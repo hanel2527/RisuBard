@@ -673,7 +673,12 @@ import ShButton from "../UI/GUI/ShButton.svelte";
     {/if}
 {:else if activeSubMenu === 3}
     {#if !$MobileGUI}
-        <h2 class="mb-2 text-2xl font-bold">{language.loreBook} <Help key="lorebook"/></h2>
+        <section data-lorebook-sidebar-header class="border-b border-darkborderc pb-2">
+            <div class="flex min-h-10 items-center gap-1 px-1.5 py-2 text-textcolor">
+                <strong class="truncate text-base font-semibold">{language.loreBook}</strong>
+                <Help key="lorebook"/>
+            </div>
+        </section>
     {/if}
     <LoreBook />
 {:else if activeSubMenu === 4}

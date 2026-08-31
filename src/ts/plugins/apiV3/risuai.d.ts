@@ -1152,6 +1152,19 @@ interface ProviderArguments {
     top_p: number;
     /** Generation mode */
     mode: string;
+    /** True whenever the caller expects schema-constrained JSON, including prompt-fallback retries. */
+    structured_output?: boolean;
+    /** Native structured output request. Present only when the provider opts in. */
+    response_schema?: ProviderStructuredOutput;
+}
+
+interface ProviderStructuredOutput {
+    /** Stable schema name for OpenAI-compatible providers */
+    name: string;
+    /** Whether the upstream provider should enforce the schema strictly */
+    strict: boolean;
+    /** JSON Schema for the final response */
+    schema: Record<string, unknown>;
 }
 
 /**
@@ -1186,6 +1199,8 @@ interface ProviderOptions {
     hostRequestStatus?: boolean | (() => boolean);
     /** Plugin storage key whose `risubard` value opts in dynamically. */
     hostRequestStatusStorageKey?: string;
+    /** Receive response_schema and translate it to the upstream provider's native structured-output format. */
+    structuredOutput?: boolean | (() => boolean);
 }
 
 // ============================================================================

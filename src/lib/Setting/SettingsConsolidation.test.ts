@@ -43,7 +43,7 @@ describe('settings consolidation', () => {
 
         expect(sidebar).toContain('data-sidebar-persona')
         expect(sidebar).toContain('openPersonaManager.set(true)')
-        expect(sidebar.indexOf('data-sidebar-persona')).toBeLessThan(sidebar.indexOf('class="character-list'))
+        expect(sidebar.indexOf('data-sidebar-persona')).toBeLessThan(sidebar.indexOf('data-character-vault-button'))
         expect(app).toContain('<PersonaManager')
         expect(settings).not.toContain("import PersonaSettings from './Pages/PersonaSettings.svelte'")
         expect(settings).not.toContain('$SettingsMenuIndex === SettingsRoute.Persona')

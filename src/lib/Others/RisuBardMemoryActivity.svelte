@@ -86,7 +86,8 @@
     const injectionLabels: Record<RequestInjectionKind, string> = {
         systemPrompt: '주입 컨텍스트', jailbreak: '탈옥 프롬프트',
         globalNote: '전역 메모', authorNote: '작가 노트', character: '캐릭터',
-        persona: '페르소나', lorebook: '로어북', wiki: 'BardWiki',
+        persona: '페르소나', lorebook: '로어북', grimoire: '그리모어',
+        grimoireRequired: '그리모어(필수)', wiki: 'BardWiki',
         memory: '메모리', exampleDialogue: '예시 대화', chatHistory: '채팅 기록',
         instruction: '추가 지침', tool: '도구', other: '기타',
     }
@@ -110,11 +111,12 @@
         systemPrompt: '시스템', jailbreak: '시스템', globalNote: '시스템',
         authorNote: '시스템', instruction: '시스템', tool: '시스템',
         character: '캐릭터', persona: '페르소나', lorebook: '로어북',
+        grimoire: '그리모어', grimoireRequired: '그리모어',
         wiki: 'BardWiki', memory: 'BardWiki', exampleDialogue: '예시 대화',
         chatHistory: '채팅', other: '기타',
     }
     const injectionGroupOrder = [
-        '시스템', '캐릭터', '페르소나', 'BardWiki', '로어북',
+        '시스템', '캐릭터', '페르소나', 'BardWiki', '그리모어', '로어북',
         '채팅', '예시 대화', '기타',
     ]
     const groupedInjectionTokens = (

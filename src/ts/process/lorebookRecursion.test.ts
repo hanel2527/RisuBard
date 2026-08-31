@@ -184,6 +184,74 @@ describe('persona builder character lorebook search', () => {
 })
 
 describe('lorebook recursion steps', () => {
+    it('uses bounded Bard Lore entries instead of legacy always-active character lore', async () => {
+        mockModuleSources.length = 0
+        const bardEntry = (id: string, content: string, activation: string, aliases: string[] = [], tags: string[] = []) => ({
+            ...lore(id, aliases.join(', '), content),
+            id,
+            bard: {
+                sourceLegacyId: id,
+                sourceHash: id,
+                kind: activation === 'required' ? 'system' : 'location',
+                activation,
+                aliases,
+                tags,
+                summary: '',
+                links: [],
+            },
+        })
+        mockDBState.db = {
+            username: 'user',
+            loreBookDepth: 5,
+            loreBookToken: 1,
+            characters: [{
+                chaId: 'bard-character',
+                name: 'storywriter',
+                chatPage: 0,
+                globalLore: [
+                    { ...lore('Legacy world', '', 'LEGACY WORLD DUMP'), alwaysActive: true },
+                    { ...lore('Legacy roster', '', 'LEGACY ROSTER DUMP'), alwaysActive: true },
+                ],
+                bardLore: {
+                    schemaVersion: 1,
+                    mode: 'bard',
+                    settings: { targetTokens: 20, maximumTokens: 30, maxEntries: 3, contextMessages: 2 },
+                    entries: [
+                        bardEntry('format', 'STATUS FORMAT', 'required'),
+                        bardEntry('mall', 'MALL DATE FACT', 'retrieve', [], ['시내']),
+                        bardEntry('dorm', 'DORM FACT', 'retrieve', [], ['기숙사']),
+                    ],
+                },
+                chats: [{
+                    localLore: [],
+                    message: [
+                        { role: 'user', data: '시내로 가자' },
+                        { role: 'user', data: '좋아' },
+                    ],
+                }],
+                loreSettings: {
+                    tokenBudget: 1,
+                    scanDepth: 3,
+                    recursiveScanning: true,
+                    maxRecursionSteps: 1,
+                    matchingMode: 'partial',
+                },
+            }],
+        }
+
+        const result = await loadLoreBookV3Prompt()
+        const prompts = result.actives.map((entry) => entry.prompt)
+
+        expect(prompts).toEqual(expect.arrayContaining(['STATUS FORMAT', 'MALL DATE FACT']))
+        expect(result.actives.map((entry) => [entry.source, entry.requestStatusKind])).toEqual(expect.arrayContaining([
+            ['format', 'grimoireRequired'],
+            ['mall', 'grimoire'],
+        ]))
+        expect(result.matchLog.some((entry) => entry.source === 'Grimoire query plan')).toBe(true)
+        expect(prompts).not.toContain('DORM FACT')
+        expect(prompts.join('\n')).not.toContain('LEGACY')
+    })
+
     it('does not activate newly discovered keys during the same sweep', async () => {
         mockModuleSources.length = 0
         mockDBState.db = {

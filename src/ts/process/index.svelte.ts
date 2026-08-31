@@ -85,7 +85,10 @@ import {
 import { resolveRisuBardChatSettings } from '../risubard/risuBardSettings';
 import { findHistoricalSourceMatches } from '../risubard/historicalSourceRecall';
 import { normalizeArcPlotterRuntimeSettings } from '../risubard/arcPlotterSettings';
-import { canonicalTurnNeedsRetry } from '../risubard/canonicalTurnReceipt';
+import {
+    canonicalTurnNeedsRetry,
+    canonicalTurnRetryWarning,
+} from '../risubard/canonicalTurnReceipt';
 import { saveChatToServer } from '../storage/chatStorage';
 import {
     createWikiRebootJob,
@@ -128,6 +131,22 @@ function findRisuBardChat(chatId?: string): Chat | undefined {
         .find((chat) => chat.id === chatId)
 }
 
+function boundedMemoryAnalysisError(error: unknown): string {
+    const base = error instanceof Error
+        ? `${error.name}: ${error.message}`
+        : String(error)
+    const validationHint = typeof error === 'object' && error !== null
+        && typeof (error as { validationHint?: unknown }).validationHint === 'string'
+        ? (error as { validationHint: string }).validationHint
+        : ''
+    return [base, validationHint]
+        .filter(Boolean)
+        .join(' · ')
+        .replace(/\s+/gu, ' ')
+        .trim()
+        .slice(0, 1024)
+}
+
 const storedResponseMemoryAnalysis = createStoredResponseMemoryAnalysis({
     requestModel: requestChatData,
     fetchImpl: fetch,
@@ -135,7 +154,8 @@ const storedResponseMemoryAnalysis = createStoredResponseMemoryAnalysis({
     getModelMode: (chatId) =>
         resolvedRisuBardSettings(findRisuBardChat(chatId)).risuBardModelMode,
     onError(error) {
-        console.warn('[RisuBard memory analysis]', error)
+        const reason = boundedMemoryAnalysisError(error) || '알 수 없는 오류'
+        console.warn(`[RisuBard memory analysis] ${reason}`)
     },
     nativeV2Analysis: true,
 })
@@ -216,6 +236,18 @@ async function confirmProjectedNarrativeTurn(input: {
                 ),
             } : {}),
         }, generationSignal)
+        const retryWarning = receipt
+            ? canonicalTurnRetryWarning(receipt)
+            : undefined
+        if (retryWarning) {
+            publishRisuBardMemoryActivity({
+                characterId: input.characterId,
+                chatId: input.chatId,
+                operation: 'error',
+                timestamp: Date.now(),
+                message: retryWarning,
+            })
+        }
         const message = chat?.message.find(
             (item) => item.chatId === input.targetMessageId
         )
@@ -1557,7 +1589,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         unformated.lorebook.push(setRequestStatusSource({
             role: lorebook.role,
             content: risuChatParser(resolvePosition(lorebook.prompt), {chara: currentChar})
-        }, 'lorebook', lorebook.source))
+        }, lorebook.requestStatusKind, lorebook.source))
     }
 
     const descActives = lorepmt.actives.filter(v => {
@@ -1568,7 +1600,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         const c = setRequestStatusSource({
             role: lorebook.role,
             content: risuChatParser(resolvePosition(lorebook.prompt), {chara: currentChar})
-        }, 'lorebook', lorebook.source)
+        }, lorebook.requestStatusKind, lorebook.source)
         if(lorebook.pos === 'before_desc'){
             beforeDescriptionPrompts.unshift(c)
             unformated.description.unshift(c)
@@ -1609,7 +1641,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         unformated.postEverything.push(setRequestStatusSource({
             role: lorebook.role,
             content: risuChatParser(resolvePosition(lorebook.prompt), {chara: currentChar})
-        }, 'lorebook', lorebook.source))
+        }, lorebook.requestStatusKind, lorebook.source))
     }
 
     //Since assistant needs to be prefill, we need to add assistant lorebooks after user/system lorebooks
@@ -1630,7 +1662,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         unformated.postEverything.push(setRequestStatusSource({
             role: lorebook.role,
             content: risuChatParser(resolvePosition(lorebook.prompt), {chara: currentChar})
-        }, 'lorebook', lorebook.source))
+        }, lorebook.requestStatusKind, lorebook.source))
     }
 
     //await tokenize currernt

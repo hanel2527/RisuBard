@@ -4,8 +4,8 @@
     import { language } from 'src/lang'
     import { alertMd } from 'src/ts/alert'
     import { tooltip } from 'src/ts/gui/tooltip'
-    import { openPersonaManager, personaSelectCallback } from 'src/ts/stores.svelte'
-    import type { PersonaSelection } from 'src/ts/personaScopes'
+    import { DBState, openPersonaManager, personaSelectCallback, selectedCharID } from 'src/ts/stores.svelte'
+    import { getEffectivePersona, type PersonaSelection } from 'src/ts/personaScopes'
     import PersonaSettings from '../Setting/Pages/PersonaSettings.svelte'
 
     const PERSONA_MANAGER_WIDTH_KEY = 'risubard-persona-manager-width'
@@ -13,6 +13,11 @@
     const MAX_MANAGER_WIDTH = 1080
     let managerWidth = $state(672)
     let stopManagerResize: (() => void) | null = null
+    const currentSelection = $derived.by(() => {
+        const character = DBState.db.characters[$selectedCharID]
+        const chat = character?.chats?.[character.chatPage]
+        return getEffectivePersona(DBState.db, character, chat)
+    })
 
     function close() {
         personaSelectCallback.set(null)
@@ -21,7 +26,6 @@
 
     function selectPersona(selection: PersonaSelection): void {
         $personaSelectCallback?.(selection)
-        close()
     }
 
     function normalizeManagerWidth(value: number): number {
@@ -95,7 +99,7 @@
             </button>
         </header>
         <div class="persona-manager-content">
-            <PersonaSettings embedded onSelect={$personaSelectCallback ? selectPersona : undefined} />
+            <PersonaSettings embedded initialSelection={currentSelection} onSelect={$personaSelectCallback ? selectPersona : undefined} />
         </div>
         <button
             data-persona-manager-resizer

@@ -6,6 +6,7 @@
     import ShDialog from 'src/lib/UI/GUI/ShDialog.svelte'
     import LoreBookWorkspace from './LoreBookWorkspace.svelte'
     import type { LorebookLocalActivation } from './loreBookWorkspaceConnections'
+    import type { BardLoreAnalysisRun, BardLoreSettings } from 'src/ts/lorebook/bardLore'
 
     interface Props {
         open?: boolean
@@ -14,6 +15,10 @@
         scopeLabel: string
         scopeKey?: string
         dragEnabled?: boolean
+        bardMode?: boolean
+        bardSettings?: BardLoreSettings
+        bardAnalysisRun?: BardLoreAnalysisRun
+        onBardAnalysisRunChange?: (run: BardLoreAnalysisRun | undefined) => void
         legacyDisabledBackups?: Record<string, loreBook & { disabled?: boolean }>
         localActivation?: LorebookLocalActivation
         onChange: (entries: loreBook[]) => void
@@ -29,6 +34,10 @@
         scopeLabel,
         scopeKey,
         dragEnabled = true,
+        bardMode = false,
+        bardSettings,
+        bardAnalysisRun,
+        onBardAnalysisRunChange,
         legacyDisabledBackups,
         localActivation,
         onChange,
@@ -78,6 +87,10 @@
         {scopeKey}
         active={open}
         {dragEnabled}
+        {bardMode}
+        {bardSettings}
+        {bardAnalysisRun}
+        {onBardAnalysisRunChange}
         {legacyDisabledBackups}
         {localActivation}
         {onChange}

@@ -53,7 +53,10 @@
     import SideChatList from "./SideChatList.svelte";
 
   import { sideBarSize } from "src/ts/gui/guisize";
-  import { normalizeCharacterSidebarWidth } from 'src/ts/gui/sidebarLayout';
+  import {
+    normalizeCharacterListSidebarWidth,
+    normalizeCharacterSidebarWidth,
+  } from 'src/ts/gui/sidebarLayout';
   import SidebarResizeHandle from './SidebarResizeHandle.svelte';
   import DevTool from "./DevTool.svelte";
     import QuickSettingsGui from "../Others/QuickSettingsGUI.svelte";
@@ -85,6 +88,12 @@
   let devTool = $state(false)
   let characterManageOpen = $state(false)
   let sidebarElement = $state<HTMLDivElement>()
+  let characterListSidebarElement = $state<HTMLDivElement>()
+  const characterListSidebarMaxWidth = $derived(Math.max(80, Math.min(240,
+    ($SizeStore.w || window.innerWidth) - 320)))
+  const characterListSidebarWidth = $derived(
+    `${normalizeCharacterListSidebarWidth(DBState.db.characterListSidebarWidth, characterListSidebarMaxWidth)}px`
+  )
   const sidebarMaxWidth = $derived(Math.max(0, ($SizeStore.w || window.innerWidth)
     - ($DynamicGUI ? 128 : 440)))
   const sidebarWidth = $derived(
@@ -601,7 +610,10 @@
 </div>
 {:else}
 <div
-  class="h-full w-20 min-w-20 flex-col items-center bg-bgcolor text-textcolor shadow-lg relative rs-sidebar"
+  bind:this={characterListSidebarElement}
+  data-character-list-sidebar
+  class="character-list-sidebar h-full min-w-20 shrink-0 flex-col items-center bg-bgcolor text-textcolor shadow-lg relative rs-sidebar"
+  style:width={characterListSidebarWidth}
   class:max-xs:hidden={$leftBarCollapsed}
   class:editMode
   class:risu-sub-sidebar={$sideBarClosing}
@@ -609,10 +621,12 @@
   class:hidden={hidden}
   class:flex={!hidden}
 >
+  <div data-character-sidebar-primary-actions class="character-sidebar-primary-actions">
   {#if !DBState.db.hamburgerButtonBottom}
+  <div class="character-sidebar-menu-action">
   <button
     data-sidebar-options
-    class="risu-button-lift mt-3 flex h-10 min-h-10 w-[52px] min-w-[52px] cursor-pointer items-center justify-center rounded-md bg-primary text-accenttext transition-colors hover:bg-primary/80"
+    class="risu-button-lift flex h-10 min-h-10 w-[52px] min-w-[52px] cursor-pointer items-center justify-center self-center rounded-md bg-primary text-accenttext transition-colors hover:bg-primary/80"
     class:max-xs:hidden={$leftBarCollapsed}
     onclick={() => {
       menuMode = 1 - menuMode;
@@ -685,10 +699,11 @@
     </div>
     {/if}
   </div>
+  </div>
   {/if}
   <div
     data-sidebar-persona
-    class="mb-2 flex w-full flex-col items-center gap-1 border-b border-b-selected px-2 py-3"
+    class="flex w-14 flex-col items-center gap-1"
     class:max-xs:hidden={$leftBarCollapsed}
   >
     <button
@@ -721,6 +736,7 @@
       {effectivePersona?.persona.name || language.persona}
     </span>
   </div>
+  </div>
   <div
     data-character-vault-button
     class="flex w-full flex-col items-center gap-1 px-2 py-2"
@@ -750,7 +766,7 @@
     </button>
     <span data-character-vault-label class="text-[10px] font-medium leading-none text-textcolor2">저장소</span>
   </div>
-  <div data-quick-inventory class="character-list flex grow w-full flex-col items-center overflow-x-hidden overflow-y-auto pr-0" class:max-xs:hidden={$leftBarCollapsed} use:touchDragContainer>
+  <div data-quick-inventory data-quick-inventory-grid class="character-list min-h-0 grow w-full overflow-x-hidden overflow-y-auto" class:max-xs:hidden={$leftBarCollapsed} use:touchDragContainer>
     <div class="h-4 min-h-4 w-14" role="listitem" data-spacer-index="0" ondragover={(e) => {
       if(!getCurrentSidebarDrag(e)){ return }
       e.preventDefault()
@@ -918,7 +934,7 @@
       </div>
       {#if char.type === 'folder' && openFolders.includes(char.id)}
         {#key char.color}
-        <div class="p-1 flex flex-col items-center py-1 mt-1 rounded-lg relative">
+        <div class="folder-character-grid p-1 grid items-center rounded-lg relative">
           <div class="absolute top-0 left-1 border border-selected w-full h-full rounded-lg z-0 {
             char.color === 'red' ? 'bg-red-700/20' :
             char.color === 'yellow' ? 'bg-yellow-700/20' :
@@ -1150,6 +1166,12 @@
     }}><ListIcon />
   </button>
   {/if}
+  <SidebarResizeHandle
+    axis="width"
+    field="characterListSidebarWidth"
+    target={characterListSidebarElement}
+    maxWidth={characterListSidebarMaxWidth}
+  />
 </div>
 {/if}
 <div
@@ -1492,11 +1514,73 @@
   .hamburger-menu::-webkit-scrollbar {
     display: none;
   }
+  .character-list-sidebar {
+    --character-card-gap: 1rem;
+  }
+  .character-sidebar-primary-actions {
+    display: grid;
+    flex: 0 0 auto;
+    grid-template-columns: repeat(auto-fit, 56px);
+    justify-content: center;
+    gap: var(--character-card-gap);
+    width: 100%;
+    padding: .75rem .75rem 1rem;
+    border-bottom: 1px solid var(--color-selected);
+  }
+  .character-sidebar-menu-action {
+    position: relative;
+    z-index: 30;
+    display: grid;
+    width: 56px;
+    place-items: center;
+  }
+  .character-sidebar-menu-action [data-sidebar-options-divider] {
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    width: 80px;
+    transform: translateX(-50%);
+  }
   .character-list {
-    scrollbar-width: none;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, 56px);
+    align-content: start;
+    justify-content: center;
+    gap: var(--character-card-gap);
+    overflow-y: auto;
+    padding: 1rem .75rem .5rem;
+    scrollbar-color: var(--color-borderc) transparent;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
   }
   .character-list::-webkit-scrollbar {
+    width: .5rem;
+  }
+  .character-list::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: var(--color-borderc);
+  }
+  .character-list > [data-spacer-index],
+  .folder-character-grid > [data-spacer-index] {
     display: none;
+  }
+  .character-list > .group,
+  .folder-character-grid > .group {
+    width: 56px;
+    padding-inline: 0;
+  }
+  .folder-character-grid {
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(auto-fit, 56px);
+    justify-content: center;
+    gap: var(--character-card-gap);
+    width: 100%;
+    margin: 0;
+    padding: .5rem;
+  }
+  .character-list > div:last-child {
+    width: 56px;
+    padding-inline: 0;
   }
   :global([data-new-character-badge] svg path) {
     fill: var(--color-media-text);

@@ -6,6 +6,7 @@ export type RequestPurpose =
     | 'bardwiki-canonical-update'
     | 'bardwiki-admin'
     | 'persona-builder'
+    | 'bard-lore-analysis'
 
 export const requestPurposeLabels: Record<RequestPurpose, string> = {
     'chat-response': '채팅 답변 생성',
@@ -13,6 +14,7 @@ export const requestPurposeLabels: Record<RequestPurpose, string> = {
     'bardwiki-canonical-update': 'BardWiki 정본 갱신',
     'bardwiki-admin': 'BardWiki 관리자 명령',
     'persona-builder': '페르소나 빌더',
+    'bard-lore-analysis': '그리모어 메타데이터 분석',
 }
 
 export function defaultRequestPurpose(

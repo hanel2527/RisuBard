@@ -35,6 +35,21 @@ afterEach(() => {
 })
 
 describe('disk-backed backup entry streaming', () => {
+    it('restores the client import timeout after Node clears the request socket', () => {
+        const source = fs.readFileSync('server/node/server.cjs', 'utf8')
+        const start = source.indexOf("app.post('/api/backup/import'")
+        const end = source.indexOf('// ── Server-side backup endpoints', start)
+        const route = source.slice(start, end)
+        const cleanup = route.slice(route.indexOf('} finally {'))
+
+        expect(start).toBeGreaterThan(-1)
+        expect(end).toBeGreaterThan(start)
+        expect(route).toContain('const requestSocket = req.socket;')
+        expect(route).toContain('const requestServer = requestSocket.server;')
+        expect(cleanup).toContain('requestServer.requestTimeout = prevRequestTimeout;')
+        expect(cleanup).not.toContain('req.socket')
+    })
+
     it('keeps server-side restores alive throughout post-stream publication work', () => {
         const source = fs.readFileSync('server/node/server.cjs', 'utf8')
         const start = source.indexOf("app.post('/api/backup/server/restore'")

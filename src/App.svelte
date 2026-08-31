@@ -41,11 +41,15 @@
     import RequestStatusToaster from './lib/UI/GUI/RequestStatusToaster.svelte';
     import sendSound from './etc/send.mp3'
     import { RISU_APP_INTERNAL_DRAG_TYPE, RISU_SIDEBAR_DRAG_TYPE } from './ts/dragTypes';
+    import { onMount } from 'svelte';
+    import { observeModalLayers } from './lib/UI/GUI/modalLayerStack';
 
     let gridOpen = $state(false)
     let aprilFools = $state(new Date().getMonth() === 3 && new Date().getDate() === 1)
     let aprilFoolsPage = $state(0)
     let keepingSessionAlive = $state(false)
+
+    onMount(() => observeModalLayers(document.body))
 
     const getMainDropEffect = (e:DragEvent): DataTransfer['dropEffect'] => {
         const types = Array.from(e.dataTransfer?.types ?? [])
@@ -217,17 +221,16 @@
         {#if gridOpen}
             <GridChars endGrid={() => {gridOpen = false}} />
         {:else}
-            {#if (!$DynamicGUI)}
-                <Sidebar openGrid={() => {gridOpen = true}} hidden={!$sideBarStore} />
-            {:else}
-                <div class="top-0 w-full h-full left-0 z-30 flex flex-row items-center" class:fixed={$sideBarStore} class:hidden={!$sideBarStore} >
-                    <!-- svelte-ignore a11y_click_events_have_key_events -->
-                    <Sidebar openGrid={() => {gridOpen = true}}  hidden={false} />
-
-
-
-                </div>
-            {/if}
+            <div
+                data-responsive-sidebar-host
+                class="top-0 w-full h-full left-0 z-30 flex flex-row items-center"
+                class:fixed={$DynamicGUI && $sideBarStore}
+                class:hidden={$DynamicGUI && !$sideBarStore}
+                style:display={!$DynamicGUI ? 'contents' : undefined}
+            >
+                <!-- Keep one Sidebar instance mounted across the responsive breakpoint so portal dialogs retain state. -->
+                <Sidebar openGrid={() => {gridOpen = true}} hidden={!$DynamicGUI && !$sideBarStore} />
+            </div>
             <div class="flex h-full min-h-0 min-w-0 grow flex-col overflow-hidden">
                 <ChatScreen />
             </div>

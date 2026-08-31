@@ -20,6 +20,7 @@ import { CharXImporter, CharXSkippableChecker, CharXWriter } from "./process/pro
 import { exportModuleLegacy, readModule, type RisuModule } from "./process/modules"
 import { pinCharacterVaultQuickAccess } from './characterVault'
 import { normalizeFirstMessageStudioProject, type FirstMessageStudioProject } from './firstMessageStudio'
+import { normalizeBardLoreState, type BardLoreState } from './lorebook/bardLore'
 
 
 const EXTERNAL_HUB_URL = 'https://sv.risuai.xyz';
@@ -657,6 +658,7 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
     let db = getDatabase()
 
     const risuext = data.extensions?.risuai ? safeStructuredClone(data.extensions.risuai) : undefined
+    const bardLore = normalizeBardLoreState((data.extensions as Record<string, any> | undefined)?.risubard?.bardLore)
     let emotions:[string, string][] = []
     let bias:[string, number][] = []
     let viewScreen: "none" | "emotion" | "imggen" = 'none'
@@ -868,7 +870,7 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
     let ext = safeStructuredClone(data?.extensions ?? {})
 
     for(const key in ext){
-        if(key === 'risuai'){
+        if(key === 'risuai' || key === 'risubard'){
             delete ext[key]
         }
         if(key === 'depth_prompt'){
@@ -894,6 +896,7 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
         emotionImages: emotions,
         bias: bias,
         globalLore: lorebook, //lorebook
+        bardLore,
         viewScreen: viewScreen,
         chaId: uuidv4(),
         sdData: sdData,
@@ -1195,6 +1198,7 @@ export function createBaseV2(char:character) {
                     moduleNamespace: char.moduleNamespace ?? '',
                     defaultVariables: char.defaultVariables ?? ''
                 },
+                risubard: char.bardLore ? { bardLore: safeStructuredClone(char.bardLore) } : undefined,
                 depth_prompt: char.depth_prompt
             }
         }
@@ -1202,7 +1206,7 @@ export function createBaseV2(char:character) {
 
     if(char.extentions){
         for(const key in char.extentions){
-            if(key === 'risuai' || key === 'depth_prompt'){
+            if(key === 'risuai' || key === 'risubard' || key === 'depth_prompt'){
                 continue
             }
             card.data.extensions[key] = char.extentions[key]
@@ -1635,6 +1639,7 @@ export function createBaseV3(char:character){
                     prebuiltAssetStyle: char.prebuiltAssetStyle ?? '',
                     toggles: char.customModuleToggle ?? '',
                 },
+                risubard: char.bardLore ? { bardLore: safeStructuredClone(char.bardLore) } : undefined,
                 depth_prompt: char.depth_prompt
             },
             group_only_greetings: char.group_only_greetings ?? [],
@@ -1648,7 +1653,7 @@ export function createBaseV3(char:character){
 
     if(char.extentions){
         for(const key in char.extentions){
-            if(key === 'risuai' || key === 'depth_prompt'){
+            if(key === 'risuai' || key === 'risubard' || key === 'depth_prompt'){
                 continue
             }
             card.data.extensions[key] = char.extentions[key]
@@ -1855,6 +1860,9 @@ type CharacterCardV2Risu = {
                 hideChatIcon?:boolean
                 moduleNamespace?:string
                 defaultVariables?: string
+            }
+            risubard?: {
+                bardLore?: BardLoreState
             }
             depth_prompt?: { depth: number, prompt: string }
         }

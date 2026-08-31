@@ -4382,10 +4382,12 @@ app.post('/api/backup/import', async (req, res, next) => {
     importInProgress = true;
 
     // Disable timeouts for large backup uploads
-    const prevRequestTimeout = req.socket.server?.requestTimeout;
-    req.socket.setTimeout(0);
-    req.socket.setKeepAlive(true);
-    if (req.socket.server) req.socket.server.requestTimeout = 0;
+    const requestSocket = req.socket;
+    const requestServer = requestSocket.server;
+    const prevRequestTimeout = requestServer?.requestTimeout;
+    requestSocket.setTimeout(0);
+    requestSocket.setKeepAlive(true);
+    if (requestServer) requestServer.requestTimeout = 0;
 
     // NDJSON streaming keeps the response socket alive during long
     // post-upload work (including cold-storage migration). Without it
@@ -4462,8 +4464,8 @@ app.post('/api/backup/import', async (req, res, next) => {
     } finally {
         if (heartbeatTimer) clearInterval(heartbeatTimer);
         importInProgress = false;
-        if (req.socket.server && prevRequestTimeout !== undefined) {
-            req.socket.server.requestTimeout = prevRequestTimeout;
+        if (requestServer && prevRequestTimeout !== undefined) {
+            requestServer.requestTimeout = prevRequestTimeout;
         }
     }
 });

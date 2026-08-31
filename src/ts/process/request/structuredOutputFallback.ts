@@ -25,7 +25,6 @@ export function createStructuredOutputFallbackMessage(
     return {
         role: 'system',
         content: [
-            'Native structured output is unavailable for this provider.',
             'Return exactly one JSON value matching this JSON Schema.',
             'Do not return Markdown, code fences, or commentary.',
             serializedSchema,

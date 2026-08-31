@@ -37,6 +37,7 @@ import {
     parseRebootBatchDraft,
     rebootBatchToMemoryDraft,
     serializeMemoryWriterDraft,
+    type CanonicalSectionPatch,
     type MemoryWriterDraft,
 } from './risubard-memory-writer'
 
@@ -77,9 +78,35 @@ import {
 let analysisTokenizer: Tiktoken | undefined
 
 const CHARACTER_CURRENT_STATE_HEADINGS = ['현재 상태', 'Current State'] as const
+const CHARACTER_OVERVIEW_HEADINGS = new Set([
+    '개요', 'overview', '프로필', 'profile', '인물 정보', 'character profile',
+])
 
 function hasCharacterCurrentState(markdown: string): boolean {
     return hasCanonicalSection(markdown, CHARACTER_CURRENT_STATE_HEADINGS)
+}
+
+function normalizeNewCharacterCurrentState(
+    patches: CanonicalSectionPatch[],
+    language: WikiWritingLanguage | undefined,
+): CanonicalSectionPatch[] {
+    if (patches.some((patch) => patch.operation === 'upsert'
+        && CHARACTER_CURRENT_STATE_HEADINGS.some((heading) =>
+            patch.heading.normalize('NFKC').toLocaleLowerCase()
+            === heading.normalize('NFKC').toLocaleLowerCase()))) {
+        return patches
+    }
+    const overviewIndex = patches.findIndex((patch) =>
+        patch.operation === 'upsert'
+        && patch.content.trim().length > 0
+        && CHARACTER_OVERVIEW_HEADINGS.has(
+            patch.heading.normalize('NFKC').toLocaleLowerCase().trim()
+        ))
+    if (overviewIndex < 0) return patches
+    return patches.map((patch, index) => index === overviewIndex ? {
+        ...patch,
+        heading: language === 'en' ? 'Current State' : '현재 상태',
+    } : patch)
 }
 
 function countAnalysisTokens(value: string): number {
@@ -1388,6 +1415,12 @@ export function createMemoryAnalysisRunner(
                                     for (const document of parsed.documents) {
                                         const target = targets[document.candidateIndex]
                                         if (target?.candidate.type !== 'character') continue
+                                        if (!target.target) {
+                                            document.sections = normalizeNewCharacterCurrentState(
+                                                document.sections,
+                                                snapshot.wikiWritingLanguage,
+                                            )
+                                        }
                                         const rewritten = applyCanonicalSectionPatches({
                                             ...(target.target ? {
                                                 markdown: target.target.content,

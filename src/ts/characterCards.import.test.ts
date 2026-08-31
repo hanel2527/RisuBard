@@ -90,6 +90,7 @@ vi.mock('src/lang', () => ({
 }))
 
 import { createBaseV2, createBaseV3, importCharacterProcess } from './characterCards'
+import { createBardLoreSettings } from './lorebook/bardLore'
 
 function cardFixture(spec: 'chara_card_v2'|'chara_card_v3', risuai: Record<string, unknown>|undefined, postHistory = 'legacy card global note') {
     return {
@@ -171,6 +172,93 @@ describe('legacy character-card replace-global-note compatibility', () => {
 })
 
 describe('public character-card lifecycle round-trips', () => {
+    test.each([
+        ['v2', createBaseV2],
+        ['v3', createBaseV3],
+    ] as const)('preserves namespaced Bard Lore without changing the standard lorebook through %s', async (_spec, createCard) => {
+        const legacyLore = [{
+            id: 'legacy',
+            key: 'legacy',
+            secondkey: '',
+            insertorder: 10,
+            comment: 'Legacy',
+            content: 'Legacy content',
+            mode: 'normal',
+            alwaysActive: false,
+            selective: false,
+        }]
+        const bardEntry = {
+            ...legacyLore[0],
+            id: 'bard',
+            comment: 'Bard',
+            content: 'Bard content',
+            bard: {
+                sourceLegacyId: 'legacy',
+                sourceHash: 'hash',
+                kind: 'location',
+                activation: 'retrieve',
+                aliases: ['장소'],
+                tags: ['데이트'],
+                summary: '장소 요약',
+                facets: [],
+                injection: 'full',
+                links: [],
+            },
+        }
+        const source = {
+            name: 'Bard Lore lifecycle',
+            globalLore: legacyLore,
+            loreExt: {},
+            bardLore: {
+                schemaVersion: 1,
+                mode: 'bard',
+                entries: [bardEntry],
+                settings: createBardLoreSettings({ maximumTokens: 777, maxEntries: 3 }),
+                analysisRun: {
+                    schemaVersion: 1,
+                    id: 'run',
+                    scope: 'all',
+                    targetIds: ['bard'],
+                    createdAt: '2026-08-31T00:00:00.000Z',
+                    updatedAt: '2026-08-31T00:00:00.000Z',
+                    status: 'review',
+                    settingsSnapshot: createBardLoreSettings({ maximumTokens: 777, maxEntries: 3 }),
+                    overwriteExisting: false,
+                    batches: [{
+                        id: 'batch',
+                        index: 0,
+                        targetIds: ['bard'],
+                        estimatedInputTokens: 120,
+                        status: 'complete',
+                        candidates: [{
+                            id: 'bard',
+                            sourceHash: 'draft-hash',
+                            kind: 'location',
+                            aliases: ['장소'],
+                            tags: ['데이트'],
+                            summary: '검토 대기',
+                            facets: [],
+                            injection: 'full',
+                            atoms: [],
+                            links: [],
+                        }],
+                    }],
+                },
+            },
+        } as any
+
+        const exported = createCard(source)
+        expect(exported.data.character_book?.entries).toHaveLength(1)
+        expect((exported.data.extensions as any).risubard.bardLore.settings.maximumTokens).toBe(777)
+
+        const imported = await importFixture(exported as any)
+        const reexported = createCard(imported)
+
+        expect(imported.globalLore).toHaveLength(1)
+        expect(imported.bardLore).toEqual(source.bardLore)
+        expect((reexported.data.extensions as any).risubard.bardLore).toEqual(source.bardLore)
+    })
+
     test.each([
         ['v2', createBaseV2],
         ['v3', createBaseV3],

@@ -88,6 +88,7 @@ async function render(
     entries: loreBook[],
     props: Partial<{
         dragEnabled: boolean
+        bardMode: boolean
         legacyDisabledBackups: Record<string, loreBook & { disabled?: boolean }>
         onChange: (next: loreBook[]) => void
         resolveChildLabel: (id: string) => string | undefined
@@ -183,6 +184,229 @@ afterEach(async () => {
 })
 
 describe('LoreBookWorkspace', () => {
+    it('shows Bard metadata controls instead of legacy activation controls for a Bard batch selection', async () => {
+        const bardEntry = (id: string) => ({
+            ...entry(id),
+            bard: {
+                sourceLegacyId: id,
+                sourceHash: id,
+                kind: 'other',
+                activation: 'retrieve',
+                aliases: [],
+                tags: [],
+                summary: '',
+                links: [],
+            },
+        }) as any
+        await render([bardEntry('a'), bardEntry('b')], { bardMode: true })
+
+        document.body.querySelector<HTMLElement>('[data-lorebook-row="a"] .row-main')!.click()
+        document.body.querySelector<HTMLElement>('[data-lorebook-row="b"] .row-main')!
+            .dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }))
+        await tick()
+
+        expect(document.body.querySelector('[data-bard-lore-batch-activation]')).not.toBeNull()
+        expect(document.body.querySelector('[data-bard-lore-batch-kind]')).not.toBeNull()
+        expect(document.body.querySelector('[data-bard-lore-batch-values]')).not.toBeNull()
+        expect(document.body.querySelector('[data-lorebook-batch-always-active]')).toBeNull()
+        expect(document.body.querySelector('[data-lorebook-batch-selective]')).toBeNull()
+        expect(document.body.querySelector('[data-lorebook-batch-regex]')).toBeNull()
+    })
+
+    it('applies Bard activation, kind, aliases, and tags to every selected Bard entry', async () => {
+        const onChange = vi.fn()
+        const bardEntry = (id: string, alias: string) => ({
+            ...entry(id),
+            bard: {
+                sourceLegacyId: id,
+                sourceHash: id,
+                kind: 'other',
+                activation: 'retrieve',
+                aliases: [alias],
+                tags: ['existing'],
+                summary: '',
+                links: [],
+            },
+        }) as any
+        await render([bardEntry('a', 'alpha'), bardEntry('b', 'beta')], { bardMode: true, onChange })
+
+        document.body.querySelector<HTMLElement>('[data-lorebook-row="a"] .row-main')!.click()
+        document.body.querySelector<HTMLElement>('[data-lorebook-row="b"] .row-main')!
+            .dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }))
+        await tick()
+
+        const activation = document.body.querySelector<HTMLSelectElement>('[data-bard-lore-batch-activation]')!
+        activation.value = 'required'
+        activation.dispatchEvent(new Event('change', { bubbles: true }))
+        await tick()
+        const kind = document.body.querySelector<HTMLSelectElement>('[data-bard-lore-batch-kind]')!
+        kind.value = 'system'
+        kind.dispatchEvent(new Event('change', { bubbles: true }))
+        await tick()
+        const values = document.body.querySelector<HTMLInputElement>('[data-bard-lore-batch-values]')!
+        values.value = 'shared, common'
+        values.dispatchEvent(new Event('input', { bubbles: true }))
+        click('[data-bard-lore-batch-add-aliases]')
+        await tick()
+        click('[data-bard-lore-batch-add-tags]')
+        await tick()
+
+        const changed = onChange.mock.calls.at(-1)?.[0] as any[]
+        expect(changed.map((item) => item.bard)).toEqual([
+            expect.objectContaining({ activation: 'required', kind: 'system', aliases: ['alpha', 'shared', 'common'], tags: ['existing', 'shared', 'common'] }),
+            expect.objectContaining({ activation: 'required', kind: 'system', aliases: ['beta', 'shared', 'common'], tags: ['existing', 'shared', 'common'] }),
+        ])
+    })
+
+    it('edits Bard Lore activation and metadata without showing legacy activation controls', async () => {
+        const onChange = vi.fn()
+        const bardEntry = {
+            ...entry('mall'),
+            bard: {
+                sourceLegacyId: 'mall',
+                sourceHash: 'hash',
+                kind: 'location',
+                activation: 'retrieve',
+                aliases: ['폴로니안 몰'],
+                tags: ['시내'],
+                summary: '데이트 장소',
+                links: [],
+            },
+        }
+        await render([bardEntry], { bardMode: true, onChange })
+        click('[data-lorebook-row="mall"] [data-lorebook-open]')
+        await tick()
+
+        expect(document.body.querySelector('[data-bard-lore-activation]')).not.toBeNull()
+        expect(document.body.querySelector('[data-bard-lore-tags]')).not.toBeNull()
+        expect(document.body.querySelector('[data-bard-lore-injection]')).not.toBeNull()
+        expect(document.body.querySelector('[data-bard-lore-add-facet]')).not.toBeNull()
+        expect(document.body.querySelector('[data-lorebook-activation-percent]')).toBeNull()
+        expect([...document.body.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('[data-lorebook-field="key"], [data-lorebook-field="secondkey"]')]
+            .every((field) => field.disabled)).toBe(true)
+        expect(document.body.querySelectorAll('[data-bard-lore-help]')).toHaveLength(7)
+        const workspaceSource = readFileSync(resolve('src/lib/SideBars/LoreBook/LoreBookWorkspace.svelte'), 'utf8')
+        const helpButtonRule = workspaceSource.match(/\.lore-state-rail \.bard-field-heading button\s*\{([^}]*)\}/)?.[1]
+        expect(helpButtonRule).toBeDefined()
+        expect(helpButtonRule!).toContain('width: 1.25rem')
+        expect(helpButtonRule!).toContain('cursor: help')
+
+        const activation = document.body.querySelector<HTMLSelectElement>('[data-bard-lore-activation]')!
+        activation.value = 'required'
+        activation.dispatchEvent(new Event('change', { bubbles: true }))
+        await tick()
+
+        const injection = document.body.querySelector<HTMLSelectElement>('[data-bard-lore-injection]')!
+        injection.value = 'index-only'
+        injection.dispatchEvent(new Event('change', { bubbles: true }))
+        await tick()
+        click('[data-bard-lore-add-facet]')
+        await tick()
+        const facetKey = document.body.querySelector<HTMLInputElement>('[data-bard-lore-facet-key="0"]')!
+        facetKey.value = 'region'
+        facetKey.dispatchEvent(new Event('change', { bubbles: true }))
+        await tick()
+        const facetValue = document.body.querySelector<HTMLInputElement>('[data-bard-lore-facet-value="0"]')!
+        facetValue.value = 'city'
+        facetValue.dispatchEvent(new Event('change', { bubbles: true }))
+        await tick()
+
+        expect((onChange.mock.calls.at(-1)?.[0] as any[])[0].bard).toMatchObject({
+            activation: 'required',
+            injection: 'index-only',
+            facets: [{ key: 'region', value: 'city', aliases: [] }],
+        })
+    })
+
+    it('creates an explicit non-retrieving Bard link without linking an entry to itself', async () => {
+        const onChange = vi.fn()
+        const bard = (id: string) => ({
+            ...entry(id),
+            bard: {
+                sourceLegacyId: id,
+                sourceHash: id,
+                kind: 'other',
+                activation: 'retrieve',
+                aliases: [],
+                tags: [],
+                summary: '',
+                links: [],
+            },
+        })
+        await render([bard('source'), bard('target')], { bardMode: true, onChange })
+        click('[data-lorebook-row="source"] [data-lorebook-open]')
+        await tick()
+        const linksButton = document.body.querySelector<HTMLButtonElement>('[data-bard-lore-links-open]')!
+        expect(linksButton.textContent).toContain('0')
+        expect(document.body.querySelector('[data-bard-lore-links-dialog]')).toBeNull()
+        linksButton.click()
+        await tick()
+        expect(document.body.querySelector('[data-bard-lore-links-dialog]')).not.toBeNull()
+        click('[data-bard-lore-add-link]')
+        await tick()
+
+        const retrieval = document.body.querySelector<HTMLSelectElement>('[data-bard-lore-link-retrieval]')!
+        expect([...retrieval.options].map((option) => option.value)).toEqual(['none', 'supporting', 'discoverable', 'ambient'])
+
+        const changed = onChange.mock.calls.at(-1)?.[0] as any[]
+        expect(changed[0].bard.links).toEqual([
+            { targetId: 'target', relation: '', retrieval: 'none' },
+        ])
+        expect(document.body.querySelectorAll('[data-bard-lore-link]')).toHaveLength(1)
+        expect(document.body.querySelector('[data-bard-lore-link-target="source"]')).toBeNull()
+    })
+
+    it('creates complete Bard metadata for new entries and folders', async () => {
+        const onChange = vi.fn()
+        await render([], { bardMode: true, onChange })
+
+        click('[data-lorebook-add]')
+        await tick()
+        const entryResult = onChange.mock.calls.at(-1)?.[0] as any[]
+        expect(entryResult[0].bard).toMatchObject({
+            sourceLegacyId: entryResult[0].id,
+            kind: 'other',
+            activation: 'retrieve',
+            aliases: [],
+            tags: [],
+            links: [],
+        })
+
+        click('[data-lorebook-add-folder]')
+        await tick()
+        const folderResult = onChange.mock.calls.at(-1)?.[0] as any[]
+        expect(folderResult.at(-1).bard).toMatchObject({
+            sourceLegacyId: folderResult.at(-1).id,
+            activation: 'never',
+        })
+    })
+
+    it('removes dangling Bard links when their target is deleted', async () => {
+        const onChange = vi.fn()
+        const bard = (id: string, links: any[] = []) => ({
+            ...entry(id),
+            bard: {
+                sourceLegacyId: id,
+                sourceHash: id,
+                kind: 'other',
+                activation: 'retrieve',
+                aliases: [],
+                tags: [],
+                summary: '',
+                links,
+            },
+        })
+        await render([
+            bard('source', [{ targetId: 'target', relation: 'supports', retrieval: 'supporting' }]),
+            bard('target'),
+        ], { bardMode: true, onChange })
+
+        click('[data-lorebook-row-delete="target"]')
+        await vi.waitFor(() => expect(onChange).toHaveBeenCalled())
+
+        expect((onChange.mock.calls.at(-1)?.[0] as any[])[0].bard.links).toEqual([])
+    })
+
     it('renders the list, editor, and search together', async () => {
         await render([entry('one')])
 
@@ -370,7 +594,7 @@ describe('LoreBookWorkspace', () => {
         const stateHandle = document.body.querySelector<HTMLElement>('[data-lorebook-state-splitter]')!
         expect(stateHandle).not.toBeNull()
         stateHandle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
-        expect(grid.style.getPropertyValue('--lore-state-width')).toBe('176px')
+        expect(grid.style.getPropertyValue('--lore-state-width')).toBe('240px')
         stateHandle.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
         expect(grid.style.getPropertyValue('--lore-state-width')).toBe('')
         click('[data-cbs-view-toggle]')
@@ -670,7 +894,7 @@ describe('LoreBookWorkspace', () => {
         }
     })
 
-    it('separates folder disclosure from editing and exposes folder management without drag', async () => {
+    it('toggles and edits a folder from the full folder row without a separate disclosure button', async () => {
         const folderKey = '\uf000folder:places'
         const onChange = vi.fn()
         await render([
@@ -681,17 +905,15 @@ describe('LoreBookWorkspace', () => {
 
         const folderRow = document.body.querySelector<HTMLElement>('[data-lorebook-row="folder"]')!
         expect(folderRow.getAttribute('role')).toBeNull()
-        const disclosure = folderRow.querySelector<HTMLButtonElement>('[data-lorebook-folder-toggle]')!
-        expect(disclosure.getAttribute('aria-expanded')).toBe('false')
+        const folderButton = folderRow.querySelector<HTMLButtonElement>('[data-lorebook-folder-toggle]')!
+        expect(folderButton.getAttribute('aria-expanded')).toBe('false')
+        expect(folderRow.querySelector('.folder-disclosure')).toBeNull()
         expect(document.body.querySelector('[data-lorebook-row="child"]')).toBeNull()
-        disclosure.click()
+        folderButton.click()
         await tick()
-        expect(disclosure.getAttribute('aria-expanded')).toBe('true')
+        expect(folderButton.getAttribute('aria-expanded')).toBe('true')
         expect(document.body.querySelector('[data-lorebook-row="child"]')).not.toBeNull()
-        expect(document.body.querySelector('[data-lorebook-folder-editor]')).toBeNull()
-
-        click('[data-lorebook-row="folder"] [data-lorebook-folder-edit]')
-        await tick()
+        expect(document.body.querySelector('[data-lorebook-folder-editor]')).not.toBeNull()
         const name = document.body.querySelector<HTMLInputElement>('[data-lorebook-folder-name]')!
         name.value = 'Locations'
         name.dispatchEvent(new Event('input', { bubbles: true }))
@@ -942,7 +1164,7 @@ describe('LoreBookWorkspace', () => {
         expect(editor.querySelector('[data-lorebook-field="content"]')).toBeNull()
     })
 
-    it('never renders private folder keys and uses the requested Solar disclosure icons', async () => {
+    it('never renders private folder keys and reflects expansion with the folder icon', async () => {
         const privateKey = '\uf000folder:7ae21525-a9e7-4d3e-b543-7b8a4fb5d04e'
         await render([
             entry('folder', { mode: 'folder', key: privateKey, comment: 'Places' }),
@@ -950,12 +1172,10 @@ describe('LoreBookWorkspace', () => {
         ], { scopeKey: 'folder-privacy' })
 
         expect(document.body.textContent).not.toContain(privateKey)
-        expect(document.body.querySelector('[data-solar-icon="square-alt-arrow-right-bold"]')).not.toBeNull()
+        expect(document.body.querySelector('[data-solar-icon="folder-bold"]')).not.toBeNull()
         click('[data-lorebook-folder-toggle]')
         await tick()
-        expect(document.body.querySelector('[data-solar-icon="square-alt-arrow-down-bold"]')).not.toBeNull()
-        click('[data-lorebook-folder-edit]')
-        await tick()
+        expect(document.body.querySelector('[data-solar-icon="folder-open-bold"]')).not.toBeNull()
         expect(document.body.textContent).not.toContain(privateKey)
     })
 
@@ -1449,15 +1669,15 @@ describe('LoreBookWorkspaceDialog source contract', () => {
         expect(workspaceSource).toContain('scopeKey?: string')
         expect(source).toContain('scopeKey?: string')
         expect(source).toContain('{scopeKey}')
-        expect(workspaceSource).toContain('.folder-disclosure, .row-select-hit-area')
+        expect(workspaceSource).not.toContain('.folder-disclosure')
         expect(workspaceSource).not.toContain('data-lorebook-drag-handle')
         expect(workspaceSource).toContain('.row-select-hit-area { display: grid; min-width: 3rem; min-height: 3rem; place-items: center; }')
         expect(workspaceSource).toContain('[data-lorebook-select] { width: 1rem; min-width: 1rem; height: 1rem; min-height: 1rem; margin: 0; }')
         expect(workspaceSource).not.toContain('.folder-disclosure, [data-lorebook-select]')
         expect(source).not.toContain('lorebookWorkspace.description')
         expect(source).toContain('lore-dialog-close')
-        expect(workspaceSource).toContain('square-alt-arrow-down-bold.svg')
-        expect(workspaceSource).toContain('square-alt-arrow-right-bold.svg')
+        expect(workspaceSource).toContain('folder-open-bold.svg')
+        expect(workspaceSource).toContain('folder-bold.svg')
         expect(workspaceSource).toContain('document-add-bold.svg')
         expect(workspaceSource).toContain('add-folder-bold.svg')
         expect(workspaceSource).toContain('file-download-bold.svg')
@@ -1471,6 +1691,18 @@ describe('LoreBookWorkspaceDialog source contract', () => {
         const contentFieldRule = workspaceSource.match(/\.content-field\s*\{([^}]*)\}/)?.[1]
 
         expect(contentFieldRule).toContain('grid-template-rows: auto minmax(0, 1fr)')
+    })
+
+    it('keeps the Bard inspector readable and lets the toolbar wrap instead of overflowing', () => {
+        const workspaceSource = readFileSync(resolve(
+            'src/lib/SideBars/LoreBook/LoreBookWorkspace.svelte',
+        ), 'utf8')
+
+        expect(workspaceSource).toContain('var(--lore-state-width, 20rem)')
+        expect(workspaceSource).toContain('class="bard-field"')
+        expect(workspaceSource).toContain('flex-wrap: wrap')
+        expect(workspaceSource).not.toContain('flex-wrap: nowrap')
+        expect(workspaceSource).toContain('compact')
     })
 
     it('derives explicit hierarchy and drag colors from canonical theme tokens', () => {

@@ -8,10 +8,9 @@ describe('plugin provider host request status contract', () => {
     test('applies the host status gate to every plugin-provider request', () => {
         const request = source('src/ts/process/request/request.ts')
 
+        expect(request).toContain('const providerOptions = pluginV2.providerOptions.get(model)')
         expect(request).toContain('const reportStatus = statusEnabled(arg.realChatId)')
-        expect(request).toContain(
-            'resolvePluginRequestStatus(pluginV2.providerOptions.get(model))',
-        )
+        expect(request).toContain('resolvePluginRequestStatus(providerOptions)')
     })
 
     test('documents the explicit plugin override contract in both plugin APIs', () => {

@@ -73,6 +73,8 @@ const injectionLabels: Record<RequestInjectionKind, string> = {
     character: '캐릭터',
     persona: '페르소나',
     lorebook: '로어북',
+    grimoire: '그리모어',
+    grimoireRequired: '그리모어(필수)',
     wiki: 'BardWiki',
     memory: '메모리',
     exampleDialogue: '예시 대화',

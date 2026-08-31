@@ -83,3 +83,17 @@ describe('applyParameters reasoning capability modifiers', () => {
             .toMatchObject({ reasoning_effort: expected })
     })
 })
+
+describe('applyParameters request overrides', () => {
+    test('prefers an explicit request temperature over the global model temperature', () => {
+        mocks.db.temperature = 115
+
+        expect(applyParameters(
+            {},
+            ['temperature'] as any,
+            {},
+            'model',
+            { modelId: 'pluginmodel:::pagefold-gemini-3.7-flash', temperatureOverride: 0 },
+        )).toMatchObject({ temperature: 0 })
+    })
+})

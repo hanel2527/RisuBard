@@ -30,6 +30,7 @@ import {
     ensureGlobalLorebookPageIds,
     ensureStableLorebookOwnerId,
 } from '../lorebook/ownerIdentity';
+import { normalizeBardLoreState, type BardLoreState } from '../lorebook/bardLore';
 import {
     normalizeRisuBardAdditionalSearchLimit,
     normalizeRisuBardAnalysisTokenLimit,
@@ -950,6 +951,9 @@ export function setDatabase(data:Database){
     data.risuBardWikiPromptPresets = wikiPromptState.presets
     data.risuBardChatWikiPromptPresetId = wikiPromptState.chatPresetId
     for(const char of data.characters){
+        if(char.bardLore){
+            char.bardLore = normalizeBardLoreState(char.bardLore)
+        }
         if (typeof char.risuBardWikiGuide !== 'string') {
             char.risuBardWikiGuide = ''
         }
@@ -1586,6 +1590,7 @@ export interface Database{
     sideBarSize:number
     /** Global layout preferences shared across characters and chats. */
     characterSidebarWidth?: number
+    characterListSidebarWidth?: number
     chatListHeight?: number
     risuBardMemoryDialogSize?: {
         width: number
@@ -1994,6 +1999,7 @@ export interface character{
     bias: [string, number][]
     emotionImages: [string, string][]
     globalLore: loreBook[]
+    bardLore?: BardLoreState
     risuBardWikiGuide?: string
     chaId: string
     sdData: [string, string][]

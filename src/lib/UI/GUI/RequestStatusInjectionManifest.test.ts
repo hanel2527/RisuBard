@@ -6,6 +6,10 @@ const toast = readFileSync(
     resolve(process.cwd(), 'src/lib/UI/GUI/RequestStatusToast.svelte'),
     'utf8',
 )
+const toaster = readFileSync(
+    resolve(process.cwd(), 'src/lib/UI/GUI/Toaster.svelte'),
+    'utf8',
+)
 const requestPipeline = readFileSync(
     resolve(process.cwd(), 'src/ts/process/request/request.ts'),
     'utf8',
@@ -21,6 +25,8 @@ describe('request status injection manifest', () => {
         expect(toast).toContain('injectionLabel(item)')
         expect(toast).toContain('item.tokens')
         expect(toast).toContain('injectionManifest.totalTokens')
+        expect(toast).toContain('grimoireRequired:')
+        expect(chatPipeline).toContain('lorebook.requestStatusKind')
     })
 
     test('renders the explicit request purpose instead of only the broad kind', () => {
@@ -33,6 +39,12 @@ describe('request status injection manifest', () => {
         expect(toast).toContain('onclick={dismiss}')
         expect(toast).toContain('clearStatus(id)')
         expect(toast).toContain('toast.dismiss(`req:${id}`)')
+    })
+
+    test('keeps request status cards readable above alert dialogs and below top-tier blockers', () => {
+        const zIndex = Number(toaster.match(/z-index:\s*(\d+)/)?.[1])
+        expect(zIndex).toBeGreaterThan(2_147_483_600)
+        expect(zIndex).toBeLessThan(2_147_483_640)
     })
 
     test('builds the manifest after preset normalization and strips private sources before adapter dispatch', () => {

@@ -13,6 +13,7 @@ import { loadV3Plugins } from "./apiV3/v3.svelte";
 import { pluginCodeTranspiler } from "./apiV3/transpiler";
 import { runPluginUpdate } from "./pluginUpdate";
 import { PluginChatOutputListeners, V2_CHAT_OUTPUT_OWNER, createV2ChatOutputApi } from "./pluginChatOutput";
+import type { PluginProviderStructuredOutput } from './providerStructuredOutput';
 
 export const customProviderStore = writable([] as string[])
 
@@ -463,6 +464,10 @@ export type PluginV2ProviderArgument = {
     temperature: number
     mode: string
     max_tokens: number
+    /** True whenever the caller expects schema-constrained JSON, including prompt-fallback retries. */
+    structured_output?: boolean
+    /** Native structured output request. Present only for providers that explicitly opt in. */
+    response_schema?: PluginProviderStructuredOutput
 }
 
 export type PluginV2ProviderOptions = {
@@ -474,6 +479,8 @@ export type PluginV2ProviderOptions = {
     hostRequestStatus?: boolean | (() => boolean)
     /** Plugin storage key whose `risubard` value opts in dynamically. */
     hostRequestStatusStorageKey?: string
+    /** Receive response_schema and translate it to the upstream provider's native structured-output format. */
+    structuredOutput?: boolean | (() => boolean)
 }
 
 export type EditFunction = (content: string) => string | null | undefined | Promise<string | null | undefined>

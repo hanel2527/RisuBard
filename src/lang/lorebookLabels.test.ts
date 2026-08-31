@@ -21,6 +21,7 @@ describe('lorebook workspace labels', () => {
         const requiredKeys = [
             'open',
             'editor',
+            'openBardLore',
             'close',
             'back',
             'search',
@@ -74,6 +75,10 @@ describe('lorebook workspace labels', () => {
             expect(typeof languageEnglish.lorebookWorkspace[key]).toBe('function')
             expect(typeof languageKorean.lorebookWorkspace[key]).toBe('function')
         }
+
+        expect(languageKorean.lorebookWorkspace.legacyLoreEditor).toBe('기존 로어북')
+        expect(languageKorean.lorebookWorkspace.bardLoreEditor).toBe('그리모어')
+        expect(languageKorean.lorebookWorkspace.openBardLore).toBe('그리모어 열기')
     })
 })
 

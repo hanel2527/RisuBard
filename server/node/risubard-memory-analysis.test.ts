@@ -1433,6 +1433,78 @@ describe('memory analysis runner', () => {
         expect(saveCanonicalDocument).toHaveBeenCalledOnce()
     })
 
+    test('normalizes a new character overview into the required current-state section', async () => {
+        const saveCanonicalDocument = vi.fn(async (input) => ({
+            ...input,
+            id: 'character.souma',
+            relativePath: 'characters/souma.md',
+            contentHash: 'hash-souma',
+        }))
+        const analyze = vi.fn(async (request: MemoryAnalysisModelRequest) => {
+            if (request.format === 'memory-draft') {
+                return JSON.stringify({
+                    schemaVersion: 1,
+                    title: '소우마의 계약',
+                    establishedEvents: ['소우마가 벨벳 룸에서 계약을 제안받았다.'],
+                    stateChanges: [],
+                    characterKnowledge: [],
+                    persistentFacts: [],
+                    openContinuity: [],
+                    canonicalUpdateCandidates: [{
+                        type: 'character',
+                        title: '소우마',
+                        reason: '벨벳 룸의 손님으로 확인됐다.',
+                        action: 'create',
+                        targetDocumentId: null,
+                        confidence: 0.99,
+                    }],
+                })
+            }
+            return canonicalPatchBatch([
+                {
+                    heading: '개요',
+                    operation: 'upsert',
+                    content: '- 벨벳 룸에 초대된 학생이다.',
+                },
+                {
+                    heading: '작중 행적',
+                    operation: 'upsert',
+                    content: '- [[소우마의 계약]]에서 계약을 제안받았다.',
+                },
+            ])
+        })
+        const runner = createMemoryAnalysisRunner({
+            memoryService: { loadState: vi.fn(), applyDelta: vi.fn() },
+            nativeV2Analysis: true,
+            markdownWikiService: {
+                inquire: vi.fn(async () => ({ graphRevision: 0, sources: [] })),
+                saveConfirmedTurn: vi.fn(async () => undefined),
+                loadDocuments: vi.fn(async () => []),
+                saveCanonicalDocument,
+            },
+            onError: vi.fn(),
+            analyze,
+        })
+
+        const result = await runner.run({
+            characterId: 'character',
+            chatId: 'chat',
+            messages: [{
+                messageId: 'assistant-1',
+                role: 'assistant',
+                content: '소우마가 벨벳 룸에서 계약을 제안받았다.',
+            }],
+        })
+
+        expect(saveCanonicalDocument).toHaveBeenCalledOnce()
+        expect(saveCanonicalDocument).toHaveBeenCalledWith(expect.objectContaining({
+            markdown: expect.stringContaining(
+                '### 현재 상태\n\n- 벨벳 룸에 초대된 학생이다.'
+            ),
+        }))
+        expect(result.canonicalReceipt?.warnings).toEqual([])
+    })
+
     test('honors a model-selected target when titles are ambiguous', async () => {
         const saveCanonicalDocument = vi.fn()
         const analyze = vi.fn(async (request: MemoryAnalysisModelRequest) =>

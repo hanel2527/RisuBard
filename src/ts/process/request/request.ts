@@ -3,8 +3,16 @@ import { language } from "../../../lang";
 import { globalFetch, fetchNative } from "../../globalApi.svelte";
 import { getModelInfo, LLMFlags, LLMFormat, type LLMModel } from "../../model/modellist";
 import { risuChatParser, risuEscape, risuUnescape } from "../../parser/parser.svelte";
-import { pluginProcess, pluginV2 } from "../../plugins/plugins.svelte";
+import { pluginProcess, pluginV2, type PluginV2ProviderArgument } from "../../plugins/plugins.svelte";
 import { resolvePluginRequestStatus } from "../../plugins/providerRequestStatus";
+import {
+    createPluginStructuredOutput,
+    isPluginStructuredOutputRejection,
+    isPluginStructuredOutputValidationFailure,
+    normalizePluginStructuredOutputFailure,
+    pluginStructuredOutputRepairMessage,
+    resolvePluginStructuredOutput,
+} from '../../plugins/providerStructuredOutput';
 import { getCurrentCharacter, getCurrentChat, getDatabase, type character } from "../../storage/database.svelte";
 import { resolveRisuBardChatSettings } from '../../risubard/risuBardSettings';
 import { tokenizeNum, encodeWithTokenizer } from "../../tokenizer";
@@ -1622,8 +1630,9 @@ async function requestPlugin(arg:RequestDataArgumentExtended):Promise<requestDat
     const isV3Model = arg.aiModel.startsWith('pluginmodel:::')
     const responseModel = isV3Model ? arg.aiModel : 'custom'
     const model = isV3Model ? arg.aiModel.replace('pluginmodel:::', '') : db.currentPluginProvider
+    const providerOptions = pluginV2.providerOptions.get(model)
     const reportStatus = statusEnabled(arg.realChatId)
-        && resolvePluginRequestStatus(pluginV2.providerOptions.get(model))
+        && resolvePluginRequestStatus(providerOptions)
     const genId = arg.chatId ?? `aux-${uuidv4()}`
     let injectionManifest: RequestInjectionManifest | undefined
 
@@ -1662,9 +1671,15 @@ async function requestPlugin(arg:RequestDataArgumentExtended):Promise<requestDat
 
     try {
         let formated = arg.formated
+        const responseSchema = arg.schema
+            ? convertInterfaceToSchema(arg.schema)
+            : undefined
+        const nativeStructuredOutput = resolvePluginStructuredOutput(providerOptions)
+            ? createPluginStructuredOutput(responseSchema, db.strictJsonSchema)
+            : undefined
         if(arg.schema){
             const schemaMessage = createStructuredOutputFallbackMessage(
-                convertInterfaceToSchema(arg.schema)
+                responseSchema
             )
             if(!schemaMessage){
                 await evidenceRecorder.finish({
@@ -1715,23 +1730,48 @@ async function requestPlugin(arg:RequestDataArgumentExtended):Promise<requestDat
             }))
         }
     
-        const d = v2Function ? (await v2Function(applyParameters({
+        const pluginArguments = applyParameters({
             prompt_chat: formated,
             mode: arg.mode,
             bias: [],
             max_tokens: maxTokens,
+            structured_output: Boolean(responseSchema),
+            response_schema: nativeStructuredOutput,
         }, [
             'frequency_penalty','min_p','presence_penalty','repetition_penalty','top_k','top_p','temperature'
         ], {}, arg.mode, {
-            modelId: arg.aiModel
-        }) as any, arg.abortSignal)) : await pluginProcess({
-            bias: bias,
-            prompt_chat: formated,
-            temperature: (db.temperature / 100),
-            max_tokens: maxTokens,
-            presence_penalty: (db.PresensePenalty / 100),
-            frequency_penalty: (db.frequencyPenalty / 100)
-        })
+            modelId: arg.aiModel,
+            temperatureOverride: arg.temperature,
+        }) as PluginV2ProviderArgument
+        let d = v2Function
+            ? await v2Function(pluginArguments, arg.abortSignal)
+            : await pluginProcess({
+                bias: bias,
+                prompt_chat: formated,
+                temperature: arg.temperature ?? (db.temperature / 100),
+                max_tokens: maxTokens,
+                presence_penalty: (db.PresensePenalty / 100),
+                frequency_penalty: (db.frequencyPenalty / 100)
+            })
+        if(v2Function && nativeStructuredOutput){
+            d = await normalizePluginStructuredOutputFailure(d)
+            if(isPluginStructuredOutputValidationFailure(d)){
+                d = await v2Function({
+                    ...pluginArguments,
+                    prompt_chat: [
+                        ...pluginArguments.prompt_chat,
+                        { role: 'user', content: pluginStructuredOutputRepairMessage },
+                    ],
+                }, arg.abortSignal)
+                d = await normalizePluginStructuredOutputFailure(d)
+            }
+            if(isPluginStructuredOutputRejection(d)){
+                d = await v2Function({
+                    ...pluginArguments,
+                    response_schema: undefined,
+                }, arg.abortSignal)
+            }
+        }
     
         if(!d){
             if(reportStatus) safeStatus(() => endStatus(genId, 'failed', {

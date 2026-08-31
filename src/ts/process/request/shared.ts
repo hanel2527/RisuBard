@@ -180,9 +180,25 @@ export function applyParameters(
     arg: {
         ignoreTopKIfZero?: boolean
         modelId:string
+        temperatureOverride?: number
     },
 ): Record<string, any> {
     const db = getDatabase()
+
+    function applyRequestOverrides() {
+        if (
+            parameters.includes('temperature')
+            && arg.temperatureOverride !== undefined
+            && Number.isFinite(arg.temperatureOverride)
+        ) {
+            data = setObjectValue(
+                data,
+                rename.temperature ?? 'temperature',
+                arg.temperatureOverride,
+            )
+        }
+        return data
+    }
 
     function getVerbosity(verbosity: number) {
         switch (verbosity) {
@@ -288,7 +304,7 @@ export function applyParameters(
 
             data = setObjectValue(data, rename[parameter] ?? parameter, value)
         }
-        return data
+        return applyRequestOverrides()
     }
 
     for (const parameter of parameters) {
@@ -350,5 +366,5 @@ export function applyParameters(
 
         data = setObjectValue(data, rename[parameter] ?? parameter, value)
     }
-    return data
+    return applyRequestOverrides()
 }

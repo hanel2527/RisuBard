@@ -289,9 +289,28 @@ describe('lorebook workspace source connections', () => {
         expect(settingSource).not.toContain(
             '{submenu === 0 ? language.globalLoreInfo : language.localLoreInfo}',
         )
-        expect(settingSource).toContain('{language.lorebookWorkspace.editor}')
+        expect(settingSource).toContain('language.lorebookWorkspace.openBardLore : language.lorebookWorkspace.editor')
         expect(settingSource).toContain('<SolarBoldIcon name="notebook"')
         expect(settingSource).not.toContain('<strong>{activeBinding.scopeLabel}</strong>')
+    })
+
+    it('offers the shared Bard Lore analysis run from the main tab and editor', () => {
+        expect(settingSource).toContain('import BardLoreAnalysisPanel')
+        expect(settingSource).toContain('<BardLoreAnalysisPanel')
+        expect(settingSource).toContain('analysisRun={DBState.db.characters[$selectedCharID].bardLore!.analysisRun}')
+        expect(settingSource).toContain('onBardAnalysisRunChange=')
+    })
+
+    it('separates lore editing tabs from an explicit Bard generation switch', () => {
+        expect(settingSource).toContain('data-bard-lore-view="legacy"')
+        expect(settingSource).toContain('data-bard-lore-view="bard"')
+        expect(settingSource).toContain('data-bard-lore-active')
+        expect(settingSource).toContain('role="switch"')
+        expect(settingSource).toContain('loreView')
+        expect(settingSource).toContain('bardActive')
+        expect(settingSource).toContain('bardLore.mode = event.currentTarget.checked ?')
+        expect(settingSource).not.toContain('aria-pressed={bardMode}')
+        expect(settingSource).toContain('scopeLabel: `${character.name}의 ${language.lorebookWorkspace.bardLore}`')
     })
 
     it('does not hard-code scope abbreviations or unnamed child labels', () => {
