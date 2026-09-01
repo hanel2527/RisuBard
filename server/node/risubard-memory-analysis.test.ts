@@ -499,6 +499,67 @@ describe('memory analysis runner', () => {
         expect(result.canonicalReceipt?.warnings).toHaveLength(failed ? 1 : 0)
     })
 
+    test('recovers a malformed single canonical target with the compact contract', async () => {
+        const saveCanonicalDocument = vi.fn(async (input) => ({
+            ...input,
+            id: `character.${input.title}`,
+            contentHash: 'hash',
+            relativePath: `${input.title}.md`,
+        }))
+        const calls: Array<{ size: number; schema: Record<string, any> }> = []
+        const analyze = vi.fn(async (request: MemoryAnalysisModelRequest) => {
+            if (request.format === 'memory-draft') return JSON.stringify({
+                schemaVersion: 1, title: 'Arrival',
+                establishedEvents: ['A and B arrived.'], stateChanges: [],
+                characterKnowledge: [], persistentFacts: [], openContinuity: [],
+                canonicalUpdateCandidates: ['A', 'B'].map((title) => ({
+                    type: 'character', title, reason: 'Arrived', action: 'create',
+                    targetDocumentId: null, confidence: 0.99,
+                })),
+            })
+            const { targets } = JSON.parse(request.input)
+            const schema = JSON.parse(request.responseSchema ?? '{}')
+            calls.push({ size: targets.length, schema })
+            if (calls.length <= 2) return 'not JSON'
+            if (schema.required?.includes('sections')) {
+                return JSON.stringify({
+                    sections: canonicalSections(
+                        `## ${targets[0].target.title}\n\n### Current State\n\n- Arrived.`
+                    ),
+                })
+            }
+            return canonicalBatch(
+                `## ${targets[0].target.title}\n\n### Current State\n\n- Arrived.`
+            )
+        })
+        const runner = createMemoryAnalysisRunner({
+            memoryService: { loadState: vi.fn(), applyDelta: vi.fn() },
+            nativeV2Analysis: true,
+            markdownWikiService: {
+                inquire: vi.fn(async () => ({ graphRevision: 0, sources: [] })),
+                loadDocuments: vi.fn(async () => []),
+                saveConfirmedTurn: vi.fn(async () => undefined),
+                saveCanonicalDocument,
+            },
+            onError: vi.fn(),
+            analyze,
+        })
+
+        const result = await runner.run({
+            characterId: 'character', chatId: 'chat',
+            messages: [{
+                messageId: 'assistant-1', role: 'assistant',
+                content: 'A and B arrived.',
+            }],
+        })
+
+        expect(calls.map((call) => call.size)).toEqual([2, 1, 1, 1])
+        expect(calls[1].schema).toHaveProperty('properties.documents')
+        expect(calls[2].schema).toMatchObject({ required: ['sections'] })
+        expect(saveCanonicalDocument).toHaveBeenCalledTimes(2)
+        expect(result.canonicalReceipt?.warnings).toEqual([])
+    })
+
     test('leaves a reboot batch recoverable when its canonical provider request fails', async () => {
         const recordRebootBatchReceipt = vi.fn(async (input) => input.receipt)
         const runner = createMemoryAnalysisRunner({
@@ -2897,7 +2958,7 @@ describe('memory analysis runner', () => {
                 expect(schema).toMatchObject({
                     type: 'object',
                     additionalProperties: false,
-                    required: ['schemaVersion', 'documents'],
+                    required: ['documents'],
                     properties: {
                         documents: {
                             minItems: 1,

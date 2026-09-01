@@ -251,6 +251,20 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
         keywords: ['canonical', 'custom instruction', '정본', '사용자 지정', '지시문'],
     },
     {
+        id: 'risubard.common.grimoire',
+        type: 'header',
+        labelKey: 'risuBardGrimoireSettings',
+        options: { level: 'h2' },
+        keywords: ['Grimoire', 'lorebook', 'metadata', 'language', '그리모어', '로어북', '메타데이터', '언어'],
+    },
+    {
+        id: 'risubard.common.grimoireLanguage',
+        type: 'custom',
+        componentId: 'RisuBardGrimoireLanguageSettings',
+        fallbackLabel: 'Grimoire language',
+        keywords: ['Grimoire', 'analysis', 'instruction', 'English', 'Korean', '그리모어', '분석', '지시문', '영어', '한국어'],
+    },
+    {
         id: 'risubard.common.saveAndLoad',
         type: 'header',
         labelKey: 'risuBardSaveAndLoadSettings',

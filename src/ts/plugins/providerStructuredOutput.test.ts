@@ -52,6 +52,13 @@ describe('plugin provider structured output contract', () => {
         }
         expect(module.isPluginStructuredOutputValidationFailure(invalidModelOutput)).toBe(true)
         expect(module.isPluginStructuredOutputRejection(invalidModelOutput)).toBe(false)
+        expect(module.shouldFallbackFromNativeStructuredOutput(invalidModelOutput)).toBe(true)
+        const ambiguousInvalidArgument = {
+            success: false,
+            content: '[PageFold] Request contains an invalid argument.',
+        }
+        expect(module.isPluginStructuredOutputRejection(ambiguousInvalidArgument)).toBe(false)
+        expect(module.shouldFallbackFromNativeStructuredOutput(ambiguousInvalidArgument)).toBe(true)
         expect(module.isPluginStructuredOutputRejection({
             success: false,
             content: 'rate limit exceeded',
@@ -103,6 +110,6 @@ describe('plugin provider structured output contract', () => {
         expect(request).toContain('response_schema: nativeStructuredOutput')
         expect(request).toContain('isPluginStructuredOutputValidationFailure(d)')
         expect(request).toContain('pluginStructuredOutputRepairMessage')
-        expect(request).toContain('isPluginStructuredOutputRejection(d)')
+        expect(request).toContain('shouldFallbackFromNativeStructuredOutput(d)')
     })
 })

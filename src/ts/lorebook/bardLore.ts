@@ -1,5 +1,6 @@
 import type { loreBook } from '../storage/database.svelte'
 import { safeStructuredClone } from '../polyfill'
+import type { ResolvedBardLoreAnalysisLanguage } from './bardLoreLanguage'
 
 export type BardLoreActivation = 'required' | 'keyed' | 'retrieve' | 'never'
 export type BardLoreKind = 'system' | 'character' | 'location' | 'faction' | 'item' | 'event' | 'concept' | 'other'
@@ -94,6 +95,7 @@ export interface BardLoreAnalysisRun {
     updatedAt: string
     status: 'running' | 'paused' | 'review' | 'failed'
     settingsSnapshot: BardLoreSettings
+    languageSnapshot?: ResolvedBardLoreAnalysisLanguage
     batches: BardLoreAnalysisBatch[]
     overwriteExisting: boolean
     replaceLinks?: boolean
@@ -544,6 +546,11 @@ function normalizeBardLoreAnalysisRun(
                 ? raw.settingsSnapshot as BardLoreSettingsInput
                 : {},
         ),
+        ...(raw.languageSnapshot === 'en'
+            || raw.languageSnapshot === 'ko'
+            || raw.languageSnapshot === 'bilingual'
+            ? { languageSnapshot: raw.languageSnapshot }
+            : {}),
         batches,
         overwriteExisting: raw.overwriteExisting === true,
         ...(typeof raw.replaceLinks === 'boolean' ? { replaceLinks: raw.replaceLinks } : {}),

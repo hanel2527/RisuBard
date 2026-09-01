@@ -55,7 +55,9 @@ function acquireWriteLock() {
             fs.writeFileSync(fd, String(process.pid), 'utf8');
             return fd;
         } catch (error) {
-            if (error?.code !== 'EEXIST') throw error;
+            const isWindowsLockContention = process.platform === 'win32'
+                && (error?.code === 'EPERM' || error?.code === 'EACCES');
+            if (error?.code !== 'EEXIST' && !isWindowsLockContention) throw error;
             removeStaleWriteLock();
             Atomics.wait(lockWaitBuffer, 0, 0, LOCK_WAIT_MS);
         }

@@ -2,12 +2,14 @@ import { describe, expect, test } from 'vitest'
 import {
     canonicalBatchSchema,
     buildCanonicalBatchSchema,
+    buildCanonicalSingleSchema,
     buildRebootBatchDraftSchema,
     memoryWriterDraftSchema,
     memoryWriterSystemPrompt,
     hasMemoryWriterContent,
     parseMemoryWriterDraft,
     parseCanonicalBatch,
+    parseCanonicalSingle,
     parseRebootBatchDraft,
     serializeMemoryWriterDraft,
     buildMemoryWriterSystemPrompt,
@@ -39,6 +41,28 @@ describe('BardWiki memory writer skill', () => {
         expect(memoryWriterSystemPrompt).toContain('독립적인 이야기 요약')
         expect(memoryWriterSystemPrompt).toContain('아크 플롯 후보는 만들지 마라')
         expect(memoryWriterSystemPrompt).toContain('설정한 확정 사건 체크포인트마다')
+    })
+
+    test('keeps schemaVersion out of model-owned writer contracts', () => {
+        const draftSchema = JSON.parse(memoryWriterDraftSchema)
+        const rebootSchema = JSON.parse(buildRebootBatchDraftSchema(1))
+        const canonicalSchema = JSON.parse(buildCanonicalBatchSchema(1))
+
+        for (const schema of [draftSchema, rebootSchema, canonicalSchema]) {
+            expect(schema.required).not.toContain('schemaVersion')
+            expect(schema.properties).not.toHaveProperty('schemaVersion')
+        }
+        expect(parseMemoryWriterDraft(JSON.stringify({
+            title: '도착', establishedEvents: ['도착했다.'],
+            stateChanges: [], characterKnowledge: [], persistentFacts: [],
+            openContinuity: [], canonicalUpdateCandidates: [],
+        }))).toMatchObject({ schemaVersion: 1, title: '도착' })
+        expect(parseCanonicalBatch(JSON.stringify({
+            documents: [{ candidateIndex: 0, sections: [] }],
+        }), 1)).toMatchObject({
+            schemaVersion: 1,
+            documents: [{ candidateIndex: 0, sections: [] }],
+        })
     })
 
     test('describes every required canonical candidate field without contradicting the schema', () => {
@@ -98,7 +122,6 @@ describe('BardWiki memory writer skill', () => {
             type: 'object',
             additionalProperties: false,
             required: [
-                'schemaVersion',
                 'title',
                 'establishedEvents',
                 'stateChanges',
@@ -109,9 +132,9 @@ describe('BardWiki memory writer skill', () => {
             ],
         })
         expect(schema.properties.establishedEvents.maxItems).toBe(12)
-        expect(schema.properties.schemaVersion).toEqual({ const: 1 })
+        expect(schema.properties.schemaVersion).toBeUndefined()
         expect(JSON.parse(canonicalBatchSchema).properties.schemaVersion)
-            .toEqual({ const: 1 })
+            .toBeUndefined()
         expect(schema.properties.characterKnowledge.items.properties.stance)
             .toMatchObject({ type: 'string' })
         expect(schema.properties.canonicalUpdateCandidates.items.properties.type)
@@ -192,6 +215,44 @@ describe('BardWiki memory writer skill', () => {
             schemaVersion: 1,
             documents: [{ candidateIndex: 0, sections: [] }],
         }), 1).documents[0]?.sections).toEqual([])
+    })
+
+    test('uses a compact single-document contract for protocol recovery', () => {
+        const schema = JSON.parse(buildCanonicalSingleSchema())
+        expect(schema).toMatchObject({
+            type: 'object',
+            additionalProperties: false,
+            required: ['sections'],
+        })
+        expect(schema.properties).not.toHaveProperty('documents')
+        expect(parseCanonicalSingle(JSON.stringify({
+            sections: [{
+                heading: '현재 상태',
+                operation: 'upsert',
+                content: '- 귀환했다.',
+            }],
+        }))).toEqual({
+            candidateIndex: 0,
+            sections: [{
+                heading: '현재 상태',
+                operation: 'upsert',
+                content: '- 귀환했다.',
+            }],
+        })
+    })
+
+    test('selects one canonical object when a provider adds unrelated JSON metadata', () => {
+        const output = [
+            JSON.stringify({ providerTrace: 'ignored' }),
+            JSON.stringify({
+                schemaVersion: 1,
+                documents: [{ candidateIndex: 0, sections: [] }],
+            }),
+        ].join('\n')
+        expect(parseCanonicalBatch(output, 1).documents).toEqual([{
+            candidateIndex: 0,
+            sections: [],
+        }])
     })
 
     test('validates a semantic draft and serializes deterministic Markdown', () => {

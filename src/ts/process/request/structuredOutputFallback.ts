@@ -15,6 +15,7 @@ const SCHEMA_ERROR_MARKERS = [
 ]
 
 const MAX_FALLBACK_SCHEMA_CHARACTERS = 32_000
+const AMBIGUOUS_INVALID_ARGUMENT = /^(?:request contains an )?invalid[_ ]argument\.?$/i
 
 export function createStructuredOutputFallbackMessage(
     responseSchema: Record<string, unknown> | undefined
@@ -39,6 +40,7 @@ export function isStructuredOutputSchemaRejection(error: unknown): boolean {
     }
     const message = error.message.toLowerCase()
     return SCHEMA_ERROR_MARKERS.some((marker) => message.includes(marker))
+        || (error.status === 400 && AMBIGUOUS_INVALID_ARGUMENT.test(message))
 }
 
 export async function sendWithStructuredOutputFallback<T>(

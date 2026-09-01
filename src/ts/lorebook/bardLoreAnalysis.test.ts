@@ -9,6 +9,7 @@ import {
     bardLoreAnalysisSchema,
     bardLoreAnalysisDraftFromRun,
     buildBardLoreAnalysisPrompt,
+    buildBardLoreAnalysisInstructions,
     collectBardLoreAnalysisTargets,
     completeBardLoreAnalysisBatch,
     createBardLoreAnalysisBatches,
@@ -120,6 +121,7 @@ describe('Bard Lore AI analysis', () => {
             createBardLoreSettings(),
             () => `id-${serial++}`,
             () => '2026-08-31T00:00:00.000Z',
+            'en',
         )
         run = completeBardLoreAnalysisBatch(run, run.batches[0].id, [{
             id: 'a',
@@ -134,6 +136,7 @@ describe('Bard Lore AI analysis', () => {
         run = finishBardLoreAnalysisRun(run)
 
         expect(run.status).toBe('review')
+        expect(run.languageSnapshot).toBe('en')
         expect(run.batches.map((batch) => batch.status)).toEqual(['complete', 'failed'])
         expect(bardLoreAnalysisDraftFromRun(run).entries).toMatchObject([{ id: 'a', summary: 'saved draft' }])
     })
@@ -169,7 +172,7 @@ describe('Bard Lore AI analysis', () => {
         expect(prompt).not.toContain(sourceHash)
         expect(prompt).toContain('Do not rewrite lore content')
         expect(prompt).toContain('The router can filter these facet keys when evidence exists')
-        expect(prompt).toContain('Korean and English')
+        expect(prompt).toContain('사람이 읽고 검색하는 모든 메타데이터를 한국어로 작성하세요')
         expect(prompt).toContain('appearance')
         expect(bardLoreAnalysisSchema).toContain('"targetRef"')
         expect(bardLoreAnalysisSchema).not.toContain('"sourceHash"')
@@ -220,6 +223,47 @@ describe('Bard Lore AI analysis', () => {
         expect(prompt).toContain('Do not invent or require a facet merely because its key is filterable')
         expect(prompt).toContain('Do not use supporting as the default relationship mode')
         expect(prompt).toContain('timeline')
+    })
+
+    it('applies the selected metadata language to prompts and token planning', async () => {
+        const character = entry('character')
+        const koreanPrompt = buildBardLoreAnalysisPrompt(
+            [character],
+            [character],
+            ['work'],
+            'ko',
+            'en',
+        )
+        const bilingualPrompt = buildBardLoreAnalysisPrompt(
+            [character],
+            [character],
+            ['work'],
+            'bilingual',
+            'ko',
+        )
+        const measured: string[] = []
+
+        await planBardLoreAnalysisBatches(
+            [character],
+            [character],
+            createBardLoreSettings(),
+            async (value) => {
+                measured.push(value)
+                return 1
+            },
+            'ko',
+            'en',
+        )
+
+        expect(koreanPrompt).toContain('사람이 읽고 검색하는 모든 메타데이터를 한국어로 작성하세요')
+        expect(koreanPrompt).not.toContain('Write all human-readable retrieval metadata in English')
+        expect(bilingualPrompt).toContain('both English and Korean')
+        expect(measured.some((value) => value.includes('사람이 읽고 검색하는 모든 메타데이터를 한국어로 작성하세요'))).toBe(true)
+    })
+
+    it('shows a dynamic facet-key slot in the readable common instruction', () => {
+        expect(buildBardLoreAnalysisInstructions(undefined, 'ko', 'ko'))
+            .toContain('[Character-specific filter facet keys are inserted here at request time.]')
     })
 
     it('reports the exact validation stage without retaining response content', () => {

@@ -138,6 +138,23 @@ function bodyToString(body: unknown): string | undefined {
     }
 }
 
+function providerErrorSummary(body: string): string | undefined {
+    try {
+        const parsed = JSON.parse(body) as unknown
+        if (!parsed || typeof parsed !== 'object') return undefined
+        const error = (parsed as { error?: unknown }).error
+        if (!error || typeof error !== 'object') return undefined
+        const record = error as { status?: unknown, message?: unknown }
+        const status = typeof record.status === 'string' ? record.status : ''
+        const message = typeof record.message === 'string' ? record.message : ''
+        if (!status && !message) return undefined
+        return status && message ? `${status}: ${message}` : status || message
+    }
+    catch {
+        return undefined
+    }
+}
+
 function headersToString(headers: unknown): string | undefined {
     if (!headers) return undefined
     try {
@@ -520,6 +537,7 @@ export function createRequestLogScope(init: RequestLogScopeInit): RequestLogScop
             // generated image would occupy megabytes of the byte budget.
             const stripped = stripInlineMedia(text)
             entry.responseBody = overflowed ? stripped + '\n...[truncated by client]' : stripped
+            if (!entry.success) entry.errorMessage ??= providerErrorSummary(stripped)
             entry.durationMs = Date.now() - started
         }
     }

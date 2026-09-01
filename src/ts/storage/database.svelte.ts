@@ -31,6 +31,7 @@ import {
     ensureStableLorebookOwnerId,
 } from '../lorebook/ownerIdentity';
 import { normalizeBardLoreState, type BardLoreState } from '../lorebook/bardLore';
+import { normalizeBardLoreAnalysisLanguage } from '../lorebook/bardLoreLanguage';
 import {
     normalizeRisuBardAdditionalSearchLimit,
     normalizeRisuBardAnalysisTokenLimit,
@@ -918,6 +919,9 @@ export function setDatabase(data:Database){
     data.risuBardInquiryTargetTokenBudget = chatInquiryTokenBudget.target
     data.risuBardInquiryMaximumTokenBudget = chatInquiryTokenBudget.maximum
     data.risuBardWikiWritingLanguage = data.risuBardWikiWritingLanguage === 'en' ? 'en' : 'ko'
+    data.risuBardGrimoireLanguage = normalizeBardLoreAnalysisLanguage(
+        data.risuBardGrimoireLanguage
+    )
     data.risuBardCanonicalWritingStyle = normalizeRisuBardCanonicalWritingStyle(
         data.risuBardCanonicalWritingStyle
     )
@@ -1629,6 +1633,7 @@ export interface Database{
     risuBardCanonicalWritingStyle?: import('../risubard/risuBardSettings').RisuBardCanonicalWritingStyle
     risuBardCanonicalCustomStyle?: string
     risuBardWikiWritingLanguage?: import('../risubard/wikiWritingLanguage').WikiWritingLanguage
+    risuBardGrimoireLanguage?: import('../lorebook/bardLoreLanguage').BardLoreAnalysisLanguage
     risuBardArcPlotterEnabled?: boolean
     risuBardArcPlotterCheckpointSize?: number
     risuBardArcPlotterMaxArcs?: number

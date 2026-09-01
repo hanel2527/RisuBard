@@ -44,7 +44,6 @@ Distinguish first registration from updates to existing canon. Return exactly on
 
 ## Runtime field contract
 
-- schemaVersion: always 1.
 - title: a short title identifying the event or change, without Markdown markers.
 - establishedEvents: up to 12 chronological events actually established in the confirmed text; together they must tell a coherent story. Exclude management proposals.
 - stateChanges: subject, before, after; use null for an unsupported before state.

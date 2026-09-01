@@ -79,6 +79,8 @@ describe('lorebook workspace labels', () => {
         expect(languageKorean.lorebookWorkspace.legacyLoreEditor).toBe('기존 로어북')
         expect(languageKorean.lorebookWorkspace.bardLoreEditor).toBe('그리모어')
         expect(languageKorean.lorebookWorkspace.openBardLore).toBe('그리모어 열기')
+        expect(languageKorean.lorebookWorkspace.bardKeyed).toBe('키·별칭 적중')
+        expect(languageKorean.lorebookWorkspace.bardGuideTitle).toBe('그리모어 도움말')
     })
 })
 

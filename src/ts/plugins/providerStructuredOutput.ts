@@ -85,3 +85,13 @@ export function isPluginStructuredOutputValidationFailure(
     const message = response.content.toLowerCase()
     return OUTPUT_VALIDATION_ERROR_MARKERS.some((marker) => message.includes(marker))
 }
+
+export function shouldFallbackFromNativeStructuredOutput(
+    response: PluginProviderResponse | undefined,
+): boolean {
+    return isPluginStructuredOutputValidationFailure(response)
+        || isPluginStructuredOutputRejection(response)
+        || Boolean(response && !response.success
+            && typeof response.content === 'string'
+            && /\binvalid[_ ]argument\b/i.test(response.content))
+}

@@ -1,4 +1,10 @@
 import { safeStructuredClone } from '../polyfill'
+import type { WikiWritingLanguage } from '../risubard/wikiWritingLanguage'
+import {
+    buildBardLoreAnalysisLanguageInstruction,
+    type BardLoreAnalysisLanguage,
+    type ResolvedBardLoreAnalysisLanguage,
+} from './bardLoreLanguage'
 import {
     fingerprintBardLoreEntry,
     createBardLoreEntry,
@@ -385,6 +391,8 @@ export async function planBardLoreAnalysisBatches(
     catalog: BardLoreEntry[],
     settings: BardLoreSettings,
     tokenize: (value: string) => Promise<number>,
+    language: BardLoreAnalysisLanguage = 'follow-bardwiki',
+    wikiLanguage: WikiWritingLanguage = 'ko',
 ): Promise<BardLoreAnalysisPlan> {
     const maxEntries = Math.max(0, Math.floor(settings.analysisBatchEntries))
     const maxTokens = Math.max(0, Math.floor(settings.analysisInputTokens))
@@ -402,6 +410,8 @@ export async function planBardLoreAnalysisBatches(
             batch,
             catalog,
             settings.router.filterFacetKeys,
+            language,
+            wikiLanguage,
         ))
     const commit = () => {
         if (current.length === 0) return
@@ -439,6 +449,7 @@ export function createBardLoreAnalysisRun(
     settings: BardLoreSettings,
     createId: () => string,
     now: () => string = () => new Date().toISOString(),
+    languageSnapshot: ResolvedBardLoreAnalysisLanguage = 'ko',
 ): BardLoreAnalysisRun {
     const timestamp = now()
     const batches: BardLoreAnalysisBatch[] = plan.batches.map((batch, index) => ({
@@ -457,6 +468,7 @@ export function createBardLoreAnalysisRun(
         updatedAt: timestamp,
         status: 'running',
         settingsSnapshot: safeStructuredClone(settings),
+        languageSnapshot,
         batches,
         overwriteExisting: false,
     }
@@ -540,6 +552,8 @@ export function buildBardLoreAnalysisPrompt(
     targets: BardLoreEntry[],
     catalog: BardLoreEntry[],
     characterFilterFacetKeys: string[] = ['work', 'gender'],
+    language: BardLoreAnalysisLanguage = 'follow-bardwiki',
+    wikiLanguage: WikiWritingLanguage = 'ko',
 ): string {
     const refs = new Map(catalog.map((entry, index) => [entry.id, index]))
     const payload = targets.map((entry) => ({
@@ -564,18 +578,34 @@ export function buildBardLoreAnalysisPrompt(
         },
     }))
     const linkCatalog = catalog.map((entry, ref) => [ref, entry.comment, entry.bard.kind])
-    const filterFacetKeys = cleanStrings(characterFilterFacetKeys)
-    const filterFacetInstruction = filterFacetKeys.length > 0
-        ? `The router can filter these facet keys when evidence exists: ${filterFacetKeys.join(', ')}. Use these canonical keys exactly and put natural query words and value synonyms in each facet aliases array.`
-        : 'For characters, return only facets established by the supplied text or catalog.'
+    return [
+        buildBardLoreAnalysisInstructions(characterFilterFacetKeys, language, wikiLanguage),
+        JSON.stringify({ linkCatalog, targets: payload }),
+    ].join('\n')
+}
+
+export function buildBardLoreAnalysisInstructions(
+    characterFilterFacetKeys: string[] | undefined,
+    language: BardLoreAnalysisLanguage = 'follow-bardwiki',
+    wikiLanguage: WikiWritingLanguage = 'ko',
+): string {
+    const filterFacetKeys = characterFilterFacetKeys === undefined
+        ? undefined
+        : cleanStrings(characterFilterFacetKeys)
+    const filterFacetInstruction = filterFacetKeys === undefined
+        ? '[Character-specific filter facet keys are inserted here at request time.]'
+        : filterFacetKeys.length > 0
+            ? `The router can filter these facet keys when evidence exists: ${filterFacetKeys.join(', ')}. Use these canonical keys exactly and put natural query words and value synonyms in each facet aliases array.`
+            : 'For characters, return only facets established by the supplied text or catalog.'
     return [
         'Analyze Grimoire metadata for deterministic runtime retrieval.',
         'Do not rewrite lore content. Do not propose activation policy changes.',
         'Infer explicit aliases, concise tags, one kind, normalized facets, a short factual search summary, and justified typed links.',
+        buildBardLoreAnalysisLanguageInstruction(language, wikiLanguage),
         'Facets are structured facts such as work, gender, role, affiliation, location, or era. Each facet has one canonical key/value and query aliases.',
         filterFacetInstruction,
         'Do not invent or require a facet merely because its key is filterable. Original characters and standalone settings may have no work, series, franchise, gender, affiliation, or other optional facet.',
-        'Add retrieval facets and aliases for explicitly stated appearance, school or social role, age group, personality, skills, weaknesses, preferences, and recurring behavior. These descriptors are search evidence, not graph relationships. Include concise Korean and English terms so a natural-language description can retrieve the character without naming them.',
+        'Add retrieval facets and aliases for explicitly stated appearance, school or social role, age group, personality, skills, weaknesses, preferences, and recurring behavior. These descriptors are search evidence, not graph relationships. Follow the selected metadata language so a natural-language description can retrieve the character without naming them.',
         'Do not use a generic class word such as persona, character, country, or location as the alias of many different facet values. An alias must identify that value rather than merely name its category.',
         'Set injection to "index-only" for a composite directory, roster, timeline, chronology, or routing catalog whose complete body should not be sent to the generation model; otherwise use "full".',
         'For a composite directory, roster, timeline, or chronology, return one atom per independently retrievable entity or event. atom.sourceQuote must be an exact contiguous quote from the supplied source content; never rewrite it. Set atom.existingTargetRef to the matching linkCatalog ref when that atomic entry already exists, otherwise -1. Return atoms: [] for ordinary entries.',
@@ -584,7 +614,6 @@ export function buildBardLoreAnalysisPrompt(
         'linkCatalog tuples are [ref, name, currentKind]. Current metadata link tuples are [targetRef, relation, retrieval].',
         'Return every target ref exactly once and no other ref. Use only link targetRef values from linkCatalog.',
         'Return JSON only matching the supplied schema.',
-        JSON.stringify({ linkCatalog, targets: payload }),
     ].join('\n')
 }
 

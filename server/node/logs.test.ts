@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'vitest'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fork, spawnSync, type ChildProcess } from 'node:child_process'
@@ -104,6 +104,8 @@ describe('file-native system logs', () => {
         const lockPath = join(root, 'logs', '.write.lock')
         const workerPath = join(root, 'lock-waiter.cjs')
         writeFileSync(lockPath, '')
+        const freshUntil = new Date(Date.now() + 5_000)
+        utimesSync(lockPath, freshUntil, freshUntil)
         writeFileSync(workerPath, `
             process.send({ type: 'ready' })
             process.on('message', message => {

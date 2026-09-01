@@ -7,11 +7,11 @@ import { pluginProcess, pluginV2, type PluginV2ProviderArgument } from "../../pl
 import { resolvePluginRequestStatus } from "../../plugins/providerRequestStatus";
 import {
     createPluginStructuredOutput,
-    isPluginStructuredOutputRejection,
     isPluginStructuredOutputValidationFailure,
     normalizePluginStructuredOutputFailure,
     pluginStructuredOutputRepairMessage,
     resolvePluginStructuredOutput,
+    shouldFallbackFromNativeStructuredOutput,
 } from '../../plugins/providerStructuredOutput';
 import { getCurrentCharacter, getCurrentChat, getDatabase, type character } from "../../storage/database.svelte";
 import { resolveRisuBardChatSettings } from '../../risubard/risuBardSettings';
@@ -1765,7 +1765,7 @@ async function requestPlugin(arg:RequestDataArgumentExtended):Promise<requestDat
                 }, arg.abortSignal)
                 d = await normalizePluginStructuredOutputFailure(d)
             }
-            if(isPluginStructuredOutputRejection(d)){
+            if(shouldFallbackFromNativeStructuredOutput(d)){
                 d = await v2Function({
                     ...pluginArguments,
                     response_schema: undefined,

@@ -9,6 +9,7 @@
     import {
         addRetainedAssistantSummary,
         buildLegacyChatRequestEvidence,
+        chatRequestFailureLabel,
         formatChatRequestEvidenceMarkdown,
         loadChatRequestEvidence,
         type ChatRequestEvidence,
@@ -18,6 +19,7 @@
         type RequestLogSource,
     } from 'src/ts/requestLog'
     import { requestPurposeLabels } from 'src/ts/requestPurpose'
+    import { canonicalTurnNeedsRetry } from 'src/ts/risubard/canonicalTurnReceipt'
     import type { RequestInjectionKind } from 'src/ts/status/requestStatus'
     import { downloadFile } from 'src/ts/globalApi.svelte'
 
@@ -50,6 +52,21 @@
             : []
     }).reverse())
     let requestEntries = $derived(storedEvidence?.requests ?? [])
+    let receiptEntries = $derived(messages.flatMap((message) => {
+        const receipt = message.risubardCanonicalReceipt
+        if (message.role !== 'char' || !receipt) return []
+        const failed = canonicalTurnNeedsRetry(receipt)
+        return [{
+            id: message.chatId ?? receipt.recordedAt,
+            timestamp: receipt.recordedAt,
+            failed,
+            eventCount: receipt.eventIds.length,
+            changeCount: receipt.changes.length,
+            message: receipt.warnings.join(' ') || (receipt.changes.length > 0
+                ? `정본 ${receipt.changes.length}건을 반영했습니다.`
+                : '확정 사실을 검사했으며 정본 변경은 없었습니다.'),
+        }]
+    }).reverse())
     let recordedGenerationIds = $derived(new Set(requestEntries.flatMap(
         (entry) => entry.generationId ? [entry.generationId] : []
     )))
@@ -99,14 +116,30 @@
             : `${(value / 1_000).toFixed(1)}초`
     const formatFirstTokenDuration = (value: number | null | undefined) =>
         value == null ? '확인 불가 ms' : formatDuration(value)
-    const outcomeLabel = (outcome: 'done' | 'failed' | 'aborted') =>
-        outcome === 'done' ? '성공' : outcome === 'aborted' ? '중단' : '실패'
-    const requestLabel = (request: ChatRequestEvidence['requests'][number]) =>
-        request.purpose === 'chat-response'
+    const outcomeLabel = (outcome: ChatRequestEvidence['requests'][number]['outcome']) =>
+        outcome === 'done' ? '성공'
+            : outcome === 'response-received' ? '응답 수신'
+            : outcome === 'aborted' ? '중단' : '요청 실패'
+    const requestAttempt = (request: ChatRequestEvidence['requests'][number]) => {
+        const index = requestEntries.findIndex((entry) => entry.id === request.id)
+        if (index < 0 || !request.purpose) return undefined
+        let start = index
+        let end = index
+        while (start > 0 && requestEntries[start - 1]?.purpose === request.purpose) start -= 1
+        while (end + 1 < requestEntries.length
+            && requestEntries[end + 1]?.purpose === request.purpose) end += 1
+        const total = end - start + 1
+        return total > 1 ? { current: end - index + 1, total } : undefined
+    }
+    const requestLabel = (request: ChatRequestEvidence['requests'][number]) => {
+        const base = request.purpose === 'chat-response'
             ? '스토리 생성'
             : request.purpose
                 ? requestPurposeLabels[request.purpose]
                 : sourceLabels[request.source]
+        const attempt = requestAttempt(request)
+        return attempt ? `${base} · 응답 시도 ${attempt.current}/${attempt.total}` : base
+    }
     const injectionGroup: Record<RequestInjectionKind, string> = {
         systemPrompt: '시스템', jailbreak: '시스템', globalNote: '시스템',
         authorNote: '시스템', instruction: '시스템', tool: '시스템',
@@ -288,6 +321,29 @@
             </details>
         {/if}
 
+        {#if receiptEntries.length > 0}
+            <div class="section-label result-label">
+                <span>확정 작업 결과</span>
+                <small>메시지에 영구 보존됨</small>
+            </div>
+            {#each receiptEntries as receipt (receipt.id)}
+                <article
+                    class="result-entry"
+                    data-outcome={receipt.failed ? 'failed' : 'done'}
+                >
+                    <div class="result-heading">
+                        <strong>BardWiki 정본 반영</strong>
+                        <time datetime={receipt.timestamp}>{formatTimestamp(receipt.timestamp)}</time>
+                        <em class="outcome" data-outcome={receipt.failed ? 'failed' : 'done'}>
+                            {receipt.failed ? '실패' : '완료'}
+                        </em>
+                    </div>
+                    <p>{receipt.message}</p>
+                    <small>사건 보존 {receipt.eventCount}건 · 정본 변경 {receipt.changeCount}건</small>
+                </article>
+            {/each}
+        {/if}
+
         {#each requestEntries as request (request.id)}
             <details class="request-entry" data-request-source={request.source}>
                 <summary class="request-summary">
@@ -339,6 +395,15 @@
                                 {/each}
                             </div>
                         </div>
+                    {/if}
+                    {#if request.outcome === 'response-received'}
+                        <p class="transport-note">
+                            모델 응답을 받은 기록입니다. JSON 검증·저장 결과는 위의 확정 작업 결과를 확인하세요.
+                        </p>
+                    {:else if request.failureCategory}
+                        <p class="transport-note" data-failure-category={request.failureCategory}>
+                            오류 유형: {chatRequestFailureLabel(request.failureCategory)}
+                        </p>
                     {/if}
                 </div>
             </details>
@@ -427,6 +492,12 @@
     .section-toggle small { color: var(--risu-theme-textcolor2); font-size: calc(.58rem + var(--activity-font-step)); }
     .live-list { display: grid; gap: .35rem; padding: 0 .45rem .45rem; }
     .live-entry { display: grid; gap: .35rem; padding: .5rem .58rem; border-radius: .35rem; background: color-mix(in srgb, var(--risu-theme-darkbg) 88%, transparent); }
+    .result-entry { display: grid; gap: .3rem; padding: .58rem .72rem; border: 1px solid color-mix(in srgb, var(--color-success) 30%, var(--risu-theme-darkborderc)); border-radius: .48rem; background: color-mix(in srgb, var(--color-success) 5%, var(--risu-theme-darkbg)); }
+    .result-entry[data-outcome='failed'] { border-color: color-mix(in srgb, var(--risu-theme-error) 45%, var(--risu-theme-darkborderc)); background: color-mix(in srgb, var(--risu-theme-error) 6%, var(--risu-theme-darkbg)); }
+    .result-heading { display: flex; align-items: center; flex-wrap: wrap; gap: .35rem .45rem; }
+    .result-heading strong { font-size: calc(.68rem + var(--activity-font-step)); }
+    .result-entry p { margin: 0; color: var(--risu-theme-textcolor); font-size: calc(.61rem + var(--activity-font-step)); line-height: 1.45; }
+    .result-entry > small { color: var(--risu-theme-textcolor2); font-size: calc(.58rem + var(--activity-font-step)); }
     .request-entry { position: relative; overflow: hidden; border: 1px solid color-mix(in srgb, var(--risu-theme-primary) 19%, var(--risu-theme-darkborderc)); border-radius: .48rem; background: color-mix(in srgb, var(--risu-theme-darkbg) 93%, transparent); }
     .request-entry::before { position: absolute; inset: 0 auto 0 0; width: 2px; content: ''; background: color-mix(in srgb, var(--risu-theme-primary) 72%, transparent); }
     .request-summary { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .35rem .6rem; padding: .58rem .72rem .58rem .78rem; cursor: pointer; list-style: none; }
@@ -437,6 +508,7 @@
     .request-kind { color: var(--risu-theme-textcolor); font-size: calc(.68rem + var(--activity-font-step)); font-weight: 850; }
     .outcome { padding: .12rem .32rem; border-radius: 999px; font-size: calc(.56rem + var(--activity-font-step)); font-style: normal; font-weight: 800; }
     .outcome[data-outcome='done'] { color: var(--color-success); background: color-mix(in srgb, var(--color-success) 10%, transparent); }
+    .outcome[data-outcome='response-received'] { color: var(--risu-theme-primary); background: color-mix(in srgb, var(--risu-theme-primary) 10%, transparent); }
     .outcome[data-outcome='failed'] { color: var(--risu-theme-error); background: color-mix(in srgb, var(--risu-theme-error) 10%, transparent); }
     .outcome[data-outcome='aborted'] { color: var(--risu-theme-textcolor2); background: color-mix(in srgb, var(--risu-theme-textcolor2) 9%, transparent); }
     .summary-data { grid-column: 1; }
@@ -456,6 +528,7 @@
     .composition-list > span { display: flex; align-items: baseline; justify-content: space-between; gap: .55rem; min-width: 0; padding: .25rem .32rem; border-bottom: 1px dotted color-mix(in srgb, var(--risu-theme-textcolor2) 18%, transparent); color: var(--risu-theme-textcolor2); font-size: calc(.59rem + var(--activity-font-step)); }
     .composition-list > span > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .composition-list strong { flex: 0 0 auto; color: var(--risu-theme-textcolor); font: 400 calc(.58rem + var(--activity-font-step)) ui-monospace, monospace; }
+    .transport-note { margin: 0; padding: .4rem .5rem; border-left: 2px solid var(--risu-theme-primary); color: var(--risu-theme-textcolor2); background: color-mix(in srgb, var(--risu-theme-primary) 5%, transparent); font-size: calc(.58rem + var(--activity-font-step)); line-height: 1.4; }
     .entry-title { display: flex; align-items: center; gap: .38rem; }
     .entry-title strong { font-size: calc(.64rem + var(--activity-font-step)); }
     time, .empty, .path-list span { color: var(--risu-theme-textcolor2); font-size: calc(.61rem + var(--activity-font-step)); }

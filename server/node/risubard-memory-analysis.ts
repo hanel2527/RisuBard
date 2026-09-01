@@ -30,8 +30,10 @@ import {
 import {
     buildMemoryWriterSystemPrompt,
     buildCanonicalBatchSchema,
+    buildCanonicalSingleSchema,
     hasMemoryWriterContent,
     parseCanonicalBatch,
+    parseCanonicalSingle,
     buildRebootBatchDraftSchema,
     parseMemoryWriterDraft,
     parseRebootBatchDraft,
@@ -1395,20 +1397,42 @@ export function createMemoryAnalysisRunner(
                                 maxAttempts: 1 | 2,
                             ) => runValidatedModelRequest({
                                 maxAttempts,
-                                request: (feedback) => analyzeResponse({
-                                format: 'canonical-batch',
-                                responseSchema: buildCanonicalBatchSchema(
-                                    targets.length
-                                ),
-                                inputTokenLimit: snapshot.analysisTokenLimit,
-                                system: [
-                                    canonicalSystem,
-                                    ...(feedback ? [modelOutputRepairInstruction(feedback)] : []),
-                                ].join('\n'),
-                                input: canonicalInput(targets),
-                                }),
+                                request: (feedback) => {
+                                    const compactSingle = targets.length === 1
+                                        && feedback?.reason === 'invalid-structure'
+                                    return analyzeResponse({
+                                        format: 'canonical-batch',
+                                        responseSchema: compactSingle
+                                            ? buildCanonicalSingleSchema()
+                                            : buildCanonicalBatchSchema(targets.length),
+                                        inputTokenLimit: snapshot.analysisTokenLimit,
+                                        system: [
+                                            canonicalSystem,
+                                            ...(feedback ? [modelOutputRepairInstruction(feedback)] : []),
+                                            ...(compactSingle ? [
+                                                'This retry has exactly one canonical target. Use the smaller supplied schema: return only the `sections` object, without schemaVersion, documents, or candidateIndex.',
+                                            ] : []),
+                                        ].join('\n'),
+                                        input: canonicalInput(targets),
+                                    })
+                                },
                                 parse: (text) => {
-                                    const parsed = parseCanonicalBatch(text, targets.length)
+                                    let parsed: ReturnType<typeof parseCanonicalBatch>
+                                    try {
+                                        parsed = parseCanonicalBatch(text, targets.length)
+                                    }
+                                    catch (batchError) {
+                                        if (targets.length !== 1) throw batchError
+                                        try {
+                                            parsed = {
+                                                schemaVersion: 1,
+                                                documents: [parseCanonicalSingle(text)],
+                                            }
+                                        }
+                                        catch {
+                                            throw batchError
+                                        }
+                                    }
                                     if (parsed.documents.length !== targets.length) {
                                         throw new Error('Return exactly one changed-section set for every candidateIndex; no targets may be omitted.')
                                     }

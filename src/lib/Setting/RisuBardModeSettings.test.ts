@@ -6,6 +6,10 @@ import { normalizeNarrativeWorkingMessageLimit } from 'src/ts/risubard/narrative
 const chatPagePath = resolve(process.cwd(), 'src/lib/Setting/Pages/RisuBardChatSettings.svelte')
 const commonPagePath = resolve(process.cwd(), 'src/lib/Setting/Pages/RisuBardCommonSettings.svelte')
 const settingsDataPath = resolve(process.cwd(), 'src/ts/setting/risuBardCommonSettingsData.ts')
+const grimoireLanguagePagePath = resolve(
+    process.cwd(),
+    'src/lib/Setting/Pages/RisuBardGrimoireLanguageSettings.svelte'
+)
 const arcPlotterPresetPath = resolve(
     process.cwd(),
     'src/lib/Setting/Pages/RisuBardArcPlotterPresets.svelte'
@@ -13,6 +17,9 @@ const arcPlotterPresetPath = resolve(
 const memoryWikiPath = resolve(process.cwd(), 'src/lib/Others/RisuBardMemoryWiki.svelte')
 const commonPage = existsSync(commonPagePath) ? readFileSync(commonPagePath, 'utf8') : ''
 const settingsData = readFileSync(settingsDataPath, 'utf8')
+const grimoireLanguagePage = existsSync(grimoireLanguagePagePath)
+    ? readFileSync(grimoireLanguagePagePath, 'utf8')
+    : ''
 const arcPlotterPreset = readFileSync(arcPlotterPresetPath, 'utf8')
 const memoryWiki = readFileSync(memoryWikiPath, 'utf8')
 const workspace = readFileSync(
@@ -137,6 +144,34 @@ describe('RisuBard mode settings', () => {
         expect(settingsData).toContain("bindKey: 'risuBardCanonicalCustomStyle'")
         expect(settingsData).toContain("db.risuBardCanonicalWritingStyle === 'custom'")
         expect(settingsData).toContain('normalizeRisuBardCanonicalCustomStyle(value)')
+    })
+
+    test('exposes Grimoire metadata language and the active code-owned instruction', () => {
+        const customComponents = readFileSync(
+            resolve(process.cwd(), 'src/ts/setting/customComponents.ts'),
+            'utf8',
+        )
+        const korean = readFileSync(resolve(process.cwd(), 'src/lang/ko.ts'), 'utf8')
+        const english = readFileSync(resolve(process.cwd(), 'src/lang/en.ts'), 'utf8')
+
+        expect(databaseSource).toContain('risuBardGrimoireLanguage?:')
+        expect(databaseSource).toContain('normalizeBardLoreAnalysisLanguage(')
+        expect(settingsData).toContain("id: 'risubard.common.grimoire'")
+        expect(settingsData).toContain("componentId: 'RisuBardGrimoireLanguageSettings'")
+        expect(settingsData.indexOf("id: 'risubard.common.wikiWriting'"))
+            .toBeLessThan(settingsData.indexOf("id: 'risubard.common.grimoire'"))
+        expect(settingsData.indexOf("id: 'risubard.common.grimoire'"))
+            .toBeLessThan(settingsData.indexOf("id: 'risubard.common.saveAndLoad'"))
+        expect(customComponents).toContain('RisuBardGrimoireLanguageSettings')
+        expect(grimoireLanguagePage).toContain('buildBardLoreAnalysisInstructions(')
+        expect(grimoireLanguagePage).toContain("value=\"follow-bardwiki\"")
+        expect(grimoireLanguagePage).toContain("value=\"en\"")
+        expect(grimoireLanguagePage).toContain("value=\"ko\"")
+        expect(grimoireLanguagePage).toContain("value=\"bilingual\"")
+        expect(grimoireLanguagePage).toContain('readonly')
+        expect(grimoireLanguagePage).toContain('resizable')
+        expect(korean).toContain('risuBardGrimoireSettings: "Grimoire 옵션"')
+        expect(english).toContain('risuBardGrimoireSettings: "Grimoire options"')
     })
 
     test('exposes global Arca chat saver dimensions in common settings', () => {

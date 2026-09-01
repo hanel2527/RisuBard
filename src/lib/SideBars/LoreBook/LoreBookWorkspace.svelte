@@ -31,6 +31,7 @@
     import type { LorebookLocalActivation } from './loreBookWorkspaceConnections'
     import SolarIcon from './SolarIcon.svelte'
     import LoreBookStatusIcons from './LoreBookStatusIcons.svelte'
+    import BardLoreActivationLabel from './BardLoreActivationLabel.svelte'
     import BardLoreAnalysisPanel from './BardLoreAnalysisPanel.svelte'
     import ShDialog from 'src/lib/UI/GUI/ShDialog.svelte'
     import CbsConditionView from '../../UI/GUI/CbsConditionView.svelte'
@@ -1024,7 +1025,7 @@
                         class:selected={Boolean(item.id && selectedIds.has(item.id))}
                         class:folder={item.mode === 'folder'}
                         class:hidden-entry={visualStatus.hidden}
-                        class:unreachable-entry={visualStatus.unreachable && !visualStatus.hidden}
+                        class:unreachable-entry={!bardMode && visualStatus.unreachable && !visualStatus.hidden}
                         class:dragging-group={Boolean(item.id && draggingIds.has(item.id))}
                         data-lorebook-row={item.id}
                         data-lorebook-folder={item.mode === 'folder'}
@@ -1076,7 +1077,12 @@
                             </span>
                         </button>
                         <span class="row-actions" data-lorebook-no-drag>
-                            <LoreBookStatusIcons entry={item} />
+                            {#if bardMode && 'bard' in item && item.mode !== 'folder' && item.mode !== 'child'}
+                                <LoreBookStatusIcons entry={item} showActivation={false} />
+                                <BardLoreActivationLabel activation={(item as BardLoreEntry).bard.activation} />
+                            {:else}
+                                <LoreBookStatusIcons entry={item} />
+                            {/if}
                             <button
                                 type="button"
                                 class="row-delete"
@@ -1238,11 +1244,10 @@
                         </label>
                         {#each keyFields as field}
                             {@const label = field === 'key' ? language.lorebookWorkspace.primaryKeys : language.lorebookWorkspace.secondaryKeys}
-                            <div class="key-field" class:disabled-key-field={bardMode}>
+                            <div class="key-field">
                                 <div class="key-label">
                                     <label for={`${editorId}-compact-${field}`}>{label}</label>
                                     <button type="button" data-lorebook-expand-key={field}
-                                        disabled={bardMode}
                                         aria-label={`${expandedKeys[field] ? language.lorebookWorkspace.collapseKeys : language.lorebookWorkspace.expandKeys} · ${label}`}
                                         aria-expanded={expandedKeys[field]} aria-controls={`${editorId}-expanded-${field}`}
                                         use:tooltip={expandedKeys[field] ? language.lorebookWorkspace.collapseKeys : language.lorebookWorkspace.expandKeys}
@@ -1251,7 +1256,6 @@
                                     </button>
                                 </div>
                                 <input id={`${editorId}-compact-${field}`} data-lorebook-field={expandedKeys[field] ? undefined : field}
-                                    disabled={bardMode}
                                     value={drafts[field]}
                                     oninput={(event) => markDraftDirty(field, event.currentTarget.value)}
                                     onblur={() => commitDraft(field)} onkeydown={(event) => commitOnShortcut(event, field)} />
@@ -1275,7 +1279,6 @@
                                     <label>{field === 'key' ? language.lorebookWorkspace.primaryKeys : language.lorebookWorkspace.secondaryKeys}
                                         <textarea id={`${editorId}-expanded-${field}`} data-lorebook-expanded-key={field}
                                             data-lorebook-field={field} rows="3" value={drafts[field]} spellcheck="false"
-                                            disabled={bardMode}
                                             oninput={(event) => markDraftDirty(field, event.currentTarget.value)}
                                             onblur={() => commitDraft(field)} onkeydown={(event) => commitOnShortcut(event, field)}></textarea>
                                     </label>
@@ -1675,8 +1678,6 @@
     .key-field { display: grid; gap: .3rem; }
     .key-label { display: flex; align-items: center; gap: .3rem; }
     .key-label button { display: grid; flex-shrink: 0; width: 1.2rem; height: 1.1rem; padding: 0; place-items: center; }
-    .disabled-key-field { opacity: .48; }
-    .disabled-key-field input, .disabled-key-field button, .expanded-key-fields textarea:disabled { cursor: not-allowed; }
     .expanded-key-fields { display: grid; flex-shrink: 0; gap: .4rem; max-height: 45%; overflow: auto; }
     .expanded-key-fields textarea { min-height: 3rem; resize: vertical; }
     .editor-fields label { display: grid; gap: .3rem; color: var(--color-textcolor2); font-size: .74rem; font-weight: 650; letter-spacing: .02em; }

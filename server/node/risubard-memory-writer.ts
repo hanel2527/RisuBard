@@ -1,5 +1,6 @@
 import {
     parseSingleJsonObject,
+    parseSingleJsonObjectMatching,
 } from '../../packages/risubard-core/src/modelOutput'
 import skillInstructions from '../../src/ts/risubard/skills/bardwiki-memory-writer/SKILL.md?raw'
 import eventSchemaReference from '../../src/ts/risubard/skills/bardwiki-memory-writer/references/event-schema.md?raw'
@@ -22,7 +23,6 @@ export const memoryWriterDraftSchema = JSON.stringify({
     type: 'object',
     additionalProperties: false,
     required: [
-        'schemaVersion',
         'title',
         'establishedEvents',
         'stateChanges',
@@ -32,7 +32,6 @@ export const memoryWriterDraftSchema = JSON.stringify({
         'canonicalUpdateCandidates',
     ],
     properties: {
-        schemaVersion: { const: 1 },
         title: { type: 'string', minLength: 1, maxLength: 160 },
         establishedEvents: {
             type: 'array',
@@ -119,11 +118,10 @@ export function buildRebootBatchDraftSchema(turnCount?: 1 | 2): string {
         type: 'object',
         additionalProperties: false,
         required: [
-            'schemaVersion', 'turns', 'stateChanges', 'characterKnowledge',
+            'turns', 'stateChanges', 'characterKnowledge',
             'persistentFacts', 'openContinuity', 'canonicalUpdateCandidates',
         ],
         properties: {
-            schemaVersion: { const: 1 },
             turns: {
                 type: 'array',
                 minItems: turnCount ?? 1,
@@ -158,9 +156,8 @@ export function buildCanonicalBatchSchema(candidateCount?: number): string {
     return JSON.stringify({
         type: 'object',
         additionalProperties: false,
-        required: ['schemaVersion', 'documents'],
+        required: ['documents'],
         properties: {
-            schemaVersion: { const: 1 },
             documents: {
                 type: 'array',
                 ...(candidateCount === undefined ? {} : {
@@ -206,6 +203,24 @@ export function buildCanonicalBatchSchema(candidateCount?: number): string {
 }
 
 export const canonicalBatchSchema = buildCanonicalBatchSchema()
+
+export function buildCanonicalSingleSchema(): string {
+    const batch = JSON.parse(buildCanonicalBatchSchema(1)) as {
+        properties: {
+            documents: { items: { properties: { sections: unknown } } }
+        }
+    }
+    return JSON.stringify({
+        type: 'object',
+        additionalProperties: false,
+        required: ['sections'],
+        properties: {
+            sections: batch.properties.documents.items.properties.sections,
+        },
+    })
+}
+
+export const canonicalSingleSchema = buildCanonicalSingleSchema()
 
 export const memoryWriterSystemPrompt = [
     skillInstructions.trim(),
@@ -276,6 +291,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+function withoutModelSchemaVersion(
+    value: Record<string, unknown>
+): Record<string, unknown> {
+    const { schemaVersion: _schemaVersion, ...modelFields } = value
+    return modelFields
+}
+
 function exactKeys(
     value: Record<string, unknown>,
     keys: readonly string[],
@@ -315,10 +337,10 @@ function boundedArray(
 }
 
 export function parseMemoryWriterDraft(output: string): MemoryWriterDraft {
-    const parsed = parseSingleJsonObject(output)
-    if (!isRecord(parsed)) throw new Error('Memory draft must be an object')
+    const raw = parseSingleJsonObject(output)
+    if (!isRecord(raw)) throw new Error('Memory draft must be an object')
+    const parsed = withoutModelSchemaVersion(raw)
     exactKeys(parsed, [
-        'schemaVersion',
         'title',
         'establishedEvents',
         'stateChanges',
@@ -327,9 +349,6 @@ export function parseMemoryWriterDraft(output: string): MemoryWriterDraft {
         'openContinuity',
         'canonicalUpdateCandidates',
     ], 'memory draft')
-    if (parsed.schemaVersion !== 1) {
-        throw new Error('Memory draft schemaVersion must be 1')
-    }
     const strings = (value: unknown, label: string) => boundedArray(
         value,
         label,
@@ -454,15 +473,13 @@ export function parseRebootBatchDraft(
     output: string,
     expectedAssistantMessageIds: readonly string[]
 ): RebootBatchDraft {
-    const parsed = parseSingleJsonObject(output)
-    if (!isRecord(parsed)) throw new Error('Reboot batch draft must be an object')
+    const raw = parseSingleJsonObject(output)
+    if (!isRecord(raw)) throw new Error('Reboot batch draft must be an object')
+    const parsed = withoutModelSchemaVersion(raw)
     exactKeys(parsed, [
-        'schemaVersion', 'turns', 'stateChanges', 'characterKnowledge',
+        'turns', 'stateChanges', 'characterKnowledge',
         'persistentFacts', 'openContinuity', 'canonicalUpdateCandidates',
     ], 'reboot batch draft')
-    if (parsed.schemaVersion !== 1) {
-        throw new Error('Reboot batch schemaVersion must be 1')
-    }
     if (expectedAssistantMessageIds.length < 1
         || expectedAssistantMessageIds.length > 2) {
         throw new Error('Reboot batch requires one or two assistant IDs')
@@ -518,7 +535,6 @@ export function parseRebootBatchDraft(
         throw new Error('Reboot batch assistant order does not match input')
     }
     const aggregate = parseMemoryWriterDraft(JSON.stringify({
-        schemaVersion: 1,
         title: turns.map((turn) => turn.title).join(' · ').slice(0, 160),
         establishedEvents: turns.flatMap((turn) => turn.establishedEvents)
             .slice(0, 12),
@@ -549,12 +565,12 @@ export function parseCanonicalBatch(
     output: string,
     candidateCount: number
 ): CanonicalBatch {
-    const parsed = parseSingleJsonObject(output)
-    if (!isRecord(parsed)) throw new Error('Canonical batch must be an object')
-    exactKeys(parsed, ['schemaVersion', 'documents'], 'canonical batch')
-    if (parsed.schemaVersion !== 1) {
-        throw new Error('Canonical batch schemaVersion must be 1')
-    }
+    const raw = parseSingleJsonObjectMatching(output, (candidate) =>
+        Array.isArray(candidate.documents)
+    )
+    if (!isRecord(raw)) throw new Error('Canonical batch must be an object')
+    const parsed = withoutModelSchemaVersion(raw)
+    exactKeys(parsed, ['documents'], 'canonical batch')
     if (!Number.isSafeInteger(candidateCount)
         || candidateCount < 0) {
         throw new Error('Canonical batch candidate count is invalid')
@@ -652,6 +668,17 @@ export function parseCanonicalBatch(
         }
     })
     return { schemaVersion: 1, documents }
+}
+
+export function parseCanonicalSingle(output: string): CanonicalBatch['documents'][number] {
+    const parsed = parseSingleJsonObjectMatching(output, (candidate) =>
+        Array.isArray(candidate.sections)
+    )
+    if (!isRecord(parsed)) throw new Error('Canonical single result must be an object')
+    exactKeys(parsed, ['sections'], 'canonical single result')
+    return parseCanonicalBatch(JSON.stringify({
+        documents: [{ candidateIndex: 0, sections: parsed.sections }],
+    }), 1).documents[0]
 }
 
 export function hasMemoryWriterContent(draft: MemoryWriterDraft): boolean {

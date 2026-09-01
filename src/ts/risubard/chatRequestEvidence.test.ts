@@ -113,6 +113,69 @@ describe('chat request evidence', () => {
         expect(markdown).not.toContain('must-not-export')
     })
 
+    it('identifies native structured-output validation failures without exporting output', () => {
+        const failed: RequestLogEntry = {
+            ...entry,
+            success: false,
+            errorMessage: '[PageFold] Structured output validation failed: /schemaVersion: value does not match const',
+        }
+        const evidence = buildChatRequestEvidence('chat-7', [failed])
+        const markdown = formatChatRequestEvidenceMarkdown(evidence)
+
+        expect(evidence.requests[0].failureCategory).toBe('format')
+        expect(markdown).toContain('| 오류 유형 | 구조화 응답 검증 오류 |')
+        expect(markdown).not.toContain('/schemaVersion')
+    })
+
+    it('identifies provider invalid-argument rejections without exporting request data', () => {
+        const failed: RequestLogEntry = {
+            ...entry,
+            success: false,
+            errorMessage: '[PageFold] Request contains an invalid argument.',
+        }
+        const evidence = buildChatRequestEvidence('chat-7', [failed])
+        const markdown = formatChatRequestEvidenceMarkdown(evidence)
+
+        expect(evidence.requests[0].failureCategory).toBe('invalid-request')
+        expect(markdown).toContain('| 오류 유형 | 요청 인자 거부 |')
+        expect(markdown).not.toContain('Request contains')
+    })
+
+    it('identifies invalid-argument rejections preserved only in the provider response body', () => {
+        const failed: RequestLogEntry = {
+            ...entry,
+            success: false,
+            status: 400,
+            errorMessage: undefined,
+            responseBody: JSON.stringify({
+                error: {
+                    code: 400,
+                    status: 'INVALID_ARGUMENT',
+                    message: 'Request contains an invalid argument.',
+                },
+            }),
+        }
+        const evidence = buildChatRequestEvidence('chat-7', [failed])
+        const markdown = formatChatRequestEvidenceMarkdown(evidence)
+
+        expect(evidence.requests[0].failureCategory).toBe('invalid-request')
+        expect(markdown).toContain('| 오류 유형 | 요청 인자 거부 |')
+        expect(markdown).not.toContain('Request contains')
+    })
+
+    it('records successful BardWiki HTTP calls as responses, not completed work', () => {
+        const evidence = buildChatRequestEvidence('chat-7', [{
+            ...entry,
+            source: 'memory',
+            purpose: 'bardwiki-canonical-update',
+        }])
+        const markdown = formatChatRequestEvidenceMarkdown(evidence)
+
+        expect(evidence.requests[0].outcome).toBe('response-received')
+        expect(markdown).toContain('| 결과 | 응답 수신 (후속 검증·저장 결과 별도) |')
+        expect(markdown).not.toContain('| 결과 | done |')
+    })
+
     it('formats the card fields and every injection row as readable Markdown', () => {
         const evidence = buildChatRequestEvidence(
             'chat-7',

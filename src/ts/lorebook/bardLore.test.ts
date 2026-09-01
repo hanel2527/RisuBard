@@ -215,6 +215,7 @@ describe('upgradeLegacyLorebook', () => {
         const normalized = normalizeBardLoreState(state)
 
         expect(normalized?.analysisRun?.status).toBe('paused')
+        expect(normalized?.analysisRun?.languageSnapshot).toBeUndefined()
         expect(normalized?.analysisRun?.batches[0].status).toBe('pending')
         ;(state.analysisRun as unknown as Record<string, unknown>).batches = 'malformed'
         const withoutBadRun = normalizeBardLoreState(state)

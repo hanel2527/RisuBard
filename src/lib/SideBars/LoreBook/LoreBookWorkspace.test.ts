@@ -258,7 +258,7 @@ describe('LoreBookWorkspace', () => {
         ])
     })
 
-    it('edits Bard Lore activation and metadata without showing legacy activation controls', async () => {
+    it('edits Bard Lore activation, keys, and metadata without showing legacy activation controls', async () => {
         const onChange = vi.fn()
         const bardEntry = {
             ...entry('mall'),
@@ -283,7 +283,7 @@ describe('LoreBookWorkspace', () => {
         expect(document.body.querySelector('[data-bard-lore-add-facet]')).not.toBeNull()
         expect(document.body.querySelector('[data-lorebook-activation-percent]')).toBeNull()
         expect([...document.body.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('[data-lorebook-field="key"], [data-lorebook-field="secondkey"]')]
-            .every((field) => field.disabled)).toBe(true)
+            .every((field) => !field.disabled)).toBe(true)
         expect(document.body.querySelectorAll('[data-bard-lore-help]')).toHaveLength(7)
         const workspaceSource = readFileSync(resolve('src/lib/SideBars/LoreBook/LoreBookWorkspace.svelte'), 'utf8')
         const helpButtonRule = workspaceSource.match(/\.lore-state-rail \.bard-field-heading button\s*\{([^}]*)\}/)?.[1]
@@ -431,6 +431,75 @@ describe('LoreBookWorkspace', () => {
         expect(document.body.querySelector('[data-lorebook-row="unreachable"]')?.classList.contains('unreachable-entry')).toBe(true)
         expect(document.body.querySelector('[data-lorebook-row="hidden"] [data-lorebook-status-hidden]')).not.toBeNull()
         expect(document.body.querySelector('[data-lorebook-row="hidden"]')?.classList.contains('hidden-entry')).toBe(true)
+    })
+
+    it('renders Grimoire activation policies as text labels instead of legacy lorebook icons', async () => {
+        const bardEntry = (id: string, activation: 'required' | 'keyed' | 'retrieve' | 'never') => ({
+            ...entry(id, activation === 'retrieve' ? { key: '' } : activation === 'never' ? { enabled: false } : {}),
+            bard: {
+                sourceLegacyId: id,
+                sourceHash: id,
+                kind: 'other' as const,
+                activation,
+                aliases: [],
+                tags: [],
+                summary: '',
+                facets: [],
+                injection: 'full' as const,
+                links: [],
+            },
+        })
+        await render([
+            bardEntry('required', 'required'),
+            bardEntry('keyed', 'keyed'),
+            bardEntry('retrieve', 'retrieve'),
+            bardEntry('never', 'never'),
+        ], { bardMode: true })
+
+        expect([...document.body.querySelectorAll('[data-bard-lore-activation-label]')]
+            .map((label) => label.textContent?.trim())).toEqual([
+                '[Required]',
+                '[Key or alias match]',
+                '[Relevant retrieval]',
+                '[Never inject]',
+            ])
+        expect(document.body.querySelector('[data-lorebook-activation-status]')).toBeNull()
+        expect(document.body.querySelector('[data-lorebook-row="retrieve"]')?.classList.contains('unreachable-entry')).toBe(false)
+        expect(document.body.querySelector('[data-lorebook-row="never"] [data-lorebook-status-hidden]')).not.toBeNull()
+    })
+
+    it('keeps primary and secondary key fields editable in Grimoire mode', async () => {
+        const onChange = vi.fn()
+        await render([{
+            ...entry('keyed', { key: '', secondkey: '' }),
+            bard: {
+                sourceLegacyId: 'keyed',
+                sourceHash: 'keyed',
+                kind: 'other',
+                activation: 'keyed',
+                aliases: [],
+                tags: [],
+                summary: '',
+                facets: [],
+                injection: 'full',
+                links: [],
+            },
+        } as any], { bardMode: true, onChange })
+        click('[data-lorebook-row="keyed"] [data-lorebook-open]')
+        await tick()
+
+        const primary = document.body.querySelector<HTMLInputElement>('[data-lorebook-field="key"]')!
+        const secondary = document.body.querySelector<HTMLInputElement>('[data-lorebook-field="secondkey"]')!
+        expect(primary.disabled).toBe(false)
+        expect(secondary.disabled).toBe(false)
+        expect(document.body.querySelector<HTMLButtonElement>('[data-lorebook-expand-key="key"]')?.disabled).toBe(false)
+
+        primary.value = 'castle'
+        primary.dispatchEvent(new Event('input', { bubbles: true }))
+        primary.dispatchEvent(new FocusEvent('blur', { bubbles: true }))
+        await tick()
+
+        expect((onChange.mock.calls.at(-1)?.[0] as loreBook[])[0].key).toBe('castle')
     })
 
     it('maps the Hidden checkbox to enabled false', async () => {
@@ -1601,6 +1670,31 @@ describe('LoreBookWorkspace', () => {
 })
 
 describe('LoreBookWorkspaceDialog source contract', () => {
+    it('opens a Grimoire end-user guide from the square help button beside close', async () => {
+        mounted = mount(LoreBookWorkspaceDialog, {
+            target: document.body.appendChild(document.createElement('div')),
+            props: {
+                open: true,
+                entries: [entry('one')],
+                scopeLabel: 'Dialog lore',
+                bardMode: true,
+                onChange: vi.fn(),
+            },
+        })
+        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-guide-open]')).not.toBeNull())
+
+        click('[data-bard-lore-guide-open]')
+        await tick()
+
+        const guide = document.body.querySelector('[data-bard-lore-guide]')
+        expect(guide).not.toBeNull()
+        expect(guide?.textContent).toContain(languageEnglish.lorebookWorkspace.bardGuideActivationTitle)
+        expect(guide?.textContent).toContain(languageEnglish.lorebookWorkspace.bardRequired)
+        expect(guide?.textContent).toContain(languageEnglish.lorebookWorkspace.bardKeyed)
+        expect(guide?.textContent).toContain(languageEnglish.lorebookWorkspace.bardRetrieve)
+        expect(guide?.textContent).toContain(languageEnglish.lorebookWorkspace.bardNever)
+    })
+
     it('commits an active draft when the dialog closes and shows it after reopening', async () => {
         const target = document.body.appendChild(document.createElement('div'))
         const entries = [entry('one')]

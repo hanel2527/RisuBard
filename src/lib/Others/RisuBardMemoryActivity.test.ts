@@ -20,6 +20,9 @@ vi.mock('src/ts/risubard/chatRequestEvidence', () => ({
     loadChatRequestEvidence: mocks.loadChatRequestEvidence,
     addRetainedAssistantSummary: mocks.addRetainedAssistantSummary,
     formatChatRequestEvidenceMarkdown: vi.fn(() => '# evidence'),
+    chatRequestFailureLabel: vi.fn((category: string) => category === 'format'
+        ? '구조화 응답 검증 오류'
+        : '공급자 응답 오류'),
     buildLegacyChatRequestEvidence: vi.fn((chatId: string, entries: unknown[]) => ({
         schemaVersion: 1,
         generatedAt: '2026-08-12T04:00:00.000Z',
@@ -116,6 +119,56 @@ describe('RisuBardMemoryActivity', () => {
         expect(document.body.textContent).toContain(
             '위키 조회 제한 시간을 초과했습니다.'
         )
+    })
+
+    it('separates provider responses from the persisted canonical result', async () => {
+        mocks.loadChatRequestEvidence.mockResolvedValue({
+            schemaVersion: 1,
+            generatedAt: '2026-09-01T04:08:00.000Z',
+            chatId: 'chat-result',
+            requestCount: 3,
+            totals: { inputTokens: 30, outputTokens: 9, cachedTokens: 0, reasoningTokens: 0 },
+            requests: [3, 2, 1].map((id) => ({
+                id,
+                timestamp: `2026-09-01T04:07:0${id}.000Z`,
+                source: 'memory',
+                purpose: 'bardwiki-canonical-update',
+                outcome: id === 3 ? 'failed' : 'response-received',
+                ...(id === 3 ? { failureCategory: 'format' as const } : {}),
+                streaming: false,
+                inputTokens: 10,
+                outputTokens: 3,
+            })),
+        })
+        const target = document.body.appendChild(document.createElement('div'))
+        mounted = mount(RisuBardMemoryActivity, {
+            target,
+            props: {
+                characterId: 'character',
+                chatId: 'chat-result',
+                messages: [{
+                    role: 'char', data: 'reply',
+                    time: Date.parse('2026-09-01T04:07:45.000Z'),
+                    chatId: 'assistant-1',
+                    risubardCanonicalReceipt: {
+                        sourceMessageIds: ['assistant-1'],
+                        eventIds: ['event-1'],
+                        changes: [],
+                        warnings: ['정본 문서 갱신 실패 (응답 형식 오류). 다음 턴에 자동으로 다시 시도합니다.'],
+                        recordedAt: '2026-09-01T04:07:45.000Z',
+                    },
+                }],
+            },
+        })
+
+        await vi.waitFor(() => {
+            expect(document.body.textContent).toContain('확정 작업 결과')
+            expect(document.body.textContent).toContain('BardWiki 정본 반영')
+            expect(document.body.textContent).toContain('실패')
+            expect(document.body.textContent).toContain('응답 수신')
+            expect(document.body.textContent).toContain('응답 시도 3/3')
+            expect(document.body.textContent).toContain('구조화 응답 검증 오류')
+        })
     })
 
     it('shows per-generation chat and wiki provenance without prompt bodies', async () => {

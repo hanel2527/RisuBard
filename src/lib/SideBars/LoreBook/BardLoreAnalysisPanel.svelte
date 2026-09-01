@@ -2,6 +2,7 @@
     import { onDestroy, untrack } from 'svelte'
     import { v4 as createUuid } from 'uuid'
     import { language } from 'src/lang'
+    import { DBState } from 'src/ts/stores.svelte'
     import ShDialog from 'src/lib/UI/GUI/ShDialog.svelte'
     import {
         createBardLoreSettings,
@@ -35,6 +36,10 @@
         type BardLoreAnalysisPlan,
         type BardLoreAnalysisQualityIssue,
     } from 'src/ts/lorebook/bardLoreAnalysis'
+    import {
+        resolveBardLoreAnalysisLanguage,
+        type ResolvedBardLoreAnalysisLanguage,
+    } from 'src/ts/lorebook/bardLoreLanguage'
 
     interface Props {
         entries: BardLoreEntry[]
@@ -66,6 +71,7 @@
     let conflicts = $state<Array<{ id: string; reason: string }>>([])
     let plan = $state<BardLoreAnalysisPlan | null>(null)
     let plannedTargets = $state<BardLoreEntry[]>([])
+    let plannedLanguage = $state<ResolvedBardLoreAnalysisLanguage>('ko')
     let currentRun = $state<BardLoreAnalysisRun | undefined>()
     let workingSettings = $state(createBardLoreSettings())
     let controller: AbortController | undefined
@@ -119,8 +125,20 @@
         planning = true
         try {
             const { tokenize } = await import('src/ts/tokenizer')
+            const analysisLanguage = resolveBardLoreAnalysisLanguage(
+                DBState.db.risuBardGrimoireLanguage,
+                DBState.db.risuBardWikiWritingLanguage === 'en' ? 'en' : 'ko',
+            )
             plannedTargets = targets
-            plan = await planBardLoreAnalysisBatches(targets, entries, runtimeSettings, tokenize)
+            plannedLanguage = analysisLanguage
+            plan = await planBardLoreAnalysisBatches(
+                targets,
+                entries,
+                runtimeSettings,
+                tokenize,
+                analysisLanguage,
+                'ko',
+            )
         }
         catch (cause) {
             error = cause instanceof Error ? cause.message : String(cause)
@@ -191,7 +209,14 @@
         try {
             if (remaining.length !== remainingIds.length) throw new Error(language.lorebookWorkspace.bardAnalysisMissingEntry)
             const { tokenize } = await import('src/ts/tokenizer')
-            const replanned = await planBardLoreAnalysisBatches(remaining, entries, runtimeSettings, tokenize)
+            const replanned = await planBardLoreAnalysisBatches(
+                remaining,
+                entries,
+                runtimeSettings,
+                tokenize,
+                run.languageSnapshot ?? 'bilingual',
+                'ko',
+            )
             if (sequence !== replanSequence) return
             const rebuilt = replanned.batches.map((batch) => ({
                 id: createUuid(),
@@ -317,6 +342,8 @@
                         batch,
                         entries,
                         next.settingsSnapshot.router.filterFacetKeys,
+                        next.languageSnapshot ?? 'bilingual',
+                        'ko',
                     )
                     let parsed
                     try {
@@ -414,7 +441,14 @@
     function startAnalysis() {
         if (!plan || plannedTargets.length === 0) return
         const next = {
-            ...createBardLoreAnalysisRun(plan, scope, workingSettings, createUuid),
+            ...createBardLoreAnalysisRun(
+                plan,
+                scope,
+                workingSettings,
+                createUuid,
+                undefined,
+                plannedLanguage,
+            ),
             replaceLinks: qualityRepair,
         }
         saveRun(next)

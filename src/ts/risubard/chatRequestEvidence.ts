@@ -20,7 +20,7 @@ export interface ChatRequestEvidenceEntry {
     purpose?: RequestPurpose
     model?: string
     provider?: string
-    outcome: 'done' | 'failed' | 'aborted'
+    outcome: 'done' | 'response-received' | 'failed' | 'aborted'
     status?: number
     route?: RequestLogRoute
     streaming: boolean
@@ -33,7 +33,7 @@ export interface ChatRequestEvidenceEntry {
     injectionManifest?: RequestInjectionManifest
     selectedHistoryMessageCount?: number
     failureCategory?: 'timeout' | 'rate-limit' | 'authentication'
-        | 'server' | 'network' | 'provider'
+        | 'server' | 'network' | 'format' | 'invalid-request' | 'provider'
 }
 
 export interface ChatRequestEvidence {
@@ -95,7 +95,15 @@ const failureLabels: Record<
     authentication: '인증 오류',
     server: '공급자 서버 오류',
     network: '네트워크 오류',
+    format: '구조화 응답 검증 오류',
+    'invalid-request': '요청 인자 거부',
     provider: '공급자 응답 오류',
+}
+
+export function chatRequestFailureLabel(
+    category: NonNullable<ChatRequestEvidenceEntry['failureCategory']>
+): string {
+    return failureLabels[category]
 }
 
 function localTimeZone(): string {
@@ -147,7 +155,10 @@ function requestFailureCategory(
     entry: RequestLogEntry
 ): ChatRequestEvidenceEntry['failureCategory'] | undefined {
     if (entry.success && !entry.aborted) return undefined
-    const message = (entry.errorMessage ?? '').toLocaleLowerCase()
+    const message = [entry.errorMessage, providerResponseError(entry.responseBody)]
+        .filter(Boolean)
+        .join(' ')
+        .toLocaleLowerCase()
     if (entry.status === 408 || entry.status === 504
         || /timed?\s*out|timeout|시간.*초과/u.test(message)) return 'timeout'
     if (entry.status === 429
@@ -155,6 +166,12 @@ function requestFailureCategory(
     if (entry.status === 401 || entry.status === 403
         || /unauthor|forbidden|authentication|api.?key/u.test(message)) {
         return 'authentication'
+    }
+    if (/structured.?output.*validation|json.?schema.*validation|response.?schema.*validation/u.test(message)) {
+        return 'format'
+    }
+    if (/\binvalid[_ ]argument\b|request contains an invalid argument/u.test(message)) {
+        return 'invalid-request'
     }
     if ((entry.status ?? 0) >= 500
         || /bad gateway|service unavailable|internal server/u.test(message)) {
@@ -164,6 +181,32 @@ function requestFailureCategory(
         return 'network'
     }
     return 'provider'
+}
+
+function providerResponseError(responseBody: string | undefined): string {
+    if (!responseBody) return ''
+    try {
+        const parsed = JSON.parse(responseBody) as unknown
+        if (!parsed || typeof parsed !== 'object') return ''
+        const error = (parsed as { error?: unknown }).error
+        if (!error || typeof error !== 'object') return ''
+        const record = error as { status?: unknown, message?: unknown }
+        return [record.status, record.message]
+            .filter((value): value is string => typeof value === 'string')
+            .join(' ')
+    }
+    catch {
+        return ''
+    }
+}
+
+function requestOutcome(entry: RequestLogEntry): ChatRequestEvidenceEntry['outcome'] {
+    if (entry.aborted) return 'aborted'
+    if (!entry.success) return 'failed'
+    return entry.source === 'memory'
+        && ['bardwiki-analysis', 'bardwiki-canonical-update'].includes(entry.purpose ?? '')
+        ? 'response-received'
+        : 'done'
 }
 
 export function buildChatRequestEvidence(
@@ -182,7 +225,7 @@ export function buildChatRequestEvidence(
         ...(entry.purpose ? { purpose: entry.purpose } : {}),
         ...(entry.model ? { model: entry.model } : {}),
         ...(entry.provider ? { provider: entry.provider } : {}),
-        outcome: entry.aborted ? 'aborted' : entry.success ? 'done' : 'failed',
+        outcome: requestOutcome(entry),
         ...(entry.status !== undefined ? { status: entry.status } : {}),
         ...(entry.route ? { route: entry.route } : {}),
         streaming: entry.streaming,
@@ -376,12 +419,14 @@ export function formatChatRequestEvidenceMarkdown(evidence: ChatRequestEvidence)
             `| 로그 종류 | ${request.source} |`,
             `| 모델 | ${escapeTable(request.model)} |`,
             `| 공급자 | ${escapeTable(request.provider)} |`,
-            `| 결과 | ${request.outcome} |`,
+            `| 결과 | ${request.outcome === 'response-received'
+                ? '응답 수신 (후속 검증·저장 결과 별도)'
+                : request.outcome} |`,
             ...(request.status === undefined ? [] : [
                 `| HTTP 상태 | ${request.status} |`,
             ]),
             ...(request.failureCategory === undefined ? [] : [
-                `| 오류 유형 | ${failureLabels[request.failureCategory]} |`,
+                `| 오류 유형 | ${chatRequestFailureLabel(request.failureCategory)} |`,
             ]),
             `| 경과 시간 | ${durationLabel(request.durationMs)} |`,
             `| 첫 토큰 | ${durationLabel(request.firstTokenMs)} |`,
