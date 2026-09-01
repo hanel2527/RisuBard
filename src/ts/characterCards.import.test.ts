@@ -249,6 +249,10 @@ describe('public character-card lifecycle round-trips', () => {
 
         const exported = createCard(source)
         expect(exported.data.character_book?.entries).toHaveLength(1)
+        expect(exported.data.character_book?.entries[0]).toMatchObject({
+            name: 'Legacy',
+            content: 'Legacy content',
+        })
         expect((exported.data.extensions as any).risubard.bardLore.settings.maximumTokens).toBe(777)
 
         const imported = await importFixture(exported as any)
@@ -257,6 +261,39 @@ describe('public character-card lifecycle round-trips', () => {
         expect(imported.globalLore).toHaveLength(1)
         expect(imported.bardLore).toEqual(source.bardLore)
         expect((reexported.data.extensions as any).risubard.bardLore).toEqual(source.bardLore)
+    })
+
+    test.each([
+        ['v2', createBaseV2],
+        ['v3', createBaseV3],
+    ] as const)('ignores malformed Bard Lore metadata without breaking the standard lorebook through %s', async (_spec, createCard) => {
+        const exported = createCard({
+            name: 'Standard compatibility',
+            globalLore: [{
+                id: 'legacy',
+                key: 'legacy',
+                secondkey: '',
+                insertorder: 10,
+                comment: 'Legacy',
+                content: 'Legacy content',
+                mode: 'normal',
+                alwaysActive: false,
+                selective: false,
+            }],
+            loreExt: {},
+        } as any)
+        ;(exported.data.extensions as any).risubard = {
+            bardLore: { schemaVersion: 999, entries: 'invalid' },
+        }
+
+        const imported = await importFixture(exported as any)
+
+        expect(imported.globalLore).toHaveLength(1)
+        expect(imported.globalLore[0]).toMatchObject({
+            comment: 'Legacy',
+            content: 'Legacy content',
+        })
+        expect(imported.bardLore).toBeUndefined()
     })
 
     test.each([

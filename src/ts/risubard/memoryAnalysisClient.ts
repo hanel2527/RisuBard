@@ -468,7 +468,8 @@ async function postJson(
 export function projectRecentMemoryMessages(
     storedMessages: readonly StoredMessage[],
     limit = 12,
-    throughMessageId?: string
+    throughMessageId?: string,
+    firstMessage?: MemoryAnalysisMessage,
 ): MemoryAnalysisMessage[] {
     const boundedLimit = Number.isSafeInteger(limit)
         ? Math.max(1, limit)
@@ -481,8 +482,7 @@ export function projectRecentMemoryMessages(
     const source = throughIndex < 0
         ? storedMessages
         : storedMessages.slice(0, throughIndex + 1)
-    return source
-        .filter((message) =>
+    const eligible = source.filter((message) =>
             (message.role === 'user' || message.role === 'char')
             && typeof message.data === 'string'
             && typeof message.chatId === 'string'
@@ -490,12 +490,33 @@ export function projectRecentMemoryMessages(
             && !message.isComment
             && !message.disabled
         )
+    const projected: MemoryAnalysisMessage[] = eligible
         .slice(-boundedLimit)
         .map((message) => ({
             messageId: message.chatId as string,
             role: message.role === 'user' ? 'user' : 'assistant',
             content: message.data as string,
         }))
+    return firstMessage && eligible.length <= boundedLimit
+        ? [firstMessage, ...projected]
+        : projected
+}
+
+export function projectMemoryAnalysisEvidence(
+    confirmedMessages: readonly MemoryAnalysisMessage[],
+    recentMessages: readonly MemoryAnalysisMessage[],
+    firstMessage?: MemoryAnalysisMessage,
+): MemoryAnalysisMessage[] {
+    if (!firstMessage
+        || !recentMessages.some((message) =>
+            message.messageId === firstMessage.messageId
+        )
+        || confirmedMessages.some((message) =>
+            message.messageId === firstMessage.messageId
+        )) {
+        return [...confirmedMessages]
+    }
+    return [firstMessage, ...confirmedMessages]
 }
 
 export function projectConfirmedMemoryTurn(

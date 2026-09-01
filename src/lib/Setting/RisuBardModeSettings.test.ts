@@ -55,6 +55,12 @@ describe('RisuBard mode settings', () => {
         expect(normalizeNarrativeWorkingMessageLimit(undefined)).toBe(12)
     })
 
+    test('includes the resolved first message in the bounded wiki analysis window', () => {
+        expect(processSource).toContain('resolveNarrativeFirstMessageEvidence(')
+        expect(processSource).toContain('projectMemoryAnalysisEvidence(')
+        expect(processSource).toContain('firstMessageEvidence')
+    })
+
     test('keeps chat analysis and response-history controls together', () => {
         expect(settingsData).toContain("bindKey: 'risuBardRecentMessageCount'")
         expect(settingsData).toContain("bindKey: 'risuBardResponseMessageCount'")

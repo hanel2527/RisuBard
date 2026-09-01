@@ -211,6 +211,15 @@ export function filterLorebookEntries(entries: loreBook[], filter: LorebookFilte
     return entries.filter((entry) => included.has(entry))
 }
 
+export function orderLorebookEntriesForDisplay(entries: loreBook[]): loreBook[] {
+    const ordered: loreBook[] = []
+    for (const node of buildWorkspace(entries)) {
+        ordered.push(node.entry)
+        if (node.kind === 'folder') ordered.push(...node.children.map((child) => child.entry))
+    }
+    return ordered
+}
+
 export function applyBatchPatch(entries: loreBook[], selected: Set<string>, patch: Partial<loreBook>): loreBook[] {
     return entries.map((entry) =>
         isBatchEditable(entry) && hasId(entry) && selected.has(entry.id) ? { ...entry, ...patch } : entry,

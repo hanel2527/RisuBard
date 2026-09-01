@@ -41,6 +41,7 @@ import {
     normalizeRisuBardInquiryTokenBudget,
 } from '../risubard/risuBardSettings';
 import { normalizeWikiRebootJob } from '../risubard/wikiReboot';
+import { createTogglePresetBaseline, type TogglePresetBaseline } from './togglePresetBaseline';
 import type { CanonicalTurnReceipt } from '../risubard/memoryWiki';
 import {
     normalizeAutosaveInterval,
@@ -1195,14 +1196,50 @@ export function pinToggleValuesToChat(
     db:Database = getDatabase(),
     char:character = getCurrentCharacter(),
 ):void{
-    chat.GLGlobalVariables = snapshotCurrentToggleValues(db, char, chat)
+    const values = snapshotCurrentToggleValues(db, char, chat)
+    chat.GLGlobalVariables = { ...values }
+    chat.togglePresetBaseline = createTogglePresetBaseline(values)
     chat.useLocallySetGlobalVariables = true
     chat.savedToggleValues = undefined
+}
+
+export function applyTogglePresetToChat(
+    preset:TogglePreset,
+    db:Database = getDatabase(),
+    char:character = getCurrentCharacter(),
+    chat:Chat = getCurrentChat(),
+):void{
+    if(db.disableToggleBinding || !chat){
+        applyToggleValues(preset.values, db, char, chat)
+        return
+    }
+
+    chat.GLGlobalVariables = {}
+    chat.useLocallySetGlobalVariables = true
+    applyToggleValues(preset.values, db, char, chat)
+    chat.togglePresetBaseline = createTogglePresetBaseline(preset.values, preset.name)
+    chat.savedToggleValues = undefined
+}
+
+export function setPinnedTogglePresetBaseline(
+    chat:Chat,
+    values:Record<string, string>,
+    name?:string,
+):void{
+    if(!chat.useLocallySetGlobalVariables) return
+    chat.togglePresetBaseline = createTogglePresetBaseline(values, name)
+}
+
+export function resetPinnedToggleValues(chat:Chat):void{
+    if(!chat.togglePresetBaseline) return
+    chat.GLGlobalVariables = { ...chat.togglePresetBaseline.values }
+    chat.useLocallySetGlobalVariables = true
 }
 
 export function unpinToggleValuesFromChat(chat:Chat):void{
     chat.useLocallySetGlobalVariables = false
     chat.GLGlobalVariables = undefined
+    chat.togglePresetBaseline = undefined
     chat.savedToggleValues = undefined
 }
 
@@ -1219,6 +1256,9 @@ export function fillMissingPinnedToggleValues(
             && Object.hasOwn(db.globalChatVariables, key)
         ){
             chat.GLGlobalVariables[key] = db.globalChatVariables[key]
+            if(chat.togglePresetBaseline && !Object.hasOwn(chat.togglePresetBaseline.values, key)){
+                chat.togglePresetBaseline.values[key] = db.globalChatVariables[key]
+            }
         }
     }
 }
@@ -1239,6 +1279,7 @@ export function loadTogglesFromChat(
     if(!chat?.savedToggleValues || chat.GLGlobalVariables) return
     chat.GLGlobalVariables = { ...chat.savedToggleValues }
     chat.useLocallySetGlobalVariables = true
+    chat.togglePresetBaseline ??= createTogglePresetBaseline(chat.savedToggleValues)
     chat.savedToggleValues = undefined
 }
 
@@ -2497,7 +2538,11 @@ export function normalizeChat(chat: Partial<Chat>): Chat {
     if (c.savedToggleValues && !c.GLGlobalVariables) {
         c.GLGlobalVariables = { ...c.savedToggleValues }
         c.useLocallySetGlobalVariables = true
+        c.togglePresetBaseline ??= createTogglePresetBaseline(c.savedToggleValues)
         c.savedToggleValues = undefined
+    }
+    if (c.useLocallySetGlobalVariables && c.GLGlobalVariables && !c.togglePresetBaseline) {
+        c.togglePresetBaseline = createTogglePresetBaseline(c.GLGlobalVariables)
     }
     c.risuBardWikiReboot = normalizeWikiRebootJob(c.risuBardWikiReboot)
     return c
@@ -2534,6 +2579,8 @@ export interface Chat{
     bookmarkNames?: { [chatId: string]: string };
     supaMemory?: boolean
     savedToggleValues?: Record<string, string>
+    /** Immutable comparison/reset point for the current per-chat toggle values. */
+    togglePresetBaseline?: TogglePresetBaseline
     /** When enabled, global chat variables can be overridden by this chat without
      * mutating the application-wide values. */
     useLocallySetGlobalVariables?: boolean

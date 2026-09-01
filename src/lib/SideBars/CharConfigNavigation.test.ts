@@ -142,6 +142,20 @@ describe('character configuration navigation', () => {
         expect(chatList).not.toContain('data-current-chat-label')
     })
 
+    test('places persona binding above prompt binding in the character sidebar', () => {
+        const chatList = source('src/lib/SideBars/SideChatList.svelte')
+        const personaPosition = chatList.indexOf('<PersonaBind />')
+        const promptPosition = chatList.indexOf('<PromptBind />')
+
+        expect(personaPosition).toBeGreaterThan(-1)
+        expect(promptPosition).toBeGreaterThan(-1)
+        expect(personaPosition).toBeLessThan(promptPosition)
+    })
+
+    test('labels the toggle area as per-chat preset pinning', () => {
+        expect(languageKorean.toggleBindingLabel).toBe('채팅별 프리셋 고정')
+    })
+
     test('keeps eight ordered toolbar actions and moves secondary actions into a menu', () => {
         const chatList = source('src/lib/SideBars/SideChatList.svelte')
         const toolbar = chatList.slice(chatList.indexOf('data-chat-list-toolbar'), chatList.indexOf('{#key sorted}'))

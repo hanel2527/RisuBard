@@ -22,6 +22,7 @@
         ensureLorebookIds,
         filterLorebookEntries,
         moveLorebookEntries,
+        orderLorebookEntriesForDisplay,
         removeKeysFromEntries,
         updateLorebookEntry,
         type LorebookDropPosition,
@@ -38,6 +39,7 @@
     import { lorebookVariableContext } from 'src/ts/gui/cbsVariableEditor'
     import { resizeHandle } from 'src/ts/gui/resizeHandle'
     import { tooltip } from 'src/ts/gui/tooltip'
+    import BardLoreActivationSelect from './BardLoreActivationSelect.svelte'
     import { loreBookVisualStatus } from './loreBookVisualStatus'
     import {
         readLorebookWorkspaceSession,
@@ -143,11 +145,13 @@
     let normalizedSource: loreBook[] | null = null
     let normalizedEntries = $state.raw<loreBook[]>([])
     const persistedIdSources = new WeakSet<loreBook[]>()
-    let visibleEntries = $derived(filterLorebookEntries(normalizedEntries, {
-        query,
-        target: searchTarget,
-        enabled: enabledFilter,
-    }))
+    let visibleEntries = $derived(orderLorebookEntriesForDisplay(
+        filterLorebookEntries(normalizedEntries, {
+            query,
+            target: searchTarget,
+            enabled: enabledFilter,
+        }),
+    ))
     let activeEntry = $derived(normalizedEntries.find((item) => item.id === activeId) ?? null)
     let activeBardEntry = $derived(
         bardMode && activeEntry && 'bard' in activeEntry
@@ -1155,19 +1159,13 @@
                 </div>
                 {#if bardMode}
                     <div class="bard-batch-fields">
-                        <label>{language.lorebookWorkspace.bardActivation}
-                            <select
-                                data-bard-lore-batch-activation
+                        <div class="bard-field">{language.lorebookWorkspace.bardActivation}
+                            <BardLoreActivationSelect
+                                batch
                                 value={batchBardActivationState === 'mixed' ? '' : batchBardActivationState}
-                                onchange={(event) => event.currentTarget.value && batchBardPatch({ activation: event.currentTarget.value as BardLoreActivation })}
-                            >
-                                <option value="" disabled>{language.lorebookWorkspace.bardBatchMixed}</option>
-                                <option value="required">{language.lorebookWorkspace.bardRequired}</option>
-                                <option value="keyed">{language.lorebookWorkspace.bardKeyed}</option>
-                                <option value="retrieve">{language.lorebookWorkspace.bardRetrieve}</option>
-                                <option value="never">{language.lorebookWorkspace.bardNever}</option>
-                            </select>
-                        </label>
+                                onChange={(activation) => batchBardPatch({ activation })}
+                            />
+                        </div>
                         <label>{language.lorebookWorkspace.bardKind}
                             <select
                                 data-bard-lore-batch-kind
@@ -1329,18 +1327,12 @@
                     {/if}
                     <label><input type="checkbox" data-lorebook-hidden checked={activeEntry.enabled === false} onchange={(event) => patchEntry(activeEntry.id!, { enabled: !event.currentTarget.checked })} /> {language.lorebookWorkspace.hidden}</label>
                     {#if activeBardEntry}
-                        <label class="bard-field"><span class="bard-field-heading"><span>{language.lorebookWorkspace.bardActivation}</span><button type="button" data-bard-lore-help="activation" aria-label={language.lorebookWorkspace.bardActivationHelp} use:tooltip={language.lorebookWorkspace.bardActivationHelp} onclick={() => alertNormal(language.lorebookWorkspace.bardActivationHelp)}>?</button></span>
-                            <select
-                                data-bard-lore-activation
+                        <div class="bard-field"><span class="bard-field-heading"><span>{language.lorebookWorkspace.bardActivation}</span><button type="button" data-bard-lore-help="activation" aria-label={language.lorebookWorkspace.bardActivationHelp} use:tooltip={language.lorebookWorkspace.bardActivationHelp} onclick={() => alertNormal(language.lorebookWorkspace.bardActivationHelp)}>?</button></span>
+                            <BardLoreActivationSelect
                                 value={activeBardEntry.bard.activation}
-                                onchange={(event) => patchBardMetadata({ activation: event.currentTarget.value as BardLoreActivation })}
-                            >
-                                <option value="required">{language.lorebookWorkspace.bardRequired}</option>
-                                <option value="keyed">{language.lorebookWorkspace.bardKeyed}</option>
-                                <option value="retrieve">{language.lorebookWorkspace.bardRetrieve}</option>
-                                <option value="never">{language.lorebookWorkspace.bardNever}</option>
-                            </select>
-                        </label>
+                                onChange={(activation) => patchBardMetadata({ activation })}
+                            />
+                        </div>
                         <label class="bard-field"><span class="bard-field-heading"><span>{language.lorebookWorkspace.bardKind}</span><button type="button" data-bard-lore-help="kind" aria-label={language.lorebookWorkspace.bardKindHelp} use:tooltip={language.lorebookWorkspace.bardKindHelp} onclick={() => alertNormal(language.lorebookWorkspace.bardKindHelp)}>?</button></span>
                             <select
                                 data-bard-lore-kind

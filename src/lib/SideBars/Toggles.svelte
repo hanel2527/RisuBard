@@ -5,10 +5,11 @@
     import { language } from "src/lang";
     import type { PromptItem } from "src/ts/process/prompt";
     import type { character } from "src/ts/storage/database.svelte";
-    import { fillMissingPinnedToggleValues, getCurrentChat, saveTogglesToChat, unpinToggleValuesFromChat } from "src/ts/storage/database.svelte";
+    import { fillMissingPinnedToggleValues, getCurrentChat, resetPinnedToggleValues, saveTogglesToChat, unpinToggleValuesFromChat } from "src/ts/storage/database.svelte";
+    import { getToggleValueDifferences } from "src/ts/storage/togglePresetBaseline";
     import { alertConfirm, alertTogglePresets, notifySuccess } from "src/ts/alert";
     import { tooltip } from "src/ts/gui/tooltip";
-    import { PinIcon, FolderHeartIcon } from "@lucide/svelte";
+    import { PinIcon, FolderHeartIcon, RotateCcwIcon } from "@lucide/svelte";
     import ShAccordion from '../UI/GUI/ShAccordion.svelte'
     import ShButton from "../UI/GUI/ShButton.svelte";
     import ShSwitch from "../UI/GUI/ShSwitch.svelte";
@@ -32,6 +33,12 @@
             ? currentChat.GLGlobalVariables
             : DBState.db.globalChatVariables
     )
+    let dirtyDifferences = $derived(getToggleValueDifferences(
+        currentChat?.togglePresetBaseline,
+        currentChat?.GLGlobalVariables ?? {},
+    ))
+    let dirtyKeys = $derived(new Set(dirtyDifferences.map(({ key }) => key)))
+    let pinnedPresetName = $derived(currentChat?.togglePresetBaseline?.name ?? language.togglePinManualName)
 
     async function pinToChat() {
         const chat = getCurrentChat()
@@ -50,6 +57,13 @@
 
     async function openPresetList() {
         await alertTogglePresets()
+    }
+
+    function resetToPinnedPreset() {
+        const chat = getCurrentChat()
+        if (!chat?.togglePresetBaseline) return
+        resetPinnedToggleValues(chat)
+        notifySuccess(language.togglePinResetDone)
     }
 
     const jailbreakToggleToken = '{{jbtoggled}}'
@@ -123,6 +137,36 @@
         })
     }
 
+    function flattenToggles(items: sidebarToggle[]): sidebarToggle[] {
+        return items.flatMap((toggle) => toggle.type === 'group'
+            ? flattenToggles(toggle.children)
+            : [toggle])
+    }
+
+    let toggleDefinitions = $derived(new Map(
+        flattenToggles(groupedToggles)
+            .filter((toggle) => toggle.key)
+            .map((toggle) => [`toggle_${toggle.key}`, toggle]),
+    ))
+
+    function isToggleDirty(toggle: sidebarToggle): boolean {
+        return !!toggle.key && dirtyKeys.has(`toggle_${toggle.key}`)
+    }
+
+    function visibleToggleValue(key: string, value: string): string {
+        const toggle = toggleDefinitions.get(key)
+        if (toggle?.type === 'select') {
+            return toggle.options[Number(value)] ?? value
+        }
+        return value
+    }
+
+    let dirtyTooltip = $derived(dirtyDifferences.map(({ key, currentValue }) => {
+        const toggle = toggleDefinitions.get(key)
+        const label = toggle?.value || key.replace(/^toggle_/, '')
+        return `[${label}] = "${visibleToggleValue(key, currentValue)}"`
+    }).join('\n'))
+
     $effect(() => {
         const chat = currentChat
         const keys = collectToggleKeys(groupedToggles)
@@ -149,7 +193,7 @@
                 {@render toggles((toggle as sidebarToggleGroup).children, reverse)}
             </ShAccordion>
         {:else if toggle.type === 'select'}
-            <div class="w-full flex gap-2 mt-2 items-center justify-between min-h-10 rounded-md px-1 transition-colors">
+            <div class="w-full flex gap-2 mt-2 items-center justify-between min-h-10 rounded-md px-1 transition-colors" class:toggle-row--dirty={isToggleDirty(toggle)}>
                 <span class="min-w-0 break-words">{toggle.value}</span>
                 <SelectInput className="w-32 shrink-0" bind:value={toggleVariableTarget[`toggle_${toggle.key}`]}>
                     {#each toggle.options as option, i}
@@ -158,12 +202,12 @@
                 </SelectInput>
             </div>
         {:else if toggle.type === 'text'}
-            <div class="w-full flex gap-2 mt-2 items-center justify-between min-h-10 rounded-md px-1 transition-colors">
+            <div class="w-full flex gap-2 mt-2 items-center justify-between min-h-10 rounded-md px-1 transition-colors" class:toggle-row--dirty={isToggleDirty(toggle)}>
                 <span class="min-w-0 break-words">{toggle.value}</span>
                 <TextInput className="w-32 shrink-0" bind:value={toggleVariableTarget[`toggle_${toggle.key}`]} />
             </div>
         {:else if toggle.type === 'textarea'}
-            <div class="w-full flex gap-2 mt-2 items-start justify-between min-h-10 rounded-md px-1 transition-colors">
+            <div class="w-full flex gap-2 mt-2 items-start justify-between min-h-10 rounded-md px-1 transition-colors" class:toggle-row--dirty={isToggleDirty(toggle)}>
                 <span class="min-w-0 break-words mt-1.5">{toggle.value}</span>
                 <TextAreaInput className="w-32 shrink-0" height='20' bind:value={toggleVariableTarget[`toggle_${toggle.key}`]} />
             </div>
@@ -182,7 +226,7 @@
                 </div>
             {/if}
         {:else}
-            <div class="w-full flex gap-2 mt-2 items-center justify-between min-h-10 rounded-md px-1 transition-colors">
+            <div class="w-full flex gap-2 mt-2 items-center justify-between min-h-10 rounded-md px-1 transition-colors" class:toggle-row--dirty={isToggleDirty(toggle)}>
                 <span class="min-w-0 break-words">{toggle.value}</span>
                 <ShSwitch
                     className="shrink-0"
@@ -200,10 +244,18 @@
 <div class="text-[11px] text-textcolor2 mt-4 px-1">{language.toggleBindingLabel}</div>
 <div class="flex gap-1 mt-1 items-stretch">
     {#if isPinned}
-        <span class="flex-1 min-w-0 flex" use:tooltip={language.togglePinRemove}>
-            <ShButton variant="binding" className="w-full" onclick={pinToChat}>
+        <span class="flex-1 min-w-0 flex" use:tooltip={dirtyDifferences.length > 0 ? dirtyTooltip : language.togglePinRemove}>
+            <ShButton variant={dirtyDifferences.length > 0 ? "destructive" : "binding"} className="w-full min-w-0" onclick={pinToChat}>
                 <PinIcon size={16} />
-                <span class="truncate">{language.togglePinLabel}</span>
+                <span class="truncate">{pinnedPresetName}</span>
+                {#if dirtyDifferences.length > 0}
+                    <span class="shrink-0 tabular-nums">({dirtyDifferences.length})</span>
+                {/if}
+            </ShButton>
+        </span>
+        <span use:tooltip={language.togglePinReset}>
+            <ShButton size="icon" onclick={resetToPinnedPreset} disabled={dirtyDifferences.length === 0} aria-label={language.togglePinReset}>
+                <RotateCcwIcon size={16} />
             </ShButton>
         </span>
     {:else}
@@ -221,6 +273,13 @@
     </span>
 </div>
 {/if}
+
+<style>
+    .toggle-row--dirty,
+    .toggle-row--dirty :global(*) {
+        color: var(--color-danger) !important;
+    }
+</style>
 
 {#if !noContainer && groupedToggles.length > 4}
     <div class="h-48 border-darkborderc p-2 border rounded-sm flex flex-col items-start mt-2 overflow-y-auto">

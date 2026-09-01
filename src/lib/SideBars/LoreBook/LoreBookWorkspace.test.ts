@@ -235,9 +235,9 @@ describe('LoreBookWorkspace', () => {
             .dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }))
         await tick()
 
-        const activation = document.body.querySelector<HTMLSelectElement>('[data-bard-lore-batch-activation]')!
-        activation.value = 'required'
-        activation.dispatchEvent(new Event('change', { bubbles: true }))
+        click('[data-bard-lore-batch-activation]')
+        await tick()
+        click('[data-bard-lore-activation-option="required"]')
         await tick()
         const kind = document.body.querySelector<HTMLSelectElement>('[data-bard-lore-batch-kind]')!
         kind.value = 'system'
@@ -291,9 +291,9 @@ describe('LoreBookWorkspace', () => {
         expect(helpButtonRule!).toContain('width: 1.25rem')
         expect(helpButtonRule!).toContain('cursor: help')
 
-        const activation = document.body.querySelector<HTMLSelectElement>('[data-bard-lore-activation]')!
-        activation.value = 'required'
-        activation.dispatchEvent(new Event('change', { bubbles: true }))
+        click('[data-bard-lore-activation]')
+        await tick()
+        click('[data-bard-lore-activation-option="required"]')
         await tick()
 
         const injection = document.body.querySelector<HTMLSelectElement>('[data-bard-lore-injection]')!
@@ -316,6 +316,44 @@ describe('LoreBookWorkspace', () => {
             injection: 'index-only',
             facets: [{ key: 'region', value: 'city', aliases: [] }],
         })
+    })
+
+    it('shows a left-side tooltip for every Grimoire activation option', async () => {
+        const bardEntry = {
+            ...entry('mall'),
+            bard: {
+                sourceLegacyId: 'mall',
+                sourceHash: 'hash',
+                kind: 'location',
+                activation: 'retrieve',
+                aliases: ['폴로니안 몰'],
+                tags: ['시내'],
+                summary: '데이트 장소',
+                links: [],
+            },
+        }
+        await render([bardEntry], { bardMode: true })
+        click('[data-lorebook-row="mall"] [data-lorebook-open]')
+        await tick()
+        click('[data-bard-lore-activation]')
+        await tick()
+
+        const options = [...document.body.querySelectorAll<HTMLElement>(
+            '[data-bard-lore-activation-option]'
+        )]
+        expect(options).toHaveLength(4)
+        expect(options.map((option) => option.dataset.tooltipSide))
+            .toEqual(['left', 'left', 'left', 'left'])
+        const retrieveOption = options.find((option) =>
+            option.dataset.bardLoreActivationOption === 'retrieve'
+        )
+        expect(retrieveOption?.getAttribute('aria-label')).toContain(
+            languageEnglish.lorebookWorkspace.bardGuideRetrieveBody
+        )
+        expect((retrieveOption?.querySelector('.activation-option') as any)?._tippy
+            ?.props.placement).toBe('left')
+        options[2].click()
+        await tick()
     })
 
     it('creates an explicit non-retrieving Bard link without linking an entry to itself', async () => {
@@ -460,7 +498,7 @@ describe('LoreBookWorkspace', () => {
             .map((label) => label.textContent?.trim())).toEqual([
                 '[Required]',
                 '[Key or alias match]',
-                '[Relevant retrieval]',
+                '[Key + relevance]',
                 '[Never inject]',
             ])
         expect(document.body.querySelector('[data-lorebook-activation-status]')).toBeNull()
@@ -994,6 +1032,24 @@ describe('LoreBookWorkspace', () => {
         await tick()
         expect((onChange.mock.calls.at(-1)?.[0] as loreBook[]).map((item) => item.id))
             .toEqual(['folder-two', 'folder', 'child'])
+    })
+
+    it('renders expanded folder children directly after their parent when source children come first', async () => {
+        const folderKey = '\uf000folder:people'
+        await render([
+            entry('first-child', { folder: folderKey, comment: 'Ada' }),
+            entry('second-child', { folder: folderKey, comment: 'Beau' }),
+            entry('folder', { mode: 'folder', key: folderKey, comment: 'People' }),
+            entry('root', { comment: 'Weather' }),
+        ])
+
+        const rowIds = () => [...document.body.querySelectorAll<HTMLElement>('[data-lorebook-row]')]
+            .map((row) => row.dataset.lorebookRow)
+
+        expect(rowIds()).toEqual(['folder', 'root'])
+        click('[data-lorebook-folder-toggle]')
+        await tick()
+        expect(rowIds()).toEqual(['folder', 'first-child', 'second-child', 'root'])
     })
 
     it('renders child-mode lore as a disabled global link and restores activation percent for normal lore', async () => {

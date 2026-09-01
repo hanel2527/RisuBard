@@ -36,6 +36,7 @@ import { clearPendingSend, registerPendingSend } from "./request/pendingSends";
 import {
     createStoredResponseMemoryAnalysis,
     projectConfirmedMemoryTurn,
+    projectMemoryAnalysisEvidence,
     projectRecentMemoryMessages,
     type MemoryAnalysisMessage,
 } from "../risubard/memoryAnalysisClient";
@@ -131,6 +132,32 @@ function findRisuBardChat(chatId?: string): Chat | undefined {
         .find((chat) => chat.id === chatId)
 }
 
+async function resolveNarrativeFirstMessageEvidence(
+    character: character,
+    chat: Chat,
+    chatId: string,
+): Promise<MemoryAnalysisMessage | undefined> {
+    if (chat.firstMessageDisabled) return undefined
+    const greetingIndex = chat.fmIndex ?? -1
+    const source = greetingIndex === -1
+        ? character.firstMessage
+        : character.alternateGreetings[greetingIndex]
+    if (typeof source !== 'string' || source.trim().length === 0) {
+        return undefined
+    }
+    const content = await processScript(
+        character,
+        risuChatParser(source, { chara: character }),
+        'editprocess'
+    )
+    if (content.trim().length === 0) return undefined
+    return {
+        messageId: `first-message:${chatId}:${greetingIndex}`,
+        role: 'assistant',
+        content,
+    }
+}
+
 function boundedMemoryAnalysisError(error: unknown): string {
     const base = error instanceof Error
         ? `${error.name}: ${error.message}`
@@ -200,10 +227,31 @@ async function confirmProjectedNarrativeTurn(input: {
                 }),
             })
             : undefined
+        const firstMessageEvidence = character && chat
+            ? await resolveNarrativeFirstMessageEvidence(
+                character,
+                chat,
+                input.chatId
+            )
+            : undefined
+        const contextMessages = chat
+            ? projectRecentMemoryMessages(
+                chat.message,
+                normalizeNarrativeWorkingMessageLimit(
+                    settings.risuBardRecentMessageCount
+                ),
+                input.targetMessageId,
+                firstMessageEvidence
+            )
+            : [...input.messages]
         const receipt = await storedResponseMemoryAnalysis.confirm({
             characterId: input.characterId,
             chatId: input.chatId,
-            messages: input.messages,
+            messages: projectMemoryAnalysisEvidence(
+                input.messages,
+                contextMessages,
+                firstMessageEvidence
+            ),
             analysisTokenLimit: settings.risuBardAnalysisTokenLimit,
             additionalSearchLimit: settings.risuBardAdditionalSearchLimit,
             canonicalTargetLimit: settings.risuBardCanonicalTargetLimit,
@@ -226,15 +274,7 @@ async function confirmProjectedNarrativeTurn(input: {
                 excludeCanonicalDocumentIds:
                     input.excludeCanonicalDocumentIds,
             } : {}),
-            ...(chat ? {
-                contextMessages: projectRecentMemoryMessages(
-                    chat.message,
-                    normalizeNarrativeWorkingMessageLimit(
-                        settings.risuBardRecentMessageCount
-                    ),
-                    input.targetMessageId
-                ),
-            } : {}),
+            ...(chat ? { contextMessages } : {}),
         }, generationSignal)
         const retryWarning = receipt
             ? canonicalTurnRetryWarning(receipt)
@@ -538,11 +578,28 @@ async function runWikiReboot(
                     }),
                 })
                 : undefined
+            const firstMessageEvidence = await resolveNarrativeFirstMessageEvidence(
+                character,
+                chat,
+                chatId
+            )
+            const contextMessages = projectRecentMemoryMessages(
+                chat.message,
+                normalizeNarrativeWorkingMessageLimit(
+                    settings.risuBardRecentMessageCount
+                ),
+                batch.at(-1)?.assistantMessageId,
+                firstMessageEvidence
+            )
             const receipt = await storedResponseMemoryAnalysis.confirm({
                 characterId: character.chaId,
                 chatId: job.stagingChatId,
                 modelSessionChatId: chatId,
-                messages: projected.messages,
+                messages: projectMemoryAnalysisEvidence(
+                    projected.messages,
+                    contextMessages,
+                    firstMessageEvidence
+                ),
                 rebootTurns: projected.rebootTurns,
                 analysisTokenLimit: settings.risuBardAnalysisTokenLimit,
                 additionalSearchLimit: settings.risuBardAdditionalSearchLimit,
@@ -562,13 +619,7 @@ async function runWikiReboot(
                             compiledWikiPromptGuide.canonicalRewrite,
                     },
                 } : {}),
-                contextMessages: projectRecentMemoryMessages(
-                    chat.message,
-                    normalizeNarrativeWorkingMessageLimit(
-                        settings.risuBardRecentMessageCount
-                    ),
-                    batch.at(-1)?.assistantMessageId
-                ),
+                contextMessages,
             }, generationSignal)
             if (!receipt) {
                 throw new Error('리부트 배치 완료 영수증을 저장하지 못했습니다.')
@@ -733,6 +784,11 @@ export async function executeCurrentNarrativeWikiCommand(
                 settings.risuBardRecentMessageCount
             ),
             target.chatId,
+            await resolveNarrativeFirstMessageEvidence(
+                character,
+                chat,
+                chatId
+            ),
         )
         if (currentMessages.length === 0) {
             throw new Error('현재 메시지를 위키 명령 자료로 준비할 수 없습니다.')

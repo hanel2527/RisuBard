@@ -534,11 +534,11 @@
             {#if DBState.db.showModelInSidebar}
                 <ModelBind />
             {/if}
-            {#if DBState.db.showPresetInSidebar}
-                <PromptBind />
-            {/if}
             {#if DBState.db.showPersonaInSidebar}
                 <PersonaBind />
+            {/if}
+            {#if DBState.db.showPresetInSidebar}
+                <PromptBind />
             {/if}
             <Toggles bind:chara={chara} noContainer />
             <ShButton className="w-full mt-2" onclick={() => {

@@ -583,6 +583,88 @@ describe('stored response memory analysis', () => {
         ])
     })
 
+    test('keeps the first message through five later stored messages and drops it on the sixth', () => {
+        const firstMessage = {
+            messageId: 'first-message',
+            role: 'assistant' as const,
+            content: 'The tournament begins in one month.',
+        }
+        const messages = Array.from({ length: 6 }, (_, index) => ({
+            role: index % 2 === 0 ? 'user' : 'char',
+            data: `message-${index}`,
+            chatId: `id-${index}`,
+        }))
+
+        expect(projectRecentMemoryMessages(
+            messages,
+            5,
+            'id-4',
+            firstMessage,
+        )).toEqual([
+            firstMessage,
+            ...Array.from({ length: 5 }, (_, index) => ({
+                messageId: `id-${index}`,
+                role: index % 2 === 0 ? 'user' : 'assistant',
+                content: `message-${index}`,
+            })),
+        ])
+        expect(projectRecentMemoryMessages(
+            messages,
+            5,
+            'id-5',
+            firstMessage,
+        )).toEqual(Array.from({ length: 5 }, (_, index) => {
+            const sourceIndex = index + 1
+            return {
+                messageId: `id-${sourceIndex}`,
+                role: sourceIndex % 2 === 0 ? 'user' : 'assistant',
+                content: `message-${sourceIndex}`,
+            }
+        }))
+    })
+
+    test('uses the first message as analysis evidence only while it remains in the recent window', async () => {
+        const module = await import('./memoryAnalysisClient')
+        const project = (
+            module as unknown as {
+                projectMemoryAnalysisEvidence?: (
+                    confirmed: Array<{
+                        messageId: string
+                        role: 'user' | 'assistant'
+                        content: string
+                    }>,
+                    recent: Array<{
+                        messageId: string
+                        role: 'user' | 'assistant'
+                        content: string
+                    }>,
+                    firstMessage: {
+                        messageId: string
+                        role: 'assistant'
+                        content: string
+                    },
+                ) => Array<{
+                    messageId: string
+                    role: 'user' | 'assistant'
+                    content: string
+                }>
+            }
+        ).projectMemoryAnalysisEvidence
+        const firstMessage = {
+            messageId: 'first-message',
+            role: 'assistant' as const,
+            content: 'The tournament begins in one month.',
+        }
+        const confirmed = [
+            { messageId: 'user-1', role: 'user' as const, content: 'When?' },
+            { messageId: 'assistant-1', role: 'assistant' as const, content: 'Soon.' },
+        ]
+
+        expect(project?.(confirmed, [firstMessage, ...confirmed], firstMessage))
+            .toEqual([firstMessage, ...confirmed])
+        expect(project?.(confirmed, confirmed, firstMessage)).toEqual(confirmed)
+    })
+
     test('uses the existing memory model slot and authenticated server storage', async () => {
         let submittedModelCall: MemoryAnalysisModelCall | undefined
         const requestModel = vi.fn(async (

@@ -1,7 +1,7 @@
 <script lang="ts">
     // shadcn-svelte DropdownMenu Content — RisuAI tokens. Portals to body.
-    // Default sits above alert dialogs but below top confirmations. Pass
-    // class="z-[45]" for menus inside base-tier management dialogs.
+    // Default sits above alert dialogs but below top confirmations. Consumers
+    // must not override this layer because modal surfaces are raised dynamically.
     // See .agent/guide/ui.md "Dialog z-index 컨벤션".
     import { DropdownMenu } from 'bits-ui';
     import { cn } from 'src/lib/utils';
