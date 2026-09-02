@@ -197,6 +197,8 @@ describe('lorebook recursion steps', () => {
                 aliases,
                 tags,
                 summary: '',
+                facets: [],
+                injection: 'full',
                 links: [],
             },
         })
@@ -209,18 +211,21 @@ describe('lorebook recursion steps', () => {
                 name: 'storywriter',
                 chatPage: 0,
                 globalLore: [
-                    { ...lore('Legacy world', '', 'LEGACY WORLD DUMP'), alwaysActive: true },
-                    { ...lore('Legacy roster', '', 'LEGACY ROSTER DUMP'), alwaysActive: true },
+                    { ...lore('format', '', 'STATUS FORMAT'), id: 'format' },
+                    { ...lore('mall', '', 'MALL DATE FACT'), id: 'mall' },
+                    { ...lore('dorm', '', 'DORM FACT'), id: 'dorm' },
+                    { ...lore('Legacy dump', '', 'LEGACY WORLD DUMP'), alwaysActive: true },
                 ],
                 bardLore: {
-                    schemaVersion: 1,
+                    schemaVersion: 2,
                     mode: 'bard',
                     settings: { targetTokens: 20, maximumTokens: 30, maxEntries: 3, contextMessages: 2 },
-                    entries: [
-                        bardEntry('format', 'STATUS FORMAT', 'required'),
-                        bardEntry('mall', 'MALL DATE FACT', 'retrieve', [], ['시내']),
-                        bardEntry('dorm', 'DORM FACT', 'retrieve', [], ['기숙사']),
+                    metadata: [
+                        bardEntry('format', 'STATUS FORMAT', 'required').bard,
+                        bardEntry('mall', 'MALL DATE FACT', 'retrieve', [], ['시내']).bard,
+                        bardEntry('dorm', 'DORM FACT', 'retrieve', [], ['기숙사']).bard,
                     ],
+                    derivedEntries: [],
                 },
                 chats: [{
                     localLore: [],

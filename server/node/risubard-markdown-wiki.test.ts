@@ -1283,4 +1283,76 @@ describe('Markdown narrative wiki', () => {
         expect((await wiki.loadView('character', 'chat')).documents
             .some((document) => document.id === created.id)).toBe(false)
     })
+
+    test('restores the one BARDCHAT snapshot after updates, creates, and trash', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        const wiki = createMarkdownNarrativeWiki(root)
+        const original = await wiki.saveManualDocument({
+            characterId: 'character', chatId: 'chat', type: 'character',
+            title: '라비안', markdown: '# 라비안\n\n처음 상태.',
+        })
+        const discarded = await wiki.saveManualDocument({
+            characterId: 'character', chatId: 'chat', type: 'concept',
+            title: '보존 문서', markdown: '# 보존 문서\n\n지워지기 전.',
+        })
+        await wiki.beginBardChatUndo({ characterId: 'character', chatId: 'chat' })
+        const updated = await wiki.saveManualDocument({
+            characterId: 'character', chatId: 'chat', documentId: original.id,
+            type: 'character', title: '라비안', markdown: '# 라비안\n\n변경 상태.',
+            expectedContentHash: original.contentHash,
+        })
+        await wiki.saveManualDocument({
+            characterId: 'character', chatId: 'chat', type: 'concept',
+            title: '추가 문서', markdown: '# 추가 문서\n\n새 내용.',
+        })
+        await wiki.trashDocument({
+            characterId: 'character', chatId: 'chat', documentId: discarded.id,
+        })
+        await wiki.finalizeBardChatUndo({ characterId: 'character', chatId: 'chat' })
+
+        await expect(wiki.getBardChatUndoStatus({
+            characterId: 'character', chatId: 'chat',
+        })).resolves.toEqual({ available: true })
+        await expect(wiki.restoreBardChatUndo({
+            characterId: 'character', chatId: 'chat',
+        })).resolves.toEqual({ restored: true })
+        const restored = await wiki.loadView('character', 'chat')
+        expect(restored.documents).toHaveLength(2)
+        expect(restored.documents.find((document) => document.id === original.id)).toMatchObject({
+            id: original.id, content: '## 라비안\n\n처음 상태.',
+        })
+        expect(restored.documents.find((document) => document.id === discarded.id))
+            .toMatchObject({ content: '## 보존 문서\n\n지워지기 전.' })
+        expect(updated.contentHash).not.toBe(original.contentHash)
+        await expect(wiki.getBardChatUndoStatus({
+            characterId: 'character', chatId: 'chat',
+        })).resolves.toEqual({ available: false })
+    })
+
+    test('refuses BARDCHAT restore after a later manual edit', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        const wiki = createMarkdownNarrativeWiki(root)
+        const original = await wiki.saveManualDocument({
+            characterId: 'character', chatId: 'chat', type: 'character',
+            title: '라비안', markdown: '# 라비안\n\n처음 상태.',
+        })
+        await wiki.beginBardChatUndo({ characterId: 'character', chatId: 'chat' })
+        const commandEdit = await wiki.saveManualDocument({
+            characterId: 'character', chatId: 'chat', documentId: original.id,
+            type: 'character', title: '라비안', markdown: '# 라비안\n\n명령 변경.',
+            expectedContentHash: original.contentHash,
+        })
+        await wiki.finalizeBardChatUndo({ characterId: 'character', chatId: 'chat' })
+        await wiki.saveManualDocument({
+            characterId: 'character', chatId: 'chat', documentId: original.id,
+            type: 'character', title: '라비안', markdown: '# 라비안\n\n후속 수동 변경.',
+            expectedContentHash: commandEdit.contentHash,
+        })
+
+        await expect(wiki.restoreBardChatUndo({
+            characterId: 'character', chatId: 'chat',
+        })).rejects.toThrow('changed after the BARDCHAT command')
+    })
 })

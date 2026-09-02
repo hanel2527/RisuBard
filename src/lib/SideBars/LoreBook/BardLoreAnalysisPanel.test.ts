@@ -7,8 +7,10 @@ import BardLoreAnalysisPanel from './BardLoreAnalysisPanel.svelte'
 
 const requestChatData = vi.hoisted(() => vi.fn())
 const tokenizerMock = vi.hoisted(() => vi.fn(async () => 20))
+const alertNormalMock = vi.hoisted(() => vi.fn())
 vi.mock('src/ts/process/request/request', () => ({ requestChatData }))
 vi.mock('src/ts/tokenizer', () => ({ tokenize: tokenizerMock }))
+vi.mock('src/ts/alert', () => ({ alertNormal: alertNormalMock, notifySuccess: vi.fn() }))
 
 const source: BardLoreEntry = {
     id: 'source',
@@ -41,9 +43,117 @@ afterEach(async () => {
     document.body.replaceChildren()
     requestChatData.mockReset()
     tokenizerMock.mockClear()
+    alertNormalMock.mockClear()
 })
 
 describe('BardLoreAnalysisPanel', () => {
+    it('resizes the analysis window and its two workbench panes', async () => {
+        mounted = mount(BardLoreAnalysisPanel, {
+            target: document.body.appendChild(document.createElement('div')),
+            props: {
+                entries: [source],
+                settings: createBardLoreSettings(),
+                onChange: vi.fn(),
+            },
+        })
+
+        await tick()
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-open]')!.click()
+        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-plan]')).not.toBeNull())
+
+        expect(document.body.querySelectorAll('[data-manager-window-resize]')).toHaveLength(8)
+        const workbench = document.body.querySelector<HTMLElement>('[data-bard-lore-analysis-workbench]')!
+        const settingsPane = workbench.querySelector<HTMLElement>('.settings-pane')!
+        workbench.getBoundingClientRect = () => ({ width: 1000 } as DOMRect)
+        settingsPane.getBoundingClientRect = () => ({ width: 360 } as DOMRect)
+        const splitter = workbench.querySelector<HTMLElement>('[data-bard-lore-analysis-splitter]')!
+        expect(splitter.getAttribute('role')).toBe('separator')
+        expect(splitter.getAttribute('aria-orientation')).toBe('vertical')
+
+        splitter.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+
+        expect(workbench.style.getPropertyValue('--analysis-settings-width')).toBe('376px')
+    })
+
+    it('omits the redundant model-request estimate sentence', async () => {
+        mounted = mount(BardLoreAnalysisPanel, {
+            target: document.body.appendChild(document.createElement('div')),
+            props: {
+                entries: [source],
+                settings: createBardLoreSettings(),
+                onChange: vi.fn(),
+            },
+        })
+
+        await tick()
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-open]')!.click()
+        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-plan]')).not.toBeNull())
+
+        expect(document.body.textContent).not.toContain('모델 요청 1회를 실행합니다')
+    })
+
+    it('opens a complete beginner Grimoire guide from the analysis dialog title', async () => {
+        mounted = mount(BardLoreAnalysisPanel, {
+            target: document.body.appendChild(document.createElement('div')),
+            props: {
+                entries: [source],
+                settings: createBardLoreSettings(),
+                onChange: vi.fn(),
+            },
+        })
+
+        await tick()
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-open]')!.click()
+        await tick()
+
+        const helpButton = document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-guide]')
+        expect(helpButton).not.toBeNull()
+        expect(helpButton?.textContent?.trim()).toBe('도움말')
+        expect(helpButton?.getAttribute('aria-label')).toBe('AI 분석 도움말')
+
+        helpButton?.click()
+        await tick()
+
+        const help = document.body.querySelector('[data-bard-lore-analysis-help-content]')
+        expect(help).not.toBeNull()
+        const headings = [...help!.querySelectorAll('h2')].map((heading) => heading.textContent?.trim())
+        expect(headings).toContain('Grimoire를 쓰기 전에')
+        expect(headings).toContain('항목마다 무엇을 입력하나요?')
+        expect(headings).toContain('구조화 패싯(facet)은 무엇인가요?')
+        expect(headings).toContain('활성화 규칙은 어떻게 고르나요?')
+        expect(headings).toContain('프롬프트 역할은 무엇인가요?')
+        expect(headings).toContain('명시 링크는 어떻게 쓰나요?')
+        expect(headings).toContain('검색 예산은 무엇인가요?')
+        expect(headings).toContain('AI 분석은 무엇을 하나요?')
+        expect(help?.textContent).toContain('원문은 바꾸지 않습니다')
+        expect(help?.textContent).toContain('AI 분석을 사용하지 않는다면')
+        expect(help?.textContent).toContain('AI가 제안하지 않는 기본 키와 활성화 규칙')
+        expect(help?.textContent).toContain('검색 메타데이터(찾기 위한 이름표)')
+        expect(help?.textContent).toContain('토큰은 글의 양을 재는 단위')
+        expect(help?.textContent).toContain('프롬프트 역할까지 확인했습니다')
+        expect(help?.textContent).toContain('패싯 키')
+        expect(help?.textContent).toContain('정규 값')
+        expect(help?.textContent).toContain('검색 별칭')
+        expect(help?.textContent).toContain('필터로 적용할 facet 키')
+        expect(help?.textContent).toContain('facet 값 검색 어휘')
+        expect(help?.textContent).toContain('항상 필수')
+        expect(help?.textContent).toContain('키·별칭 적중')
+        expect(help?.textContent).toContain('키+관련도')
+        expect(help?.textContent).toContain('검색 인덱스로만 사용')
+        expect(help?.textContent).toContain('full')
+        expect(help?.textContent).toContain('index-only')
+        expect(help?.textContent).toContain('보조 검색')
+        expect(help?.textContent).toContain('역방향 탐색')
+        expect(help?.textContent).toContain('supporting')
+        expect(help?.textContent).toContain('discoverable')
+        expect(help?.textContent).toContain('ambient')
+        expect(help?.textContent).toContain('none')
+        expect(help?.textContent).toContain('서로 다른 설정')
+        expect(help?.textContent).toContain('추천 셋팅')
+        expect(help?.textContent).toContain('요청 시작')
+        expect(help?.textContent).toContain('초안 적용')
+    })
+
     it('shows the exact deterministic quality gaps before the user trusts the Grimoire', async () => {
         mounted = mount(BardLoreAnalysisPanel, {
             target: document.body.appendChild(document.createElement('div')),
@@ -168,6 +278,137 @@ describe('BardLoreAnalysisPanel', () => {
         await vi.waitFor(() => expect(requestChatData).toHaveBeenCalled())
 
         expect(requestChatData.mock.calls[0][0].maxTokens).toBe(6400)
+    })
+
+    it('recommends settings from the current estimate and saves them as app defaults', async () => {
+        const onSettingsChange = vi.fn()
+        const onSaveSettingsAsDefault = vi.fn()
+        mounted = mount(BardLoreAnalysisPanel, {
+            target: document.body.appendChild(document.createElement('div')),
+            props: {
+                entries: [source],
+                settings: createBardLoreSettings(),
+                onChange: vi.fn(),
+                onSettingsChange,
+                onSaveSettingsAsDefault,
+            },
+        })
+
+        await tick()
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-open]')!.click()
+        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-plan]')).not.toBeNull())
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-recommend]')!.click()
+        await vi.waitFor(() => expect(onSettingsChange).toHaveBeenCalledWith(expect.objectContaining({
+            analysisBatchEntries: 1,
+            analysisTemperature: 0.2,
+            analysisLinkedDepth: 1,
+        })))
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-save-default]')!.click()
+
+        expect(onSaveSettingsAsDefault).toHaveBeenCalledWith(expect.objectContaining({
+            analysisBatchEntries: 1,
+            analysisTemperature: 0.2,
+        }))
+    })
+
+    it('filters a hierarchical target table by lore kind and bulk-selects visible entries', async () => {
+        const folder = { ...structuredClone(source), id: 'folder', key: 'folder-key', comment: '등장인물', mode: 'folder' as const }
+        const character = structuredClone(source)
+        character.id = 'character'
+        character.comment = '탑지기'
+        character.folder = 'folder-key'
+        character.bard.kind = 'character'
+        const location = structuredClone(source)
+        location.id = 'location'
+        location.comment = '광장'
+        location.bard.kind = 'location'
+        mounted = mount(BardLoreAnalysisPanel, {
+            target: document.body.appendChild(document.createElement('div')),
+            props: {
+                entries: [location, character, folder],
+                settings: createBardLoreSettings(),
+                onChange: vi.fn(),
+            },
+        })
+
+        await tick()
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-open]')!.click()
+        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-plan]')).not.toBeNull())
+        const filter = document.body.querySelector<HTMLSelectElement>('[data-bard-lore-analysis-kind-filter]')!
+        filter.value = 'character'
+        filter.dispatchEvent(new Event('change', { bubbles: true }))
+        await tick()
+
+        expect([...document.body.querySelectorAll<HTMLElement>('[data-bard-lore-analysis-row]')].map((row) => row.dataset.bardLoreAnalysisRow))
+            .toEqual(['folder', 'character'])
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-select-none]')!.click()
+        await tick()
+        expect(document.body.querySelector('[data-bard-lore-analysis-selected-count]')?.textContent).toContain('0')
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-select-all]')!.click()
+        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-selected-count]')?.textContent).toContain('2'))
+        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-plan]')).not.toBeNull())
+    })
+
+    it('paints the pointer-down selection state across every entered target row', async () => {
+        const second = structuredClone(source)
+        second.id = 'second'
+        second.comment = '두 번째'
+        mounted = mount(BardLoreAnalysisPanel, {
+            target: document.body.appendChild(document.createElement('div')),
+            props: { entries: [source, second], settings: createBardLoreSettings(), onChange: vi.fn() },
+        })
+
+        await tick()
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-open]')!.click()
+        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-plan]')).not.toBeNull())
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-select-none]')!.click()
+        const firstRow = document.body.querySelector<HTMLElement>('[data-bard-lore-analysis-row="source"]')!
+        const secondRow = document.body.querySelector<HTMLElement>('[data-bard-lore-analysis-row="second"]')!
+        firstRow.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+        secondRow.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true }))
+        window.dispatchEvent(new PointerEvent('pointerup'))
+        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-selected-count]')?.textContent).toContain('2'))
+    })
+
+    it('shows setting help on hover and click and marks completed and failed entry names', async () => {
+        const failed = structuredClone(source)
+        failed.id = 'failed'
+        failed.comment = '실패 항목'
+        const settings = createBardLoreSettings()
+        mounted = mount(BardLoreAnalysisPanel, {
+            target: document.body.appendChild(document.createElement('div')),
+            props: {
+                entries: [source, failed],
+                settings,
+                analysisRun: {
+                    schemaVersion: 1,
+                    id: 'status-run',
+                    scope: 'all',
+                    targetIds: ['source', 'failed'],
+                    createdAt: '2026-09-02T00:00:00.000Z',
+                    updatedAt: '2026-09-02T00:00:00.000Z',
+                    status: 'failed',
+                    settingsSnapshot: settings,
+                    overwriteExisting: false,
+                    batches: [
+                        { id: 'done', index: 0, targetIds: ['source'], estimatedInputTokens: 20, status: 'complete', candidates: [] },
+                        { id: 'bad', index: 1, targetIds: ['failed'], estimatedInputTokens: 20, status: 'failed', error: 'invalid' },
+                    ],
+                },
+                onChange: vi.fn(),
+            },
+        })
+
+        await tick()
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-open]')!.click()
+        await tick()
+        const label = document.body.querySelector<HTMLElement>('[data-bard-lore-analysis-label="analysisLinkedDepth"]')!
+        const help = document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-help="analysisLinkedDepth"]')!
+        expect(label.title).toContain('1')
+        help.click()
+        expect(alertNormalMock).toHaveBeenCalledWith(expect.stringContaining('1'))
+        expect(document.body.querySelector('[data-bard-lore-analysis-name="source"]')?.classList.contains('complete')).toBe(true)
+        expect(document.body.querySelector('[data-bard-lore-analysis-name="failed"]')?.classList.contains('failed')).toBe(true)
     })
 
     it('previews every selected lore entry and its original content before charging tokens', async () => {

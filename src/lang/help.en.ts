@@ -442,8 +442,14 @@ export const helpEn = {
             "Input and output token limit for each memory analysis, reboot, and canonical writing request. Long input is fitted before sending, and the same value is applied to model output. The default is 8,192. There is no fixed app maximum; choose a value within your model's context and output limits.",
         risuBardInquiryTargetTokenBudget:
             "Target number of tokens for related documents in an ordinary wiki inquiry. It is not filled when fewer documents are relevant.",
+        risuBardInquiryEventTokenBudget:
+            "Separate budget for detailed event documents reached through character turning-point maps and the Story Arc Plot during historical, causal, detail, and chronology queries. Current-state queries alone do not activate it, and the whole inquiry stays below the absolute limit.",
+        risuBardInquirySourceTokenBudget:
+            "Actual tokenizer limit for each selected wiki document or historical chat excerpt. This replaces the old character-count approximation.",
         risuBardInquiryMaximumTokenBudget:
             "Absolute token limit for one wiki inquiry, including detailed retrieval and required documents. A lower maximum also clamps the target.",
+        risuBardHistoricalSourceMatchLimit:
+            "Maximum historical chat excerpts admitted from lexical candidates and exact source IDs of selected events. Relevance and token budgets may select fewer. The default is 8, the safety ceiling is 32, and 0 disables historical chat recall.",
         risuBardAdditionalSearchLimit:
             "Maximum extra wiki searches when the first analysis does not find enough canonical candidates.",
         risuBardCanonicalTargetLimit:

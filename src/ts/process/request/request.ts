@@ -1,4 +1,5 @@
 import { Ollama } from 'ollama/dist/browser.mjs';
+import { buildOllamaChatRequest, createOllamaFetch } from './ollamaRequest';
 import { language } from "../../../lang";
 import { globalFetch, fetchNative } from "../../globalApi.svelte";
 import { getModelInfo, LLMFlags, LLMFormat, type LLMModel } from "../../model/modellist";
@@ -31,7 +32,7 @@ import { runTrigger } from "../triggers";
 import { requestClaude } from './anthropic';
 import { requestGoogleCloudVertex } from './google';
 import { requestOpenAI, requestOpenAILegacyInstruct, requestOpenAIResponseAPI } from "./openAI/requests";
-import { applyParameters, collectStreamingText, type ModelModeExtended } from './shared';
+import { applyParameters, collectStreamingText, resolveApiSamplingParameter, resolveStoredSamplingParameter, resolveStoredTemperature, type ModelModeExtended } from './shared';
 import {
     sendChatRequest, streamChatRequest, previewChatRequest,
     sendAnthropicChatRequest, streamAnthropicChatRequest, previewAnthropicChatRequest,
@@ -486,7 +487,9 @@ export async function requestChatDataMain(arg:requestDataArgument, model:ModelMo
 
     targ.formated = safeStructuredClone(arg.formated)
     targ.maxTokens = arg.maxTokens ??db.maxResponse
-    targ.temperature = arg.temperature ?? (db.temperature / 100)
+    targ.temperature = arg.temperature === undefined
+        ? resolveStoredTemperature(db.temperature)
+        : resolveApiSamplingParameter('temperature', arg.temperature)
     targ.bias = arg.bias
     targ.currentChar = arg.currentChar
     targ.useStreaming = arg.forceStreaming ? true : db.useStreaming && arg.useStreaming
@@ -1435,7 +1438,9 @@ async function requestOobaLegacy(arg:RequestDataArgumentExtended):Promise<reques
     bodyTemplate = {
         'max_new_tokens': db.maxResponse,
         'do_sample': db.ooba.do_sample,
-        'temperature': (db.temperature / 100),
+        'temperature': arg.temperature === undefined
+            ? resolveStoredTemperature(db.temperature)
+            : resolveApiSamplingParameter('temperature', arg.temperature),
         'top_p': db.ooba.top_p,
         'typical_p': db.ooba.typical_p,
         'repetition_penalty': db.ooba.repetition_penalty,
@@ -1452,7 +1457,7 @@ async function requestOobaLegacy(arg:RequestDataArgumentExtended):Promise<reques
         'stopping_strings': stopStrings,
         'seed': -1,
         add_bos_token: db.ooba.add_bos_token,
-        topP: db.top_p,
+        topP: resolveStoredSamplingParameter('top_p', db.top_p),
         prompt: prompt
     }
 
@@ -1565,15 +1570,22 @@ async function requestOoba(arg:RequestDataArgumentExtended):Promise<requestDataR
             return risuChatParser(v.replace(/\\n/g, "\n"))
         })
     }
+    const presencePenalty = arg.PresensePenalty === undefined
+        ? resolveStoredSamplingParameter('presence_penalty', db.PresensePenalty)
+        : resolveApiSamplingParameter('presence_penalty', arg.PresensePenalty)
+    const frequencyPenalty = arg.frequencyPenalty === undefined
+        ? resolveStoredSamplingParameter('frequency_penalty', db.frequencyPenalty)
+        : resolveApiSamplingParameter('frequency_penalty', arg.frequencyPenalty)
+    const topP = resolveStoredSamplingParameter('top_p', db.top_p)
     let bodyTemplate:Record<string, any> = {
         'prompt': prompt,
-        presence_penalty: arg.PresensePenalty || (db.PresensePenalty / 100),
-        frequency_penalty: arg.frequencyPenalty || (db.frequencyPenalty / 100),
         logit_bias: {},
         max_tokens: maxTokens,
         stop: stopStrings,
         temperature: temperature,
-        top_p: db.top_p,
+        ...(presencePenalty === undefined ? {} : { presence_penalty: presencePenalty }),
+        ...(frequencyPenalty === undefined ? {} : { frequency_penalty: frequencyPenalty }),
+        ...(topP === undefined ? {} : { top_p: topP }),
     }
 
     const url = new URL(db.textgenWebUIBlockingURL)
@@ -1743,15 +1755,20 @@ async function requestPlugin(arg:RequestDataArgumentExtended):Promise<requestDat
             modelId: arg.aiModel,
             temperatureOverride: arg.temperature,
         }) as PluginV2ProviderArgument
+        const legacyPluginTemperature = arg.temperature === undefined
+            ? resolveStoredTemperature(db.temperature)
+            : resolveApiSamplingParameter('temperature', arg.temperature)
+        const legacyPluginPresencePenalty = resolveStoredSamplingParameter('presence_penalty', db.PresensePenalty)
+        const legacyPluginFrequencyPenalty = resolveStoredSamplingParameter('frequency_penalty', db.frequencyPenalty)
         let d = v2Function
             ? await v2Function(pluginArguments, arg.abortSignal)
             : await pluginProcess({
                 bias: bias,
                 prompt_chat: formated,
-                temperature: arg.temperature ?? (db.temperature / 100),
                 max_tokens: maxTokens,
-                presence_penalty: (db.PresensePenalty / 100),
-                frequency_penalty: (db.frequencyPenalty / 100)
+                ...(legacyPluginTemperature === undefined ? {} : { temperature: legacyPluginTemperature }),
+                ...(legacyPluginPresencePenalty === undefined ? {} : { presence_penalty: legacyPluginPresencePenalty }),
+                ...(legacyPluginFrequencyPenalty === undefined ? {} : { frequency_penalty: legacyPluginFrequencyPenalty }),
             })
         if(v2Function && nativeStructuredOutput){
             d = await normalizePluginStructuredOutputFailure(d)
@@ -2080,7 +2097,10 @@ async function requestOllama(arg:RequestDataArgumentExtended):Promise<requestDat
         }
     }
 
-    const ollama = new Ollama({host: db.ollamaURL})
+    const ollama = new Ollama({
+        host: db.ollamaURL,
+        fetch: createOllamaFetch(fetch, arg.abortSignal),
+    })
 
     const messages = []
     for (const v of formated) {
@@ -2092,20 +2112,46 @@ async function requestOllama(arg:RequestDataArgumentExtended):Promise<requestDat
         }
     }
 
-    const response = await ollama.chat({
+    arg.abortSignal?.throwIfAborted()
+    const request = buildOllamaChatRequest({
         model: db.ollamaModel,
-        messages: messages,
-        stream: true
+        messages,
+        useStreaming: arg.useStreaming !== false,
+        schema: arg.schema,
+        temperature: arg.temperature,
+        maxTokens: arg.maxTokens,
     })
+
+    if (arg.useStreaming === false) {
+        const response = await ollama.chat({ ...request, stream: false })
+        return {
+            type: 'success',
+            result: response.message.content,
+            finishReason: response.done_reason,
+        }
+    }
+
+    const response = await ollama.chat({ ...request, stream: true })
+    arg.abortSignal?.throwIfAborted()
 
     const readableStream = new ReadableStream<StreamResponseChunk>({
         async start(controller){
-            for await(const chunk of response){
-                controller.enqueue({
-                    "0": chunk.message.content
-                })
+            const abort = () => ollama.abort()
+            arg.abortSignal?.addEventListener('abort', abort, { once: true })
+            try {
+                for await(const chunk of response){
+                    controller.enqueue({
+                        "0": chunk.message.content
+                    })
+                }
+                controller.close()
             }
-            controller.close()
+            catch (error) {
+                controller.error(error)
+            }
+            finally {
+                arg.abortSignal?.removeEventListener('abort', abort)
+            }
         }
     })
 
@@ -2266,6 +2312,11 @@ async function requestHorde(arg:RequestDataArgumentExtended):Promise<requestData
     const prompt = applyChatTemplate(formated)
 
     const realModel = aiModel.split(":::")[1]
+    const hordeTemperature = arg.temperature === undefined
+        ? resolveStoredTemperature(db.temperature)
+        : resolveApiSamplingParameter('temperature', arg.temperature)
+    const hordeTopK = resolveStoredSamplingParameter('top_k', db.top_k)
+    const hordeTopP = resolveStoredSamplingParameter('top_p', db.top_p)
 
     const argument = {
         "prompt": prompt,
@@ -2274,9 +2325,9 @@ async function requestHorde(arg:RequestDataArgumentExtended):Promise<requestData
             "max_context_length": db.maxContext + 100,
             "max_length": db.maxResponse,
             "singleline": false,
-            "temperature": db.temperature / 100,
-            "top_k": db.top_k,
-            "top_p": db.top_p,
+            ...(hordeTemperature === undefined ? {} : { "temperature": hordeTemperature }),
+            ...(hordeTopK === undefined ? {} : { "top_k": hordeTopK }),
+            ...(hordeTopP === undefined ? {} : { "top_p": hordeTopP }),
         },
         "trusted_workers": false,
         "workerslow_workers": true,

@@ -35,6 +35,7 @@
         moved: boolean
     }
 
+    let boundaryElement = $state<HTMLDivElement>()
     let viewport = $state(readViewport())
     let transientPlacements = $state<Record<
         string,
@@ -45,8 +46,8 @@
 
     function readViewport() {
         return {
-            width: Math.max(1, window.innerWidth),
-            height: Math.max(1, window.innerHeight),
+            width: Math.max(1, boundaryElement?.clientWidth || window.innerWidth),
+            height: Math.max(1, boundaryElement?.clientHeight || window.innerHeight),
         }
     }
 
@@ -199,15 +200,28 @@
             size
         ))
     }
+
+    $effect(() => {
+        if (!boundaryElement || typeof ResizeObserver === 'undefined') return
+        viewport = readViewport()
+        const observer = new ResizeObserver(() => viewport = readViewport())
+        observer.observe(boundaryElement)
+        return () => observer.disconnect()
+    })
 </script>
 
 <svelte:window onresize={() => viewport = readViewport()} />
 
+<div
+    class="pointer-events-none absolute inset-0 z-50 overflow-hidden"
+    data-plugin-fab-boundary
+    bind:this={boundaryElement}
+>
 {#each buttons as button, index (`${button.pluginName ?? 'legacy-plugin'}:${button.id}`)}
     {@const position = buttonPosition(button, index)}
     <button
         type="button"
-        class="fixed z-50 flex cursor-move items-center gap-2 rounded-full bg-primary px-4 py-2 text-accenttext shadow-lg transition-colors hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+        class="pointer-events-auto absolute flex cursor-move items-center gap-2 rounded-full bg-primary px-4 py-2 text-accenttext shadow-lg transition-colors hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
         style:left={`${position.left}px`}
         style:top={`${position.top}px`}
         style:transform="translate(-50%, -50%)"
@@ -226,3 +240,4 @@
         <PluginDefinedIcon ico={button} />
     </button>
 {/each}
+</div>

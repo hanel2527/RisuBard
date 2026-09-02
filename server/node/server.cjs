@@ -60,6 +60,7 @@ if (nodeMajor < 24) {
 
 // Configuration flags for patch-based sync
 const enablePatchSync = true;
+const DEFAULT_PORT = 7777;
 
 // In-memory database cache for patch-based sync
 // dbCache stores the STRIPPED (stubs-only) version matching what the client sees.
@@ -6294,7 +6295,7 @@ app.post('/api/self-update', async (req, res) => {
             console.log(`[Update] Self-update to v${targetVersion} complete. Restarting...`);
             try { await flushPendingDb(); } catch {}
 
-            const port = process.env.PORT || 6001;
+            const port = process.env.PORT || DEFAULT_PORT;
 
             if (isWin) {
                 // Windows: use a .bat script to apply bin/, finalize version, and restart.
@@ -6453,7 +6454,7 @@ app.post('/api/tunnel/start', async (req, res) => {
 });
 
 function startTunnelProcess(cfPath) {
-    const port = process.env.PORT || 6001;
+    const port = process.env.PORT || DEFAULT_PORT;
     tunnelStatus = 'starting';
     tunnelError = null;
     tunnelUrl = null;
@@ -6555,7 +6556,7 @@ async function startServer() {
     try {
         await migrateInlaysToFilesystem();
         await migrateRemoteBlocksIfNeeded();
-        const port = process.env.PORT || 6001;
+        const port = process.env.PORT || DEFAULT_PORT;
         const httpsOptions = await getHttpsOptions();
         let server;
 

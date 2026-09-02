@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parse } from 'postcss'
-import { describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
+import { tooltip as attachTooltip } from './tooltip'
 
 const tooltip = readFileSync(join(process.cwd(), 'src/ts/gui/tooltip.ts'), 'utf8')
 const themePath = join(process.cwd(), 'src/styles/tooltip-theme.css')
@@ -17,6 +18,30 @@ function declarations(selector: string): Record<string, string> {
 }
 
 describe('theme-aware Tippy tooltips', () => {
+    afterEach(() => {
+        document.body.innerHTML = ''
+    })
+
+    test('renders above the dynamically layered surface containing its trigger', async () => {
+        const surface = document.body.appendChild(document.createElement('section'))
+        surface.className = 'risu-modal-surface'
+        surface.style.zIndex = '311'
+        const trigger = surface.appendChild(document.createElement('button'))
+        const action = attachTooltip(trigger, 'Help')
+
+        trigger.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }))
+
+        const tooltipRoot = await vi.waitFor(() => {
+            const root = document.querySelector<HTMLElement>('[data-tippy-root]')
+            expect(root).not.toBeNull()
+            return root!
+        })
+        expect(Number(tooltipRoot.style.zIndex)).toBeGreaterThan(Number(surface.style.zIndex))
+        expect(tooltipRoot.hasAttribute('data-risu-floating-layer')).toBe(true)
+
+        action.destroy()
+    })
+
     test('keeps structural CSS and uses the local theme for all tooltip actions', () => {
         expect(tooltip).toContain("import 'tippy.js/dist/tippy.css'")
         expect(tooltip).toContain("import '../../styles/tooltip-theme.css'")

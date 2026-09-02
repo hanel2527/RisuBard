@@ -90,7 +90,7 @@ vi.mock('src/lang', () => ({
 }))
 
 import { createBaseV2, createBaseV3, importCharacterProcess } from './characterCards'
-import { createBardLoreSettings } from './lorebook/bardLore'
+import { createBardLoreSettings, fingerprintLegacyLore, upgradeLegacyLorebook } from './lorebook/bardLore'
 
 function cardFixture(spec: 'chara_card_v2'|'chara_card_v3', risuai: Record<string, unknown>|undefined, postHistory = 'legacy card global note') {
     return {
@@ -175,7 +175,7 @@ describe('public character-card lifecycle round-trips', () => {
     test.each([
         ['v2', createBaseV2],
         ['v3', createBaseV3],
-    ] as const)('preserves namespaced Bard Lore without changing the standard lorebook through %s', async (_spec, createCard) => {
+    ] as const)('migrates namespaced Bard Lore without losing one-sided edits through %s', async (_spec, createCard) => {
         const legacyLore = [{
             id: 'legacy',
             key: 'legacy',
@@ -189,12 +189,12 @@ describe('public character-card lifecycle round-trips', () => {
         }]
         const bardEntry = {
             ...legacyLore[0],
-            id: 'bard',
+            id: 'legacy',
             comment: 'Bard',
             content: 'Bard content',
             bard: {
                 sourceLegacyId: 'legacy',
-                sourceHash: 'hash',
+                sourceHash: fingerprintLegacyLore(legacyLore[0] as any),
                 kind: 'location',
                 activation: 'retrieve',
                 aliases: ['장소'],
@@ -218,7 +218,7 @@ describe('public character-card lifecycle round-trips', () => {
                     schemaVersion: 1,
                     id: 'run',
                     scope: 'all',
-                    targetIds: ['bard'],
+                    targetIds: ['legacy'],
                     createdAt: '2026-08-31T00:00:00.000Z',
                     updatedAt: '2026-08-31T00:00:00.000Z',
                     status: 'review',
@@ -227,11 +227,11 @@ describe('public character-card lifecycle round-trips', () => {
                     batches: [{
                         id: 'batch',
                         index: 0,
-                        targetIds: ['bard'],
+                        targetIds: ['legacy'],
                         estimatedInputTokens: 120,
                         status: 'complete',
                         candidates: [{
-                            id: 'bard',
+                            id: 'legacy',
                             sourceHash: 'draft-hash',
                             kind: 'location',
                             aliases: ['장소'],
@@ -250,17 +250,62 @@ describe('public character-card lifecycle round-trips', () => {
         const exported = createCard(source)
         expect(exported.data.character_book?.entries).toHaveLength(1)
         expect(exported.data.character_book?.entries[0]).toMatchObject({
-            name: 'Legacy',
-            content: 'Legacy content',
+            name: 'Bard',
+            content: 'Bard content',
         })
         expect((exported.data.extensions as any).risubard.bardLore.settings.maximumTokens).toBe(777)
+        expect(JSON.stringify((exported.data.extensions as any).risubard.bardLore)).not.toContain('Bard content')
 
         const imported = await importFixture(exported as any)
         const reexported = createCard(imported)
 
         expect(imported.globalLore).toHaveLength(1)
-        expect(imported.bardLore).toEqual(source.bardLore)
-        expect((reexported.data.extensions as any).risubard.bardLore).toEqual(source.bardLore)
+        expect(imported.bardLore).toMatchObject({
+            schemaVersion: 2,
+            metadata: [expect.objectContaining({ sourceLegacyId: 'legacy', kind: 'location' })],
+            derivedEntries: [],
+        })
+        expect(imported.bardLore).not.toHaveProperty('entries')
+        expect((reexported.data.extensions as any).risubard.bardLore).toEqual(imported.bardLore)
+    })
+
+    test.each([
+        ['v2', createBaseV2],
+        ['v3', createBaseV3],
+    ] as const)('preserves completed Bard analysis drafts for ID-less lore through %s', async (_spec, createCard) => {
+        const idlessLore = {
+            key: 'place', secondkey: '', insertorder: 10, comment: 'Place', content: 'Stable place body',
+            mode: 'normal' as const, alwaysActive: false, selective: false,
+        }
+        const settings = createBardLoreSettings()
+        const bardLore = upgradeLegacyLorebook([{ ...idlessLore, id: 'old-source-id' }], () => 'unused', settings)
+        bardLore.analysisRun = {
+            schemaVersion: 1,
+            id: 'run',
+            scope: 'all',
+            targetIds: ['old-source-id'],
+            createdAt: '2026-09-02T00:00:00.000Z',
+            updatedAt: '2026-09-02T00:00:00.000Z',
+            status: 'review',
+            settingsSnapshot: settings,
+            overwriteExisting: false,
+            batches: [{
+                id: 'batch', index: 0, targetIds: ['old-source-id'], estimatedInputTokens: 10, status: 'complete',
+                candidates: [{ id: 'old-source-id', sourceHash: 'draft', kind: 'location', aliases: [], tags: [], summary: 'completed', links: [] }],
+            }],
+        }
+
+        const imported = await importFixture(createCard({
+            name: 'ID-less Bard Lore',
+            globalLore: [idlessLore],
+            loreExt: {},
+            bardLore,
+        } as any) as any)
+        const importedId = imported.globalLore[0].id
+
+        expect(importedId).toBeTruthy()
+        expect(imported.bardLore?.analysisRun?.targetIds).toEqual([importedId])
+        expect(imported.bardLore?.analysisRun?.batches[0].candidates?.[0].id).toBe(importedId)
     })
 
     test.each([

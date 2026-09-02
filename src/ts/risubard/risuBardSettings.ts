@@ -4,7 +4,10 @@ export const RISUBARD_ANALYSIS_TOKEN_LIMIT_DEFAULT = 8_192
 export const RISUBARD_ADDITIONAL_SEARCH_LIMIT_DEFAULT = 1
 export const RISUBARD_CANONICAL_TARGET_LIMIT_DEFAULT = 8
 export const RISUBARD_INQUIRY_TARGET_TOKEN_BUDGET_DEFAULT = 2_000
+export const RISUBARD_INQUIRY_EVENT_TOKEN_BUDGET_DEFAULT = 2_000
+export const RISUBARD_INQUIRY_SOURCE_TOKEN_BUDGET_DEFAULT = 2_000
 export const RISUBARD_INQUIRY_MAXIMUM_TOKEN_BUDGET_DEFAULT = 6_000
+export const RISUBARD_HISTORICAL_SOURCE_MATCH_LIMIT_DEFAULT = 8
 export const RISUBARD_CANONICAL_WRITING_STYLE_DEFAULT = 'concise' as const
 export const RISUBARD_CANONICAL_CUSTOM_STYLE_MAX_LENGTH = 1_000
 
@@ -18,7 +21,10 @@ export interface RisuBardChatSettings {
     risuBardModelMode?: 'memory' | 'model'
     showRequestStatus?: boolean
     risuBardInquiryTargetTokenBudget?: number
+    risuBardInquiryEventTokenBudget?: number
+    risuBardInquirySourceTokenBudget?: number
     risuBardInquiryMaximumTokenBudget?: number
+    risuBardHistoricalSourceMatchLimit?: number
     risuBardAnalysisTokenLimit?: number
     risuBardAdditionalSearchLimit?: number
     risuBardCanonicalTargetLimit?: number
@@ -41,7 +47,10 @@ export interface ResolvedRisuBardChatSettings {
     risuBardModelMode: 'memory' | 'model'
     showRequestStatus: boolean
     risuBardInquiryTargetTokenBudget: number
+    risuBardInquiryEventTokenBudget: number
+    risuBardInquirySourceTokenBudget: number
     risuBardInquiryMaximumTokenBudget: number
+    risuBardHistoricalSourceMatchLimit: number
     risuBardAnalysisTokenLimit: number
     risuBardAdditionalSearchLimit: number
     risuBardCanonicalTargetLimit: number
@@ -81,12 +90,20 @@ export function resolveRisuBardChatSettings(
     const inquiry = normalizeRisuBardInquiryTokenBudget(
         value('risuBardInquiryTargetTokenBudget'),
         value('risuBardInquiryMaximumTokenBudget'),
+        value('risuBardInquiryEventTokenBudget'),
+        value('risuBardInquirySourceTokenBudget'),
     )
     return {
         risuBardModelMode: value('risuBardModelMode') === 'model' ? 'model' : 'memory',
         showRequestStatus: value('showRequestStatus') !== false,
         risuBardInquiryTargetTokenBudget: inquiry.target,
+        risuBardInquiryEventTokenBudget: inquiry.events,
+        risuBardInquirySourceTokenBudget: inquiry.perSource,
         risuBardInquiryMaximumTokenBudget: inquiry.maximum,
+        risuBardHistoricalSourceMatchLimit:
+            normalizeRisuBardHistoricalSourceMatchLimit(
+                value('risuBardHistoricalSourceMatchLimit')
+            ),
         risuBardAnalysisTokenLimit: normalizeRisuBardAnalysisTokenLimit(
             value('risuBardAnalysisTokenLimit')
         ),
@@ -149,10 +166,23 @@ export function normalizeRisuBardCanonicalTargetLimit(value: unknown): number {
     )
 }
 
+export function normalizeRisuBardHistoricalSourceMatchLimit(
+    value: unknown
+): number {
+    return boundedInteger(
+        value,
+        RISUBARD_HISTORICAL_SOURCE_MATCH_LIMIT_DEFAULT,
+        0,
+        32
+    )
+}
+
 export function normalizeRisuBardInquiryTokenBudget(
     target: unknown,
-    maximum: unknown
-): { target: number; maximum: number } {
+    maximum: unknown,
+    events?: unknown,
+    perSource?: unknown,
+): { target: number; events: number; perSource: number; maximum: number } {
     const normalizedMaximum = boundedInteger(
         maximum,
         RISUBARD_INQUIRY_MAXIMUM_TOKEN_BUDGET_DEFAULT,
@@ -164,6 +194,18 @@ export function normalizeRisuBardInquiryTokenBudget(
             RISUBARD_INQUIRY_TARGET_TOKEN_BUDGET_DEFAULT,
             256,
             normalizedMaximum
+        ),
+        events: boundedInteger(
+            events,
+            RISUBARD_INQUIRY_EVENT_TOKEN_BUDGET_DEFAULT,
+            256,
+            normalizedMaximum,
+        ),
+        perSource: boundedInteger(
+            perSource,
+            RISUBARD_INQUIRY_SOURCE_TOKEN_BUDGET_DEFAULT,
+            256,
+            normalizedMaximum,
         ),
         maximum: normalizedMaximum,
     }
@@ -247,19 +289,21 @@ export function buildRisuBardCanonicalWritingPolicy(
 ): string {
     if (language === 'en') return [
         buildRisuBardEventWritingPolicy(style, customStyle, language),
-        'Every character document must summarize verified current facts in a self-contained `### Current State` section near the top.',
-        'Every character document must include a `### Story History` section with at most 16 chronological bullets for causally necessary turning points.',
-        'Merge older consecutive turning points into larger causal units when necessary; do not accumulate a turn-by-turn action log.',
-        'Link corresponding event documents with exact [[event document titles]]. Preserve unrelated established facts.',
-        'When new facts replace old ones, do not present both states as current. Keep detailed history in event documents instead of duplicating it in character canon.',
+        'Treat each character document as a dynamic lorebook entry: keep durable identity, role, traits, capabilities and rules, relationships, knowledge boundaries, goals, possessions, constraints, and open continuity that help the character operate in the next scene.',
+        'A compact self-contained `### Current State` snapshot near the top is recommended when useful, but no exact heading is required and its absence is valid.',
+        'An optional `### Story History` or turning-point map should contain about 3-6 major irreversible or causally useful transitions, not a turn-by-turn action log.',
+        'Link exact [[event document titles]] from turning points. Retrieve exact chronology, actions, targets, locations, and evidence from event documents rather than copying those details into character canon.',
+        'Do not update a character document merely because the character participated in an event. Update it only for a durable lorebook fact or a major transition.',
+        'When new facts replace old ones, do not present both states as current. Preserve unrelated established facts.',
     ].join('\n')
     return [
         buildRisuBardEventWritingPolicy(style, customStyle, language),
-        '모든 캐릭터 정본은 문서 상단의 `### 현재 상태` 절에 확인된 현재 사실을 자족적으로 요약한다.',
-        '모든 캐릭터 정본에는 `### 작중 행적` 절을 두고, 인과에 필요한 전환점만 시간순으로 최대 16개 글머리표에 압축한다.',
-        '새 전환점으로 16개를 넘으면 오래된 연속 전환점을 더 큰 인과 단위로 합치며 턴별 행동 기록을 누적하지 않는다.',
-        '대응하는 사건 문서가 있으면 행적 글머리표에 `[[사건 문서 제목]]` 링크를 사용한다.',
+        '각 캐릭터 정본은 다음 장면에서 인물을 기동시키는 다이나믹 로어북으로 쓴다. 지속되는 정체성·역할, 성격, 능력과 규칙, 관계, 지식 경계, 목표, 소지품과 제약, 열린 연속성을 우선한다.',
+        '유용할 때 문서 상단에 자족적인 `### 현재 상태` 스냅샷을 두는 것을 권장하지만 정확한 절 이름은 필수가 아니며 없어도 유효하다.',
+        '선택적인 `### 작중 행적` 또는 전환점 맵은 되돌리기 어렵거나 인과상 중요한 큰 전환점 약 3~6개만 남기고 턴별 행동 기록을 누적하지 않는다.',
+        '전환점에는 정확한 `[[사건 문서 제목]]`을 연결한다. 상세 과거 행적은 사건 문서에서 조회하며 시간순 세부 행위, 대상, 장소와 근거를 캐릭터 정본에 복사하지 않는다.',
+        '인물이 사건에 참여했다는 이유만으로 캐릭터 정본을 갱신하지 않는다. 지속되는 로어북 사실이나 큰 전환점이 생긴 경우에만 갱신한다.',
         '새 사실이 기존 사실을 대체하면 이전 상태를 현재 사실처럼 병기하지 않는다.',
-        '상세 과거 행적은 사건 문서에 근거로 남기고 캐릭터 정본에 중복 복사하지 않는다.',
+        '관련 없는 기존 정본 사실은 보존한다.',
     ].join('\n')
 }

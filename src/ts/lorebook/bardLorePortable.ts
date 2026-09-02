@@ -1,8 +1,10 @@
 import { safeStructuredClone } from '../polyfill'
 import type { loreBook } from '../storage/database.svelte'
 import {
+    applyMaterializedBardLoreEntries,
     createBardLoreEntry,
     createBardLoreSettings,
+    materializeBardLoreEntries,
     normalizeBardLoreState,
     type BardLoreEntry,
     type BardLoreMetadata,
@@ -81,9 +83,14 @@ function portableMetadata(entry: BardLoreEntry, validIds: Set<string>): Portable
     }
 }
 
-export function exportBardLoreMetadata(state: BardLoreState, characterName?: string): string {
-    const validIds = new Set(state.entries.map((entry) => entry.id))
-    const entries = state.entries.map((entry): PortableEntry => ({
+export function exportBardLoreMetadata(
+    state: BardLoreState,
+    legacyEntries: loreBook[],
+    characterName?: string,
+): string {
+    const materialized = materializeBardLoreEntries(state, legacyEntries)
+    const validIds = new Set(materialized.map((entry) => entry.id))
+    const entries = materialized.map((entry): PortableEntry => ({
         handle: entry.id,
         sourceLegacyId: entry.bard.sourceLegacyId,
         sourceHash: entry.bard.sourceHash,
@@ -233,7 +240,10 @@ function parsePortable(value: string | unknown): BardLorePortablePackage {
         })),
     })
     if (!validationState) throw new BardLorePortableError('Grimoire metadata package failed schema validation.')
-    const normalizedByHandle = new Map(validationState.entries.map((entry) => [entry.id, entry]))
+    const normalizedByHandle = new Map<string, BardLoreMetadata>()
+    const baseItems = provisional.filter((item) => !item.derivedFromHandle)
+    baseItems.forEach((item, index) => normalizedByHandle.set(item.handle, validationState.metadata[index]))
+    validationState.derivedEntries.forEach((entry) => normalizedByHandle.set(entry.id, entry.bard))
     const entries = provisional.map((item): PortableEntry => {
         const normalized = normalizedByHandle.get(item.handle)!
         return {
@@ -243,14 +253,14 @@ function parsePortable(value: string | unknown): BardLorePortablePackage {
             ...(item.derivedFromHandle ? { derivedFromHandle: item.derivedFromHandle } : {}),
             ...(item.derived ? { derived: safeStructuredClone(item.derived) } : {}),
             metadata: {
-                kind: normalized.bard.kind,
-                activation: normalized.bard.activation,
-                aliases: [...normalized.bard.aliases],
-                tags: [...normalized.bard.tags],
-                summary: normalized.bard.summary,
-                facets: safeStructuredClone(normalized.bard.facets),
-                injection: normalized.bard.injection,
-                links: normalized.bard.links.map((link) => ({
+                kind: normalized.kind,
+                activation: normalized.activation,
+                aliases: [...normalized.aliases],
+                tags: [...normalized.tags],
+                summary: normalized.summary,
+                facets: safeStructuredClone(normalized.facets),
+                injection: normalized.injection,
+                links: normalized.links.map((link) => ({
                     targetHandle: link.targetId,
                     relation: link.relation,
                     retrieval: link.retrieval,
@@ -274,15 +284,16 @@ function uniqueMatch(entries: BardLoreEntry[], predicate: (entry: BardLoreEntry)
 
 export function importBardLoreMetadata(
     current: BardLoreState,
+    legacyEntries: loreBook[],
     input: string | unknown,
     createId: () => string,
 ): BardLoreMetadataImportResult {
     const portable = parsePortable(input)
-    const state = safeStructuredClone(current)
+    const entries = materializeBardLoreEntries(current, legacyEntries)
     const report: BardLoreMetadataImportReport = { applied: 0, createdDerived: 0, skipped: 0, unresolvedLinks: 0 }
     const resolved = new Map<string, BardLoreEntry>()
     const usedTargetIds = new Set<string>()
-    const baseEntries = state.entries.filter((entry) => !entry.bard.derivedFromId)
+    const baseEntries = entries.filter((entry) => !entry.bard.derivedFromId)
     const baseItems = portable.entries.filter((item) => !item.derivedFromHandle)
     const derivedItems = portable.entries.filter((item) => item.derivedFromHandle)
 
@@ -302,7 +313,7 @@ export function importBardLoreMetadata(
         else report.skipped += 1
     }
 
-    const usedIds = new Set(state.entries.map((entry) => entry.id))
+    const usedIds = new Set(entries.map((entry) => entry.id))
     for (const item of derivedItems) {
         const parent = resolved.get(item.derivedFromHandle!)
         if (!parent || !item.derived || !parent.content.includes(item.derived.content)) {
@@ -312,11 +323,10 @@ export function importBardLoreMetadata(
         const matchesDerived = (entry: BardLoreEntry) =>
             entry.bard.derivedFromId === parent.id
             && (
-                entry.id === item.handle
-                || entry.bard.sourceHash === item.sourceHash
+                entry.bard.sourceHash === item.sourceHash
                 || (entry.comment === item.derived!.comment && entry.content === item.derived!.content)
             )
-        const existingMatches = state.entries.filter(matchesDerived)
+        const existingMatches = entries.filter(matchesDerived)
         let target = uniqueMatch(existingMatches, (entry) => !usedTargetIds.has(entry.id))
         if (!target && existingMatches.length > 0) {
             report.skipped += 1
@@ -338,7 +348,7 @@ export function importBardLoreMetadata(
             })
             target.bard.sourceLegacyId = parent.bard.sourceLegacyId
             target.bard.derivedFromId = parent.id
-            state.entries.push(target)
+            entries.push(target)
             usedIds.add(id)
             report.createdDerived += 1
         }
@@ -370,6 +380,10 @@ export function importBardLoreMetadata(
         }
         report.applied += 1
     }
+    if (report.applied === 0 && report.createdDerived === 0) {
+        return { state: safeStructuredClone(current), report }
+    }
+    const state = applyMaterializedBardLoreEntries(current, legacyEntries, entries).state
     if (report.applied > 0) delete state.analysisRun
     return { state, report }
 }

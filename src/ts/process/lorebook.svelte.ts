@@ -20,7 +20,7 @@ import {
     type LorebookMatchingMode,
 } from './lorebookMatching';
 import { BardLoreBudgetError, selectBardLoreEntries } from '../lorebook/bardLoreRetrieval';
-import { createBardLoreSettings, type BardLoreEntry } from '../lorebook/bardLore';
+import { createBardLoreSettings, materializeBardLoreEntries, type BardLoreEntry } from '../lorebook/bardLore';
 import type { RequestInjectionKind } from '../status/requestStatus';
 
 export function addLorebook(type:number) {
@@ -99,10 +99,11 @@ export async function loadLoreBookV3Prompt(search?: { character: character; text
     let characterLore = char.globalLore ?? []
     const bardState = char.bardLore?.mode === 'bard' ? char.bardLore : undefined
     const bardSettings = bardState ? createBardLoreSettings(bardState.settings) : undefined
+    const bardEntries = bardState ? materializeBardLoreEntries(bardState, characterLore) : []
 
     if(bardState && bardSettings){
         const tokenCounts: Record<string, number> = {}
-        await Promise.all(bardState.entries.filter((entry) => entry.bard.injection !== 'index-only').map(async (entry) => {
+        await Promise.all(bardEntries.filter((entry) => entry.bard.injection !== 'index-only').map(async (entry) => {
             tokenCounts[entry.id] = await tokenize(risuChatParser(entry.content, {chara: char}))
         }))
         const query = currentChat
@@ -111,7 +112,7 @@ export async function loadLoreBookV3Prompt(search?: { character: character; text
             .join('\n')
         const selection = selectBardLoreEntries({
             query,
-            entries: bardState.entries,
+            entries: bardEntries,
             tokenCounts,
             settings: bardSettings,
             scopeAliases: [char.name],

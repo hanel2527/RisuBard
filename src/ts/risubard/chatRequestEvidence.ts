@@ -84,6 +84,125 @@ const injectionLabels: Record<RequestInjectionKind, string> = {
     other: '기타',
 }
 
+export interface DisplayInjectionItem {
+    kind: RequestInjectionKind
+    label: string
+    tokens: number
+    details?: Array<{ label: string, tokens: number }>
+}
+
+interface ChatRange {
+    start: number
+    end: number
+}
+
+function parseChatRange(name: string | undefined): ChatRange | undefined {
+    const match = name?.match(/^\d+개 \((\d+)(?:~(\d+))?\)$/)
+    if (!match) return undefined
+    const start = Number(match[1])
+    const end = Number(match[2] ?? match[1])
+    return Number.isSafeInteger(start) && Number.isSafeInteger(end) && start > 0 && end >= start
+        ? { start, end }
+        : undefined
+}
+
+function mergeChatRanges(ranges: ChatRange[]): ChatRange[] {
+    const sorted = ranges.slice().sort((a, b) => a.start - b.start || a.end - b.end)
+    const merged: ChatRange[] = []
+    for (const range of sorted) {
+        const previous = merged.at(-1)
+        if (previous && range.start <= previous.end + 1) {
+            previous.end = Math.max(previous.end, range.end)
+        } else {
+            merged.push({ ...range })
+        }
+    }
+    return merged
+}
+
+function chatHistoryDisplay(items: RequestInjectionManifest['items']): DisplayInjectionItem {
+    const ranges = items.map((item) => parseChatRange(item.name))
+    const tokens = items.reduce((total, item) => total + item.tokens, 0)
+    if (ranges.every((range): range is ChatRange => range !== undefined)) {
+        const merged = mergeChatRanges(ranges)
+        const count = merged.reduce((total, range) => total + range.end - range.start + 1, 0)
+        const rangeLabel = merged.map((range) => range.start === range.end
+            ? String(range.start)
+            : `${range.start}~${range.end}`
+        ).join(', ')
+        return {
+            kind: 'chatHistory',
+            label: `채팅 기록 · ${count}개 (${rangeLabel})`,
+            tokens,
+            ...(items.length > 1 ? {
+                details: items.map((item, index) => {
+                    const range = ranges[index]
+                    const itemCount = range.end - range.start + 1
+                    const itemRange = range.start === range.end
+                        ? String(range.start)
+                        : `${range.start}~${range.end}`
+                    return {
+                        label: `${itemCount}개 (${itemRange})`,
+                        tokens: item.tokens,
+                    }
+                }),
+            } : {}),
+        }
+    }
+    return {
+        kind: 'chatHistory',
+        label: items.length === 1 && items[0].name
+            ? `채팅 기록 · ${items[0].name}`
+            : `채팅 기록 · ${items.length}개 항목`,
+        tokens,
+    }
+}
+
+/** Body-free, deterministic projection shared by the activity UI and export. */
+export function groupInjectionManifestItems(
+    manifest: RequestInjectionManifest
+): DisplayInjectionItem[] {
+    const instructions = manifest.items.filter((item) => item.kind === 'instruction')
+    const chatHistory = manifest.items.filter((item) => item.kind === 'chatHistory')
+    const result: DisplayInjectionItem[] = []
+    let emittedInstructions = false
+    let emittedChatHistory = false
+
+    for (const item of manifest.items) {
+        if (item.kind === 'instruction') {
+            if (emittedInstructions) continue
+            emittedInstructions = true
+            result.push({
+                kind: 'instruction',
+                label: instructions.length === 1 && instructions[0].name
+                    ? `추가 지침 · ${instructions[0].name}`
+                    : `추가 지침 · ${instructions.length}개 항목`,
+                tokens: instructions.reduce((total, source) => total + source.tokens, 0),
+                ...(instructions.length > 1 ? {
+                    details: instructions.map((source, index) => ({
+                        label: source.name || `이름 없는 지침 ${index + 1}`,
+                        tokens: source.tokens,
+                    })),
+                } : {}),
+            })
+            continue
+        }
+        if (item.kind === 'chatHistory') {
+            if (emittedChatHistory) continue
+            emittedChatHistory = true
+            result.push(chatHistoryDisplay(chatHistory))
+            continue
+        }
+        const label = item.kind === 'other' && item.name
+            ? item.name
+            : item.name
+                ? `${injectionLabels[item.kind]} · ${item.name}`
+                : injectionLabels[item.kind]
+        result.push({ kind: item.kind, label, tokens: item.tokens })
+    }
+    return result
+}
+
 const number = (value: number | undefined) => value?.toLocaleString('ko-KR') ?? '확인 불가'
 
 const failureLabels: Record<
@@ -406,10 +525,13 @@ export function formatChatRequestEvidenceMarkdown(evidence: ChatRequestEvidence)
         '> 이 보고서는 요청 메타데이터만 포함합니다. 프롬프트, 응답 본문, 헤더와 인증 정보는 제외됩니다.',
     ]
 
-    for (const [index, request] of evidence.requests.entries()) {
+    for (const request of evidence.requests) {
+        const requestHeading = request.id >= 0
+            ? `요청 #${request.id}`
+            : `레거시 요청 ${Math.abs(request.id)}`
         lines.push(
             '',
-            `## 요청 ${index + 1}`,
+            `## ${requestHeading} · ${requestPurposeLabel(request.purpose, request.source)}`,
             '',
             '| 항목 | 값 |',
             '| --- | --- |',
@@ -445,13 +567,8 @@ export function formatChatRequestEvidenceMarkdown(evidence: ChatRequestEvidence)
                 '',
                 '| 주입 항목 | 토큰 |',
                 '| --- | ---: |',
-                ...request.injectionManifest.items.map((item) => {
-                    const label = item.kind === 'other' && item.name
-                        ? escapeTable(item.name)
-                        : item.name
-                            ? `${injectionLabels[item.kind]} · ${escapeTable(item.name)}`
-                        : injectionLabels[item.kind]
-                    return `| ${label} | ${number(item.tokens)} |`
+                ...groupInjectionManifestItems(request.injectionManifest).map((item) => {
+                    return `| ${escapeTable(item.label)} | ${number(item.tokens)} |`
                 }),
             )
         }

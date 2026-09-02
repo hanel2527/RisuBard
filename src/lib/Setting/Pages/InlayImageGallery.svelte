@@ -536,7 +536,7 @@
 
 <!-- Fullscreen viewer -->
 {#if viewerOpen}
-  <div class="fixed inset-0 z-50 flex overflow-hidden" style="background: var(--color-media-bg);">
+  <div data-risu-modal-tier="alert" class="fixed inset-0 z-[300] flex overflow-hidden" style="background: var(--color-media-bg);">
 
     <!-- Image panel -->
     <div class="flex-1 relative flex items-center justify-center min-w-0 overflow-hidden">

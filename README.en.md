@@ -115,7 +115,7 @@ The portable package is the simplest way to run RisuBard. It does not require No
 
 1. Open [GitHub Releases](https://github.com/rpaddict/RisuBard/releases).
 2. Download and extract the package for your platform.
-3. Start RisuBard and open `http://localhost:6001`.
+3. Start RisuBard and open `http://localhost:7777`.
 
 | Platform | Package | Start |
 | --- | --- | --- |

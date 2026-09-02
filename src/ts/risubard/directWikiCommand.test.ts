@@ -28,6 +28,32 @@ const documents: WikiDocument[] = [{
 }]
 
 describe('direct wiki command', () => {
+    test('captures undo after plan validation and before the first write', async () => {
+        const order: string[] = []
+        await executeDirectWikiCommand({
+            instruction: '갱신해.', documents, currentMessages: [], maxTokens: 12_000,
+            requestModel: async () => {
+                order.push('model')
+                return {
+                    type: 'success',
+                    result: JSON.stringify({ schemaVersion: 1, operations: [{
+                        action: 'upsert', targetDocumentId: 'character.existing',
+                        type: 'character', title: '기존 인물',
+                        markdown: '## 기존 인물\n\n변경.', reason: '갱신',
+                    }] }),
+                }
+            },
+            beforeApply: async () => { order.push('snapshot') },
+            saveDocument: vi.fn(async () => {
+                order.push('write')
+                return { id: 'character.existing', title: '기존 인물', relativePath: 'characters/existing.md' }
+            }),
+            trashDocument: vi.fn(), retractEvent: vi.fn(),
+        })
+
+        expect(order).toEqual(['model', 'snapshot', 'write'])
+    })
+
     test('repairs a truncated plan before applying any operation, at most once', async () => {
         const saveDocument = vi.fn(async () => ({ id: 'character.existing', title: '기존 인물', relativePath: 'characters/existing.md' }))
         const requestModel = vi.fn(async () => {

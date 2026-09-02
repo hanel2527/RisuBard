@@ -9,6 +9,7 @@ describe('lorebook sidebar layout', () => {
     const characterConfig = source('src/lib/SideBars/CharConfig.svelte')
     const chatSidebar = source('src/lib/SideBars/SideChatList.svelte')
     const app = source('src/App.svelte')
+    const analysisPanel = source('src/lib/SideBars/LoreBook/BardLoreAnalysisPanel.svelte')
 
     test('uses the same compact section header hierarchy as the chat sidebar', () => {
         expect(chatSidebar).toContain(
@@ -43,7 +44,7 @@ describe('lorebook sidebar layout', () => {
 
     test('exposes portable Bard metadata actions without routing them through legacy lore import', () => {
         expect(lorebook).toContain('data-bard-lore-portable')
-        expect(lorebook).toContain('exportBardLoreMetadata(bardLore, character.name)')
+        expect(lorebook).toContain('exportBardLoreMetadata(bardLore, character.globalLore, character.name)')
         expect(lorebook).toContain('importBardLoreMetadata(')
         expect(lorebook).toContain('cleanseBardLoreMetadata(character)')
         expect(lorebook).toContain('onImport={bardView ? importBardLoreOverlay')
@@ -53,5 +54,9 @@ describe('lorebook sidebar layout', () => {
     test('keeps the open lorebook dialogs mounted when the responsive sidebar shell changes', () => {
         expect(app.match(/<Sidebar\b/g)).toHaveLength(1)
         expect(app).toContain('data-responsive-sidebar-host')
+    })
+
+    test('wraps analysis request-plan cards according to the resized pane width', () => {
+        expect(analysisPanel).toContain('repeat(auto-fit, minmax(min(100%, 6rem), 1fr))')
     })
 })

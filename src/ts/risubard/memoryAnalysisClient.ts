@@ -659,6 +659,7 @@ export function createStoredResponseMemoryAnalysis(
             currentInput: string
             tokenBudget?: {
                 target: number
+                events?: number
                 maximum: number
             }
         }) {
@@ -824,6 +825,7 @@ export function createStoredResponseMemoryAnalysis(
                     realChatId: request.sessionChatId,
                     logSource: 'memory' as const,
                     logPurpose: request.format === 'canonical-batch'
+                        || request.format === 'markdown'
                         ? 'bardwiki-canonical-update' as const
                         : 'bardwiki-analysis' as const,
                 } : {}),

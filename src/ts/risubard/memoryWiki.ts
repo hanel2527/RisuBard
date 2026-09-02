@@ -543,6 +543,71 @@ function requiredMutationString(
     return value.trim()
 }
 
+async function bardChatUndoRequest<K extends 'started' | 'available' | 'restored'>(
+    action: 'begin' | 'finalize' | 'status' | 'restore',
+    key: K,
+    input: {
+        characterId: string
+        chatId: string
+        fetchImpl: typeof fetch
+        createAuth(): Promise<string>
+    }
+): Promise<Record<K, boolean>> {
+    const response = await invokeBrowserFetch(
+        input.fetchImpl,
+        `/api/risubard/memory/wiki/bardchat-undo/${action}`,
+        {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'content-type': 'application/json',
+                'risu-auth': await input.createAuth(),
+            },
+            body: JSON.stringify({
+                characterId: requiredMutationString(input.characterId, 'Character ID', 1_024),
+                chatId: requiredMutationString(input.chatId, 'Chat ID', 1_024),
+            }),
+        }
+    )
+    if (!response.ok) {
+        throw new Error(`BARDCHAT undo ${action} failed with status ${response.status}`)
+    }
+    const value = await response.json()
+    if (!isRecord(value) || !hasExactKeys(value, [key])
+        || typeof value[key] !== 'boolean') {
+        throw new Error(`Invalid BARDCHAT undo ${action} receipt`)
+    }
+    return value as Record<K, boolean>
+}
+
+export function beginBardChatUndo(input: {
+    characterId: string; chatId: string; fetchImpl: typeof fetch
+    createAuth(): Promise<string>
+}) {
+    return bardChatUndoRequest('begin', 'started', input) as Promise<{ started: true }>
+}
+
+export function finalizeBardChatUndo(input: {
+    characterId: string; chatId: string; fetchImpl: typeof fetch
+    createAuth(): Promise<string>
+}) {
+    return bardChatUndoRequest('finalize', 'available', input)
+}
+
+export function getBardChatUndoStatus(input: {
+    characterId: string; chatId: string; fetchImpl: typeof fetch
+    createAuth(): Promise<string>
+}) {
+    return bardChatUndoRequest('status', 'available', input)
+}
+
+export function restoreBardChatUndo(input: {
+    characterId: string; chatId: string; fetchImpl: typeof fetch
+    createAuth(): Promise<string>
+}) {
+    return bardChatUndoRequest('restore', 'restored', input) as Promise<{ restored: true }>
+}
+
 export async function saveManualWikiDocument(input: {
     characterId: string
     chatId: string

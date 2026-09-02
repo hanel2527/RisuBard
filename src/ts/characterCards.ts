@@ -20,7 +20,7 @@ import { CharXImporter, CharXSkippableChecker, CharXWriter } from "./process/pro
 import { exportModuleLegacy, readModule, type RisuModule } from "./process/modules"
 import { pinCharacterVaultQuickAccess } from './characterVault'
 import { normalizeFirstMessageStudioProject, type FirstMessageStudioProject } from './firstMessageStudio'
-import { normalizeBardLoreState, type BardLoreState } from './lorebook/bardLore'
+import { normalizeBardLoreOwnerState, type BardLoreState } from './lorebook/bardLore'
 
 
 const EXTERNAL_HUB_URL = 'https://sv.risuai.xyz';
@@ -30,6 +30,10 @@ export const hubURL = '/hub-proxy';
 export function readFirstMessageStudioExtension(data: { extensions?: { risuai?: { firstMessageStudio?: unknown } } }): FirstMessageStudioProject | undefined {
     const project = data?.extensions?.risuai?.firstMessageStudio
     return project ? normalizeFirstMessageStudioProject(safeStructuredClone(project)) : undefined
+}
+
+function exportableBardLoreOwner(char: Pick<character, 'bardLore' | 'globalLore'>) {
+    return normalizeBardLoreOwnerState(char.bardLore, char.globalLore ?? [], uuidv4)
 }
 
 export async function importCharacter() {
@@ -658,7 +662,7 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
     let db = getDatabase()
 
     const risuext = data.extensions?.risuai ? safeStructuredClone(data.extensions.risuai) : undefined
-    const bardLore = normalizeBardLoreState((data.extensions as Record<string, any> | undefined)?.risubard?.bardLore)
+    const bardLoreSource = (data.extensions as Record<string, any> | undefined)?.risubard?.bardLore
     let emotions:[string, string][] = []
     let bias:[string, number][] = []
     let viewScreen: "none" | "emotion" | "imggen" = 'none'
@@ -896,7 +900,7 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
         emotionImages: emotions,
         bias: bias,
         globalLore: lorebook, //lorebook
-        bardLore,
+        bardLore: undefined,
         viewScreen: viewScreen,
         chaId: uuidv4(),
         sdData: sdData,
@@ -957,6 +961,12 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
         char.source = card.data.source ?? card.data?.extensions?.risuai?.source ?? []
         char.creation_date = card.data.creation_date ?? 0
         char.modification_date = card.data.modification_date ?? 0
+    }
+
+    const migratedBardLore = normalizeBardLoreOwnerState(bardLoreSource, char.globalLore, uuidv4)
+    if (migratedBardLore) {
+        char.globalLore = migratedBardLore.legacyEntries
+        char.bardLore = migratedBardLore.state
     }
 
     if(returnValue){
@@ -1091,9 +1101,10 @@ export function convertCharbook(arg:{
 
 
 export function createBaseV2(char:character) {
-    
+    const bardLoreOwner = exportableBardLoreOwner(char)
+    const exportGlobalLore = bardLoreOwner?.legacyEntries ?? char.globalLore
     let charBook:charBookEntry[] = []
-    for(const lore of char.globalLore){
+    for(const lore of exportGlobalLore){
         let ext:{
             risu_case_sensitive?: boolean;
             risu_activationPercent?: number
@@ -1198,7 +1209,7 @@ export function createBaseV2(char:character) {
                     moduleNamespace: char.moduleNamespace ?? '',
                     defaultVariables: char.defaultVariables ?? ''
                 },
-                risubard: char.bardLore ? { bardLore: safeStructuredClone(char.bardLore) } : undefined,
+                risubard: bardLoreOwner ? { bardLore: bardLoreOwner.state } : undefined,
                 depth_prompt: char.depth_prompt
             }
         }
@@ -1490,7 +1501,8 @@ type RisuLorebookEntry = LorebookEntry & {
 }
 
 export function createBaseV3(char:character){
-    
+    const bardLoreOwner = exportableBardLoreOwner(char)
+    const exportGlobalLore = bardLoreOwner?.legacyEntries ?? char.globalLore
     let charBook:RisuLorebookEntry[] = []
     let assets:Array<{
         type: string
@@ -1528,7 +1540,7 @@ export function createBaseV3(char:character){
         })
     }
 
-    for(const lore of char.globalLore){
+    for(const lore of exportGlobalLore){
         let ext:{
             risu_case_sensitive?: boolean;
             risu_activationPercent?: number
@@ -1639,7 +1651,7 @@ export function createBaseV3(char:character){
                     prebuiltAssetStyle: char.prebuiltAssetStyle ?? '',
                     toggles: char.customModuleToggle ?? '',
                 },
-                risubard: char.bardLore ? { bardLore: safeStructuredClone(char.bardLore) } : undefined,
+                risubard: bardLoreOwner ? { bardLore: bardLoreOwner.state } : undefined,
                 depth_prompt: char.depth_prompt
             },
             group_only_greetings: char.group_only_greetings ?? [],

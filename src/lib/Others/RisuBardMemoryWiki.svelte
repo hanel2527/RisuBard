@@ -24,7 +24,9 @@
         normalizeMemoryWikiWorkspaceHeight,
     } from 'src/ts/risubard/memoryWikiLayout'
     import {
+        getBardChatUndoStatus,
         loadNarrativeMemoryWiki,
+        restoreBardChatUndo,
         type NarrativeMemoryWiki,
     } from 'src/ts/risubard/memoryWiki'
     import {
@@ -129,6 +131,8 @@
     let editorFocus = $state(false)
     let helpOpen = $state(false)
     let selectedMarkdownId = $state('')
+    let bardChatUpdatedIds = $state<string[] | null>(null)
+    let bardChatUndoAvailable = $state(false)
     let rebootChooserOpen = $state(false)
     let rebootActionBusy = $state(false)
     let rebootStartChatIndex = $state(0)
@@ -145,6 +149,9 @@
     let markdownDocuments = $derived(
         wiki?.mode === 'markdown' ? wiki.documents : []
     )
+    let selectedMarkdownDocument = $derived(markdownDocuments.find(
+        (document) => document.id === selectedMarkdownId
+    ) ?? null)
     let activityMessages = $derived(
         DBState.db.characters?.find((character) =>
             character.chaId === characterId
@@ -391,8 +398,42 @@
             instruction,
             contextSelection
         )
+        bardChatUpdatedIds = result.applied.map((item) => item.documentId)
         await loadWiki()
+        await refreshBardChatUndoStatus()
         return result
+    }
+
+    async function refreshBardChatUndoStatus() {
+        const scope = `${characterId}\u0000${wikiChatId}`
+        try {
+            const status = await getBardChatUndoStatus({
+                characterId,
+                chatId: wikiChatId,
+                fetchImpl: fetch,
+                createAuth: () => forageStorage.createAuth(),
+            })
+            if (scope === `${characterId}\u0000${wikiChatId}`) {
+                bardChatUndoAvailable = status.available
+            }
+        }
+        catch {
+            if (scope === `${characterId}\u0000${wikiChatId}`) {
+                bardChatUndoAvailable = false
+            }
+        }
+    }
+
+    async function restoreLastBardChatChange() {
+        await restoreBardChatUndo({
+            characterId,
+            chatId: wikiChatId,
+            fetchImpl: fetch,
+            createAuth: () => forageStorage.createAuth(),
+        })
+        bardChatUndoAvailable = false
+        bardChatUpdatedIds = []
+        await loadWiki()
     }
 
     function setBardChatContextSelection(
@@ -564,6 +605,13 @@
         void open
         if (!characterId || !wikiChatId) return
         void loadWiki()
+    })
+
+    $effect(() => {
+        if (!characterId || !wikiChatId || !onExecuteWikiCommand) return
+        bardChatUpdatedIds = null
+        bardChatUndoAvailable = false
+        void refreshBardChatUndoStatus()
     })
 
     $effect(() => {
@@ -935,6 +983,7 @@
                             onChanged={loadWiki}
                             onFocusModeChange={(focused) => editorFocus = focused}
                             onNavigateSource={onNavigateStorySource}
+                            highlightedDocumentIds={bardChatUpdatedIds}
                             mobileLayout={layoutMode === 'mobile'}
                         />
                     </div>
@@ -972,6 +1021,9 @@
                                     onExecute={executeWikiCommand}
                                     contextSelection={bardChatContextSelection}
                                     onContextSelectionChange={setBardChatContextSelection}
+                                    targetDocumentTitleOrId={selectedMarkdownDocument?.title ?? ''}
+                                    canRestore={bardChatUndoAvailable}
+                                    onRestore={restoreLastBardChatChange}
                                     mobileLayout={layoutMode === 'mobile'}
                                 />
                             </div>

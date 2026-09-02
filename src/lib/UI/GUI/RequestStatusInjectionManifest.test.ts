@@ -41,10 +41,9 @@ describe('request status injection manifest', () => {
         expect(toast).toContain('toast.dismiss(`req:${id}`)')
     })
 
-    test('keeps request status cards readable above alert dialogs and below top-tier blockers', () => {
+    test('keeps request status cards on the bounded notification layer', () => {
         const zIndex = Number(toaster.match(/z-index:\s*(\d+)/)?.[1])
-        expect(zIndex).toBeGreaterThan(2_147_483_600)
-        expect(zIndex).toBeLessThan(2_147_483_640)
+        expect(zIndex).toBe(600)
     })
 
     test('builds the manifest after preset normalization and strips private sources before adapter dispatch', () => {
@@ -75,6 +74,7 @@ describe('request status injection manifest', () => {
 
     test('preserves selected BardWiki and narrative-memory source identities', () => {
         expect(chatPipeline).toContain("kind: source.id.includes(':wiki:') ? 'wiki' : 'memory'")
-        expect(chatPipeline).toContain('name: narrativeSourceDisplayName(source.id)')
+        expect(chatPipeline).toContain('name: narrativeSourceDisplayName(')
+        expect(chatPipeline).toContain('source.displayName')
     })
 })

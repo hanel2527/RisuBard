@@ -15,6 +15,15 @@ function svelteSources(path: string): Array<{ path: string, source: string }> {
     })
 }
 
+function runtimeLayerSources(path: string): Array<{ path: string, source: string }> {
+    return readdirSync(resolve(process.cwd(), path), { withFileTypes: true }).flatMap((entry) => {
+        const entryPath = `${path}/${entry.name}`
+        if (entry.isDirectory()) return runtimeLayerSources(entryPath)
+        if (!/\.(?:css|js|svelte|ts)$/.test(entry.name) || entry.name.endsWith('.test.ts')) return []
+        return [{ path: entryPath, source: source(entryPath) }]
+    })
+}
+
 describe('application overlay layering', () => {
     test('keeps BardWiki below the relative modal stack and notifications', () => {
         const app = source('src/App.svelte')
@@ -23,10 +32,14 @@ describe('application overlay layering', () => {
         const stack = source('src/lib/UI/GUI/modalLayerStack.ts')
 
         expect(wiki).toMatch(/\.memory-wiki-dock\s*\{[\s\S]*?z-index:\s*51/)
-        expect(stack).toContain('const MODAL_LAYER_BASE = 1_000_000')
-        expect(stack).toContain("const MODAL_SELECTOR = '.risu-modal-overlay, .risu-modal-surface'")
+        expect(stack).toContain('floating: 90')
+        expect(stack).toContain('base: 100')
+        expect(stack).toContain('alert: 300')
+        expect(stack).toContain('notification: 600')
+        expect(stack).toContain('top: 700')
+        expect(stack).toContain("const FLOATING_SELECTOR = '[data-risu-floating-layer]'")
         expect(app).toContain('onMount(() => observeModalLayers(document.body))')
-        expect(toaster).toContain('z-index: 2147483620 !important')
+        expect(toaster).toContain('z-index: 600 !important')
     })
 
     test('places the reboot choice dialog in the top confirmation tier', () => {
@@ -44,9 +57,10 @@ describe('application overlay layering', () => {
         const menuLayer = Math.max(
             ...[...menu.matchAll(/z-\[(\d+)\]/g)].map((match) => Number(match[1]))
         )
-        const modalBase = Number(stack.match(/MODAL_LAYER_BASE = ([\d_]+)/)?.[1].replaceAll('_', ''))
+        const modalBase = Number(stack.match(/base:\s*(\d+)/)?.[1])
 
-        expect(menuLayer).toBeGreaterThan(modalBase)
+        expect(menuLayer).toBeLessThan(modalBase)
+        expect(menu).toContain('data-risu-floating-layer')
 
         const consumerOverrides = svelteSources('src').flatMap(({ path, source }) =>
             [...source.matchAll(/<ShDropdownMenuContent\b[^>]*\bclass="([^"]*)"/gs)]
@@ -55,5 +69,26 @@ describe('application overlay layering', () => {
         )
 
         expect(consumerOverrides).toEqual([])
+    })
+
+    test('keeps shared dialog tier ownership out of consumer classes', () => {
+        const consumerOverrides = svelteSources('src').flatMap(({ path, source }) =>
+            [...source.matchAll(/<Sh(?:Alert|Loading)?Dialog\b[^>]*\b(?:contentClass|overlayClass)="([^"]*)"/gs)]
+                .filter((match) => /\bz-(?:\[[^\]]+\]|\d+)/.test(match[1]))
+                .map(() => path)
+        )
+
+        expect(consumerOverrides).toEqual([])
+    })
+
+    test('rejects extreme runtime z-index escape hatches', () => {
+        const violations = runtimeLayerSources('src').flatMap(({ path, source }) =>
+            [...source.matchAll(/(?:z-index\s*:\s*|\bzIndex\s*[:=]\s*["']?|\bz-\[)(\d[\d_]*)/g)]
+                .map((match) => Number(match[1].replaceAll('_', '')))
+                .filter((value) => value >= 1000)
+                .map((value) => `${path}:${value}`)
+        )
+
+        expect(violations).toEqual([])
     })
 })

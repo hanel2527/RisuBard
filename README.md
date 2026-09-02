@@ -115,7 +115,7 @@ RisuBard는 세 가지 책임을 분리합니다.
 
 1. [GitHub Releases](https://github.com/rpaddict/RisuBard/releases)를 엽니다.
 2. 운영체제에 맞는 패키지를 내려받아 압축을 풉니다.
-3. RisuBard를 실행하고 `http://localhost:6001`을 엽니다.
+3. RisuBard를 실행하고 `http://localhost:7777`을 엽니다.
 
 | 플랫폼 | 패키지 | 실행 |
 | --- | --- | --- |

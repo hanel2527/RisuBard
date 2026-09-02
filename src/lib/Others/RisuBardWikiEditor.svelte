@@ -49,6 +49,7 @@
         onSelected?: (documentId: string) => void
         onFocusModeChange?: (focused: boolean) => void
         onNavigateSource?: (source: StorySourceRef) => void
+        highlightedDocumentIds?: string[] | null
     }
 
     let {
@@ -63,6 +64,7 @@
         onSelected,
         onFocusModeChange,
         onNavigateSource,
+        highlightedDocumentIds = null,
     }: Props = $props()
     let creating = $state(false)
     let type = $state<MarkdownWikiDocumentType>('character')
@@ -98,7 +100,9 @@
     })
 
     let tree = $derived(buildWikiFileTree(documents))
-    let recentlyUpdatedIds = $derived(getRecentlyUpdatedWikiDocumentIds(documents))
+    let recentlyUpdatedIds = $derived(highlightedDocumentIds === null
+        ? getRecentlyUpdatedWikiDocumentIds(documents)
+        : new Set(highlightedDocumentIds))
     let danglingSourceIds = $derived(new Set(
         health.danglingLinks.map((link) => link.sourceId)
     ))
@@ -748,6 +752,7 @@
 {#if contextDocument}
     <div
         class="file-context-menu"
+        data-risu-floating-layer
         role="menu"
         tabindex="-1"
         aria-label={`${contextDocument.title} 파일 메뉴`}
@@ -835,7 +840,7 @@
     .success { color: var(--risu-theme-success); }
     .file-context-menu {
         position: fixed;
-        z-index: 10000;
+        z-index: 90;
         display: grid;
         width: 11rem;
         padding: .28rem;

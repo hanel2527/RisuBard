@@ -1,8 +1,6 @@
 <script lang="ts">
     // shadcn-svelte DropdownMenu Content — RisuAI tokens. Portals to body.
-    // Default sits above alert dialogs but below top confirmations. Consumers
-    // must not override this layer because modal surfaces are raised dynamically.
-    // See .agent/guide/ui.md "Dialog z-index 컨벤션".
+    // modalLayerStack raises this portal above its current owning surface.
     import { DropdownMenu } from 'bits-ui';
     import { cn } from 'src/lib/utils';
 
@@ -19,10 +17,11 @@
     <DropdownMenu.Content
         bind:ref
         data-slot="dropdown-menu-content"
+        data-risu-floating-layer
         {sideOffset}
         {align}
         class={cn(
-            'z-[2147483620] min-w-32 rounded-md border border-darkborderc bg-darkbg text-textcolor p-1 shadow-md outline-none ' +
+            'z-[90] min-w-32 rounded-md border border-darkborderc bg-darkbg text-textcolor p-1 shadow-md outline-none ' +
             'data-[state=open]:animate-in data-[state=closed]:animate-out ' +
             'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 ' +
             'data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 ' +

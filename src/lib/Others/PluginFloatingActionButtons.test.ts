@@ -33,6 +33,26 @@ afterEach(async () => {
 })
 
 describe('PluginFloatingActionButtons', () => {
+    test('owns an absolute boundary inside the chat pane', () => {
+        const target = document.createElement('main')
+        document.body.appendChild(target)
+        mounted = mount(PluginFloatingActionButtons, {
+            target,
+            props: { buttons: [menu()] },
+        })
+
+        const boundary = target.querySelector<HTMLElement>(
+            '[data-plugin-fab-boundary]'
+        )!
+        const button = boundary.querySelector<HTMLButtonElement>(
+            '[data-plugin-fab="sample-plugin:main"]'
+        )!
+        expect(boundary).not.toBeNull()
+        expect(boundary.classList.contains('absolute')).toBe(true)
+        expect(button.classList.contains('absolute')).toBe(true)
+        expect(button.classList.contains('fixed')).toBe(false)
+    })
+
     test('keeps a normal click connected to the plugin callback', () => {
         const callback = vi.fn()
         const target = document.createElement('div')

@@ -47,7 +47,7 @@ Holen Sie die Datei für Ihr OS von der [Releases-Seite](https://github.com/rpad
 
 **Windows**
 
-Entpacken Sie die zip und doppelklicken Sie auf `RisuBard.exe`. Ein Browser öffnet sich automatisch unter `http://localhost:6001`.
+Entpacken Sie die zip und doppelklicken Sie auf `RisuBard.exe`. Ein Browser öffnet sich automatisch unter `http://localhost:7777`.
 
 **macOS**
 
@@ -67,7 +67,7 @@ cd RisuBard-vX.X.X-linux-*
 ./start.sh
 ```
 
-Öffnen Sie `http://localhost:6001` in Ihrem Browser.
+Öffnen Sie `http://localhost:7777` in Ihrem Browser.
 
 ### Headless-Server (Ein-Zeilen-Download)
 
@@ -127,7 +127,7 @@ curl -L https://raw.githubusercontent.com/rpaddict/RisuBard/main/docker-compose.
 docker compose up -d
 ```
 
-Öffnen Sie `http://localhost:6001` in Ihrem Browser.
+Öffnen Sie `http://localhost:7777` in Ihrem Browser.
 
 ### Aktualisieren
 
@@ -172,7 +172,7 @@ cd ~/risubard
 pnpm runserver
 ```
 
-Öffnen Sie `http://localhost:6001` in Ihrem Browser.
+Öffnen Sie `http://localhost:7777` in Ihrem Browser.
 
 ### Aktualisieren
 
@@ -205,7 +205,7 @@ pnpm build
 pnpm runserver
 ```
 
-Öffnen Sie `http://localhost:6001` in Ihrem Browser.
+Öffnen Sie `http://localhost:7777` in Ihrem Browser.
 
 ### Aktualisieren
 

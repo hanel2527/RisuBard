@@ -53,9 +53,9 @@
     };
 
     const tierClasses: Record<ShDialogTier, string> = {
-        base: 'z-40',
-        alert: 'z-[2147483600]',
-        top: 'z-[2147483640]',
+        base: 'z-[100]',
+        alert: 'z-[300]',
+        top: 'z-[700]',
     };
 
     // w-[calc(100vw-2rem)] guarantees a 1rem gutter on each side at any
@@ -72,9 +72,11 @@
 <AlertDialog.Root bind:open {onOpenChange}>
     <AlertDialog.Portal>
         <AlertDialog.Overlay
+            data-risu-modal-tier={tier}
             class={cn('risu-modal-overlay fixed inset-0 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0', tierClasses[tier])}
         />
         <AlertDialog.Content
+            data-risu-modal-tier={tier}
             class={cn(contentBase, tierClasses[tier], sizeClasses[size], contentClass)}
             onCloseAutoFocus={handleDialogCloseAutoFocus}
             escapeKeydownBehavior={closeOnEscape ? 'close' : 'ignore'}

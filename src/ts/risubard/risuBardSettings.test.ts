@@ -5,7 +5,10 @@ import {
     RISUBARD_CANONICAL_TARGET_LIMIT_DEFAULT,
     RISUBARD_CANONICAL_WRITING_STYLE_DEFAULT,
     RISUBARD_INQUIRY_MAXIMUM_TOKEN_BUDGET_DEFAULT,
+    RISUBARD_INQUIRY_EVENT_TOKEN_BUDGET_DEFAULT,
+    RISUBARD_INQUIRY_SOURCE_TOKEN_BUDGET_DEFAULT,
     RISUBARD_INQUIRY_TARGET_TOKEN_BUDGET_DEFAULT,
+    RISUBARD_HISTORICAL_SOURCE_MATCH_LIMIT_DEFAULT,
     buildRisuBardCanonicalWritingPolicy,
     buildRisuBardEventWritingPolicy,
     normalizeRisuBardAnalysisTokenLimit,
@@ -14,6 +17,7 @@ import {
     normalizeRisuBardCanonicalTargetLimit,
     normalizeRisuBardCanonicalWritingStyle,
     normalizeRisuBardInquiryTokenBudget,
+    normalizeRisuBardHistoricalSourceMatchLimit,
     resolveRisuBardChatSettings,
 } from './risuBardSettings'
 
@@ -32,9 +36,11 @@ describe('RisuBard analysis settings', () => {
             const event = buildRisuBardEventWritingPolicy(style, 'Use short sentences.', 'en')
             const canon = buildRisuBardCanonicalWritingPolicy(style, 'Use short sentences.', 'en')
             expect(event).toContain('English')
+            expect(canon).toContain('dynamic lorebook')
             expect(canon).toContain('### Current State')
             expect(canon).toContain('### Story History')
-            expect(canon).toContain('16')
+            expect(canon).toContain('recommended')
+            expect(canon).toContain('3-6')
             expect(canon).toContain('entire body')
             expect(canon).toContain('existing document titles')
             expect(event + canon).not.toMatch(/[가-힣]/)
@@ -62,16 +68,25 @@ describe('RisuBard analysis settings', () => {
         expect(normalizeRisuBardAnalysisTokenLimit(Number.MAX_SAFE_INTEGER + 1)).toBe(RISUBARD_ANALYSIS_TOKEN_LIMIT_DEFAULT)
     })
 
-    test('normalizes configurable inquiry target and maximum budgets', () => {
-        expect(normalizeRisuBardInquiryTokenBudget(undefined, undefined))
+    test('normalizes configurable inquiry map, event, source, and maximum budgets', () => {
+        expect(normalizeRisuBardInquiryTokenBudget(undefined, undefined, undefined, undefined))
             .toEqual({
                 target: RISUBARD_INQUIRY_TARGET_TOKEN_BUDGET_DEFAULT,
+                events: RISUBARD_INQUIRY_EVENT_TOKEN_BUDGET_DEFAULT,
+                perSource: RISUBARD_INQUIRY_SOURCE_TOKEN_BUDGET_DEFAULT,
                 maximum: RISUBARD_INQUIRY_MAXIMUM_TOKEN_BUDGET_DEFAULT,
             })
-        expect(normalizeRisuBardInquiryTokenBudget(8_000, 4_000))
-            .toEqual({ target: 4_000, maximum: 4_000 })
-        expect(normalizeRisuBardInquiryTokenBudget(1, 99_999))
-            .toEqual({ target: 256, maximum: 99_999 })
+        expect(normalizeRisuBardInquiryTokenBudget(8_000, 4_000, 9_000, 5_000))
+            .toEqual({ target: 4_000, events: 4_000, perSource: 4_000, maximum: 4_000 })
+        expect(normalizeRisuBardInquiryTokenBudget(1, 99_999, 1, 1))
+            .toEqual({ target: 256, events: 256, perSource: 256, maximum: 99_999 })
+    })
+
+    test('normalizes the historical source candidate limit', () => {
+        expect(normalizeRisuBardHistoricalSourceMatchLimit(undefined))
+            .toBe(RISUBARD_HISTORICAL_SOURCE_MATCH_LIMIT_DEFAULT)
+        expect(normalizeRisuBardHistoricalSourceMatchLimit(-1)).toBe(0)
+        expect(normalizeRisuBardHistoricalSourceMatchLimit(99)).toBe(32)
     })
 
     test('keeps configured message windows above one hundred', () => {
@@ -109,14 +124,15 @@ describe('RisuBard analysis settings', () => {
     test('keeps character canon compact while preserving detailed event evidence', () => {
         const policy = buildRisuBardCanonicalWritingPolicy('concise', '')
 
-        expect(policy).toContain('모든 캐릭터 정본은 문서 상단')
-        expect(policy).toContain('인과에 필요한 전환점')
+        expect(policy).toContain('다이나믹 로어북')
+        expect(policy).toContain('권장')
+        expect(policy).toContain('큰 전환점')
         expect(policy).toContain('턴별 행동 기록을 누적하지 않는다')
         expect(policy).toContain('상세 과거 행적은 사건 문서')
         expect(policy).toContain('이전 상태를 현재 사실처럼 병기하지 않는다')
         expect(policy).toContain('### 현재 상태')
         expect(policy).toContain('### 작중 행적')
-        expect(policy).toContain('최대 16개')
+        expect(policy).toContain('3~6개')
         expect(policy).toContain('[[사건 문서 제목]]')
         expect(policy).toContain('원문에 없는 행동 대상이나 장소를 보충하지 않는다')
         expect(policy).toContain('시간적 선후를 인과로 바꾸지 않는다')

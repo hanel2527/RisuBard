@@ -14,8 +14,17 @@
     import BardLoreAnalysisPanel from "./BardLoreAnalysisPanel.svelte";
     import Help from "src/lib/Others/Help.svelte";
     import { selectedCharID } from "src/ts/stores.svelte";
-    import type { loreBook } from "src/ts/storage/database.svelte";
-    import { createBardLoreSettings, upgradeLegacyLorebook, type BardLoreEntry, type BardLoreKind } from "src/ts/lorebook/bardLore";
+    import type { character, loreBook } from "src/ts/storage/database.svelte";
+    import {
+        applyMaterializedBardLoreEntries,
+        createBardLoreSettings,
+        materializeBardLoreEntries,
+        upgradeLegacyLorebook,
+        type BardLoreEntry,
+        type BardLoreKind,
+    } from "src/ts/lorebook/bardLore";
+    import { ensureLorebookIds } from 'src/ts/lorebook/workspaceOperations';
+    import { applyBardLoreAnalysisSettings, normalizeBardLoreAnalysisDefaults } from 'src/ts/lorebook/bardLoreAnalysisSettings';
     import {
         coreLorebookScopeKey,
         createCharacterLocalActivationBinding,
@@ -54,6 +63,32 @@
         && loreView === 'bard'
         && Boolean(DBState.db.characters[$selectedCharID]?.bardLore)
     )
+    let bardEntries = $derived.by(() => {
+        const character = DBState.db.characters[$selectedCharID]
+        return character?.bardLore
+            ? materializeBardLoreEntries(character.bardLore, character.globalLore ?? [])
+            : []
+    })
+
+    function applyBardEntries(owner: character, next: BardLoreEntry[]) {
+        if (!owner.bardLore) return
+        const applied = applyMaterializedBardLoreEntries(owner.bardLore, owner.globalLore ?? [], next)
+        owner.globalLore = applied.legacyEntries
+        owner.bardLore = applied.state
+    }
+
+    function applyLegacyEntries(owner: character, next: loreBook[]) {
+        const withIds = owner.bardLore ? ensureLorebookIds(next, createUuid) : next
+        owner.globalLore = withIds
+        if (!owner.bardLore) return
+        const applied = applyMaterializedBardLoreEntries(
+            owner.bardLore,
+            withIds,
+            materializeBardLoreEntries(owner.bardLore, withIds),
+        )
+        owner.globalLore = applied.legacyEntries
+        owner.bardLore = applied.state
+    }
     $effect(() => {
         const character = DBState.db.characters[$selectedCharID]
         if (!character || viewedCharacterId === character.chaId) return
@@ -68,8 +103,8 @@
                 return {
                     ...createLorebookOwnerBinding(
                         character,
-                        character.bardLore.entries,
-                        (owner, next) => { owner.bardLore!.entries = next as BardLoreEntry[] },
+                        bardEntries,
+                        (owner, next) => applyBardEntries(owner, next as BardLoreEntry[]),
                         (owner) => DBState.db.characters.includes(owner),
                     ),
                     scopeKey: coreLorebookScopeKey({ kind: 'character', chaId: character.chaId }),
@@ -86,7 +121,7 @@
                 ...createLorebookOwnerBinding(
                     character,
                     character.globalLore,
-                    (owner, next) => { owner.globalLore = next },
+                    (owner, next) => applyLegacyEntries(owner, next),
                     (owner) => DBState.db.characters.includes(owner),
                 ),
                 scopeKey: coreLorebookScopeKey({ kind: 'character', chaId: character.chaId }),
@@ -181,11 +216,18 @@
 
     function ensureBardLore() {
         const character = DBState.db.characters[$selectedCharID]
+        const withIds = ensureLorebookIds(character.globalLore ?? [], createUuid)
+        if (withIds.some((entry, index) => entry !== character.globalLore[index])) {
+            character.globalLore = withIds
+        }
         if (!character.bardLore) {
             character.bardLore = upgradeLegacyLorebook(
                 character.globalLore ?? [],
                 createUuid,
-                createBardLoreSettings(),
+                applyBardLoreAnalysisSettings(
+                    createBardLoreSettings(),
+                    normalizeBardLoreAnalysisDefaults(DBState.db.risuBardGrimoireAnalysisDefaults),
+                ),
             )
             character.bardLore.mode = 'legacy'
         }
@@ -213,7 +255,7 @@
         const bardLore = ensureBardLore()
         await downloadFile(
             bardLoreMetadataFileName(character.name),
-            exportBardLoreMetadata(bardLore, character.name),
+            exportBardLoreMetadata(bardLore, character.globalLore, character.name),
         )
         notifySuccess(language.lorebookWorkspace.bardPortableExportSuccess)
     }
@@ -225,6 +267,7 @@
             const character = DBState.db.characters[$selectedCharID]
             const result = importBardLoreMetadata(
                 ensureBardLore(),
+                character.globalLore,
                 await files[0].text(),
                 createUuid,
             )
@@ -336,15 +379,15 @@
             </div>
         </section>
         <BardLoreAnalysisPanel
-            entries={DBState.db.characters[$selectedCharID].bardLore!.entries}
+            entries={bardEntries}
             settings={DBState.db.characters[$selectedCharID].bardLore!.settings}
             analysisRun={DBState.db.characters[$selectedCharID].bardLore!.analysisRun}
-            onChange={(next) => { DBState.db.characters[$selectedCharID].bardLore!.entries = next }}
+            onChange={(next) => applyBardEntries(DBState.db.characters[$selectedCharID], next)}
             onSettingsChange={(next) => { DBState.db.characters[$selectedCharID].bardLore!.settings = next }}
             onAnalysisRunChange={(next) => { DBState.db.characters[$selectedCharID].bardLore!.analysisRun = next }}
         />
         <BardLoreSearchPreview
-            entries={DBState.db.characters[$selectedCharID].bardLore!.entries}
+            entries={bardEntries}
             settings={DBState.db.characters[$selectedCharID].bardLore!.settings}
             character={DBState.db.characters[$selectedCharID]}
         />

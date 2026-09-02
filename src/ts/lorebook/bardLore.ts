@@ -131,6 +131,15 @@ export interface BardLoreSettings {
 }
 
 export interface BardLoreState {
+    schemaVersion: 2
+    mode: 'legacy' | 'bard'
+    metadata: BardLoreMetadata[]
+    derivedEntries: BardLoreEntry[]
+    settings: BardLoreSettings
+    analysisRun?: BardLoreAnalysisRun
+}
+
+interface CopiedBardLoreState {
     schemaVersion: 1
     mode: 'legacy' | 'bard'
     entries: BardLoreEntry[]
@@ -191,7 +200,7 @@ export const bardLoreDefaultPreset: Readonly<BardLoreSettings> = {
     analysisInputTokens: 12_000,
     analysisOutputTokens: 4_000,
     analysisLinkedDepth: 1,
-    analysisTemperature: 0,
+    analysisTemperature: 0.2,
 }
 
 export type BardLoreRouterSettingsInput = Partial<Omit<BardLoreRouterSettings, 'kindAliases' | 'intentAliases' | 'filterFacetKeys' | 'facetVocabulary'>> & {
@@ -272,7 +281,7 @@ export function createBardLoreSettings(input: BardLoreSettingsInput = {}): BardL
     }
 }
 
-export function normalizeBardLoreState(value: unknown): BardLoreState | undefined {
+function normalizeCopiedBardLoreState(value: unknown): CopiedBardLoreState | undefined {
     if (!value || typeof value !== 'object') return undefined
     const raw = value as Record<string, unknown>
     if (raw.schemaVersion !== 1 || (raw.mode !== 'legacy' && raw.mode !== 'bard') || !Array.isArray(raw.entries)) {
@@ -364,7 +373,7 @@ export function normalizeBardLoreState(value: unknown): BardLoreState | undefine
             },
         } as unknown as BardLoreEntry)
     }
-    const normalized: BardLoreState = {
+    const normalized: CopiedBardLoreState = {
         schemaVersion: 1,
         mode: raw.mode,
         entries,
@@ -377,6 +386,68 @@ export function normalizeBardLoreState(value: unknown): BardLoreState | undefine
     const analysisRun = normalizeBardLoreAnalysisRun(raw.analysisRun, entryIds)
     if (analysisRun) normalized.analysisRun = analysisRun
     return normalized
+}
+
+function copiedStateToOverlay(state: CopiedBardLoreState): BardLoreState | undefined {
+    const metadata: BardLoreMetadata[] = []
+    const derivedEntries: BardLoreEntry[] = []
+    for (const entry of state.entries) {
+        if (entry.bard.derivedFromId) derivedEntries.push(entry)
+        else metadata.push(safeStructuredClone(entry.bard))
+    }
+    if (metadata.some((item) => item.derivedFromId)) return undefined
+    return {
+        schemaVersion: 2,
+        mode: state.mode,
+        metadata,
+        derivedEntries,
+        settings: state.settings,
+        ...(state.analysisRun ? { analysisRun: state.analysisRun } : {}),
+    }
+}
+
+export function normalizeBardLoreState(value: unknown): BardLoreState | undefined {
+    if (!value || typeof value !== 'object') return undefined
+    const raw = value as Record<string, unknown>
+    if (raw.schemaVersion === 1) {
+        const copied = normalizeCopiedBardLoreState(value)
+        return copied ? copiedStateToOverlay(copied) : undefined
+    }
+    if (
+        raw.schemaVersion !== 2
+        || (raw.mode !== 'legacy' && raw.mode !== 'bard')
+        || !Array.isArray(raw.metadata)
+        || !Array.isArray(raw.derivedEntries)
+    ) return undefined
+
+    const syntheticEntries = [
+        ...raw.metadata.map((metadata) => ({
+            id: metadata && typeof metadata === 'object'
+                ? (metadata as Record<string, unknown>).sourceLegacyId
+                : undefined,
+            key: '',
+            secondkey: '',
+            insertorder: 0,
+            comment: '',
+            content: '',
+            mode: 'normal',
+            alwaysActive: false,
+            selective: false,
+            bard: metadata,
+        })),
+        ...raw.derivedEntries,
+    ]
+    const copied = normalizeCopiedBardLoreState({
+        schemaVersion: 1,
+        mode: raw.mode,
+        entries: syntheticEntries,
+        settings: raw.settings,
+        analysisRun: raw.analysisRun,
+    })
+    if (!copied || copied.entries.slice(0, raw.metadata.length).some((entry) => entry.bard.derivedFromId)) {
+        return undefined
+    }
+    return copiedStateToOverlay(copied)
 }
 
 function normalizeBardLoreAnalysisRun(
@@ -632,6 +703,372 @@ export function createBardLoreEntry(entry: loreBook): BardLoreEntry {
     }
 }
 
+function withoutBardMetadata(entry: BardLoreEntry): loreBook {
+    const legacy = safeStructuredClone(entry) as BardLoreEntry & { bard?: BardLoreMetadata }
+    delete legacy.bard
+    return legacy
+}
+
+function uniqueSourceId(entry: loreBook, index: number, retained: Set<string>): string {
+    const saved = entry.id?.trim() ?? ''
+    if (saved && !retained.has(saved)) return saved
+    const base = `legacy-${fingerprintLegacyLore(entry).slice(6)}-${index + 1}`
+    let id = base
+    let suffix = 2
+    while (retained.has(id)) id = `${base}-${suffix++}`
+    return id
+}
+
+function allocateSourceId(preferred: string | undefined, used: Set<string>, createId: () => string): string {
+    let id = preferred?.trim() ?? ''
+    if (id && !used.has(id)) {
+        used.add(id)
+        return id
+    }
+    do id = createId().trim()
+    while (!id || used.has(id))
+    used.add(id)
+    return id
+}
+
+function ensureSourceIds(entries: loreBook[], createId: () => string): loreBook[] {
+    const used = new Set<string>()
+    return entries.map((entry) => {
+        const id = allocateSourceId(entry.id, used, createId)
+        return entry.id === id ? entry : { ...entry, id }
+    })
+}
+
+function reconcileAnalysisRun(
+    run: BardLoreAnalysisRun | undefined,
+    validIds: Set<string>,
+    remappedIds: Map<string, string> = new Map(),
+): BardLoreAnalysisRun | undefined {
+    if (!run) return undefined
+    const mapId = (id: string) => remappedIds.get(id) ?? id
+    const targetIds = [...new Set(run.targetIds.map(mapId).filter((id) => validIds.has(id)))]
+    if (targetIds.length === 0) return undefined
+    const batches = run.batches.flatMap((batch): BardLoreAnalysisBatch[] => {
+        const batchTargetIds = [...new Set(batch.targetIds.map(mapId).filter((id) => validIds.has(id)))]
+        if (batchTargetIds.length === 0) return []
+        const batchTargets = new Set(batchTargetIds)
+        const candidates = batch.candidates?.flatMap((candidate): BardLoreAnalysisCandidate[] => {
+            const id = mapId(candidate.id)
+            if (!batchTargets.has(id)) return []
+            return [{
+                ...safeStructuredClone(candidate),
+                id,
+                links: candidate.links.flatMap((link) => {
+                    const targetId = mapId(link.targetId)
+                    return validIds.has(targetId) ? [{ ...link, targetId }] : []
+                }),
+                ...(candidate.atoms ? {
+                    atoms: candidate.atoms.map((atom) => ({
+                        ...safeStructuredClone(atom),
+                        ...(atom.existingTargetId
+                            ? { existingTargetId: mapId(atom.existingTargetId) }
+                            : {}),
+                        links: atom.links.flatMap((link) => {
+                            const targetId = mapId(link.targetId)
+                            return validIds.has(targetId) ? [{ ...link, targetId }] : []
+                        }),
+                    })),
+                } : {}),
+            }]
+        })
+        return [{
+            ...safeStructuredClone(batch),
+            targetIds: batchTargetIds,
+            ...(candidates ? { candidates } : {}),
+        }]
+    })
+    return {
+        ...safeStructuredClone(run),
+        targetIds,
+        batches,
+    }
+}
+
+export function materializeBardLoreEntries(
+    state: BardLoreState,
+    legacyEntries: loreBook[],
+): BardLoreEntry[] {
+    const retainedIds = new Set<string>()
+    const unusedMetadata = new Set(state.metadata.map((_, index) => index))
+    const remappedIds = new Map<string, string>()
+    const baseEntries = legacyEntries.map((source, index): BardLoreEntry => {
+        const id = uniqueSourceId(source, index, retainedIds)
+        retainedIds.add(id)
+        const sourceHash = fingerprintLegacyLore(source)
+        let metadataIndex = state.metadata.findIndex((item, candidateIndex) =>
+            unusedMetadata.has(candidateIndex) && item.sourceLegacyId === id,
+        )
+        if (metadataIndex < 0) {
+            const hashMatches = state.metadata
+                .map((item, candidateIndex) => ({ item, candidateIndex }))
+                .filter(({ item, candidateIndex }) => unusedMetadata.has(candidateIndex) && item.sourceHash === sourceHash)
+            if (hashMatches.length === 1) metadataIndex = hashMatches[0].candidateIndex
+        }
+        const defaults = createBardLoreEntry({ ...source, id }).bard
+        const saved = metadataIndex >= 0 ? state.metadata[metadataIndex] : defaults
+        if (metadataIndex >= 0) unusedMetadata.delete(metadataIndex)
+        remappedIds.set(saved.sourceLegacyId, id)
+        return {
+            ...safeStructuredClone(source),
+            id,
+            bard: {
+                ...safeStructuredClone(saved),
+                sourceLegacyId: id,
+                sourceHash,
+            },
+        }
+    })
+
+    const baseIds = new Set(baseEntries.map((entry) => entry.id))
+    const derivedEntries = state.derivedEntries.flatMap((saved): BardLoreEntry[] => {
+        const originalParent = saved.bard.derivedFromId
+        if (!originalParent) return []
+        const parentId = remappedIds.get(originalParent) ?? originalParent
+        if (!baseIds.has(parentId) || retainedIds.has(saved.id)) return []
+        retainedIds.add(saved.id)
+        return [{
+            ...safeStructuredClone(saved),
+            bard: {
+                ...safeStructuredClone(saved.bard),
+                sourceLegacyId: parentId,
+                derivedFromId: parentId,
+            },
+        }]
+    })
+    const validIds = new Set([...baseIds, ...derivedEntries.map((entry) => entry.id)])
+    return [...baseEntries, ...derivedEntries].map((entry) => ({
+        ...entry,
+        bard: {
+            ...entry.bard,
+            links: entry.bard.links.flatMap((link) => {
+                const targetId = remappedIds.get(link.targetId) ?? link.targetId
+                return validIds.has(targetId) ? [{ ...link, targetId }] : []
+            }),
+        },
+    }))
+}
+
+export function applyMaterializedBardLoreEntries(
+    state: BardLoreState,
+    _currentLegacyEntries: loreBook[],
+    entries: BardLoreEntry[],
+): { state: BardLoreState; legacyEntries: loreBook[] } {
+    const retainedIds = new Set<string>()
+    const baseEntries = entries.filter((entry) => !entry.bard.derivedFromId).filter((entry) => {
+        const id = entry.id?.trim()
+        if (!id || retainedIds.has(id)) return false
+        retainedIds.add(id)
+        return true
+    })
+    const baseIds = new Set(baseEntries.map((entry) => entry.id))
+    const derivedEntries = entries.filter((entry) => {
+        const parentId = entry.bard.derivedFromId
+        if (!parentId || !baseIds.has(parentId) || retainedIds.has(entry.id)) return false
+        retainedIds.add(entry.id)
+        return true
+    })
+    const validIds = new Set(retainedIds)
+    const remappedIds = new Map<string, string>()
+    const savedHashCounts = new Map<string, number>()
+    for (const saved of state.metadata) {
+        savedHashCounts.set(saved.sourceHash, (savedHashCounts.get(saved.sourceHash) ?? 0) + 1)
+    }
+    for (const saved of state.metadata) {
+        let target = baseEntries.find((entry) => entry.id === saved.sourceLegacyId)
+        if (!target && savedHashCounts.get(saved.sourceHash) === 1) {
+            const hashMatches = baseEntries.filter((entry) => entry.bard.sourceHash === saved.sourceHash)
+            if (hashMatches.length === 1) target = hashMatches[0]
+        }
+        if (target) remappedIds.set(saved.sourceLegacyId, target.id)
+    }
+    for (const saved of state.derivedEntries) {
+        if (derivedEntries.some((entry) => entry.id === saved.id)) remappedIds.set(saved.id, saved.id)
+    }
+    const normalizeLinks = (links: BardLoreLink[]) => links.filter((link) => validIds.has(link.targetId))
+    const legacyEntries = baseEntries.map(withoutBardMetadata)
+    const metadata = baseEntries.map((entry, index): BardLoreMetadata => ({
+        ...safeStructuredClone(entry.bard),
+        sourceLegacyId: entry.id,
+        sourceHash: fingerprintLegacyLore(legacyEntries[index]),
+        derivedFromId: undefined,
+        links: normalizeLinks(entry.bard.links),
+    }))
+    const normalizedDerived = derivedEntries.map((entry): BardLoreEntry => ({
+        ...safeStructuredClone(entry),
+        bard: {
+            ...safeStructuredClone(entry.bard),
+            sourceLegacyId: entry.bard.derivedFromId!,
+            sourceHash: fingerprintLegacyLore(entry),
+            links: normalizeLinks(entry.bard.links),
+        },
+    }))
+    const analysisRun = reconcileAnalysisRun(state.analysisRun, validIds, remappedIds)
+    return {
+        legacyEntries,
+        state: {
+            schemaVersion: 2,
+            mode: state.mode,
+            metadata,
+            derivedEntries: normalizedDerived,
+            settings: createBardLoreSettings(state.settings),
+            ...(analysisRun ? { analysisRun } : {}),
+        },
+    }
+}
+
+export function reconcileBardLoreState(
+    state: BardLoreState,
+    legacyEntries: loreBook[],
+): { state: BardLoreState; legacyEntries: loreBook[] } {
+    return applyMaterializedBardLoreEntries(
+        state,
+        legacyEntries,
+        materializeBardLoreEntries(state, legacyEntries),
+    )
+}
+
+export interface BardLoreOwnerMigrationReport {
+    migratedFromSchema1: boolean
+    promotedEntries: number
+    conflicts: number
+}
+
+export interface BardLoreOwnerStateResult {
+    state: BardLoreState
+    legacyEntries: loreBook[]
+    report: BardLoreOwnerMigrationReport
+}
+
+export function normalizeBardLoreOwnerState(
+    value: unknown,
+    legacyEntries: loreBook[],
+    createId: () => string,
+): BardLoreOwnerStateResult | undefined {
+    const raw = value && typeof value === 'object' ? value as Record<string, unknown> : undefined
+    if (raw?.schemaVersion !== 1) {
+        const normalized = normalizeBardLoreState(value)
+        if (!normalized) return undefined
+        return {
+            ...reconcileBardLoreState(normalized, ensureSourceIds(legacyEntries, createId)),
+            report: { migratedFromSchema1: false, promotedEntries: 0, conflicts: 0 },
+        }
+    }
+
+    const copied = normalizeCopiedBardLoreState(value)
+    if (!copied) return undefined
+    const current = ensureSourceIds(legacyEntries, createId)
+    const bases = current.map((entry) => createBardLoreEntry(entry))
+    const copiedBases = copied.entries.filter((entry) => !entry.bard.derivedFromId)
+    const available = new Set(current.map((_, index) => index))
+    const usedIds = new Set(bases.map((entry) => entry.id))
+    const remappedIds = new Map<string, string>()
+    let promotedEntries = 0
+    let conflicts = 0
+
+    const uniqueCurrentMatch = (predicate: (entry: loreBook) => boolean): number | undefined => {
+        const matches = current.flatMap((entry, index) => available.has(index) && predicate(entry) ? [index] : [])
+        return matches.length === 1 ? matches[0] : undefined
+    }
+
+    for (const source of copiedBases) {
+        const copiedHash = fingerprintLegacyLore(source)
+        let targetIndex = uniqueCurrentMatch((entry) =>
+            entry.id === source.id || entry.id === source.bard.sourceLegacyId,
+        )
+        targetIndex ??= uniqueCurrentMatch((entry) => fingerprintLegacyLore(entry) === source.bard.sourceHash)
+        targetIndex ??= uniqueCurrentMatch((entry) => fingerprintLegacyLore(entry) === copiedHash)
+
+        let targetId: string
+        if (targetIndex === undefined) {
+            targetId = allocateSourceId(source.id, usedIds, createId)
+            bases.push({
+                ...safeStructuredClone(source),
+                id: targetId,
+                bard: { ...safeStructuredClone(source.bard), sourceLegacyId: targetId },
+            })
+            promotedEntries += 1
+        }
+        else {
+            available.delete(targetIndex)
+            const legacy = current[targetIndex]
+            const legacyHash = fingerprintLegacyLore(legacy)
+            const grimoireChanged = copiedHash !== source.bard.sourceHash
+            const legacyChanged = legacyHash !== source.bard.sourceHash
+            if (grimoireChanged && legacyChanged && copiedHash !== legacyHash) {
+                targetId = allocateSourceId(undefined, usedIds, createId)
+                bases.push({
+                    ...safeStructuredClone(source),
+                    id: targetId,
+                    comment: `${source.comment} (Grimoire migration copy)`,
+                    bard: {
+                        ...safeStructuredClone(source.bard),
+                        sourceLegacyId: targetId,
+                        tags: [...new Set([...source.bard.tags, 'migration-conflict'])],
+                    },
+                })
+                conflicts += 1
+            }
+            else {
+                targetId = legacy.id!
+                const ordinary = grimoireChanged && !legacyChanged ? withoutBardMetadata(source) : legacy
+                bases[targetIndex] = {
+                    ...safeStructuredClone(ordinary),
+                    id: targetId,
+                    bard: { ...safeStructuredClone(source.bard), sourceLegacyId: targetId },
+                }
+            }
+        }
+        remappedIds.set(source.id, targetId)
+        remappedIds.set(source.bard.sourceLegacyId, targetId)
+    }
+
+    const derivedEntries = copied.entries.filter((entry) => entry.bard.derivedFromId).map((source) => {
+        const parentId = remappedIds.get(source.bard.derivedFromId!) ?? source.bard.derivedFromId!
+        const id = allocateSourceId(source.id, usedIds, createId)
+        remappedIds.set(source.id, id)
+        return {
+            ...safeStructuredClone(source),
+            id,
+            bard: {
+                ...safeStructuredClone(source.bard),
+                sourceLegacyId: parentId,
+                derivedFromId: parentId,
+            },
+        }
+    })
+    const allEntries = [...bases, ...derivedEntries]
+    const validIds = new Set(allEntries.map((entry) => entry.id))
+    for (const entry of allEntries) {
+        entry.bard.links = entry.bard.links.flatMap((link) => {
+            const targetId = remappedIds.get(link.targetId) ?? link.targetId
+            return validIds.has(targetId) ? [{ ...link, targetId }] : []
+        })
+    }
+    const analysisRun = reconcileAnalysisRun(copied.analysisRun, validIds, remappedIds)
+    const state: BardLoreState = {
+        schemaVersion: 2,
+        mode: copied.mode,
+        metadata: bases.map((entry) => entry.bard),
+        derivedEntries,
+        settings: copied.settings,
+        ...(analysisRun ? { analysisRun } : {}),
+    }
+    const reconciled = applyMaterializedBardLoreEntries(
+        state,
+        bases.map(withoutBardMetadata),
+        allEntries,
+    )
+    return {
+        ...reconciled,
+        report: { migratedFromSchema1: true, promotedEntries, conflicts },
+    }
+}
+
 export function upgradeLegacyLorebook(
     entries: loreBook[],
     createId: () => string,
@@ -640,7 +1077,7 @@ export function upgradeLegacyLorebook(
     const reserved = new Set(entries.map((entry) => entry.id?.trim()).filter((id): id is string => Boolean(id)))
     const retained = new Set<string>()
 
-    const upgraded = entries.map((entry): BardLoreEntry => {
+    const metadata = entries.map((entry): BardLoreMetadata => {
         let id = entry.id?.trim() ?? ''
         if (!id || retained.has(id)) {
             do id = createId().trim()
@@ -649,13 +1086,14 @@ export function upgradeLegacyLorebook(
         retained.add(id)
         reserved.add(id)
 
-        return createBardLoreEntry({ ...entry, id })
+        return createBardLoreEntry({ ...entry, id }).bard
     })
 
     return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         mode: 'bard',
-        entries: upgraded,
+        metadata,
+        derivedEntries: [],
         settings: createBardLoreSettings(settings),
     }
 }

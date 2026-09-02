@@ -573,6 +573,17 @@ export function createMarkdownNarrativeWiki(
     const workspaceFor = (characterId: string, chatId: string) =>
         resolveMarkdownWikiWorkspace(userDataDirectory, characterId, chatId)
     const documentCache = new Map<string, MarkdownWikiDocument[]>()
+    type BardChatUndoFile = { relativePath: string; contents: string }
+    type BardChatUndoSnapshot = {
+        characterId: string
+        chatId: string
+        files: BardChatUndoFile[]
+        signature: string
+    }
+    let bardChatUndoSnapshot: BardChatUndoSnapshot | null = null
+    let pendingBardChatUndo: Omit<BardChatUndoSnapshot, 'signature'> & {
+        beforeSignature: string
+    } | null = null
 
     const cleanupLegacySnapshots = async (
         characterId: string,
@@ -751,6 +762,34 @@ export function createMarkdownNarrativeWiki(
             ?? refreshDocuments(characterId, chatId)
     }
 
+    const snapshotSignature = (
+        documents: readonly MarkdownWikiDocument[]
+    ): string => createHash('sha256').update(JSON.stringify(
+        [...documents]
+            .sort((left, right) => left.relativePath.localeCompare(right.relativePath))
+            .map((document) => [
+                document.id, document.relativePath, document.contentHash,
+            ])
+    )).digest('base64url')
+
+    const captureBardChatFiles = async (
+        characterId: string,
+        chatId: string
+    ): Promise<{ files: BardChatUndoFile[]; signature: string }> => {
+        const workspace = workspaceFor(characterId, chatId)
+        const documents = await refreshDocuments(characterId, chatId)
+        return {
+            signature: snapshotSignature(documents),
+            files: await Promise.all(documents.map(async (document) => ({
+                relativePath: document.relativePath,
+                contents: await fileSystem.readFile(join(
+                    workspace.directory,
+                    ...document.relativePath.split('/')
+                ), 'utf8'),
+            }))),
+        }
+    }
+
     const rebuildIndex = async (
         characterId: string,
         chatId: string,
@@ -782,6 +821,97 @@ export function createMarkdownNarrativeWiki(
     return {
         invalidateCache(characterId: string, chatId: string): void {
             documentCache.delete(workspaceFor(characterId, chatId).directory)
+        },
+        async beginBardChatUndo(input: {
+            characterId: string
+            chatId: string
+        }): Promise<{ started: true }> {
+            const characterId = required(input.characterId, 'Character ID')
+            const chatId = required(input.chatId, 'Chat ID')
+            const captured = await captureBardChatFiles(characterId, chatId)
+            pendingBardChatUndo = {
+                characterId,
+                chatId,
+                files: captured.files,
+                beforeSignature: captured.signature,
+            }
+            return { started: true }
+        },
+        async finalizeBardChatUndo(input: {
+            characterId: string
+            chatId: string
+        }): Promise<{ available: boolean }> {
+            const characterId = required(input.characterId, 'Character ID')
+            const chatId = required(input.chatId, 'Chat ID')
+            const pending = pendingBardChatUndo
+            if (!pending || pending.characterId !== characterId
+                || pending.chatId !== chatId) {
+                throw new Error('BARDCHAT undo snapshot was not started')
+            }
+            const current = await captureBardChatFiles(characterId, chatId)
+            if (current.signature !== pending.beforeSignature) {
+                bardChatUndoSnapshot = {
+                    characterId,
+                    chatId,
+                    files: pending.files,
+                    signature: current.signature,
+                }
+            }
+            pendingBardChatUndo = null
+            return {
+                available: bardChatUndoSnapshot?.characterId === characterId
+                    && bardChatUndoSnapshot.chatId === chatId,
+            }
+        },
+        async getBardChatUndoStatus(input: {
+            characterId: string
+            chatId: string
+        }): Promise<{ available: boolean }> {
+            const characterId = required(input.characterId, 'Character ID')
+            const chatId = required(input.chatId, 'Chat ID')
+            return {
+                available: bardChatUndoSnapshot?.characterId === characterId
+                    && bardChatUndoSnapshot.chatId === chatId,
+            }
+        },
+        async restoreBardChatUndo(input: {
+            characterId: string
+            chatId: string
+        }): Promise<{ restored: true }> {
+            const characterId = required(input.characterId, 'Character ID')
+            const chatId = required(input.chatId, 'Chat ID')
+            const snapshot = bardChatUndoSnapshot
+            if (!snapshot || snapshot.characterId !== characterId
+                || snapshot.chatId !== chatId) {
+                throw new Error('No BARDCHAT undo snapshot is available')
+            }
+            const workspace = workspaceFor(characterId, chatId)
+            const current = await refreshDocuments(characterId, chatId)
+            if (snapshotSignature(current) !== snapshot.signature) {
+                throw new Error('Wiki changed after the BARDCHAT command')
+            }
+            const baselinePaths = new Set(snapshot.files.map((file) =>
+                file.relativePath
+            ))
+            for (const file of snapshot.files) {
+                const target = join(
+                    workspace.directory,
+                    ...file.relativePath.split('/')
+                )
+                await fileSystem.mkdir(resolve(target, '..'), { recursive: true })
+                await writeAtomically(fileSystem, target, file.contents)
+            }
+            for (const document of current) {
+                if (baselinePaths.has(document.relativePath)) continue
+                await fileSystem.rm(join(
+                    workspace.directory,
+                    ...document.relativePath.split('/')
+                ), { force: true })
+            }
+            await rebuildIndex(characterId, chatId)
+            bardChatUndoSnapshot = null
+            pendingBardChatUndo = null
+            return { restored: true }
         },
         async recoverRebootBatch(input: {
             characterId: string
@@ -1845,8 +1975,11 @@ export function createMarkdownNarrativeWiki(
                 score: number
                 occurredAt: number
             }[]
+            sourceLimit?: number
             tokenBudget?: {
                 target: number
+                events?: number
+                perSource?: number
                 maximum: number
             }
         }) {
@@ -1862,6 +1995,9 @@ export function createMarkdownNarrativeWiki(
                 ...(input.sourceMatches
                     ? { sourceMatches: input.sourceMatches }
                     : {}),
+                ...(input.sourceLimit === undefined
+                    ? {}
+                    : { sourceLimit: input.sourceLimit }),
                 ...(input.tokenBudget
                     ? { tokenBudget: input.tokenBudget }
                     : {}),

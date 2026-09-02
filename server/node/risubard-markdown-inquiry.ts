@@ -5,7 +5,7 @@ import { normalizeRisuBardInquiryTokenBudget } from '../../src/ts/risubard/risuB
 import { selectMarkdownExcerpt } from './risubard-markdown-excerpt'
 
 const MAX_SELECTED_DOCUMENTS = 12
-const MAX_SOURCE_CHARACTERS = 2_000
+const MAX_SOURCE_CHARACTERS = 12_000
 const MAX_CANDIDATES = 64
 const MAX_DIRECT_SEEDS = 32
 const MAX_SEMANTIC_SEEDS = 32
@@ -13,9 +13,9 @@ const MAX_EXPANDED_DOCUMENTS_PER_HOP = 8
 const MAX_EDGES_PER_DOCUMENT = 16
 const MAX_INSPECTED_EDGES = 256
 const MAX_HOPS = 2
-const MAX_RESERVED_HISTORICAL_EVENTS = 2
-const MAX_SOURCE_MATCHES = 8
-const MAX_SELECTED_SOURCE_MESSAGES = 2
+const MAX_SOURCE_MATCHES = 32
+const DEFAULT_SELECTED_SOURCE_MESSAGES = 8
+const MAX_MAP_ANCHORS_BEFORE_EVENTS = 4
 const ROUTED_SOURCE_SCORE_BONUS = 12
 const SEMANTIC_RRF_K = 60
 const SEMANTIC_RRF_SCALE = 480
@@ -25,6 +25,7 @@ const QUERY_STOPWORDS = new Set([
     '지금', '현재', '무엇', '무엇을', '어떻게', '왜', '해야', '하지',
     '한다', '했다', '하는', '있는', '있다', '없는', '없다', '대한',
     '관련', '정보', '알려', '해줘', '해', '줘', '그리고', '그러면',
+    '아는', '같다', '대해', '대해서', '생각',
     'the', 'a', 'an', 'is', 'are', 'was', 'were', 'what', 'how', 'why',
     'this', 'that', 'these', 'those', 'about', 'please',
 ])
@@ -35,7 +36,7 @@ const KOREAN_QUERY_SUFFIXES = [
     '했던', '하던', '했다', '한다', '하는', '하며', '하고',
     '에서', '에게', '까지', '부터', '처럼', '보다', '으로',
     '거나', '면서', '지만', '는데', '던', '고',
-    '은', '는', '이', '가', '을', '를', '와', '과', '의', '에', '로',
+    '은', '는', '이', '가', '을', '를', '와', '과', '의', '에', '로', '들',
 ] as const
 
 let inquiryTokenizer: Tiktoken | undefined
@@ -43,6 +44,20 @@ let inquiryTokenizer: Tiktoken | undefined
 function countInquiryTokens(value: string): number {
     inquiryTokenizer ??= get_encoding('cl100k_base')
     return inquiryTokenizer.encode(value).length
+}
+
+function truncateToTokenBudget(value: string, maximumTokens: number): string {
+    if (countInquiryTokens(value) <= maximumTokens) return value
+    const characters = Array.from(value)
+    let low = 0
+    let high = characters.length
+    while (low < high) {
+        const middle = Math.ceil((low + high) / 2)
+        if (countInquiryTokens(characters.slice(0, middle).join(''))
+            <= maximumTokens) low = middle
+        else high = middle - 1
+    }
+    return characters.slice(0, low).join('').trimEnd()
 }
 
 export interface MarkdownInquiryInput {
@@ -59,8 +74,11 @@ export interface MarkdownInquiryInput {
         score: number
         occurredAt: number
     }[]
+    sourceLimit?: number
     tokenBudget?: {
         target: number
+        events?: number
+        perSource?: number
         maximum: number
     }
 }
@@ -77,6 +95,12 @@ export interface MarkdownInquiryResult {
         content: string
         tokens: number
         priority: number
+        displayName?: string
+        occurredAt?: number
+    }>
+    evidenceRequests: Array<{
+        messageId: string
+        eventTitle: string
     }>
     entityCandidates: []
     metrics: {
@@ -85,6 +109,7 @@ export interface MarkdownInquiryResult {
         inspectedEdgeCount: number
         selectedNodeCount: number
         selectedTokens: number
+        selectedEventTokens: number
         semanticCandidateCount: number
         hopCount: number
         auxiliaryModelCalls: 0
@@ -123,12 +148,14 @@ function normalized(value: string): string {
 
 function normalizedQueryTerm(value: string): string {
     if (!/^[가-힣]+$/u.test(value)) return value
-    for (const suffix of KOREAN_QUERY_SUFFIXES) {
-        if (!value.endsWith(suffix)) continue
-        const stem = value.slice(0, -suffix.length)
-        if (stem.length >= 2) return stem
+    let term = value
+    while (true) {
+        const suffix = KOREAN_QUERY_SUFFIXES.find((candidate) =>
+            term.endsWith(candidate)
+            && term.length - candidate.length >= 2)
+        if (!suffix) return term
+        term = term.slice(0, -suffix.length)
     }
-    return value
 }
 
 function queryTerms(value: string): string[] {
@@ -446,26 +473,28 @@ export function inquireMarkdownDocuments(
     const pastIntent = hasPastIntent(input.currentInput)
     const currentIntent = /(?:현재|지금|최신|상태|current|now|latest|status|現在|今)/i
         .test(input.currentInput)
+    const stateTopicIntent = /(?:상태|목표|관계|위치|어디|소지품|보유|능력|지식|state|status|goal|relationship|location|where|inventory|ability|knowledge|状態|目標|関係|位置)/i
+        .test(input.currentInput)
+    const stateHistoryIntent = pastIntent
+        || /(?:상태\s*변화|왜|원인|이유|계기|변해|바뀌|했|였|됐|갔|왔|던|데려간|사라진|향했|cause|reason|changed?|became|変化|理由|原因)/i
+            .test(input.currentInput)
+    const explicitEventIntent = /(?:사건|이벤트|발생|일어났|벌어졌|event|incident|happened|occurred|事件|発生)/i
+        .test(input.currentInput)
+        || eligibleDocuments.some((document) => document.type === 'event'
+            && [document.title, ...(document.aliases ?? [])].some((title) =>
+                normalizedQuery.includes(normalized(title))))
+    const currentStateIntent = stateTopicIntent
+        && !stateHistoryIntent
+        && !explicitEventIntent
     const chronologyIntent = /(?:작중\s*행적|행적|모험|여정|연대기|시간\s*순|순서대로|지금까지|journey|adventures?|chronolog|timeline|story\s+history)/i
         .test(input.currentInput)
     const historicalEvidenceIntent = hasHistoricalEvidenceIntent(
         input.currentInput
     )
     const linkedCharacterIntent = hasLinkedCharacterIntent(input.currentInput)
-    const chronologySummaryIds = new Set(
-        chronologyIntent
-            ? eligibleDocuments.filter((document) =>
-                document.type === 'character'
-                && /^#{2,3}\s+(작중\s*행적|Story History)\s*$/mi.test(document.content)
-                && normalizedQuery.includes(normalized(document.title)))
-                .map((document) => document.id)
-            : []
-    )
     const requiredIds = new Set(requiredDocuments.map((document) => document.id))
     const automatic = [...candidates.values()]
         .filter((candidate) => !requiredIds.has(candidate.document.id))
-        .filter((candidate) => chronologySummaryIds.size === 0
-            || candidate.document.type !== 'event')
         .filter((candidate) => candidate.document.type !== 'character'
             || candidate.hop === 0
             || candidate.directScore > 0
@@ -480,6 +509,16 @@ export function inquireMarkdownDocuments(
             right.score - left.score
             || right.document.updated.localeCompare(left.document.updated)
             || left.document.id.localeCompare(right.document.id))
+    const tokenBudget = normalizeRisuBardInquiryTokenBudget(
+        input.tokenBudget?.target,
+        input.tokenBudget?.maximum,
+        input.tokenBudget?.events,
+        input.tokenBudget?.perSource,
+    )
+    const excerptCharacters = Math.min(
+        MAX_SOURCE_CHARACTERS,
+        tokenBudget.perSource,
+    )
     const prepared = [
         ...requiredDocuments.map((document) => ({
             document,
@@ -492,52 +531,32 @@ export function inquireMarkdownDocuments(
             content: candidate.document.content,
             documentType: candidate.document.type,
             query: input.currentInput,
-            maximumCharacters: MAX_SOURCE_CHARACTERS,
+            maximumCharacters: excerptCharacters,
             chronologyIntent,
         })
+        const boundedContent = truncateToTokenBudget(
+            content,
+            tokenBudget.perSource,
+        )
         return {
             ...candidate,
-            content,
-            tokens: countInquiryTokens(content),
+            content: boundedContent,
+            tokens: countInquiryTokens(boundedContent),
         }
     })
-    const tokenBudget = normalizeRisuBardInquiryTokenBudget(
-        input.tokenBudget?.target,
-        input.tokenBudget?.maximum
-    )
-    const selectedTokenBudget = /(?:자세히|상세히|모든\s+근거|근거까지|전부|모두|in detail|all evidence)/i
+    const detailedIntent = /(?:자세히|상세히|모든\s+근거|근거까지|전부|모두|in detail|all evidence)/i
         .test(input.currentInput)
-        ? tokenBudget.maximum
-        : tokenBudget.target
+    const eventEvidenceIntent = !currentStateIntent && (
+        stateHistoryIntent || historicalEvidenceIntent
+        || chronologyIntent || detailedIntent
+    )
+    const selectedMapTokenBudget = tokenBudget.target
     const selected: typeof prepared = []
-    const routedSourceMessageIds = new Set([...candidates.values()]
-        .flatMap((candidate) => candidate.document.sourceMessageIds))
-    const preparedSourceMatches = historicalEvidenceIntent
-        ? (input.sourceMatches ?? []).slice(0, MAX_SOURCE_MATCHES)
-            .map((match) => {
-                const routed = routedSourceMessageIds.has(match.messageId)
-                const content = [
-                    `Original historical chat evidence (${match.role}, order ${match.occurredAt}):`,
-                    match.content,
-                ].join('\n')
-                return {
-                    ...match,
-                    content,
-                    routed,
-                    effectiveScore: match.score
-                        + (routed ? ROUTED_SOURCE_SCORE_BONUS : 0),
-                    tokens: countInquiryTokens(content),
-                }
-            })
-            .sort((left, right) =>
-                right.effectiveScore - left.effectiveScore
-                || right.occurredAt - left.occurredAt
-                || left.messageId.localeCompare(right.messageId))
-        : []
-    const selectedSourceMatches: typeof preparedSourceMatches = []
     const selectedIds = new Set<string>()
-    const selectedSourceIds = new Set<string>()
     let selectedTokens = 0
+    let selectedMapTokens = 0
+    let selectedEventLaneTokens = 0
+    let selectedEventTokens = 0
     for (const candidate of prepared.filter((item) =>
         requiredIds.has(item.document.id))) {
         if (selectedTokens + candidate.tokens > tokenBudget.maximum) {
@@ -546,40 +565,133 @@ export function inquireMarkdownDocuments(
         selected.push(candidate)
         selectedIds.add(candidate.document.id)
         selectedTokens += candidate.tokens
+        if (candidate.document.type === 'event') {
+            selectedEventTokens += candidate.tokens
+            selectedEventLaneTokens += candidate.tokens
+        }
+        else {
+            selectedMapTokens += candidate.tokens
+        }
     }
-    const addOptionalIfFits = (candidate: (typeof prepared)[number]) => {
+    const addOptionalIfFits = (
+        candidate: (typeof prepared)[number],
+        lane: 'map' | 'event',
+    ) => {
+        const isEvent = candidate.document.type === 'event'
+        const laneTokens = lane === 'event'
+            ? selectedEventLaneTokens
+            : selectedMapTokens
+        const laneBudget = lane === 'event'
+            ? tokenBudget.events
+            : selectedMapTokenBudget
         if (selectedIds.has(candidate.document.id)
-            || selected.length + selectedSourceMatches.length
-                >= MAX_SELECTED_DOCUMENTS
-            || selectedTokens + candidate.tokens > selectedTokenBudget) {
+            || selected.length >= MAX_SELECTED_DOCUMENTS
+            || selectedTokens + candidate.tokens > tokenBudget.maximum
+            || laneTokens + candidate.tokens > laneBudget) {
             return false
         }
         selected.push(candidate)
         selectedIds.add(candidate.document.id)
         selectedTokens += candidate.tokens
+        if (isEvent) selectedEventTokens += candidate.tokens
+        if (lane === 'event') selectedEventLaneTokens += candidate.tokens
+        else selectedMapTokens += candidate.tokens
         return true
     }
-    for (const match of preparedSourceMatches) {
-        if (selectedSourceMatches.length >= MAX_SELECTED_SOURCE_MESSAGES
-            || selectedSourceIds.has(match.messageId)
-            || selected.length + selectedSourceMatches.length
-                >= MAX_SELECTED_DOCUMENTS
-            || selectedTokens + match.tokens > selectedTokenBudget) continue
-        selectedSourceMatches.push(match)
-        selectedSourceIds.add(match.messageId)
-        selectedTokens += match.tokens
+    for (const candidate of prepared.filter((item) =>
+        !requiredIds.has(item.document.id)
+        && item.document.type !== 'event'
+    ).slice(0, MAX_MAP_ANCHORS_BEFORE_EVENTS)) {
+        addOptionalIfFits(candidate, 'map')
     }
-    if (historicalEvidenceIntent && !chronologyIntent) {
+    if (eventEvidenceIntent) {
         for (const candidate of prepared.filter((item) =>
             !requiredIds.has(item.document.id)
             && item.document.type === 'event'
-        ).slice(0, MAX_RESERVED_HISTORICAL_EVENTS)) {
-            addOptionalIfFits(candidate)
+        )) {
+            addOptionalIfFits(candidate, 'event')
         }
     }
+    if (!eventEvidenceIntent && !currentStateIntent) {
+        for (const candidate of prepared.filter((item) =>
+            !requiredIds.has(item.document.id)
+            && item.document.type === 'event'
+        )) {
+            addOptionalIfFits(candidate, 'map')
+        }
+    }
+    const sourceLimit = Number.isSafeInteger(input.sourceLimit)
+        ? Math.max(0, Math.min(MAX_SOURCE_MATCHES, input.sourceLimit as number))
+        : DEFAULT_SELECTED_SOURCE_MESSAGES
+    const selectedEventSources = new Map<string, string>()
+    for (const candidate of selected) {
+        if (candidate.document.type !== 'event') continue
+        for (const messageId of candidate.document.sourceMessageIds) {
+            if (!selectedEventSources.has(messageId)) {
+                selectedEventSources.set(messageId, candidate.document.title)
+            }
+        }
+    }
+    const evidenceRequests = [...selectedEventSources]
+        .slice(0, sourceLimit)
+        .map(([messageId, eventTitle]) => ({ messageId, eventTitle }))
+    const preparedSourceMatches = (input.sourceMatches ?? [])
+        .slice(0, MAX_SOURCE_MATCHES)
+        .map((match) => {
+            const eventTitle = selectedEventSources.get(match.messageId)
+            const routed = eventTitle !== undefined
+            const heading = `Original historical chat evidence (${match.role}, order ${match.occurredAt}):`
+            const bodyTokenBudget = Math.max(
+                1,
+                tokenBudget.perSource - countInquiryTokens(`${heading}\n`),
+            )
+            const excerpt = selectMarkdownExcerpt({
+                content: match.content,
+                documentType: 'other',
+                query: input.currentInput,
+                maximumCharacters: Math.min(
+                    MAX_SOURCE_CHARACTERS,
+                    bodyTokenBudget,
+                ),
+                chronologyIntent: false,
+            })
+            const content = `${heading}\n${truncateToTokenBudget(
+                excerpt,
+                bodyTokenBudget,
+            )}`
+            return {
+                ...match,
+                content,
+                eventTitle,
+                routed,
+                effectiveScore: match.score
+                    + (routed ? ROUTED_SOURCE_SCORE_BONUS : 0),
+                tokens: countInquiryTokens(content),
+            }
+        })
+        .filter((match) => historicalEvidenceIntent || match.routed)
+        .sort((left, right) =>
+            Number(right.routed) - Number(left.routed)
+            || right.effectiveScore - left.effectiveScore
+            || right.occurredAt - left.occurredAt
+            || left.messageId.localeCompare(right.messageId))
+    const selectedSourceMatches: typeof preparedSourceMatches = []
+    const selectedSourceIds = new Set<string>()
+    for (const match of preparedSourceMatches) {
+        if (selectedSourceMatches.length >= sourceLimit
+            || selectedSourceIds.has(match.messageId)
+            || selectedTokens + match.tokens > tokenBudget.maximum
+            || selectedMapTokens + match.tokens > selectedMapTokenBudget) continue
+        selectedSourceMatches.push(match)
+        selectedSourceIds.add(match.messageId)
+        selectedTokens += match.tokens
+        selectedMapTokens += match.tokens
+    }
     for (const candidate of prepared) {
-        const required = requiredIds.has(candidate.document.id)
-        if (!required) addOptionalIfFits(candidate)
+        if (!requiredIds.has(candidate.document.id)
+            && candidate.document.type !== 'event') {
+            addOptionalIfFits(candidate, 'map')
+        }
     }
 
     return {
@@ -597,6 +709,9 @@ export function inquireMarkdownDocuments(
                 priority: candidate.document.contextMode === 'always'
                     ? 200
                     : 100 + Math.round(candidate.score),
+                ...(candidate.document.type === 'event'
+                    ? { displayName: `사건 · ${candidate.document.title} · ${candidate.document.id}` }
+                    : {}),
             })),
             ...selectedSourceMatches.map((match) => ({
                 id: `narrative-memory:source:${encodeURIComponent(match.messageId)}:${match.occurredAt}`,
@@ -606,8 +721,12 @@ export function inquireMarkdownDocuments(
                 tokens: match.tokens,
                 priority: 140 + Math.round(match.effectiveScore),
                 occurredAt: match.occurredAt,
+                displayName: match.routed
+                    ? `과거 원문 · 턴 ${Math.max(1, Math.floor((match.occurredAt + 1) / 2))} 응답 · 출처 기반 · ${match.eventTitle}`
+                    : `과거 원문 · 턴 ${Math.max(1, Math.floor((match.occurredAt + 1) / 2))} ${match.role === 'assistant' ? '응답' : '입력'} · 어휘 검색`,
             })),
         ],
+        evidenceRequests,
         entityCandidates: [],
         metrics: {
             candidateCount: candidates.size,
@@ -615,6 +734,7 @@ export function inquireMarkdownDocuments(
             inspectedEdgeCount,
             selectedNodeCount: selected.length + selectedSourceMatches.length,
             selectedTokens,
+            selectedEventTokens,
             semanticCandidateCount: semantic.length,
             hopCount: selected.reduce((maximum, candidate) =>
                 Math.max(maximum, candidate.hop), 0),

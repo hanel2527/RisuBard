@@ -499,14 +499,18 @@ describe('memory analysis runner', () => {
         expect(result.canonicalReceipt?.warnings).toHaveLength(failed ? 1 : 0)
     })
 
-    test('recovers a malformed single canonical target with the compact contract', async () => {
+    test('recovers a malformed single canonical target with Markdown sections', async () => {
         const saveCanonicalDocument = vi.fn(async (input) => ({
             ...input,
             id: `character.${input.title}`,
             contentHash: 'hash',
             relativePath: `${input.title}.md`,
         }))
-        const calls: Array<{ size: number; schema: Record<string, any> }> = []
+        const calls: Array<{
+            size: number
+            format: MemoryAnalysisModelRequest['format']
+            schema: Record<string, any>
+        }> = []
         const analyze = vi.fn(async (request: MemoryAnalysisModelRequest) => {
             if (request.format === 'memory-draft') return JSON.stringify({
                 schemaVersion: 1, title: 'Arrival',
@@ -519,14 +523,10 @@ describe('memory analysis runner', () => {
             })
             const { targets } = JSON.parse(request.input)
             const schema = JSON.parse(request.responseSchema ?? '{}')
-            calls.push({ size: targets.length, schema })
+            calls.push({ size: targets.length, format: request.format, schema })
             if (calls.length <= 2) return 'not JSON'
-            if (schema.required?.includes('sections')) {
-                return JSON.stringify({
-                    sections: canonicalSections(
-                        `## ${targets[0].target.title}\n\n### Current State\n\n- Arrived.`
-                    ),
-                })
+            if (request.format === 'markdown') {
+                return '### Current State\n\n- Arrived.'
             }
             return canonicalBatch(
                 `## ${targets[0].target.title}\n\n### Current State\n\n- Arrived.`
@@ -555,7 +555,7 @@ describe('memory analysis runner', () => {
 
         expect(calls.map((call) => call.size)).toEqual([2, 1, 1, 1])
         expect(calls[1].schema).toHaveProperty('properties.documents')
-        expect(calls[2].schema).toMatchObject({ required: ['sections'] })
+        expect(calls[2]).toMatchObject({ format: 'markdown', schema: {} })
         expect(saveCanonicalDocument).toHaveBeenCalledTimes(2)
         expect(result.canonicalReceipt?.warnings).toEqual([])
     })
@@ -1439,7 +1439,7 @@ describe('memory analysis runner', () => {
             ])
     })
 
-    test('retries a new character document that omits current state', async () => {
+    test('accepts a new character document that omits current state', async () => {
         let batchAttempts = 0
         const saveCanonicalDocument = vi.fn(async (input) => ({
             ...input,
@@ -1463,11 +1463,7 @@ describe('memory analysis runner', () => {
                 })
             }
             batchAttempts += 1
-            if (batchAttempts === 1) {
-                return canonicalBatch('# 사만다\n\n### 작중 행적\n\n- 연구를 계속했다.')
-            }
-            expect(request.system).toContain('직접 자식 `### 현재 상태` 절이 필요합니다')
-            return canonicalBatch('# 사만다\n\n### 현재 상태\n\n- 수석 생물학자다.')
+            return canonicalBatch('# 사만다\n\n### 큰 전환점\n\n- 연구를 계속했다.')
         })
         const runner = createMemoryAnalysisRunner({
             memoryService: { loadState: vi.fn(), applyDelta: vi.fn() },
@@ -1490,8 +1486,11 @@ describe('memory analysis runner', () => {
             }],
         })
 
-        expect(batchAttempts).toBe(2)
+        expect(batchAttempts).toBe(1)
         expect(saveCanonicalDocument).toHaveBeenCalledOnce()
+        expect(saveCanonicalDocument).toHaveBeenCalledWith(expect.objectContaining({
+            markdown: expect.not.stringContaining('### 현재 상태'),
+        }))
     })
 
     test('normalizes a new character overview into the required current-state section', async () => {
@@ -1862,7 +1861,7 @@ describe('memory analysis runner', () => {
         expect(result.canonicalReceipt?.changes).toEqual([])
     })
 
-    test('repairs a missing character current-state section during additional analysis', async () => {
+    test('does not force-repair a missing character current-state section', async () => {
         const saveCanonicalDocument = vi.fn(async (input) => ({
             ...input,
             id: input.documentId,
@@ -1882,12 +1881,7 @@ describe('memory analysis runner', () => {
                     canonicalUpdateCandidates: [],
                 })
             }
-            expect(request.input).toContain('character.souma')
-            return canonicalPatchBatch([{
-                heading: '현재 상태',
-                operation: 'upsert',
-                content: '- 2학년 5반으로 전학 온 남학생이다.\n- 페르소나 「청색의 왕」을 지닌다.',
-            }])
+            throw new Error(`unexpected canonical rewrite: ${request.format}`)
         })
         const runner = createMemoryAnalysisRunner({
             memoryService: { loadState: vi.fn(), applyDelta: vi.fn() },
@@ -1922,10 +1916,7 @@ describe('memory analysis runner', () => {
             additionalSearchLimit: 0,
         })
 
-        expect(saveCanonicalDocument).toHaveBeenCalledWith(expect.objectContaining({
-            documentId: 'character.souma',
-            markdown: expect.stringContaining('### 현재 상태'),
-        }))
+        expect(saveCanonicalDocument).not.toHaveBeenCalled()
     })
 
     test('does not protect an ordinary turn with no durable change', async () => {

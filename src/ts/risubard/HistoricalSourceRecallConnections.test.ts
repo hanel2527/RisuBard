@@ -11,10 +11,12 @@ describe('historical source recall connections', () => {
         const recallCall = source.match(
             /sourceMatches: findHistoricalSourceMatches\(\{[\s\S]{0,500}?\}\),/
         )?.[0] ?? ''
+        const exactRecallCall = source.match(
+            /resolveSourceMatches: \(messageIds\) =>[\s\S]{0,700}?\}\),/
+        )?.[0] ?? ''
 
-        expect(source).toContain(
-            "import { findHistoricalSourceMatches } from '../risubard/historicalSourceRecall'"
-        )
+        expect(source).toContain('findHistoricalSourceMatches,')
+        expect(source).toContain('resolveHistoricalSourceMatchesById,')
         expect(recallCall).toContain('messages: currentChat.message')
         expect(recallCall).toContain(
             'inquirySettings.risuBardResponseMessageCount'
@@ -22,5 +24,7 @@ describe('historical source recall connections', () => {
         expect(recallCall).not.toContain(
             'inquirySettings.risuBardRecentMessageCount'
         )
+        expect(exactRecallCall).toContain('messages: currentChat.message')
+        expect(exactRecallCall).toContain('messageIds')
     })
 })

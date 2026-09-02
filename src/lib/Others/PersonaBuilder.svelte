@@ -206,10 +206,9 @@
     bind:open
     size="xl"
     tier="base"
-    overlayClass="z-[45]"
     closeOnEscape={true}
     closeOnOutsideClick={false}
-    contentClass="persona-builder-dialog z-[45]"
+    contentClass="persona-builder-dialog"
     bodyClass="min-h-0 overflow-y-auto"
     closeAriaLabel={copy.close}
 >

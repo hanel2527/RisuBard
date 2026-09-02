@@ -32,8 +32,21 @@ function validEvidence(value, chatId) {
 }
 
 function validInquiryTokenBudget(value) {
-    return hasExactKeys(value, ['target', 'maximum'])
+    if (!isRecord(value)) return false
+    const keys = Object.keys(value)
+    if (!keys.includes('target') || !keys.includes('maximum')
+        || keys.some((key) => ![
+            'target', 'events', 'perSource', 'maximum',
+        ].includes(key))) return false
+    return keys.length >= 2 && keys.length <= 4
         && Number.isSafeInteger(value.target)
+        && (value.events === undefined || (Number.isSafeInteger(value.events)
+            && value.events >= 256
+            && value.events <= value.maximum))
+        && (value.perSource === undefined
+            || (Number.isSafeInteger(value.perSource)
+                && value.perSource >= 256
+                && value.perSource <= value.maximum))
         && Number.isSafeInteger(value.maximum)
         && value.target >= 256
         && value.target <= value.maximum
@@ -53,7 +66,7 @@ function validSemanticMatches(value) {
 
 function validSourceMatches(value) {
     return Array.isArray(value)
-        && value.length <= 8
+        && value.length <= 32
         && value.every((match) =>
             hasExactKeys(match, [
                 'messageId', 'role', 'content', 'score', 'occurredAt',
@@ -459,6 +472,9 @@ function registerRisuBardMemoryRoutes(app, options) {
                 ...(req.body.sourceMatches === undefined
                     ? []
                     : ['sourceMatches']),
+                ...(req.body.sourceLimit === undefined
+                    ? []
+                    : ['sourceLimit']),
             ])
             if (!validShape
                 || !hasBoundedId(req.body.characterId)
@@ -472,8 +488,12 @@ function registerRisuBardMemoryRoutes(app, options) {
                     && !validSemanticMatches(req.body.semanticMatches))
                 || (req.body.sourceMatches !== undefined
                     && !validSourceMatches(req.body.sourceMatches))
+                || (req.body.sourceLimit !== undefined
+                    && (!Number.isSafeInteger(req.body.sourceLimit)
+                        || req.body.sourceLimit < 0
+                        || req.body.sourceLimit > 32))
                 || Buffer.byteLength(JSON.stringify(req.body), 'utf8')
-                    > 32 * 1_024) {
+                    > 256 * 1_024) {
                 res.status(400).send({
                     error: 'Invalid narrative inquiry request',
                 })
@@ -721,6 +741,34 @@ function registerRisuBardMemoryRoutes(app, options) {
             }
         }
     )
+
+    for (const [action, method] of [
+        ['begin', 'beginBardChatUndo'],
+        ['finalize', 'finalizeBardChatUndo'],
+        ['status', 'getBardChatUndoStatus'],
+        ['restore', 'restoreBardChatUndo'],
+    ]) {
+        app.post(
+            `/api/risubard/memory/wiki/bardchat-undo/${action}`,
+            async (req, res, next) => {
+                try {
+                    if (!await options.auth(req, res)) return
+                    if (!hasExactKeys(req.body, ['characterId', 'chatId'])
+                        || !hasBoundedId(req.body.characterId)
+                        || !hasBoundedId(req.body.chatId)) {
+                        res.status(400).send({
+                            error: 'Invalid BARDCHAT undo request',
+                        })
+                        return
+                    }
+                    res.send(await options.service[method](req.body))
+                }
+                catch (error) {
+                    next(error)
+                }
+            }
+        )
+    }
 
     app.post(
         '/api/risubard/memory/wiki/document/review',

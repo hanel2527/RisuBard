@@ -115,8 +115,7 @@ describe('persona builder UI connections', () => {
         const confirmDialog = alerts.slice(confirmStart, confirmEnd)
 
         expect(builder).toContain('tier="base"')
-        expect(builder).toContain('overlayClass="z-[45]"')
-        expect(builder).toContain('contentClass="persona-builder-dialog z-[45]"')
+        expect(builder).not.toMatch(/(?:overlayClass|contentClass)="[^"]*\bz-/)
         expect(confirmStart).toBeGreaterThan(-1)
         expect(confirmDialog).not.toContain('tier="base"')
     })

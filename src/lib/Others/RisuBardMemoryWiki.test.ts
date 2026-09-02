@@ -8,6 +8,8 @@ import { resolve } from 'node:path'
 const mocks = vi.hoisted(() => ({
     loadNarrativeMemoryWiki: vi.fn(),
     saveManualWikiDocument: vi.fn(),
+    getBardChatUndoStatus: vi.fn(async () => ({ available: false })),
+    restoreBardChatUndo: vi.fn(async () => ({ restored: true })),
     replaceWikiText: vi.fn(),
     saveChatToServer: vi.fn(),
     db: {} as {
@@ -53,6 +55,8 @@ vi.mock('src/ts/process/request/request', () => ({
 vi.mock('src/ts/risubard/memoryWiki', () => ({
     loadNarrativeMemoryWiki: mocks.loadNarrativeMemoryWiki,
     saveManualWikiDocument: mocks.saveManualWikiDocument,
+    getBardChatUndoStatus: mocks.getBardChatUndoStatus,
+    restoreBardChatUndo: mocks.restoreBardChatUndo,
 }))
 vi.mock('src/ts/risubard/findReplace', () => ({
     previewFindReplace: (
@@ -456,6 +460,33 @@ describe('RisuBardMemoryWiki', () => {
                 ?.value
         ).toBe(updated.content))
         expect(document.body.textContent).not.toContain('저장하지 않은 변경')
+        expect(document.querySelector('[data-wiki-recent-update]')
+            ?.parentElement?.getAttribute('aria-label')).toBe('아만다 다인 ')
+    })
+
+    test('loads and restores the process-lifetime BARDCHAT snapshot', async () => {
+        mocks.loadNarrativeMemoryWiki.mockResolvedValue({
+            mode: 'markdown', wikiPath: 'C:\\wiki', documents: [],
+            health: { danglingLinks: [], unlinkedDocumentIds: [] },
+        })
+        mocks.getBardChatUndoStatus.mockResolvedValue({ available: true })
+        mounted = mount(RisuBardMemoryWiki, {
+            target: document.body,
+            props: {
+                open: true, characterId: 'character', chatId: 'chat',
+                onExecuteWikiCommand: vi.fn(async () => ({ applied: [], failed: [] })),
+            },
+        })
+        await vi.waitFor(() => expect(
+            document.querySelector<HTMLButtonElement>('[data-bardchat-restore]')
+                ?.disabled
+        ).toBe(false))
+        document.querySelector<HTMLButtonElement>('[data-bardchat-restore]')?.click()
+
+        await vi.waitFor(() => expect(mocks.restoreBardChatUndo)
+            .toHaveBeenCalledWith(expect.objectContaining({
+                characterId: 'character', chatId: 'chat',
+            })))
     })
 
     test('keeps the selected document and file-tree viewport after saving', async () => {

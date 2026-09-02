@@ -345,7 +345,8 @@
                     </Tooltip.Trigger>
                     <Tooltip.Portal>
                         <Tooltip.Content
-                            class="bg-darkbg border border-darkborderc rounded-md px-3 py-2 text-xs text-textcolor shadow-lg z-50 leading-relaxed"
+                            data-risu-floating-layer
+                            class="bg-darkbg border border-darkborderc rounded-md px-3 py-2 text-xs text-textcolor shadow-lg z-[90] leading-relaxed"
                             sideOffset={4}
                             collisionPadding={8}
                         >
@@ -364,7 +365,8 @@
                     </Tooltip.Trigger>
                     <Tooltip.Portal>
                         <Tooltip.Content
-                            class="bg-darkbg border border-darkborderc rounded-md px-3 py-2 text-xs text-textcolor shadow-lg z-50 leading-relaxed"
+                            data-risu-floating-layer
+                            class="bg-darkbg border border-darkborderc rounded-md px-3 py-2 text-xs text-textcolor shadow-lg z-[90] leading-relaxed"
                             sideOffset={4}
                             collisionPadding={8}
                         >
@@ -398,7 +400,8 @@
                         </Tooltip.Trigger>
                         <Tooltip.Portal>
                             <Tooltip.Content
-                                class="bg-darkbg border border-darkborderc rounded-md px-3 py-2 text-xs text-textcolor shadow-lg z-50 max-w-70 leading-relaxed"
+                                data-risu-floating-layer
+                                class="bg-darkbg border border-darkborderc rounded-md px-3 py-2 text-xs text-textcolor shadow-lg z-[90] max-w-70 leading-relaxed"
                                 sideOffset={4}
                                 collisionPadding={8}
                             >
@@ -459,7 +462,8 @@
                 </Tooltip.Trigger>
                 <Tooltip.Portal>
                     <Tooltip.Content
-                        class="bg-darkbg border border-darkborderc rounded-md px-3 py-2 text-xs text-textcolor shadow-lg z-50 leading-relaxed"
+                        data-risu-floating-layer
+                        class="bg-darkbg border border-darkborderc rounded-md px-3 py-2 text-xs text-textcolor shadow-lg z-[90] leading-relaxed"
                         sideOffset={4}
                         collisionPadding={8}
                     >
@@ -476,7 +480,8 @@
                 </Tooltip.Trigger>
                 <Tooltip.Portal>
                     <Tooltip.Content
-                        class="bg-darkbg border border-darkborderc rounded-md px-3 py-2 text-xs text-textcolor shadow-lg z-50 leading-relaxed"
+                        data-risu-floating-layer
+                        class="bg-darkbg border border-darkborderc rounded-md px-3 py-2 text-xs text-textcolor shadow-lg z-[90] leading-relaxed"
                         sideOffset={4}
                         collisionPadding={8}
                     >

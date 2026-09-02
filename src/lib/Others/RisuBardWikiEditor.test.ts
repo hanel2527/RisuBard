@@ -74,6 +74,22 @@ afterEach(async () => {
 })
 
 describe('RisuBardWikiEditor', () => {
+    it('uses an explicit BARDCHAT update set instead of older automatic badges', async () => {
+        mounted = mount(RisuBardWikiEditor, {
+            target: document.body,
+            props: {
+                characterId: 'character', chatId: 'chat',
+                documents,
+                highlightedDocumentIds: ['character.lavian'],
+            },
+        })
+        await tick()
+
+        const badges = [...document.querySelectorAll('[data-wiki-recent-update]')]
+        expect(badges.map((badge) => badge.parentElement?.getAttribute('aria-label')))
+            .toEqual(['라비안 '])
+    })
+
     it('shows recent update badges on the right of root and folder pages without changing their selection', async () => {
         mounted = mount(RisuBardWikiEditor, {
             target: document.body,

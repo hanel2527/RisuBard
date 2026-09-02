@@ -10,7 +10,7 @@ services:
     image: ghcr.io/rpaddict/risubard:latest
     restart: always
     ports:
-      - 6001:6001
+      - 7777:7777
     volumes:
       - risuai-save:/app/save
 

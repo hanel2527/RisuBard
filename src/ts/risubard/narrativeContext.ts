@@ -39,6 +39,7 @@ export interface NarrativeInquiryResponse {
     indexRevision: number
     cacheStatus: 'current' | 'missing-or-stale'
     sources: ContextSource[]
+    evidenceRequests: Array<{ messageId: string, eventTitle: string }>
     entityCandidates: Array<{ id: string, title: string }>
     metrics: {
         candidateCount: number
@@ -46,6 +47,7 @@ export interface NarrativeInquiryResponse {
         inspectedEdgeCount: number
         selectedNodeCount: number
         selectedTokens: number
+        selectedEventTokens: number
         semanticCandidateCount?: number
         hopCount: number
         auxiliaryModelCalls: 0
@@ -53,13 +55,9 @@ export interface NarrativeInquiryResponse {
 }
 
 const NARRATIVE_EVIDENCE_RULES = [
-    'Narrative evidence rules:',
-    '- Original historical chat excerpts are primary evidence for exact old details and outrank compressed summaries when they conflict.',
-    '- For past details, event documents are the detailed evidence; canonical summaries are compressed navigation and current-state context.',
-    '- Do not invent an omitted action target or location. Do not turn temporal order into causation or cross a character knowledge boundary.',
-    '- Current-state sections in canonical character documents outrank older historical descriptions and unsupported continuation assumptions.',
-    '- Do not replace an established identity, status, relationship, duration, location, or goal with an unsupported detail. If the sources do not establish a replacement, keep the canonical fact unchanged.',
-    '- If sources do not establish a detail, preserve uncertainty instead of completing it.',
+    'Narrative continuity:',
+    '- Treat retrieved sources as authoritative evidence. Preserve established facts, chronology, viewpoint knowledge, and unresolved uncertainty; never replace them with an unsupported continuation.',
+    '- Prefer direct historical chat evidence and event documents for exact past details, and current canonical state for present facts.',
 ].join('\n')
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -92,6 +90,8 @@ export async function loadNarrativeInquiry(input: {
     currentInput: string
     tokenBudget?: {
         target: number
+        events?: number
+        perSource?: number
         maximum: number
     }
     semanticMatches?: readonly {
@@ -99,6 +99,10 @@ export async function loadNarrativeInquiry(input: {
         score: number
     }[]
     sourceMatches?: readonly HistoricalSourceMatch[]
+    sourceLimit?: number
+    resolveSourceMatches?: (
+        messageIds: readonly string[]
+    ) => readonly HistoricalSourceMatch[] | Promise<readonly HistoricalSourceMatch[]>
     fetchImpl: typeof fetch
     createAuth(): Promise<string>
     timeoutMs?: number
@@ -136,7 +140,9 @@ export async function loadNarrativeInquiry(input: {
                                 : { tokenBudget:
                                     normalizeRisuBardInquiryTokenBudget(
                                         input.tokenBudget.target,
-                                        input.tokenBudget.maximum
+                                        input.tokenBudget.maximum,
+                                        input.tokenBudget.events,
+                                        input.tokenBudget.perSource,
                                     ) }),
                             ...(input.semanticMatches === undefined
                                 ? {}
@@ -145,7 +151,13 @@ export async function loadNarrativeInquiry(input: {
                             ...(input.sourceMatches === undefined
                                 ? {}
                                 : { sourceMatches:
-                                    input.sourceMatches.slice(0, 8) }),
+                                    input.sourceMatches.slice(0, 32) }),
+                            ...(input.sourceLimit === undefined
+                                ? {}
+                                : { sourceLimit: Math.max(0, Math.min(
+                                    32,
+                                    Math.trunc(input.sourceLimit)
+                                )) }),
                         }),
                     }
                 )
@@ -186,6 +198,23 @@ export async function loadNarrativeInquiry(input: {
             'sources',
             'entityCandidates',
             'metrics',
+        ]) || hasExactKeys(value, [
+            'mode',
+            'graphRevision',
+            'indexRevision',
+            'cacheStatus',
+            'sources',
+            'evidenceRequests',
+            'metrics',
+        ]) || hasExactKeys(value, [
+            'mode',
+            'graphRevision',
+            'indexRevision',
+            'cacheStatus',
+            'sources',
+            'evidenceRequests',
+            'entityCandidates',
+            'metrics',
         ]))
         || !['v2-current', 'bounded-v1-fallback'].includes(
             String(value.mode)
@@ -194,7 +223,7 @@ export async function loadNarrativeInquiry(input: {
             String(value.cacheStatus)
         )
         || !Array.isArray(value.sources)
-        || value.sources.length > 16
+        || value.sources.length > 44
         || !isRecord(value.metrics)
         || !(hasExactKeys(value.metrics, [
                 'candidateCount',
@@ -210,6 +239,25 @@ export async function loadNarrativeInquiry(input: {
                 'inspectedEdgeCount',
                 'selectedNodeCount',
                 'selectedTokens',
+                'semanticCandidateCount',
+                'hopCount',
+                'auxiliaryModelCalls',
+            ]) || hasExactKeys(value.metrics, [
+                'candidateCount',
+                'inspectedNodeCount',
+                'inspectedEdgeCount',
+                'selectedNodeCount',
+                'selectedTokens',
+                'selectedEventTokens',
+                'hopCount',
+                'auxiliaryModelCalls',
+            ]) || hasExactKeys(value.metrics, [
+                'candidateCount',
+                'inspectedNodeCount',
+                'inspectedEdgeCount',
+                'selectedNodeCount',
+                'selectedTokens',
+                'selectedEventTokens',
                 'semanticCandidateCount',
                 'hopCount',
                 'auxiliaryModelCalls',
@@ -239,12 +287,33 @@ export async function loadNarrativeInquiry(input: {
                 'tokens',
                 'priority',
                 'occurredAt',
+            ]) || hasExactKeys(source, [
+                'id',
+                'kind',
+                'role',
+                'content',
+                'tokens',
+                'priority',
+                'displayName',
+            ]) || hasExactKeys(source, [
+                'id',
+                'kind',
+                'role',
+                'content',
+                'tokens',
+                'priority',
+                'occurredAt',
+                'displayName',
             ]))
             || typeof source.id !== 'string'
             || source.kind !== 'memory'
             || source.role !== 'system'
             || typeof source.content !== 'string'
-            || source.content.length > 4_096) {
+            || source.content.length > 4_096
+            || (source.displayName !== undefined
+                && (typeof source.displayName !== 'string'
+                    || source.displayName.trim().length === 0
+                    || source.displayName.length > 1_024))) {
             throw new Error('Invalid RisuBard narrative inquiry source')
         }
         return {
@@ -257,8 +326,33 @@ export async function loadNarrativeInquiry(input: {
             ...(source.occurredAt === undefined
                 ? {}
                 : { occurredAt: boundedMetric(source.occurredAt) }),
+            ...(source.displayName === undefined
+                ? {}
+                : { displayName: String(source.displayName).slice(0, 1_024) }),
         }
     })
+    const evidenceRequests = value.evidenceRequests === undefined
+        ? []
+        : Array.isArray(value.evidenceRequests)
+            ? value.evidenceRequests.slice(0, 32).map((request) => {
+                if (!isRecord(request)
+                    || !hasExactKeys(request, ['messageId', 'eventTitle'])
+                    || typeof request.messageId !== 'string'
+                    || request.messageId.trim().length === 0
+                    || request.messageId.length > 1_024
+                    || typeof request.eventTitle !== 'string'
+                    || request.eventTitle.trim().length === 0
+                    || request.eventTitle.length > 512) {
+                    throw new Error('Invalid RisuBard evidence request')
+                }
+                return {
+                    messageId: request.messageId,
+                    eventTitle: request.eventTitle,
+                }
+            })
+            : (() => {
+                throw new Error('Invalid RisuBard evidence requests')
+            })()
     const entityCandidates = value.entityCandidates === undefined
         ? []
         : Array.isArray(value.entityCandidates)
@@ -280,12 +374,38 @@ export async function loadNarrativeInquiry(input: {
                     'Invalid RisuBard narrative entity candidates'
                 )
             })()
+    const suppliedSourceIds = new Set(
+        (input.sourceMatches ?? []).map((match) => match.messageId)
+    )
+    const missingSourceIds = evidenceRequests
+        .map((request) => request.messageId)
+        .filter((messageId) => !suppliedSourceIds.has(messageId))
+    if (input.resolveSourceMatches && missingSourceIds.length > 0) {
+        const resolved = await input.resolveSourceMatches(missingSourceIds)
+        const merged = [...resolved, ...(input.sourceMatches ?? [])]
+            .filter((match, index, matches) => matches.findIndex((candidate) =>
+                candidate.messageId === match.messageId) === index)
+            .slice(0, Math.max(0, Math.min(
+                32,
+                Number.isSafeInteger(input.sourceLimit)
+                    ? input.sourceLimit as number
+                    : 8
+            )))
+        if (merged.some((match) => !suppliedSourceIds.has(match.messageId))) {
+            return loadNarrativeInquiry({
+                ...input,
+                sourceMatches: merged,
+                resolveSourceMatches: undefined,
+            })
+        }
+    }
     return {
         mode: value.mode as NarrativeInquiryResponse['mode'],
         graphRevision: boundedMetric(value.graphRevision),
         indexRevision: boundedMetric(value.indexRevision),
         cacheStatus: value.cacheStatus as NarrativeInquiryResponse['cacheStatus'],
         sources,
+        evidenceRequests,
         entityCandidates,
         metrics: {
             candidateCount: boundedMetric(value.metrics.candidateCount, 64),
@@ -299,10 +419,13 @@ export async function loadNarrativeInquiry(input: {
             ),
             selectedNodeCount: boundedMetric(
                 value.metrics.selectedNodeCount,
-                16
+                44
             ),
             selectedTokens: boundedMetric(
                 value.metrics.selectedTokens
+            ),
+            selectedEventTokens: boundedMetric(
+                value.metrics.selectedEventTokens ?? 0
             ),
             ...(value.metrics.semanticCandidateCount === undefined
                 ? {}

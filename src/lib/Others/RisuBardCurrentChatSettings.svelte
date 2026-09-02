@@ -55,7 +55,10 @@
     <label class="check"><input type="checkbox" checked={settings.showRequestStatus}
         onchange={(event) => setValue('showRequestStatus', (event.currentTarget as HTMLInputElement).checked)} /> 요청 컨텍스트 상태 표시</label>
     <label><span>검색 목표 토큰</span><input type="number" min="256" step="256" value={settings.risuBardInquiryTargetTokenBudget} onchange={(event) => setNumber('risuBardInquiryTargetTokenBudget', event)} /></label>
+    <label><span>사건 검색 토큰</span><input type="number" min="256" step="256" value={settings.risuBardInquiryEventTokenBudget} onchange={(event) => setNumber('risuBardInquiryEventTokenBudget', event)} /></label>
+    <label><span>자료별 검색 토큰</span><input type="number" min="256" step="256" value={settings.risuBardInquirySourceTokenBudget} onchange={(event) => setNumber('risuBardInquirySourceTokenBudget', event)} /></label>
     <label><span>검색 최대 토큰</span><input type="number" min="256" step="256" value={settings.risuBardInquiryMaximumTokenBudget} onchange={(event) => setNumber('risuBardInquiryMaximumTokenBudget', event)} /></label>
+    <label><span>과거 원문 최대 수</span><input type="number" min="0" max="32" step="1" value={settings.risuBardHistoricalSourceMatchLimit} onchange={(event) => setNumber('risuBardHistoricalSourceMatchLimit', event)} /></label>
     <label><span>분석 토큰 한도</span><input type="number" min="3072" step="1024" value={settings.risuBardAnalysisTokenLimit} onchange={(event) => setNumber('risuBardAnalysisTokenLimit', event)} /></label>
     <label><span>추가 검색 횟수</span><input type="number" min="0" step="1" value={settings.risuBardAdditionalSearchLimit} onchange={(event) => setNumber('risuBardAdditionalSearchLimit', event)} /></label>
     <label><span>정본 대상 한도</span><input type="number" min="1" step="1" value={settings.risuBardCanonicalTargetLimit} onchange={(event) => setNumber('risuBardCanonicalTargetLimit', event)} /></label>

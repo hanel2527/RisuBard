@@ -1749,6 +1749,15 @@ describe('LoreBookWorkspaceDialog source contract', () => {
         expect(guide?.textContent).toContain(languageEnglish.lorebookWorkspace.bardKeyed)
         expect(guide?.textContent).toContain(languageEnglish.lorebookWorkspace.bardRetrieve)
         expect(guide?.textContent).toContain(languageEnglish.lorebookWorkspace.bardNever)
+        const toc = guide?.querySelector('[data-bard-lore-guide-toc]')
+        expect(toc).not.toBeNull()
+        expect(toc?.querySelector('a[href="#bard-guide-writing"]')?.textContent)
+            .toContain(languageEnglish.lorebookWorkspace.bardGuideWritingTitle)
+        const writing = guide?.querySelector('#bard-guide-writing')
+        expect(writing?.textContent).toContain(languageEnglish.lorebookWorkspace.bardGuideWritingSecretTitle)
+        expect(writing?.textContent).toContain(languageEnglish.lorebookWorkspace.bardGuideWritingIdentityTitle)
+        expect(writing?.textContent).toContain(languageEnglish.lorebookWorkspace.bardGuideWritingKeysTitle)
+        expect(writing?.textContent).toContain(languageEnglish.lorebookWorkspace.bardGuideWritingExampleTitle)
     })
 
     it('commits an active draft when the dialog closes and shows it after reopening', async () => {

@@ -339,6 +339,7 @@ export async function executeDirectWikiCommand(input: {
     contextSources?: DirectWikiContextSources
     maxTokens: number
     requestModel(request: DirectWikiModelCall): Promise<DirectWikiModelResponse>
+    beforeApply?: () => Promise<void>
     saveDocument(input: {
         documentId?: string
         expectedContentHash?: string
@@ -426,6 +427,7 @@ export async function executeDirectWikiCommand(input: {
         }
         throw error
     })
+    await input.beforeApply?.()
     const byId = new Map(input.documents.map((document) => [
         document.id,
         document,

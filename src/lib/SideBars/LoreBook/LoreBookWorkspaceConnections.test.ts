@@ -332,7 +332,8 @@ describe('lorebook workspace source connections', () => {
     })
 
     it('uses exact replacement callbacks and leaves source selections outside them', () => {
-        expect(settingSource).toContain('(owner, next) => { owner.globalLore = next }')
+        expect(settingSource).toContain('(owner, next) => applyLegacyEntries(owner, next)')
+        expect(settingSource).toContain('(owner, next) => applyBardEntries(owner, next as BardLoreEntry[])')
         expect(settingSource).toContain('(owner, next) => { owner.localLore = next }')
         expect(globalSource).toContain('(owner, next) => { owner.data = next }')
         expect(moduleSource).toContain('(owner, next) => { owner.lorebook = next }')

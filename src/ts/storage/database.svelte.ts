@@ -30,14 +30,19 @@ import {
     ensureGlobalLorebookPageIds,
     ensureStableLorebookOwnerId,
 } from '../lorebook/ownerIdentity';
-import { normalizeBardLoreState, type BardLoreState } from '../lorebook/bardLore';
+import { normalizeBardLoreOwnerState, type BardLoreState } from '../lorebook/bardLore';
 import { normalizeBardLoreAnalysisLanguage } from '../lorebook/bardLoreLanguage';
+import {
+    normalizeBardLoreAnalysisDefaults,
+    type BardLoreAnalysisSettings,
+} from '../lorebook/bardLoreAnalysisSettings';
 import {
     normalizeRisuBardAdditionalSearchLimit,
     normalizeRisuBardAnalysisTokenLimit,
     normalizeRisuBardCanonicalCustomStyle,
     normalizeRisuBardCanonicalTargetLimit,
     normalizeRisuBardCanonicalWritingStyle,
+    normalizeRisuBardHistoricalSourceMatchLimit,
     normalizeRisuBardInquiryTokenBudget,
 } from '../risubard/risuBardSettings';
 import { normalizeWikiRebootJob } from '../risubard/wikiReboot';
@@ -915,13 +920,24 @@ export function setDatabase(data:Database){
     )
     const chatInquiryTokenBudget = normalizeRisuBardInquiryTokenBudget(
         data.risuBardInquiryTargetTokenBudget,
-        data.risuBardInquiryMaximumTokenBudget
+        data.risuBardInquiryMaximumTokenBudget,
+        data.risuBardInquiryEventTokenBudget,
+        data.risuBardInquirySourceTokenBudget,
     )
     data.risuBardInquiryTargetTokenBudget = chatInquiryTokenBudget.target
+    data.risuBardInquiryEventTokenBudget = chatInquiryTokenBudget.events
+    data.risuBardInquirySourceTokenBudget = chatInquiryTokenBudget.perSource
     data.risuBardInquiryMaximumTokenBudget = chatInquiryTokenBudget.maximum
+    data.risuBardHistoricalSourceMatchLimit =
+        normalizeRisuBardHistoricalSourceMatchLimit(
+            data.risuBardHistoricalSourceMatchLimit
+        )
     data.risuBardWikiWritingLanguage = data.risuBardWikiWritingLanguage === 'en' ? 'en' : 'ko'
     data.risuBardGrimoireLanguage = normalizeBardLoreAnalysisLanguage(
         data.risuBardGrimoireLanguage
+    )
+    data.risuBardGrimoireAnalysisDefaults = normalizeBardLoreAnalysisDefaults(
+        data.risuBardGrimoireAnalysisDefaults
     )
     data.risuBardCanonicalWritingStyle = normalizeRisuBardCanonicalWritingStyle(
         data.risuBardCanonicalWritingStyle
@@ -957,7 +973,16 @@ export function setDatabase(data:Database){
     data.risuBardChatWikiPromptPresetId = wikiPromptState.chatPresetId
     for(const char of data.characters){
         if(char.bardLore){
-            char.bardLore = normalizeBardLoreState(char.bardLore)
+            const normalizedBardLore = normalizeBardLoreOwnerState(
+                char.bardLore,
+                char.globalLore ?? [],
+                uuidv4,
+            )
+            if (normalizedBardLore) {
+                char.globalLore = normalizedBardLore.legacyEntries
+                char.bardLore = normalizedBardLore.state
+            }
+            else char.bardLore = undefined
         }
         if (typeof char.risuBardWikiGuide !== 'string') {
             char.risuBardWikiGuide = ''
@@ -1670,11 +1695,15 @@ export interface Database{
     risuBardAdditionalSearchLimit?: number
     risuBardCanonicalTargetLimit?: number
     risuBardInquiryTargetTokenBudget?: number
+    risuBardInquiryEventTokenBudget?: number
+    risuBardInquirySourceTokenBudget?: number
     risuBardInquiryMaximumTokenBudget?: number
+    risuBardHistoricalSourceMatchLimit?: number
     risuBardCanonicalWritingStyle?: import('../risubard/risuBardSettings').RisuBardCanonicalWritingStyle
     risuBardCanonicalCustomStyle?: string
     risuBardWikiWritingLanguage?: import('../risubard/wikiWritingLanguage').WikiWritingLanguage
     risuBardGrimoireLanguage?: import('../lorebook/bardLoreLanguage').BardLoreAnalysisLanguage
+    risuBardGrimoireAnalysisDefaults?: BardLoreAnalysisSettings
     risuBardArcPlotterEnabled?: boolean
     risuBardArcPlotterCheckpointSize?: number
     risuBardArcPlotterMaxArcs?: number

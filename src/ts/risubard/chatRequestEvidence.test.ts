@@ -201,6 +201,32 @@ describe('chat request evidence', () => {
         expect(markdown).not.toContain('secret prose')
         expect(markdown).not.toContain('가상 레거시')
         expect(markdown).not.toContain('레거시 입력 구성')
+        expect(markdown).toContain('## 요청 #7 · 채팅 답변 생성')
+        expect(markdown).not.toContain('## 요청 1')
+    })
+
+    it('groups instruction blocks and adjacent chat ranges for display', () => {
+        const evidence = buildChatRequestEvidence('chat-7', [{
+            ...entry,
+            inputTokens: 1_000,
+            injectionManifest: {
+                totalTokens: 1_000,
+                items: [
+                    { kind: 'chatHistory', name: '4개 (1~4)', tokens: 300 },
+                    { kind: 'instruction', name: '작업 지시', tokens: 120 },
+                    { kind: 'chatHistory', name: '1개 (5~5)', tokens: 200 },
+                    { kind: 'instruction', name: '추가 프롬프트', tokens: 180 },
+                    { kind: 'chatHistory', name: '1개 (6~6)', tokens: 200 },
+                ],
+            },
+        }])
+
+        const markdown = formatChatRequestEvidenceMarkdown(evidence)
+
+        expect(markdown.match(/\| 추가 지침 · 2개 항목 \| 300 \|/g)).toHaveLength(1)
+        expect(markdown.match(/\| 채팅 기록 · 6개 \(1~6\) \| 700 \|/g)).toHaveLength(1)
+        expect(markdown).not.toContain('5~5')
+        expect(markdown).not.toContain('6~6')
     })
 
     it('counts only retained assistant bodies and the currently selected reroll', async () => {
