@@ -935,9 +935,9 @@ export function createMemoryAnalysisRunner(
             })
         )
         if (options.nativeV2Analysis && options.markdownWikiService) {
-            const sourceMessageIds = snapshot.messages.map(
-                (message) => message.messageId
-            )
+            const sourceMessageIds = snapshot.rebootTurns
+                ? snapshot.rebootTurns.flatMap((turn) => turn.sourceMessageIds)
+                : snapshot.messages.map((message) => message.messageId)
             const contextMessages = snapshot.contextMessages
                 ?? snapshot.messages
             const excludedDocumentIds = new Set(

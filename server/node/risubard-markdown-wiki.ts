@@ -144,6 +144,22 @@ function stableId(sourceMessageIds: readonly string[]): string {
         .slice(0, 24)
 }
 
+function isLegacyFirstMessageCheckpoint(
+    sourceMessageIds: readonly string[]
+): boolean {
+    return /^first-message:.+:-?\d+$/.test(sourceMessageIds[0] ?? '')
+}
+
+function matchesRebootSourceMessageIds(
+    checkpoint: readonly string[],
+    requested: readonly string[]
+): boolean {
+    if (JSON.stringify(checkpoint) === JSON.stringify(requested)) return true
+    return checkpoint.length === requested.length + 1
+        && isLegacyFirstMessageCheckpoint(checkpoint)
+        && JSON.stringify(checkpoint.slice(1)) === JSON.stringify(requested)
+}
+
 function readableStem(value: string): string {
     return value.normalize('NFKC')
         .replace(/[<>:"/\\|?*\u0000-\u001f]/g, ' ')
@@ -952,11 +968,24 @@ export function createMarkdownNarrativeWiki(
                     && await cleanupUnpublishedRecovery(workspace)) return null
                 throw error
             }
+            const sourceMatches = matchesRebootSourceMessageIds(
+                manifest.sourceMessageIds,
+                sourceMessageIds
+            )
+            const eventGroupsMatch = JSON.stringify(manifest.eventSourceGroups)
+                === JSON.stringify(eventSourceGroups)
+            if (manifest.receipt
+                && isLegacyFirstMessageCheckpoint(manifest.sourceMessageIds)
+                && (!sourceMatches || !eventGroupsMatch)) {
+                await fileSystem.rm(recoveryDirectory, {
+                    recursive: true,
+                    force: true,
+                })
+                return null
+            }
             if (manifest.version !== 1
-                || JSON.stringify(manifest.sourceMessageIds)
-                    !== JSON.stringify(sourceMessageIds)
-                || JSON.stringify(manifest.eventSourceGroups)
-                    !== JSON.stringify(eventSourceGroups)
+                || !sourceMatches
+                || !eventGroupsMatch
                 || !Array.isArray(manifest.documents)) {
                 throw new Error('Wiki reboot recovery checkpoint is invalid')
             }
@@ -1192,8 +1221,10 @@ export function createMarkdownNarrativeWiki(
                 throw error
             }
             if (manifest.version !== 1
-                || JSON.stringify(manifest.sourceMessageIds)
-                    !== JSON.stringify(sourceMessageIds)) {
+                || !matchesRebootSourceMessageIds(
+                    manifest.sourceMessageIds,
+                    sourceMessageIds
+                )) {
                 throw new Error('Wiki reboot recovery checkpoint does not match')
             }
             await fileSystem.rm(recoveryDirectory, {

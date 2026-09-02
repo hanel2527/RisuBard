@@ -148,6 +148,81 @@ describe('Markdown narrative wiki', () => {
         })).resolves.toEqual({ removed: false })
     })
 
+    test('recovers an unfinished legacy first-message checkpoint', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        const wiki = createMarkdownNarrativeWiki(root)
+        await wiki.beginRebootBatch({
+            characterId: 'character', chatId: 'chat',
+            sourceMessageIds: ['first-message:chat:-1', 'u1', 'a1'],
+            eventSourceGroups: [['u1', 'a1']],
+        })
+
+        await expect(wiki.recoverRebootBatch({
+            characterId: 'character', chatId: 'chat',
+            sourceMessageIds: ['u1', 'a1'],
+            eventSourceGroups: [['u1', 'a1']],
+        })).resolves.toBeNull()
+    })
+
+    test('completes a recorded legacy first-message checkpoint', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        const wiki = createMarkdownNarrativeWiki(root)
+        const receipt = {
+            sourceMessageIds: ['first-message:chat:-1', 'u1', 'a1'],
+            eventIds: [], changes: [], warnings: [],
+            recordedAt: '2026-09-03T00:00:00.000Z',
+        }
+        await wiki.beginRebootBatch({
+            characterId: 'character', chatId: 'chat',
+            sourceMessageIds: receipt.sourceMessageIds,
+            eventSourceGroups: [['u1', 'a1']],
+        })
+        await wiki.recordRebootBatchReceipt({
+            characterId: 'character', chatId: 'chat', receipt,
+        })
+
+        await expect(wiki.recoverRebootBatch({
+            characterId: 'character', chatId: 'chat',
+            sourceMessageIds: ['u1', 'a1'],
+            eventSourceGroups: [['u1', 'a1']],
+        })).resolves.toEqual(receipt)
+        await expect(wiki.completeRebootBatch({
+            characterId: 'character', chatId: 'chat',
+            sourceMessageIds: ['u1', 'a1'],
+        })).resolves.toEqual({ removed: true })
+    })
+
+    test('cleans a completed checkpoint after the client advances batches', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        const wiki = createMarkdownNarrativeWiki(root)
+        const receipt = {
+            sourceMessageIds: ['first-message:chat:-1', 'u1', 'a1'],
+            eventIds: [], changes: [], warnings: [],
+            recordedAt: '2026-09-03T00:00:00.000Z',
+        }
+        await wiki.beginRebootBatch({
+            characterId: 'character', chatId: 'chat',
+            sourceMessageIds: receipt.sourceMessageIds,
+            eventSourceGroups: [['u1', 'a1']],
+        })
+        await wiki.recordRebootBatchReceipt({
+            characterId: 'character', chatId: 'chat', receipt,
+        })
+
+        await expect(wiki.recoverRebootBatch({
+            characterId: 'character', chatId: 'chat',
+            sourceMessageIds: ['u2', 'a2'],
+            eventSourceGroups: [['u2', 'a2']],
+        })).resolves.toBeNull()
+        const workspace = resolveMarkdownWikiWorkspace(root, 'character', 'chat')
+        await expect(fs.access(join(
+            workspace.recoveryDirectory, 'reboot-batch'
+        ))).rejects.toMatchObject({ code: 'ENOENT' })
+    })
+
     test('cleans an unpublished reboot checkpoint before retrying begin', async () => {
         const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
         temporaryDirectories.push(root)

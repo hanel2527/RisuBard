@@ -127,6 +127,71 @@ describe('memory analysis runner', () => {
         expect(saveCanonicalDocument).toHaveBeenCalledWith(expect.objectContaining({ writingLanguage: 'en' }))
     })
 
+    test('keeps first-message evidence outside reboot checkpoint sources', async () => {
+        const beginRebootBatch = vi.fn(async () => ({ canonicalCount: 0 }))
+        const recordRebootBatchReceipt = vi.fn(async (input) => input.receipt)
+        const analyze = vi.fn(async () => JSON.stringify({
+            schemaVersion: 1,
+            turns: [{ title: '도착', establishedEvents: ['앨리스가 도착했다.'] }],
+            stateChanges: [], characterKnowledge: [], persistentFacts: [],
+            openContinuity: [], canonicalUpdateCandidates: [],
+        }))
+        const runner = createMemoryAnalysisRunner({
+            memoryService: { loadState: vi.fn(), applyDelta: vi.fn() },
+            nativeV2Analysis: true,
+            markdownWikiService: {
+                inquire: vi.fn(async () => ({ graphRevision: 0, sources: [] })),
+                beginRebootBatch,
+                saveConfirmedTurn: vi.fn(async (input) => ({
+                    ...input,
+                    id: 'event.arrival',
+                    type: 'event' as const,
+                    status: 'active' as const,
+                    title: '도착',
+                    relativePath: 'events/arrival.md',
+                    contentHash: 'event-hash',
+                })),
+                recordRebootBatchReceipt,
+            },
+            analyze,
+            onError: vi.fn(),
+        })
+
+        const result = await runner.run({
+            characterId: 'character',
+            chatId: 'reboot-job',
+            messages: [
+                { messageId: 'first-message:chat:-1', role: 'assistant',
+                    content: '캐릭터 시작문 근거.' },
+                { messageId: 'user-1', role: 'user', content: '도시에 들어간다.' },
+                { messageId: 'assistant-1', role: 'assistant',
+                    content: '앨리스가 도착했다.' },
+            ],
+            rebootTurns: [{
+                assistantMessageId: 'assistant-1',
+                sourceMessageIds: ['user-1', 'assistant-1'],
+            }],
+        })
+
+        expect(analyze.mock.calls[0][0].input).toContain('캐릭터 시작문 근거.')
+        expect(beginRebootBatch).toHaveBeenCalledWith({
+            characterId: 'character',
+            chatId: 'reboot-job',
+            sourceMessageIds: ['user-1', 'assistant-1'],
+            eventSourceGroups: [['user-1', 'assistant-1']],
+        })
+        expect(recordRebootBatchReceipt).toHaveBeenCalledWith(
+            expect.objectContaining({
+                receipt: expect.objectContaining({
+                    sourceMessageIds: ['user-1', 'assistant-1'],
+                }),
+            })
+        )
+        expect(result.canonicalReceipt?.sourceMessageIds).toEqual([
+            'user-1', 'assistant-1',
+        ])
+    })
+
     test('fits initial character registration within the minimum analysis token budget', async () => {
         const analyze = vi.fn(async (_request: MemoryAnalysisModelRequest) => JSON.stringify({
             schemaVersion: 1, title: '동료 소개', establishedEvents: [],
