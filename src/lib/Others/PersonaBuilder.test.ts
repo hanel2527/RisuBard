@@ -109,12 +109,14 @@ describe('persona builder UI connections', () => {
 
     test('places the builder between the persona manager and nested confirmation dialogs', () => {
         const builder = source('src/lib/Others/PersonaBuilder.svelte')
+        const manager = source('src/lib/Others/PersonaManager.svelte')
         const alerts = source('src/lib/Others/AlertComp.svelte')
         const confirmStart = alerts.indexOf("open={$alertStore.type === 'ask'}")
         const confirmEnd = alerts.indexOf('</ShAlertDialog>', confirmStart)
         const confirmDialog = alerts.slice(confirmStart, confirmEnd)
 
         expect(builder).toContain('tier="base"')
+        expect(manager).toMatch(/persona-manager-backdrop[^>]*data-risu-modal-tier="base"/)
         expect(builder).not.toMatch(/(?:overlayClass|contentClass)="[^"]*\bz-/)
         expect(confirmStart).toBeGreaterThan(-1)
         expect(confirmDialog).not.toContain('tier="base"')

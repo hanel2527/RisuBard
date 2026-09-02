@@ -88,7 +88,7 @@ export interface SettingsBackupEstimate {
 export type BackupImportPhase = 'validating' | 'publishing' | 'finalizing'
 
 export class NodeStorage{
-    private static readonly BULK_WRITE_CLIENT_BATCH = 50
+    private static readonly BULK_WRITE_CLIENT_BATCH = 200
 
     // Cross-device single-writer lock identity. Persisted in sessionStorage so
     // a reload or an OS tab restore of the SAME tab keeps the same identity —

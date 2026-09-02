@@ -193,7 +193,10 @@ export class CharXImporter{
 
     constructor(){
         this.unzip = new fflate.Unzip()
-        this.unzip.register(fflate.AsyncUnzipInflate)
+        // AsyncUnzipInflate creates a worker per compressed entry. Module
+        // archives can contain hundreds of x_meta files, exhausting the
+        // browser worker pool and leaving import completion unresolved.
+        this.unzip.register(fflate.UnzipInflate)
         this.unzip.onfile = (file) => this.#handleFile(file)
 
         this.onProgress = (done, total) => {

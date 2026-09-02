@@ -502,6 +502,52 @@ describe('stored response memory analysis', () => {
         }
     })
 
+    test('does not retry after a prompt-schema fallback returns invalid output', async () => {
+        const requestModel = vi.fn(async (request: MemoryAnalysisModelCall) =>
+            request.schema
+                ? { type: 'fail' as const, result: 'HTTP 400' }
+                : { type: 'success' as const, result: 'not JSON' }
+        )
+        const analysis = createStoredResponseMemoryAnalysis({
+            requestModel,
+            fetchImpl: vi.fn(async (input) => {
+                const url = String(input)
+                if (url.endsWith('/view')) {
+                    return new Response(JSON.stringify({
+                        mode: 'markdown', wikiPath: 'wiki', documents: [],
+                        health: { danglingLinks: [], unlinkedDocumentIds: [] },
+                    }))
+                }
+                if (url.endsWith('/inquiry')) {
+                    return new Response(JSON.stringify({
+                        mode: 'v2-current', graphRevision: 0, indexRevision: 0,
+                        cacheStatus: 'current', sources: [], metrics: {
+                            candidateCount: 0, inspectedNodeCount: 0,
+                            inspectedEdgeCount: 0, selectedNodeCount: 0,
+                            selectedTokens: 0, hopCount: 0,
+                            auxiliaryModelCalls: 0,
+                        },
+                    }))
+                }
+                throw new Error(`Unexpected request: ${url}`)
+            }) as unknown as typeof fetch,
+            createAuth: async () => 'test-jwt',
+            onError: vi.fn(),
+            nativeV2Analysis: true,
+        })
+
+        await expect(analysis.run({
+            characterId: 'character', chatId: 'chat',
+            messages: [{
+                messageId: 'assistant-1', role: 'assistant',
+                content: '아무 변화도 없었다.',
+            }],
+        })).rejects.toThrow('응답 형식')
+        expect(requestModel).toHaveBeenCalledTimes(2)
+        expect(requestModel.mock.calls[0][0].schema).toBeTruthy()
+        expect(requestModel.mock.calls[1][0].schema).toBeUndefined()
+    })
+
     test('does not prepare or store a v1 snapshot for native v2 analysis', async () => {
         const fetchImpl = vi.fn()
         const requestModel = vi.fn()
@@ -1509,6 +1555,122 @@ describe('stored response memory analysis', () => {
         finally { tokenizer.free() }
         expect(modelCalls[1].formated[1].content).toContain('confirmedMessages')
         expect(savedTitles).toEqual(['사만다', '아만다'])
+    })
+
+    test('retries a canonical native-schema HTTP 400 with a prompt schema', async () => {
+        const modelCalls: MemoryAnalysisModelCall[] = []
+        const requestModel = vi.fn(async (request: MemoryAnalysisModelCall) => {
+            modelCalls.push(request)
+            if (request.logPurpose === 'bardwiki-analysis') {
+                return {
+                    type: 'success' as const,
+                    result: JSON.stringify({
+                        schemaVersion: 1,
+                        turns: [{
+                            title: '인물 등록',
+                            establishedEvents: ['사만다가 생물학자로 확인되었다.'],
+                        }],
+                        stateChanges: [],
+                        characterKnowledge: [],
+                        persistentFacts: [],
+                        openContinuity: [],
+                        canonicalUpdateCandidates: [{
+                            type: 'character',
+                            title: '사만다',
+                            reason: '지속되는 역할',
+                            action: 'create',
+                            targetDocumentId: null,
+                            confidence: 0.9,
+                        }],
+                    }),
+                }
+            }
+            if (request.schema) {
+                return { type: 'fail' as const, result: 'HTTP 400' }
+            }
+            return {
+                type: 'success' as const,
+                result: JSON.stringify({
+                    schemaVersion: 1,
+                    documents: [{
+                        candidateIndex: 0,
+                        sections: [{
+                            heading: '현재 상태',
+                            operation: 'upsert',
+                            content: '- 생물학자.',
+                        }],
+                    }],
+                }),
+            }
+        })
+        const analysis = createStoredResponseMemoryAnalysis({
+            requestModel,
+            fetchImpl: vi.fn(async (input, init) => {
+                const url = String(input)
+                if (url.endsWith('/view')) {
+                    return new Response(JSON.stringify({
+                        mode: 'markdown', wikiPath: 'wiki', documents: [],
+                        health: { danglingLinks: [], unlinkedDocumentIds: [] },
+                    }))
+                }
+                if (url.endsWith('/inquiry')) {
+                    return new Response(JSON.stringify({
+                        mode: 'v2-current', graphRevision: 0, indexRevision: 0,
+                        cacheStatus: 'current', sources: [], metrics: {
+                            candidateCount: 0, inspectedNodeCount: 0,
+                            inspectedEdgeCount: 0, selectedNodeCount: 0,
+                            selectedTokens: 0, hopCount: 0,
+                            auxiliaryModelCalls: 0,
+                        },
+                    }))
+                }
+                if (url.endsWith('/wiki/reboot/begin')) {
+                    return new Response(JSON.stringify({ canonicalCount: 0 }))
+                }
+                if (url.endsWith('/wiki/reboot/record')) {
+                    return new Response(JSON.stringify(
+                        JSON.parse(String(init?.body)).receipt
+                    ))
+                }
+                if (url.endsWith('/document/save')) {
+                    const body = JSON.parse(String(init?.body))
+                    return new Response(JSON.stringify({
+                        id: 'character.samantha', type: 'character',
+                        status: 'active', title: body.title,
+                        relativePath: 'characters/samantha.md',
+                        sourceMessageIds: ['assistant-1'],
+                        updated: '2026-09-02T00:00:00.000Z',
+                        content: body.markdown, links: [], contextMode: 'auto',
+                        contentHash: 'hash-samantha', reviewStatus: 'reviewed',
+                    }))
+                }
+                return new Response(JSON.stringify({ id: 'event-1' }))
+            }) as unknown as typeof fetch,
+            createAuth: async () => 'test-jwt',
+            onError: vi.fn(),
+            nativeV2Analysis: true,
+        })
+
+        await expect(analysis.confirm({
+            characterId: 'character', chatId: 'chat',
+            messages: [{
+                messageId: 'assistant-1', role: 'assistant',
+                content: '사만다는 생물학자다.',
+            }],
+            rebootTurns: [{
+                assistantMessageId: 'assistant-1',
+                sourceMessageIds: ['assistant-1'],
+            }],
+        })).resolves.toMatchObject({
+            changes: [{ documentId: 'character.samantha', action: 'create' }],
+        })
+
+        expect(modelCalls).toHaveLength(3)
+        expect(modelCalls[1].schema).toContain('candidateIndex')
+        expect(modelCalls[2].schema).toBeUndefined()
+        expect(modelCalls[2].formated[0].content)
+            .toContain('Return exactly one JSON value matching this JSON Schema.')
+        expect(modelCalls[2].formated[0].content).toContain('"documents"')
     })
 
     test('allows background wiki inquiry to outlive the synchronous chat deadline', async () => {

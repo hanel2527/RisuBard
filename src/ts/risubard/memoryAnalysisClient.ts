@@ -41,6 +41,7 @@ import {
     memoryWriterDraftSchema,
     rebootBatchDraftSchema,
 } from '../../../server/node/risubard-memory-writer'
+import { createStructuredOutputFallbackMessage } from '../process/request/structuredOutputFallback'
 
 interface StoredMessage {
     role?: unknown
@@ -87,6 +88,21 @@ interface MemoryAnalysisClientOptions {
 }
 
 let analysisTokenizer: Tiktoken | undefined
+
+const NATIVE_SCHEMA_REJECTION = /(?:json[ _-]?schema|response[_ ]?format|response[_ ]?schema|responseformat|structured[ -]?output|response[_ ]?mime)/i
+const AMBIGUOUS_INVALID_ARGUMENT = /^(?:\[[^\]\r\n]{1,80}\]\s*)?(?:request contains an )?invalid[_ ]argument\.?$/i
+const BARE_HTTP_400 = /^HTTP\s+400\.?$/i
+
+function rejectsNativeSchema(response: MemoryAnalysisModelResponse): boolean {
+    if (response.type === 'success' || response.noRetry
+        || response.toolExecuted || typeof response.result !== 'string') {
+        return false
+    }
+    const reason = response.result.trim()
+    return NATIVE_SCHEMA_REJECTION.test(reason)
+        || AMBIGUOUS_INVALID_ARGUMENT.test(reason)
+        || BARE_HTTP_400.test(reason)
+}
 
 function countAnalysisTokens(value: string): number {
     analysisTokenizer ??= get_encoding('cl100k_base')
@@ -847,12 +863,49 @@ export function createStoredResponseMemoryAnalysis(
             }
             const nativeDraft = ['memory-draft', 'reboot-batch', 'canonical-batch'].includes(request.format ?? '')
             const requestResponse = async (feedback?: ModelOutputError) => {
-                    const response = await requestMemoryModel({
+                    let response = await requestMemoryModel({
                         ...modelCall,
                         formated: [{ role: 'system', content: request.system
                             + (feedback ? `\n\n${modelOutputRepairInstruction(feedback)}` : '') },
                         modelCall.formated[1]],
                     }, signal)
+                    if (nativeDraft && modelCall.schema
+                        && rejectsNativeSchema(response)) {
+                        const fallbackMessage = createStructuredOutputFallbackMessage(
+                            JSON.parse(modelCall.schema) as Record<string, unknown>
+                        )
+                        if (fallbackMessage
+                            && typeof fallbackMessage.content === 'string') {
+                            const fallbackSystem = [
+                                request.system,
+                                feedback
+                                    ? modelOutputRepairInstruction(feedback)
+                                    : '',
+                                fallbackMessage.content,
+                            ].filter(Boolean).join('\n\n')
+                            response = {
+                                ...await requestMemoryModel({
+                                    ...modelCall,
+                                    schema: undefined,
+                                    formated: [
+                                        {
+                                            role: 'system',
+                                            content: fallbackSystem,
+                                        },
+                                        {
+                                            role: 'user',
+                                            content: fitAnalysisInput(
+                                                fallbackSystem,
+                                                request.input,
+                                                request.inputTokenLimit
+                                            ),
+                                        },
+                                    ],
+                                }, signal),
+                                noRetry: true,
+                            }
+                        }
+                    }
                     if (response.type !== 'success') {
                         throw new Error(modelFailureMessage('Memory analysis model request failed', response))
                     }

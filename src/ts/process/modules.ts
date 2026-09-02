@@ -170,7 +170,8 @@ export async function readModule(buf:Buffer):Promise<RisuModule> {
 
     // Keep decoded results bounded to the worker-pool size so mobile browsers do
     // not retain dozens of expanded assets while waiting for one large batch.
-    const maxAssetBatchSize = 8
+    const maxAssetDecodeBatchSize = 8
+    const maxAssetPersistBatchSize = 200
     const maxAssetBatchBytes = 32 * 1024 * 1024
     const retryDelayMs = 5000
     const maxRetries = 3
@@ -238,8 +239,18 @@ export async function readModule(buf:Buffer):Promise<RisuModule> {
             }
         }
 
-        for (let offset = 0; offset < tasks.length; offset += maxAssetBatchSize) {
-            const decodeGroup = tasks.slice(offset, offset + maxAssetBatchSize)
+        let persistQueue: DecodedAssetTask[] = []
+        let persistQueueBytes = 0
+        const flushPersistQueue = async () => {
+            if (persistQueue.length === 0) return
+            const batch = persistQueue
+            persistQueue = []
+            persistQueueBytes = 0
+            await persistBatch(batch)
+        }
+
+        for (let offset = 0; offset < tasks.length; offset += maxAssetDecodeBatchSize) {
+            const decodeGroup = tasks.slice(offset, offset + maxAssetDecodeBatchSize)
             let decoded: DecodedAssetTask[]
             try {
                 const decodedData = await decodeRPackBatch(decodeGroup.map(task => task.data))
@@ -257,21 +268,20 @@ export async function readModule(buf:Buffer):Promise<RisuModule> {
                 continue
             }
 
-            let batch: DecodedAssetTask[] = []
-            let batchBytes = 0
             for (const decodedTask of decoded) {
-                if (batch.length > 0 && batchBytes + decodedTask.data.length > maxAssetBatchBytes) {
-                    await persistBatch(batch)
-                    batch = []
-                    batchBytes = 0
+                if (persistQueue.length > 0 && (
+                    persistQueue.length >= maxAssetPersistBatchSize
+                    || persistQueueBytes + decodedTask.data.length > maxAssetBatchBytes
+                )) {
+                    await flushPersistQueue()
                 }
-                batch.push(decodedTask)
-                batchBytes += decodedTask.data.length
-            }
-            if (batch.length > 0) {
-                await persistBatch(batch)
+                persistQueue.push(decodedTask)
+                persistQueueBytes += decodedTask.data.length
+                if (persistQueue.length >= maxAssetPersistBatchSize
+                    || persistQueueBytes >= maxAssetBatchBytes) await flushPersistQueue()
             }
         }
+        await flushPersistQueue()
         return failed
     }
 

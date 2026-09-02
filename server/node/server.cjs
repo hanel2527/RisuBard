@@ -23,7 +23,7 @@ const getVips = () => {
     }
     return _vipsPromise
 }
-const { kvGet, kvSet, kvSetMany, kvReplacePrefixesAsync, kvReplacePrefixesFromFilesAsync, kvReplaceAllAsync, kvDel, kvList,
+const { kvGet, kvSet, kvSetMany, kvSetManyAsync, kvReplacePrefixesAsync, kvReplacePrefixesFromFilesAsync, kvReplaceAllAsync, kvDel, kvList,
         kvDelPrefix, kvListWithSizes, kvSize, kvGetUpdatedAt, kvCopyValue,
         gcChunks, reclaimableChunkBytes, objectStoreBytes, isDbBlobChunked, snapshotFootprint, repository: userDataRepository } = require('./db.cjs');
 const {
@@ -3994,7 +3994,8 @@ app.post('/api/patch', async (req, res, next) => {
 });
 
 // ─── Bulk asset endpoints (3-2-B) ─────────────────────────────────────────────
-const BULK_BATCH = 50;
+const BULK_READ_BATCH = 50;
+const BULK_WRITE_BATCH = 200;
 
 app.post('/api/assets/bulk-read', async (req, res, next) => {
     if(!await checkAuth(req, res)){ return; }
@@ -4012,8 +4013,8 @@ app.post('/api/assets/bulk-read', async (req, res, next) => {
             // Eliminates ~33% base64 overhead
             const entries = [];
             let totalSize = 4; // count header
-            for (let i = 0; i < keys.length; i += BULK_BATCH) {
-                const batch = keys.slice(i, i + BULK_BATCH);
+            for (let i = 0; i < keys.length; i += BULK_READ_BATCH) {
+                const batch = keys.slice(i, i + BULK_READ_BATCH);
                 for (const key of batch) {
                     let value = null;
                     if (typeof key === 'string' && key.startsWith('inlay_info/')) {
@@ -4044,8 +4045,8 @@ app.post('/api/assets/bulk-read', async (req, res, next) => {
         } else {
             // Legacy JSON+base64 fallback
             const results = [];
-            for (let i = 0; i < keys.length; i += BULK_BATCH) {
-                const batch = keys.slice(i, i + BULK_BATCH);
+            for (let i = 0; i < keys.length; i += BULK_READ_BATCH) {
+                const batch = keys.slice(i, i + BULK_READ_BATCH);
                 for (const key of batch) {
                     let value = null;
                     if (typeof key === 'string' && key.startsWith('inlay_info/')) {
@@ -4073,9 +4074,9 @@ app.post('/api/assets/bulk-write', async (req, res, next) => {
             res.status(400).send({ error: 'Body must be a JSON array of {key, value}' });
             return;
         }
-        for(let i = 0; i < entries.length; i += BULK_BATCH){
-            const batch = entries.slice(i, i + BULK_BATCH);
-            kvSetMany(batch.map(({ key, value }) => ({
+        for(let i = 0; i < entries.length; i += BULK_WRITE_BATCH){
+            const batch = entries.slice(i, i + BULK_WRITE_BATCH);
+            await kvSetManyAsync(batch.map(({ key, value }) => ({
                 key,
                 value: Buffer.from(value, 'base64'),
             })));

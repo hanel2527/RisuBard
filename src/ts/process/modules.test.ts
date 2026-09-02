@@ -115,7 +115,8 @@ describe('readModule asset persistence', () => {
     it('bounds decoded asset batches to mobile-safe worker-sized groups', async () => {
         const module = await readModule(risumWithAssets(51))
 
-        expect(mocks.setItems).toHaveBeenCalledTimes(7)
+        expect(mocks.setItems).toHaveBeenCalledTimes(1)
+        expect(mocks.setItems.mock.calls[0][0]).toHaveLength(51)
         expect(mocks.decodeRPackBatch).toHaveBeenCalledTimes(7)
         expect(mocks.decodeRPackBatch.mock.calls.every(([items]) => items.length <= 8)).toBe(true)
         expect(mocks.saveAsset).not.toHaveBeenCalled()

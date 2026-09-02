@@ -15,6 +15,34 @@ function root() {
 afterEach(() => roots.splice(0).forEach(value => fs.rmSync(value, { recursive: true, force: true })))
 
 describe('file-native KV compatibility projection', () => {
+    it('prepares bulk asset objects concurrently before publishing one manifest', async () => {
+        const dataRoot = root()
+        const store = createFileKv({ dataRoot })
+        const writeMany = store.kvSetManyAsync
+
+        expect(typeof writeMany).toBe('function')
+        if (typeof writeMany !== 'function') return
+        await writeMany([
+            { key: 'assets/a', value: Buffer.from('asset-a') },
+            { key: 'assets/b', value: Buffer.from('asset-b') },
+        ])
+
+        const reopened = createFileKv({ dataRoot })
+        expect(reopened.kvList('assets/')).toEqual(['assets/a', 'assets/b'])
+        expect(reopened.kvGet('assets/a')?.toString()).toBe('asset-a')
+    })
+
+    it('routes bulk asset writes through the concurrent file-KV path', () => {
+        const server = fs.readFileSync(path.join(process.cwd(), 'server/node/server.cjs'), 'utf8')
+        const route = server.slice(
+            server.indexOf("app.post('/api/assets/bulk-write'"),
+            server.indexOf('// ── Settings-only export', server.indexOf("app.post('/api/assets/bulk-write'")),
+        )
+
+        expect(server).toMatch(/const \{[^}]*kvSetManyAsync[^}]*\} = require\('\.\/db\.cjs'\)/s)
+        expect(route).toContain('await kvSetManyAsync(')
+    })
+
     it('promotes a verified staged file into the object store without recopying it', async () => {
         const dataRoot = root()
         const stagingRoot = root()

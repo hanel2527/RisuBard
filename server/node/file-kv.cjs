@@ -198,6 +198,12 @@ function createFileKv(options = {}) {
         if (entries.length) saveManifest();
     }
 
+    async function kvSetManyAsync(entries) {
+        const prepared = await prepareEntriesAsync(entries);
+        for (const [key, entry] of prepared) manifest.entries[key] = entry;
+        if (entries.length) saveManifest();
+    }
+
     function kvReplacePrefixes(entries, prefixes) {
         const next = { ...manifest.entries };
         for (const key of Object.keys(next)) {
@@ -364,6 +370,7 @@ function createFileKv(options = {}) {
         kvGet,
         kvSet,
         kvSetMany,
+        kvSetManyAsync,
         kvReplacePrefixes,
         kvReplacePrefixesAsync,
         kvReplacePrefixesFromFilesAsync,
