@@ -1,5 +1,5 @@
 export type CanonicalReceiptDocumentType = 'character' | 'location' | 'scene'
-    | 'faction' | 'item' | 'concept' | 'other'
+    | 'faction' | 'creature' | 'item' | 'concept' | 'other'
 
 export interface CanonicalTurnReceiptChange {
     documentId: string
@@ -84,7 +84,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const documentTypes: readonly CanonicalReceiptDocumentType[] = [
-    'character', 'location', 'scene', 'faction', 'item', 'concept', 'other',
+    'character', 'location', 'scene', 'faction', 'creature', 'item',
+    'concept', 'other',
 ]
 
 export function parseCanonicalTurnReceipt(

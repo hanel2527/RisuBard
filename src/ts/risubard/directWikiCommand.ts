@@ -7,7 +7,8 @@ type CanonicalType = Exclude<WikiDocument['type'], 'event'>
 type EditableType = WikiDocument['type']
 
 const canonicalTypes: CanonicalType[] = [
-    'character', 'location', 'scene', 'faction', 'item', 'concept', 'other',
+    'character', 'location', 'scene', 'faction', 'creature', 'item',
+    'concept', 'other',
 ]
 const editableTypes: EditableType[] = [...canonicalTypes, 'event']
 

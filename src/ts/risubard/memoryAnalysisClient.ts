@@ -761,7 +761,7 @@ export function createStoredResponseMemoryAnalysis(
             chatId: string
             documentId?: string
             type: 'character' | 'location' | 'scene' | 'faction' | 'item'
-                | 'concept' | 'other'
+                | 'creature' | 'concept' | 'other'
             title: string
             aliases?: string[]
             sourceMessageIds: string[]

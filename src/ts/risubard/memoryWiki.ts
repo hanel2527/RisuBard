@@ -38,6 +38,7 @@ export interface NarrativeMemoryWikiMarkdown {
     health: {
         danglingLinks: Array<{ sourceId: string; target: string }>
         unlinkedDocumentIds: string[]
+        duplicatePassages?: Array<{ documentIds: [string, string] }>
     }
     documents: Array<{
         id: string
@@ -63,7 +64,7 @@ export interface NarrativeMemoryWikiMarkdown {
 export type MarkdownWikiContextMode = 'always' | 'auto' | 'never'
 
 export type MarkdownWikiDocumentType = 'event' | 'character' | 'location'
-    | 'scene' | 'faction' | 'item' | 'concept' | 'other'
+    | 'scene' | 'faction' | 'creature' | 'item' | 'concept' | 'other'
 export type CanonicalMarkdownWikiDocumentType = Exclude<
     MarkdownWikiDocumentType,
     'event'
@@ -334,9 +335,11 @@ export async function loadNarrativeMemoryWiki(input: {
         && hasExactKeys(value, ['mode', 'wikiPath', 'documents', 'health'])
         && Array.isArray(value.documents)
         && isRecord(value.health)
-        && hasExactKeys(value.health, [
+        && (hasExactKeys(value.health, [
+            'danglingLinks', 'unlinkedDocumentIds', 'duplicatePassages',
+        ]) || hasExactKeys(value.health, [
             'danglingLinks', 'unlinkedDocumentIds',
-        ])
+        ]))
         && Array.isArray(value.health.danglingLinks)
         && value.health.danglingLinks.every((item) => isRecord(item)
             && hasExactKeys(item, ['sourceId', 'target'])
@@ -345,7 +348,17 @@ export async function loadNarrativeMemoryWiki(input: {
         && Array.isArray(value.health.unlinkedDocumentIds)
         && value.health.unlinkedDocumentIds.every(
             (id) => typeof id === 'string'
-        )) {
+        )
+        && (value.health.duplicatePassages === undefined
+            || (Array.isArray(value.health.duplicatePassages)
+                && value.health.duplicatePassages.every((item) => isRecord(item)
+                    && hasExactKeys(item, ['documentIds'])
+                    && Array.isArray(item.documentIds)
+                    && item.documentIds.length === 2
+                    && item.documentIds[0] !== item.documentIds[1]
+                    && item.documentIds.every((id) => typeof id === 'string')
+                )))
+    ) {
         return {
             mode: 'markdown',
             wikiPath: requireString(value.wikiPath),
@@ -355,6 +368,9 @@ export async function loadNarrativeMemoryWiki(input: {
                     target: string
                 }>,
                 unlinkedDocumentIds: value.health.unlinkedDocumentIds as string[],
+                duplicatePassages: (value.health.duplicatePassages ?? []) as Array<{
+                    documentIds: [string, string]
+                }>,
             },
             documents: value.documents.map((document) => {
                 const documentKeys = [
@@ -379,7 +395,7 @@ export async function loadNarrativeMemoryWiki(input: {
                     ].includes(key))
                     || ![
                         'event', 'character', 'location', 'scene', 'faction',
-                        'item', 'concept', 'other',
+                        'creature', 'item', 'concept', 'other',
                     ].includes(
                         String(document.type)
                     )

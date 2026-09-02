@@ -140,6 +140,10 @@ describe('RisuBard analysis settings', () => {
         expect(policy).toContain('퍼즐')
         expect(policy).toContain('배치')
         expect(policy).toContain('확정 관찰과 추론')
+        expect(policy).toContain('종족·생물')
+        expect(policy).toContain('이름 있는 하위 장소')
+        expect(policy).toContain('조사 줄기')
+        expect(policy).toContain('문장이나 문단을 복사하지 않는다')
     })
 
     test('resolves current-chat overrides over normalized global defaults', () => {

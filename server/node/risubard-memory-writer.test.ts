@@ -41,6 +41,10 @@ describe('BardWiki memory writer skill', () => {
         expect(memoryWriterSystemPrompt).toContain('독립적인 이야기 요약')
         expect(memoryWriterSystemPrompt).toContain('아크 플롯 후보는 만들지 마라')
         expect(memoryWriterSystemPrompt).toContain('설정한 확정 사건 체크포인트마다')
+        expect(memoryWriterSystemPrompt).toContain('종족·생물')
+        expect(memoryWriterSystemPrompt).toContain('이름 있는 하위 장소')
+        expect(memoryWriterSystemPrompt).toContain('조사 줄기')
+        expect(memoryWriterSystemPrompt).toContain('사건 문서에 남기고')
     })
 
     test('keeps schemaVersion out of model-owned writer contracts', () => {
@@ -143,6 +147,22 @@ describe('BardWiki memory writer skill', () => {
             .toMatchObject({ type: 'string' })
         expect(schema.properties.canonicalUpdateCandidates.items.properties.aliases)
             .toMatchObject({ type: 'array', maxItems: 32 })
+    })
+
+    test('accepts creature canon candidates', () => {
+        const schema = JSON.parse(memoryWriterDraftSchema)
+        expect(schema.properties.canonicalUpdateCandidates.items.properties.type.enum)
+            .toContain('creature')
+        const draft = parseMemoryWriterDraft(JSON.stringify({
+            title: '좀비 출현', establishedEvents: ['좀비가 나타났다.'],
+            stateChanges: [], characterKnowledge: [], persistentFacts: [],
+            openContinuity: [], canonicalUpdateCandidates: [{
+                type: 'creature', title: '좀비', aliases: [],
+                reason: '반복해서 등장할 생물 종류의 규칙이 확정되었다.',
+                action: 'create', targetDocumentId: null, confidence: 0.95,
+            }],
+        }))
+        expect(draft.canonicalUpdateCandidates[0].type).toBe('creature')
     })
 
     test('supports canonical target budgets above eight while validating index membership', () => {

@@ -14,7 +14,8 @@ Distinguish first registration from updates to existing canon. Return exactly on
 - Register an important participant without individual canon as soon as confirmed text establishes a durable role, relationship, ability, goal or knowledge. Include participating leaders, companions, opponents and relationship partners without waiting for a complete profile, changed state or several turns.
 - A mention in an event or another character's canon does not replace individual canon. Avoid creating duplicate aliases.
 - If a subject matches an existing canonical title or alias, use update instead of creating another document. Put only alternate names or forms of address explicitly present in confirmed evidence into aliases; never infer aliases.
-- Exclude one-off participants and name-only mentions. Apply the same rule to durable locations, factions, items and concepts. Do not fill gaps from the entire lorebook, external canon or guesses.
+- Exclude one-off participants and name-only mentions. Apply the same rule to durable locations, factions, creatures, items and concepts. Do not fill gaps from the entire lorebook, external canon or guesses.
+- Register reusable species or monsters as `creature`, named sublocations with independent state or repeated use as `location`, and cross-event unresolved investigations as one `other`. Exclude individual encounters, cosmetic variants, and single clues; keep details in event documents and link them.
 
 ### Existing updates (update)
 

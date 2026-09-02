@@ -117,8 +117,8 @@ function validCanonicalReceipt(value) {
             'documentId', 'type', 'title', 'relativePath', 'action', 'afterHash',
         ])
             && hasBoundedId(change.documentId)
-            && ['character', 'location', 'scene', 'faction', 'item',
-                'concept', 'other'].includes(change.type)
+            && ['character', 'location', 'scene', 'faction', 'creature',
+                'item', 'concept', 'other'].includes(change.type)
             && typeof change.title === 'string'
             && typeof change.relativePath === 'string'
             && (change.action === 'create' || change.action === 'update')
@@ -653,8 +653,8 @@ function registerRisuBardMemoryRoutes(app, options) {
                             req.body.reviewStatus
                         ))
                     || ![
-                        'character', 'location', 'scene', 'faction', 'item',
-                        'concept', 'other',
+                        'character', 'location', 'scene', 'faction', 'creature',
+                        'item', 'concept', 'other',
                     ].includes(req.body.type)
                     || typeof req.body.title !== 'string'
                     || req.body.title.trim().length === 0
@@ -709,8 +709,8 @@ function registerRisuBardMemoryRoutes(app, options) {
                     || (req.body.expectedContentHash !== undefined
                         && !hasBoundedId(req.body.expectedContentHash))
                     || ![
-                        'character', 'location', 'scene', 'faction', 'item',
-                        'concept', 'other', 'event',
+                        'character', 'location', 'scene', 'faction', 'creature',
+                        'item', 'concept', 'other', 'event',
                     ].includes(req.body.type)
                     || (req.body.type === 'event'
                         && req.body.documentId === undefined)

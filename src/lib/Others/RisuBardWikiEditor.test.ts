@@ -148,6 +148,19 @@ describe('RisuBardWikiEditor', () => {
         expect(document.body.textContent).not.toContain('context: auto')
     })
 
+    it('offers a creature document type', async () => {
+        mounted = mount(RisuBardWikiEditor, {
+            target: document.body,
+            props: { characterId: 'character', chatId: 'chat', documents },
+        })
+        await tick()
+
+        const option = document.querySelector<HTMLOptionElement>(
+            '[aria-label="항목 유형"] option[value="creature"]'
+        )
+        expect(option?.textContent).toBe('종족·생물')
+    })
+
     it('keeps a visible vertical scrollbar in the Markdown editor', () => {
         const source = readFileSync(
             'src/lib/Others/RisuBardWikiEditor.svelte',
@@ -192,6 +205,28 @@ describe('RisuBardWikiEditor', () => {
         expect(row).not.toBeNull()
         expect(row.classList.contains('dangling-link')).toBe(true)
         expect(row.querySelector('[data-wiki-repair-link]')).toBeNull()
+    })
+
+    it('shows duplicate passage warnings without offering automatic repair', async () => {
+        mounted = mount(RisuBardWikiEditor, {
+            target: document.body,
+            props: {
+                characterId: 'character', chatId: 'chat', documents,
+                health: {
+                    danglingLinks: [],
+                    unlinkedDocumentIds: [],
+                    duplicatePassages: [{
+                        documentIds: ['character.lavian', 'event.turn'],
+                    }],
+                } as any,
+            },
+        })
+        await tick()
+
+        expect(document.body.textContent).toContain('본문 중복 1')
+        expect(document.querySelectorAll('[data-wiki-duplicate-document]'))
+            .toHaveLength(2)
+        expect(document.querySelector('[data-wiki-repair-duplicate]')).toBeNull()
     })
 
     it('toggles a live, safe Markdown preview from the editor toolbar', async () => {

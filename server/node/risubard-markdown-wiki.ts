@@ -32,7 +32,7 @@ export interface MarkdownWikiDocument {
 export type MarkdownWikiContextMode = 'always' | 'auto' | 'never'
 
 export type MarkdownWikiDocumentType = 'event' | 'character' | 'location'
-    | 'scene' | 'faction' | 'item' | 'concept' | 'other'
+    | 'scene' | 'faction' | 'creature' | 'item' | 'concept' | 'other'
 export type CanonicalMarkdownWikiDocumentType = Exclude<
     MarkdownWikiDocumentType,
     'event'
@@ -48,6 +48,7 @@ export interface MarkdownWikiView {
 export interface MarkdownWikiHealth {
     danglingLinks: Array<{ sourceId: string; target: string }>
     unlinkedDocumentIds: string[]
+    duplicatePassages: Array<{ documentIds: [string, string] }>
 }
 
 interface RebootRecoveryManifest {
@@ -240,7 +241,8 @@ function parseRebootRecoveryManifest(value: unknown): RebootRecoveryManifest {
         'documents', ...(hasReceipt ? ['receipt'] : []),
     ]
     const canonicalTypes: readonly string[] = [
-        'character', 'location', 'scene', 'faction', 'item', 'concept', 'other',
+        'character', 'location', 'scene', 'faction', 'creature', 'item',
+        'concept', 'other',
     ]
     if (Object.keys(record).length !== expectedKeys.length
         || !expectedKeys.every((key) => Object.hasOwn(record, key))
@@ -413,8 +415,8 @@ function parseDocument(
     const normalized = normalizeMarkdown(storedContent)
     const type = plainScalar('type')
     if (![
-        'event', 'character', 'location', 'scene', 'faction', 'item',
-        'concept', 'other',
+        'event', 'character', 'location', 'scene', 'faction', 'creature',
+        'item', 'concept', 'other',
     ].includes(type)) {
         throw new Error('Invalid Markdown wiki type')
     }
@@ -516,8 +518,44 @@ function computeHealth(documents: MarkdownWikiDocument[]): MarkdownWikiHealth {
             connected.add(resolved.id)
         }
     }
+    const passageDocuments = new Map<string, Set<string>>()
+    for (const document of documents) {
+        if (document.status !== 'active' || document.type === 'scene') continue
+        const passages = new Set(document.content.split(/\r?\n\s*\r?\n/)
+            .map((passage) => passage.trim())
+            .filter((passage) => passage.length > 0
+                && !/^#{1,6}\s/u.test(passage)
+                && passage.replace(/\[\[[^\]]+\]\]/g, '')
+                    .replace(/[\s\-*•,;:|]+/gu, '').length > 0)
+            .map((passage) => passage.normalize('NFKC').toLocaleLowerCase()
+                .replace(/\s+/gu, ' ').trim())
+            .filter((passage) => Array.from(passage).length >= 80))
+        for (const passage of passages) {
+            const owners = passageDocuments.get(passage) ?? new Set<string>()
+            owners.add(document.id)
+            passageDocuments.set(passage, owners)
+        }
+    }
+    const duplicatePairKeys = new Set<string>()
+    const duplicatePassages: MarkdownWikiHealth['duplicatePassages'] = []
+    for (const owners of passageDocuments.values()) {
+        const ids = [...owners].sort()
+        for (let left = 0; left < ids.length; left += 1) {
+            for (let right = left + 1; right < ids.length; right += 1) {
+                const documentIds: [string, string] = [ids[left], ids[right]]
+                const key = documentIds.join('\n')
+                if (duplicatePairKeys.has(key)) continue
+                duplicatePairKeys.add(key)
+                duplicatePassages.push({ documentIds })
+            }
+        }
+    }
+    duplicatePassages.sort((left, right) =>
+        left.documentIds.join('\n').localeCompare(right.documentIds.join('\n'))
+    )
     return {
         danglingLinks,
+        duplicatePassages: duplicatePassages.slice(0, 64),
         unlinkedDocumentIds: documents
             .filter((document) => document.type !== 'event'
                 && document.type !== 'scene'
@@ -710,6 +748,7 @@ export function createMarkdownNarrativeWiki(
             [workspace.charactersDirectory, 'characters'],
             [workspace.locationsDirectory, 'locations'],
             [resolve(workspace.directory, 'factions'), 'factions'],
+            [resolve(workspace.directory, 'creatures'), 'creatures'],
             [resolve(workspace.directory, 'items'), 'items'],
             [resolve(workspace.directory, 'concepts'), 'concepts'],
             [resolve(workspace.directory, 'notes'), 'notes'],
@@ -1378,6 +1417,7 @@ export function createMarkdownNarrativeWiki(
                 location: 'locations',
                 scene: '',
                 faction: 'factions',
+                creature: 'creatures',
                 item: 'items',
                 concept: 'concepts',
                 other: 'notes',
@@ -1568,8 +1608,8 @@ export function createMarkdownNarrativeWiki(
         }): Promise<MarkdownWikiDocument> {
             const title = required(input.title, 'Title').trim().slice(0, 160)
             const allowed: MarkdownWikiDocumentType[] = [
-                'character', 'location', 'scene', 'faction', 'item',
-                'concept', 'other', 'event',
+                'character', 'location', 'scene', 'faction', 'creature',
+                'item', 'concept', 'other', 'event',
             ]
             if (!allowed.includes(input.type)) {
                 throw new Error('Invalid manual wiki document type')
@@ -1603,6 +1643,7 @@ export function createMarkdownNarrativeWiki(
                 location: 'locations',
                 scene: '',
                 faction: 'factions',
+                creature: 'creatures',
                 item: 'items',
                 concept: 'concepts',
                 other: 'notes',

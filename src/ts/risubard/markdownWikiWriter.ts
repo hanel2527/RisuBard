@@ -3,12 +3,12 @@ import { modelOutputRepairInstruction, runValidatedModelRequest, type ModelRespo
 import type { WikiWritingLanguage } from './wikiWritingLanguage'
 
 export type CanonicalWikiDocumentType = 'character' | 'location' | 'scene'
-    | 'faction' | 'item' | 'concept' | 'other'
+    | 'faction' | 'creature' | 'item' | 'concept' | 'other'
 
 export interface MarkdownWikiWriterEvidence {
     id: string
     type: 'event' | CanonicalWikiDocumentType
-        | 'faction' | 'item' | 'concept' | 'other'
+        | 'faction' | 'creature' | 'item' | 'concept' | 'other'
     title: string
     content: string
     sourceMessageIds: string[]
@@ -105,7 +105,8 @@ export async function requestMarkdownWikiDraft(input: {
     const title = required(input.title, 'Wiki title', 160)
     const instruction = required(input.instruction, 'Writer instruction', 4_000)
     if (![
-        'character', 'location', 'scene', 'faction', 'item', 'concept', 'other',
+        'character', 'location', 'scene', 'faction', 'creature', 'item',
+        'concept', 'other',
     ].includes(input.type)
         || input.evidence.length < 1
         || input.evidence.length > 8) {
@@ -255,8 +256,8 @@ export async function saveCanonicalWikiDocument(input: {
     if (!isRecord(value)
         || typeof value.id !== 'string'
         || ![
-            'character', 'location', 'scene', 'faction', 'item', 'concept',
-            'other',
+            'character', 'location', 'scene', 'faction', 'creature', 'item',
+            'concept', 'other',
         ].includes(String(value.type))
         || value.status !== 'active'
         || typeof value.title !== 'string'

@@ -422,6 +422,29 @@ describe('Markdown narrative wiki', () => {
         expect(contents).toContain('created: "2026-08-08T06:07:08.000Z"')
     })
 
+    test('stores creature canon in the creature folder', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        const wiki = createMarkdownNarrativeWiki(root)
+
+        const created = await wiki.saveManualDocument({
+            characterId: 'character', chatId: 'chat',
+            type: 'creature' as any,
+            title: '기어다니는 좀비',
+            markdown: '## 기어다니는 좀비\n\n좀비의 지속 변종이다.',
+        })
+
+        expect(created).toEqual(expect.objectContaining({
+            type: 'creature',
+            relativePath: expect.stringMatching(/^creatures\//),
+            contextMode: 'auto',
+        }))
+        expect((await wiki.loadView('character', 'chat')).documents)
+            .toEqual(expect.arrayContaining([
+                expect.objectContaining({ id: created.id, type: 'creature' }),
+            ]))
+    })
+
     test('nests wiki document headings below the injected prompt-block heading', async () => {
         const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
         temporaryDirectories.push(root)
@@ -1192,6 +1215,36 @@ describe('Markdown narrative wiki', () => {
             linked.id,
             isolated.id,
         ]))
+    })
+
+    test('reports exact normalized duplicate passages without changing documents', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        const wiki = createMarkdownNarrativeWiki(root)
+        const shared = '교회 지하 통로의 석벽에는 하얀 손 문양이 일정한 간격으로 반복되어 있었고, 문양 아래에는 아직 해독되지 않은 고대 문자가 길게 새겨져 있었다.'
+        const first = await wiki.saveManualDocument({
+            characterId: 'character', chatId: 'chat', type: 'location',
+            title: '아르세존 교회',
+            markdown: `## 아르세존 교회\n\n${shared}\n\n${shared}`,
+        })
+        const second = await wiki.saveManualDocument({
+            characterId: 'character', chatId: 'chat', type: 'other',
+            title: '사교도의 흔적',
+            markdown: `## 사교도의 흔적\n\n${shared.replace('일정한 간격으로', '일정한\n간격으로')}`,
+        })
+        await wiki.saveManualDocument({
+            characterId: 'character', chatId: 'chat', type: 'concept',
+            title: '문양 색인',
+            markdown: '## 문양 색인\n\n- [[아르세존 교회]] [[사교도의 흔적]] [[하얀 손 문양]] [[고대 문자]] [[지하 통로]]',
+        })
+
+        const view = await wiki.loadView('character', 'chat')
+
+        expect(view.health.duplicatePassages).toEqual([{
+            documentIds: [first.id, second.id].sort(),
+        }])
+        expect(view.documents.find((document) => document.id === first.id)?.content)
+            .toContain(shared)
     })
 
     test('honors always and never context modes in bounded inquiry', async () => {

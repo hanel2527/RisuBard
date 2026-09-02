@@ -281,6 +281,9 @@ describe('loadNarrativeMemoryWiki', () => {
                 health: {
                     danglingLinks: [{ sourceId: 'event.one', target: '리나' }],
                     unlinkedDocumentIds: ['character.lavian'],
+                    duplicatePassages: [{
+                        documentIds: ['character.lavian', 'event.one'],
+                    }],
                 },
                 documents: [{
                     id: 'event.one',
@@ -317,6 +320,9 @@ describe('loadNarrativeMemoryWiki', () => {
             health: {
                 danglingLinks: [{ sourceId: 'event.one', target: '리나' }],
                 unlinkedDocumentIds: ['character.lavian'],
+                duplicatePassages: [{
+                    documentIds: ['character.lavian', 'event.one'],
+                }],
             },
             documents: [
                 expect.objectContaining({

@@ -56,7 +56,9 @@
         characterId,
         chatId,
         documents,
-        health = { danglingLinks: [], unlinkedDocumentIds: [] },
+        health = {
+            danglingLinks: [], unlinkedDocumentIds: [], duplicatePassages: [],
+        },
         locked = false,
         mobileLayout = false,
         selectedId = $bindable(''),
@@ -105,6 +107,9 @@
         : new Set(highlightedDocumentIds))
     let danglingSourceIds = $derived(new Set(
         health.danglingLinks.map((link) => link.sourceId)
+    ))
+    let duplicateDocumentIds = $derived(new Set(
+        (health.duplicatePassages ?? []).flatMap((passage) => passage.documentIds)
     ))
     let selected = $derived(
         documents.find((document) => document.id === selectedId) ?? null
@@ -531,6 +536,7 @@
             <span>{documents.length} 문서</span>
             <span>끊어진 링크 {health.danglingLinks.length}</span>
             <span>연결 없음 {health.unlinkedDocumentIds.length}</span>
+            <span>본문 중복 {health.duplicatePassages?.length ?? 0}</span>
         </div>
         {#each tree as node (node.path)}
             {#if node.kind === 'folder'}
@@ -546,7 +552,9 @@
                                 <div
                                     class="file-row"
                                     class:dangling-link={danglingSourceIds.has(child.documentId)}
+                                    class:duplicate-passage={duplicateDocumentIds.has(child.documentId)}
                                     data-wiki-dangling-document={danglingSourceIds.has(child.documentId) ? child.documentId : undefined}
+                                    data-wiki-duplicate-document={duplicateDocumentIds.has(child.documentId) ? child.documentId : undefined}
                                 >
                                     <button
                                         type="button"
@@ -573,7 +581,9 @@
                 <div
                     class="file-row"
                     class:dangling-link={danglingSourceIds.has(node.documentId)}
+                    class:duplicate-passage={duplicateDocumentIds.has(node.documentId)}
                     data-wiki-dangling-document={danglingSourceIds.has(node.documentId) ? node.documentId : undefined}
+                    data-wiki-duplicate-document={duplicateDocumentIds.has(node.documentId) ? node.documentId : undefined}
                 >
                     <button
                         type="button"
@@ -647,6 +657,7 @@
                         <option value="character">캐릭터</option>
                         <option value="location">장소</option>
                         <option value="faction">세력</option>
+                        <option value="creature">종족·생물</option>
                         <option value="item">사물</option>
                         <option value="concept">개념</option>
                         <option value="scene">현재 장면</option>
@@ -794,6 +805,7 @@
     .root-file:hover, .folder-children .file-select:hover, button.active { background: color-mix(in srgb, var(--risu-theme-primary) 13%, transparent); }
     .file-row.dangling-link { background: color-mix(in srgb, var(--risu-theme-draculared) 10%, transparent); }
     .file-row.dangling-link .file-select { color: var(--risu-theme-draculared); }
+    .file-row.duplicate-passage { box-shadow: inset 2px 0 color-mix(in srgb, var(--color-warning) 75%, transparent); }
     .document-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .recent-update-badge { flex: 0 0 auto; margin-left: auto; padding: .12rem .32rem; border: 1px solid color-mix(in srgb, var(--risu-theme-primary) 45%, transparent); border-radius: .25rem; color: var(--risu-theme-textcolor); background: color-mix(in srgb, var(--risu-theme-primary) 18%, transparent); font-size: .6rem; font-weight: 700; line-height: 1.2; white-space: nowrap; }
     .editor-pane { container-name: wiki-editor-pane; container-type: inline-size; min-width: 0; display: flex; flex-direction: column; background: color-mix(in srgb, var(--risu-theme-darkbg) 98%, var(--color-bgcolor)); }

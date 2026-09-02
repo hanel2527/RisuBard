@@ -294,6 +294,10 @@ export function buildRisuBardCanonicalWritingPolicy(
         'An optional `### Story History` or turning-point map should contain about 3-6 major irreversible or causally useful transitions, not a turn-by-turn action log.',
         'Link exact [[event document titles]] from turning points. Retrieve exact chronology, actions, targets, locations, and evidence from event documents rather than copying those details into character canon.',
         'Do not update a character document merely because the character participated in an event. Update it only for a durable lorebook fact or a major transition.',
+        'Events own exact historical observations and actions. Other canon owns durable current state and rules; do not copy event sentences or paragraphs into it.',
+        'Register recurring species, creatures, and monster kinds as creature canon. Split a variant only for durable distinct rules, not an individual encounter or cosmetic difference.',
+        'Give a named sublocation its own location canon when it has independent persistent state, structure, people, secrets, or repeated scene use; keep only a short link summary in its parent.',
+        'Do not create canon for every clue. Keep one compact investigation thread in other canon only when clues cross events or remain unresolved and affect future decisions.',
         'When new facts replace old ones, do not present both states as current. Preserve unrelated established facts.',
     ].join('\n')
     return [
@@ -303,6 +307,10 @@ export function buildRisuBardCanonicalWritingPolicy(
         '선택적인 `### 작중 행적` 또는 전환점 맵은 되돌리기 어렵거나 인과상 중요한 큰 전환점 약 3~6개만 남기고 턴별 행동 기록을 누적하지 않는다.',
         '전환점에는 정확한 `[[사건 문서 제목]]`을 연결한다. 상세 과거 행적은 사건 문서에서 조회하며 시간순 세부 행위, 대상, 장소와 근거를 캐릭터 정본에 복사하지 않는다.',
         '인물이 사건에 참여했다는 이유만으로 캐릭터 정본을 갱신하지 않는다. 지속되는 로어북 사실이나 큰 전환점이 생긴 경우에만 갱신한다.',
+        '사건은 정확한 과거 관찰과 행동을 소유한다. 다른 정본은 이후에도 유효한 현재 상태와 규칙만 소유하며 사건의 문장이나 문단을 복사하지 않는다.',
+        '반복 등장하거나 고유한 지속 규칙이 있는 종족·생물·몬스터 종류는 creature 정본으로 등록한다. 개별 조우나 외형 차이는 만들지 않고 변종은 공통 종류와 다른 지속 규칙이 있을 때만 분리한다.',
+        '이름 있는 하위 장소가 독립된 지속 상태·구조·인물·비밀을 가지거나 반복되는 사건 무대이면 별도 location 정본으로 만들고 상위 장소에는 짧은 링크 요약만 둔다.',
+        '단서마다 정본을 만들지 않는다. 여러 사건을 연결하거나 해결되지 않아 향후 판단에 영향을 주는 조사 줄기만 하나의 간결한 other 정본으로 관리한다.',
         '새 사실이 기존 사실을 대체하면 이전 상태를 현재 사실처럼 병기하지 않는다.',
         '관련 없는 기존 정본 사실은 보존한다.',
     ].join('\n')

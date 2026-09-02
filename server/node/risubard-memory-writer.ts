@@ -14,6 +14,7 @@ const canonicalTypes = [
     'location',
     'scene',
     'faction',
+    'creature',
     'item',
     'concept',
     'other',

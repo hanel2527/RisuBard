@@ -1,6 +1,6 @@
 export type ExcerptDocumentType =
     | 'event' | 'scene' | 'character' | 'location'
-    | 'faction' | 'item' | 'concept' | 'other'
+    | 'faction' | 'creature' | 'item' | 'concept' | 'other'
 
 export interface MarkdownExcerptInput {
     content: string
