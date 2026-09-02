@@ -251,7 +251,7 @@
     async function handleRebootAction() {
         if (rebootActionBusy) return
         if (!rebootJob) {
-            if (!await alertConfirm(language.risuBardWikiRebootWarning)) return
+            if (!await alertConfirm(language.risuBardWikiRebootWarning, { tier: 'top' })) return
             rebootChooserOpen = true
             return
         }
@@ -287,7 +287,7 @@
     }
 
     async function cancelReboot() {
-        if (!await alertConfirm(language.risuBardWikiRebootCancelWarning)) return
+        if (!await alertConfirm(language.risuBardWikiRebootCancelWarning, { tier: 'top' })) return
         rebootActionBusy = true
         try {
             await onCancelWikiReboot?.()

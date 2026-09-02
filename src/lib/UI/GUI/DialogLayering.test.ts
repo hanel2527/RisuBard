@@ -42,10 +42,29 @@ describe('application overlay layering', () => {
 
     test('places the reboot choice dialog in the top confirmation tier', () => {
         const wiki = source('src/lib/Others/RisuBardMemoryWiki.svelte')
+        expect(wiki).toContain(
+            "alertConfirm(language.risuBardWikiRebootWarning, { tier: 'top' })"
+        )
+        expect(wiki).toContain(
+            "alertConfirm(language.risuBardWikiRebootCancelWarning, { tier: 'top' })"
+        )
         const chooser = wiki.slice(
             wiki.indexOf('{#if rebootChooserOpen}'),
             wiki.indexOf('{#snippet rebootChooserFooter')
         )
         expect(chooser).toContain('tier="top"')
+    })
+
+    test('lets a global confirmation opt into the top tier', () => {
+        const alertApi = source('src/ts/alert.ts')
+        const alertHost = source('src/lib/Others/AlertComp.svelte')
+        const ask = alertHost.slice(
+            alertHost.indexOf("open={$alertStore.type === 'ask'}"),
+            alertHost.indexOf("open={$alertStore.type === 'pluginconfirm'}")
+        )
+
+        expect(alertApi).toContain('options: AlertConfirmOptions = {}')
+        expect(alertApi).toContain("'tier': options.tier")
+        expect(ask).toContain("tier={$alertStore.tier ?? 'alert'}")
     })
 })
