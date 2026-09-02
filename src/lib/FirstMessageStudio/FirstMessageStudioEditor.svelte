@@ -896,7 +896,7 @@
 </div>
 
 <style>
-    .overlay{position:fixed;z-index:300;inset:0;padding:1.25rem;background:color-mix(in srgb, var(--color-overlay) 58%, transparent);backdrop-filter:blur(4px)}
+    .overlay{position:fixed;z-index:1000;inset:0;padding:1.25rem;background:color-mix(in srgb, var(--color-overlay) 58%, transparent);backdrop-filter:blur(4px)}
     .shell{display:grid;grid-template-rows:auto 1fr auto;width:min(96rem,100%);height:100%;margin:auto;overflow:hidden;border:1px solid var(--color-darkborderc);border-radius:1rem;color:var(--color-textcolor);background:var(--color-darkbg);box-shadow:0 1.5rem 4rem color-mix(in srgb, var(--color-shadow) 32%, transparent)}
     .topbar,.footer{display:flex;align-items:center;justify-content:space-between;gap:1rem}
     .topbar{padding:1rem 1.25rem;border-bottom:1px solid var(--risu-theme-darkborderc);background:var(--risu-theme-darkbg)}

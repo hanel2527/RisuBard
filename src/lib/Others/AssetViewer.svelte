@@ -77,7 +77,7 @@
   })
 </script>
 
-<div data-risu-modal-tier="alert" class="fixed inset-0 z-[300] flex flex-col" style="background: var(--color-media-bg);">
+<div class="fixed inset-0 z-50 flex flex-col" style="background: var(--color-media-bg);">
   <!-- Header: title + search + close -->
   <div class="shrink-0 flex items-center gap-3 px-4 py-3 border-b border-media-text/10">
     <span class="text-media-text text-sm font-semibold truncate">{assetViewerStore.title}</span>
@@ -126,7 +126,7 @@
 
 <!-- Fullscreen zoom -->
 {#if zoomIndex >= 0}
-  <div data-risu-modal-tier="alert" class="fixed inset-0 z-[300]" style="background: var(--color-media-bg);">
+  <div class="fixed inset-0 z-[60]" style="background: var(--color-media-bg);">
     <!-- Toolbar -->
     <div class="absolute top-0 inset-x-0 z-10 flex items-center gap-3 px-4 py-3 bg-gradient-to-b from-media-bg/70 to-transparent pointer-events-none">
       <div class="flex-1 min-w-0">

@@ -79,8 +79,8 @@
     })
 </script>
 
-<div class="risu-modal-overlay persona-manager-backdrop" data-risu-modal-tier="base">
-    <dialog open class="risu-modal-surface persona-manager" data-risu-modal-tier="base" style={`--persona-manager-width: ${managerWidth}px`} aria-labelledby="persona-manager-title">
+<div class="risu-modal-overlay persona-manager-backdrop">
+    <dialog open class="risu-modal-surface persona-manager" style={`--persona-manager-width: ${managerWidth}px`} aria-labelledby="persona-manager-title">
         <header class="risu-modal-header">
             <div class="persona-manager-title">
                 <h1 id="persona-manager-title">{language.persona}</h1>

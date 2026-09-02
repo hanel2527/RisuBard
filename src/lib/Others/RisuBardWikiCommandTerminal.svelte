@@ -308,7 +308,6 @@
 {#if templatesOpen}
     <div
         class="template-backdrop"
-        data-risu-modal-tier="alert"
         role="presentation"
         onclick={(event) => {
             if (event.target === event.currentTarget) closeTemplates()
@@ -571,7 +570,7 @@
 
     .template-backdrop {
         position: fixed;
-        z-index: 300;
+        z-index: 10000;
         inset: 0;
         display: grid;
         place-items: center;

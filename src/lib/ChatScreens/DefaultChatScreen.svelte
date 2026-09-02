@@ -1838,7 +1838,7 @@ import { isMobile } from 'src/ts/platform'
 </div>
 
 {#if composerFullscreen}
-    <div data-risu-modal-tier="alert" class="fixed inset-0 z-[300] bg-bgcolor flex flex-col p-4">
+    <div class="fixed inset-0 z-50 bg-bgcolor flex flex-col p-4">
         <div class="mx-auto w-full max-w-3xl flex flex-col flex-1 min-h-0">
             <div class="flex items-center justify-between mb-2">
                 <span class="text-textcolor text-sm">{language.chatInputExpandTitle}</span>

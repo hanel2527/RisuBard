@@ -2,8 +2,8 @@
     // shadcn-svelte Dialog — ported to RisuAI theme tokens.
     // See _reference/shadcn-components/dialog/* for source patterns.
     export type ShDialogSize = 'sm' | 'default' | 'lg' | 'xl';
-    // Bounded fallback tiers. modalLayerStack dynamically orders dialogs
-    // inside each tier and keeps floating children above their owner.
+    // Static stacking tiers. Individual callers may use a small local override
+    // when a nested dialog must sit above its owning base-tier window.
     export type ShDialogTier = 'base' | 'alert' | 'top';
 </script>
 
@@ -75,9 +75,9 @@
     };
 
     const tierClasses: Record<ShDialogTier, string> = {
-        base: 'z-[100]',
-        alert: 'z-[300]',
-        top: 'z-[700]',
+        base: 'z-40',
+        alert: 'z-50',
+        top: 'z-[60]',
     };
 
     // w-[calc(100vw-2rem)] guarantees a 1rem gutter on each side at any
@@ -94,11 +94,9 @@
 <Dialog.Root bind:open {onOpenChange}>
     <Dialog.Portal>
         <Dialog.Overlay
-            data-risu-modal-tier={tier}
             class={cn('risu-modal-overlay fixed inset-0 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0', tierClasses[tier], overlayClass)}
         />
         <Dialog.Content
-            data-risu-modal-tier={tier}
             bind:ref={contentElement}
             class={cn(
                 contentBase,

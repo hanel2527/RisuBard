@@ -423,7 +423,7 @@
 
       const rect = el.getBoundingClientRect()
       const ghost = el.cloneNode(true) as HTMLElement
-      ghost.style.cssText = `position:fixed;pointer-events:none;z-index:900;opacity:0.7;width:${rect.width}px;left:${touch.clientX - rect.width / 2}px;top:${touch.clientY - rect.height / 2}px;`
+      ghost.style.cssText = `position:fixed;pointer-events:none;z-index:9999;opacity:0.7;width:${rect.width}px;left:${touch.clientX - rect.width / 2}px;top:${touch.clientY - rect.height / 2}px;`
       document.body.appendChild(ghost)
       touchDragState.ghost = ghost
     }, 400)

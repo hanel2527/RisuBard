@@ -30,10 +30,6 @@
 />
 
 <style>
-    :global([data-sonner-toaster]) {
-        /* Notifications sit above ordinary alerts and below top blockers. */
-        z-index: 600 !important;
-    }
     :global(.risu-toast) {
         border-radius: 0.375rem;
         font-size: 0.875rem;

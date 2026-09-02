@@ -149,7 +149,6 @@
                 },
             );
             document.body.appendChild(blockButtonWrapper);
-            blockButtonWrapper.dataset.risuFloatingLayer = '';
         }
 
         // Calculate button position (fixed to viewport)
@@ -161,7 +160,7 @@
         blockButtonWrapper.style.left = `${rect.left}px`;
         blockButtonWrapper.style.display = 'flex';
         blockButtonWrapper.style.gap = '4px';
-        blockButtonWrapper.style.zIndex = '90';
+        blockButtonWrapper.style.zIndex = '1000';
     }
 
     function hideBlockButton() {
@@ -180,7 +179,6 @@
                 startDragDelete,
             );
             document.body.appendChild(dragButtonWrapper);
-            dragButtonWrapper.dataset.risuFloatingLayer = '';
         }
 
         // 72px: 2 buttons (32px*2) + gap(4px) + margin
@@ -192,7 +190,7 @@
         dragButtonWrapper.style.left = `${centerX - buttonTotalWidth / 2}px`;
         dragButtonWrapper.style.display = 'flex';
         dragButtonWrapper.style.gap = '4px';
-        dragButtonWrapper.style.zIndex = '90';
+        dragButtonWrapper.style.zIndex = '1000';
     }
 
     function hideDragButton() {
@@ -934,7 +932,7 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        z-index: 300;
+        z-index: 10000;
     }
 
     .partial-edit-modal {

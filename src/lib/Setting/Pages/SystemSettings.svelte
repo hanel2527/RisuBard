@@ -540,8 +540,7 @@
                                     {/snippet}
                                 </Tooltip.Trigger>
                                 <Tooltip.Content
-                                    data-risu-floating-layer
-                                    class="bg-darkbg border border-darkborderc rounded-md px-2 py-1 text-xs text-textcolor shadow-lg z-[90]"
+                                    class="bg-darkbg border border-darkborderc rounded-md px-2 py-1 text-xs text-textcolor shadow-lg z-50"
                                     sideOffset={4}
                                 >
                                     {formatAbsolute(entry.timestamp)}

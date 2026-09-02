@@ -1081,8 +1081,7 @@ const makeRisuaiAPIV3 = (iframe:HTMLIFrameElement,plugin:RisuPlugin) => {
                     iframe.style.width = "100%";
                     iframe.style.height = "100%";
                     iframe.style.border = "none";
-                    iframe.dataset.risuModalTier = "alert";
-                    iframe.style.zIndex = "300";
+                    iframe.style.zIndex = "1000";
                     break;
                 }
                 default: {

@@ -752,7 +752,6 @@
 {#if contextDocument}
     <div
         class="file-context-menu"
-        data-risu-floating-layer
         role="menu"
         tabindex="-1"
         aria-label={`${contextDocument.title} 파일 메뉴`}
@@ -840,7 +839,7 @@
     .success { color: var(--risu-theme-success); }
     .file-context-menu {
         position: fixed;
-        z-index: 90;
+        z-index: 10000;
         display: grid;
         width: 11rem;
         padding: .28rem;

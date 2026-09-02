@@ -6,10 +6,6 @@ const toast = readFileSync(
     resolve(process.cwd(), 'src/lib/UI/GUI/RequestStatusToast.svelte'),
     'utf8',
 )
-const toaster = readFileSync(
-    resolve(process.cwd(), 'src/lib/UI/GUI/Toaster.svelte'),
-    'utf8',
-)
 const requestPipeline = readFileSync(
     resolve(process.cwd(), 'src/ts/process/request/request.ts'),
     'utf8',
@@ -39,11 +35,6 @@ describe('request status injection manifest', () => {
         expect(toast).toContain('onclick={dismiss}')
         expect(toast).toContain('clearStatus(id)')
         expect(toast).toContain('toast.dismiss(`req:${id}`)')
-    })
-
-    test('keeps request status cards on the bounded notification layer', () => {
-        const zIndex = Number(toaster.match(/z-index:\s*(\d+)/)?.[1])
-        expect(zIndex).toBe(600)
     })
 
     test('builds the manifest after preset normalization and strips private sources before adapter dispatch', () => {
