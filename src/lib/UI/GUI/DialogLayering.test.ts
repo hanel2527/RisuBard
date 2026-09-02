@@ -67,4 +67,20 @@ describe('application overlay layering', () => {
         expect(alertApi).toContain("'tier': options.tier")
         expect(ask).toContain("tier={$alertStore.tier ?? 'alert'}")
     })
+
+    test('keeps the BardWiki dock below base editor dialogs', () => {
+        const wiki = source('src/lib/Others/RisuBardMemoryWiki.svelte')
+        const dialog = source('src/lib/UI/GUI/ShDialog.svelte')
+        const lorebook = source(
+            'src/lib/SideBars/LoreBook/LoreBookWorkspaceDialog.svelte'
+        )
+        const dockRule = wiki.slice(
+            wiki.indexOf('.memory-wiki-dock {'),
+            wiki.indexOf('.memory-wiki-dock.closed')
+        )
+
+        expect(dialog).toContain("tier = 'alert'")
+        expect(lorebook).toContain('tier="base"')
+        expect(dockRule).toContain('z-index: 30;')
+    })
 })

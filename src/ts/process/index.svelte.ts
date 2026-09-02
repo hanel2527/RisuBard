@@ -659,14 +659,22 @@ async function runWikiReboot(
             }
             return true
         }
+        const reason = (error instanceof Error
+            ? error.message
+            : String(error)).trim().slice(0, 512) || '알 수 없는 오류'
         if (job) {
             job.status = 'failed'
-            job.lastError = (error instanceof Error
-                ? error.message
-                : String(error)).trim().slice(0, 512)
+            job.lastError = reason
             job.updatedAt = Date.now()
             await persistWikiReboot(character, chat, chatIndex).catch(() => {})
         }
+        publishRisuBardMemoryActivity({
+            characterId: character.chaId,
+            chatId,
+            operation: 'error',
+            timestamp: Date.now(),
+            message: `위키 리부트 실패: ${reason}`,
+        })
         throw error
     }
     finally {
@@ -1515,6 +1523,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                         characterId: currentChar.chaId,
                         chatId: narrativeSessionChatId,
                         currentInput,
+                        entityHints: lorepmt.bardWikiEntityHints,
                         tokenBudget: {
                             target: inquirySettings.risuBardInquiryTargetTokenBudget,
                             events: inquirySettings.risuBardInquiryEventTokenBudget,

@@ -555,6 +555,10 @@ describe('RisuBard memory routes', () => {
                         documentId: 'event-bridge',
                         score: 0.91,
                     }],
+                    entityHints: [{
+                        kind: 'character',
+                        names: ['Haania', 'Hania', '하니아', 'Hanya'],
+                    }],
                     sourceMatches: [{
                         messageId: 'message-5',
                         role: 'assistant',
@@ -576,6 +580,10 @@ describe('RisuBard memory routes', () => {
             semanticMatches: [{
                 documentId: 'event-bridge',
                 score: 0.91,
+            }],
+            entityHints: [{
+                kind: 'character',
+                names: ['Haania', 'Hania', '하니아', 'Hanya'],
             }],
             sourceMatches: [{
                 messageId: 'message-5',
@@ -640,6 +648,24 @@ describe('RisuBard memory routes', () => {
                         content: 'bounded source',
                         score: 1,
                         occurredAt: index,
+                    })),
+                },
+            },
+            harness.response,
+            vi.fn()
+        )
+        expect(harness.response.statusCode).toBe(400)
+        expect(service.inquireNarrative).toHaveBeenCalledTimes(2)
+
+        await harness.routes.get('/api/risubard/memory/inquiry')!(
+            {
+                body: {
+                    characterId: 'character',
+                    chatId: 'chat',
+                    currentInput: 'bridge',
+                    entityHints: Array.from({ length: 13 }, () => ({
+                        kind: 'character',
+                        names: ['Haania'],
                     })),
                 },
             },

@@ -98,6 +98,10 @@ export async function loadNarrativeInquiry(input: {
         documentId: string
         score: number
     }[]
+    entityHints?: readonly {
+        kind: 'character'
+        names: readonly string[]
+    }[]
     sourceMatches?: readonly HistoricalSourceMatch[]
     sourceLimit?: number
     resolveSourceMatches?: (
@@ -148,6 +152,15 @@ export async function loadNarrativeInquiry(input: {
                                 ? {}
                                 : { semanticMatches:
                                     input.semanticMatches.slice(0, 32) }),
+                            ...(input.entityHints === undefined
+                                ? {}
+                                : { entityHints: input.entityHints
+                                    .slice(0, 12)
+                                    .map((hint) => ({
+                                        kind: hint.kind,
+                                        names: hint.names.slice(0, 16)
+                                            .map((name) => name.slice(0, 128)),
+                                    })) }),
                             ...(input.sourceMatches === undefined
                                 ? {}
                                 : { sourceMatches:

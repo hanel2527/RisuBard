@@ -1240,7 +1240,7 @@
 <style>
     .memory-wiki-dock {
         position: relative;
-        z-index: 51;
+        z-index: 30;
         display: flex;
         flex: 0 0 auto;
         flex-direction: column;

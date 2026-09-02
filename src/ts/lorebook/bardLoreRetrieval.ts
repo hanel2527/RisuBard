@@ -29,6 +29,7 @@ export interface BardLoreExclusion {
 
 export interface BardLoreSelectionInput {
     query: string
+    priorityQuery?: string
     entries: BardLoreEntry[]
     tokenCounts: Record<string, number>
     settings: BardLoreSettings
@@ -137,7 +138,15 @@ export function selectBardLoreEntries(input: BardLoreSelectionInput): BardLoreSe
         if (selectedIds.has(entry.id) || entry.bard.activation === 'required') continue
         const match = directMatch(input.query, entry)
         if (!match) continue
-        direct.push({ entry, reason: match.reason, score: settings.directMatchScore, lane: 'context' })
+        const latestInputMatch = input.priorityQuery
+            ? directMatch(input.priorityQuery, entry)
+            : undefined
+        direct.push({
+            entry,
+            reason: match.reason,
+            score: settings.directMatchScore + (latestInputMatch ? 1 : 0),
+            lane: 'context',
+        })
         directCandidateIds.add(entry.id)
         directSeedIds.add(entry.id)
     }

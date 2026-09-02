@@ -26,5 +26,6 @@ describe('historical source recall connections', () => {
         )
         expect(exactRecallCall).toContain('messages: currentChat.message')
         expect(exactRecallCall).toContain('messageIds')
+        expect(source).toContain('entityHints: lorepmt.bardWikiEntityHints')
     })
 })

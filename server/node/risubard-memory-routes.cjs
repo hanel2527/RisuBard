@@ -64,6 +64,21 @@ function validSemanticMatches(value) {
         )
 }
 
+function validEntityHints(value) {
+    return Array.isArray(value)
+        && value.length <= 12
+        && value.every((hint) =>
+            hasExactKeys(hint, ['kind', 'names'])
+            && hint.kind === 'character'
+            && Array.isArray(hint.names)
+            && hint.names.length >= 1
+            && hint.names.length <= 16
+            && hint.names.every((name) => typeof name === 'string'
+                && name.trim().length > 0
+                && name.length <= 128)
+        )
+}
+
 function validSourceMatches(value) {
     return Array.isArray(value)
         && value.length <= 32
@@ -469,6 +484,9 @@ function registerRisuBardMemoryRoutes(app, options) {
                 ...(req.body.semanticMatches === undefined
                     ? []
                     : ['semanticMatches']),
+                ...(req.body.entityHints === undefined
+                    ? []
+                    : ['entityHints']),
                 ...(req.body.sourceMatches === undefined
                     ? []
                     : ['sourceMatches']),
@@ -486,6 +504,8 @@ function registerRisuBardMemoryRoutes(app, options) {
                     && !validInquiryTokenBudget(req.body.tokenBudget))
                 || (req.body.semanticMatches !== undefined
                     && !validSemanticMatches(req.body.semanticMatches))
+                || (req.body.entityHints !== undefined
+                    && !validEntityHints(req.body.entityHints))
                 || (req.body.sourceMatches !== undefined
                     && !validSourceMatches(req.body.sourceMatches))
                 || (req.body.sourceLimit !== undefined

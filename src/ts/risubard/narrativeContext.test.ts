@@ -248,6 +248,10 @@ describe('actual narrative inquiry prompt', () => {
                 documentId: 'event-bridge',
                 score: 0.91,
             }],
+            entityHints: [{
+                kind: 'character',
+                names: ['Haania', 'Hania', '하니아', 'Hanya'],
+            }],
             sourceMatches: Array.from({ length: 9 }, (_, index) => ({
                 messageId: `message-${index}`,
                 role: 'assistant' as const,
@@ -280,6 +284,10 @@ describe('actual narrative inquiry prompt', () => {
                     semanticMatches: [{
                         documentId: 'event-bridge',
                         score: 0.91,
+                    }],
+                    entityHints: [{
+                        kind: 'character',
+                        names: ['Haania', 'Hania', '하니아', 'Hanya'],
                     }],
                     sourceMatches: Array.from({ length: 9 }, (_, index) => ({
                         messageId: `message-${index}`,

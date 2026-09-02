@@ -37,6 +37,48 @@ describe('progressive Markdown inquiry', () => {
         ])
     })
 
+    test('retrieves current character canon from a unique lore entity hint', () => {
+        const result = inquireMarkdownDocuments({
+            currentInput: '손을 뻗는다.',
+            entityHints: [{
+                kind: 'character',
+                names: ['Haania', 'Hanya', 'Hania', '하니아', '수녀'],
+            }],
+            documents: [document({
+                id: 'haania', type: 'character', title: '하니아',
+                aliases: ['Haania', 'Hania'],
+                relativePath: 'characters/haania.md',
+                content: '## 하니아\n\n### 현재 상태\n\n교회 밖 나무 아래에 있다.',
+            })],
+        })
+
+        expect(result.sources.map((source) => source.id)).toEqual([
+            'narrative-memory:wiki:characters/haania.md',
+        ])
+        expect(result.sources[0]?.content).toContain('교회 밖 나무 아래')
+    })
+
+    test('does not guess a character from an ambiguous lore entity alias', () => {
+        const result = inquireMarkdownDocuments({
+            currentInput: '손을 뻗는다.',
+            entityHints: [{ kind: 'character', names: ['수녀'] }],
+            documents: [
+                document({
+                    id: 'haania', type: 'character', title: '하니아',
+                    aliases: ['수녀'], relativePath: 'characters/haania.md',
+                    content: '## 하니아\n\n교회 밖에 있다.',
+                }),
+                document({
+                    id: 'maria', type: 'character', title: '마리아',
+                    aliases: ['수녀'], relativePath: 'characters/maria.md',
+                    content: '## 마리아\n\n수도원에 있다.',
+                }),
+            ],
+        })
+
+        expect(result.sources).toEqual([])
+    })
+
     test('follows a wikilink written with a unique alias', () => {
         const result = inquireMarkdownDocuments({
             currentInput: '북문 경비대 관계를 알려 줘.',

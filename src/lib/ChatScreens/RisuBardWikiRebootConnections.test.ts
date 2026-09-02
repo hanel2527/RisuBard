@@ -51,6 +51,21 @@ describe('BardWiki reboot connections', () => {
         expect(chatSource).toContain('class:wiki-generating={$isWikiGenerating}')
     })
 
+    test('records reboot failures in the BardWiki work log', () => {
+        const runner = processSource.slice(
+            processSource.indexOf('async function runWikiReboot'),
+            processSource.indexOf('export async function startCurrentWikiReboot')
+        )
+        const failure = runner.slice(
+            runner.lastIndexOf('catch (error)'),
+            runner.lastIndexOf('finally')
+        )
+
+        expect(failure).toContain('publishRisuBardMemoryActivity')
+        expect(failure).toContain("operation: 'error'")
+        expect(failure).toContain('위키 리부트 실패:')
+    })
+
     test('blocks new responses while any BardWiki write is active', () => {
         const sendChat = processSource.slice(
             processSource.indexOf('export async function sendChat'),

@@ -19,6 +19,7 @@ const MAX_MAP_ANCHORS_BEFORE_EVENTS = 4
 const ROUTED_SOURCE_SCORE_BONUS = 12
 const SEMANTIC_RRF_K = 60
 const SEMANTIC_RRF_SCALE = 480
+const ENTITY_HINT_SCORE = 10_000
 
 const QUERY_STOPWORDS = new Set([
     '그는', '그녀는', '그들은', '나는', '우리는', '이것', '그것', '저것',
@@ -66,6 +67,10 @@ export interface MarkdownInquiryInput {
     semanticMatches?: readonly {
         documentId: string
         score: number
+    }[]
+    entityHints?: readonly {
+        kind: 'character'
+        names: readonly string[]
     }[]
     sourceMatches?: readonly {
         messageId: string
@@ -391,6 +396,29 @@ export function inquireMarkdownDocuments(
             directScore: (existing?.directScore ?? 0) + semanticRankBonus,
         })
     })
+    for (const hint of input.entityHints ?? []) {
+        if (hint.kind !== 'character') continue
+        const uniquelyResolvedIds = new Set<string>()
+        for (const rawName of hint.names) {
+            const name = normalized(rawName)
+            if (!name) continue
+            const matches = eligibleDocuments.filter((document) =>
+                document.type === 'character'
+                && [document.title, ...document.aliases]
+                    .map(normalized)
+                    .includes(name))
+            if (matches.length === 1) uniquelyResolvedIds.add(matches[0].id)
+        }
+        if (uniquelyResolvedIds.size !== 1) continue
+        const documentId = [...uniquelyResolvedIds][0]
+        const document = byId.get(documentId)
+        if (!document) continue
+        const existing = directById.get(documentId)
+        directById.set(documentId, {
+            document,
+            directScore: (existing?.directScore ?? 0) + ENTITY_HINT_SCORE,
+        })
+    }
     const hybridDirect = [...directById.values()]
         .sort((left, right) =>
             right.directScore - left.directScore

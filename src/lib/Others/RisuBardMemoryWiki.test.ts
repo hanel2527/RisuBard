@@ -153,12 +153,9 @@ describe('RisuBardMemoryWiki', () => {
         )
     })
 
-    test('renders above plugin FABs and uses the BARDWIKI title', () => {
+    test('renders above the chat stacking context and uses the BARDWIKI title', () => {
         const dockSource = readFileSync(resolve(
             process.cwd(), 'src/lib/Others/RisuBardMemoryWiki.svelte'
-        ), 'utf8')
-        const fabSource = readFileSync(resolve(
-            process.cwd(), 'src/lib/Others/PluginFloatingActionButtons.svelte'
         ), 'utf8')
         const chatSource = readFileSync(resolve(
             process.cwd(), 'src/lib/ChatScreens/DefaultChatScreen.svelte'
@@ -170,9 +167,8 @@ describe('RisuBardMemoryWiki', () => {
         const dockLayer = Number(dockSource.match(
             /\.memory-wiki-dock\s*\{[\s\S]*?z-index:\s*(\d+)/
         )?.[1])
-        const fabLayer = Number(fabSource.match(/\bz-(\d+)\b/)?.[1])
 
-        expect(dockLayer).toBeGreaterThan(fabLayer)
+        expect(dockLayer).toBeGreaterThan(0)
         const chatPaneStart = chatSource.indexOf(
             '<main class="relative z-0 h-full min-w-0 flex-1"'
         )

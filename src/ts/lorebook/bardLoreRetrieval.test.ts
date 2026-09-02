@@ -35,9 +35,10 @@ function entry(id: string, overrides: Partial<BardLoreEntry> = {}): BardLoreEntr
     }
 }
 
-function select(query: string, entries: BardLoreEntry[], tokenCounts: Record<string, number>, overrides: Partial<BardLoreSettings> = {}) {
+function select(query: string, entries: BardLoreEntry[], tokenCounts: Record<string, number>, overrides: Partial<BardLoreSettings> = {}, priorityQuery?: string) {
     return selectBardLoreEntries({
         query,
+        priorityQuery,
         entries,
         tokenCounts,
         settings: { ...settings, ...overrides },
@@ -81,6 +82,45 @@ describe('selectBardLoreEntries', () => {
         const result = select('오늘 폴로니안 몰에서 데이트하자.', [mall], { mall: 80 })
 
         expect(result.selected[0]).toMatchObject({ reason: 'alias' })
+    })
+
+    it('injects the full entry selected by a multi-word primary key', () => {
+        const gameOver = entry('game-over', {
+            key: 'game over, gameover',
+            content: 'GAME OVER INSTRUCTIONS',
+        })
+
+        const result = select('game over', [gameOver], { 'game-over': 80 })
+
+        expect(result.selected).toEqual([
+            expect.objectContaining({
+                entry: expect.objectContaining({
+                    id: 'game-over',
+                    content: 'GAME OVER INSTRUCTIONS',
+                }),
+                reason: 'key',
+            }),
+        ])
+    })
+
+    it('prioritizes a direct match from the latest user input over older context matches', () => {
+        const haania = entry('haania', { key: 'Haania, Hanya' })
+        const lilia = entry('lilia', { key: 'Lilia' })
+        const gameOver = entry('game-over', {
+            key: 'game over, gameover',
+            content: 'GAME OVER INSTRUCTIONS',
+        })
+
+        const result = select(
+            'Haania\nLilia\ngame over',
+            [haania, lilia, gameOver],
+            { haania: 60, lilia: 60, 'game-over': 60 },
+            { targetTokens: 100, maximumTokens: 180, maxEntries: 3 },
+            'game over',
+        )
+
+        expect(result.selected[0].entry.id).toBe('game-over')
+        expect(result.selected.map((item) => item.entry.id)).toContain('game-over')
     })
 
     it('uses sparse Korean and English evidence without including unrelated entries of the same kind', () => {
