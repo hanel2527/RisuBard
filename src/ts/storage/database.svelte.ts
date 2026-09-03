@@ -2058,12 +2058,39 @@ export interface loreBook{
 
 import type { FirstMessageStudioProject } from '../firstMessageStudio'
 
+export interface RisuBardGallerySlot {
+    id: string
+    title: string
+    summary: string
+    previewMessageIndex?: number
+    hideUserMessages?: boolean
+    categoryId?: string
+    sourceChatId?: string
+    sourceChatName: string
+    createdAt: number
+    messages: Message[]
+}
+
+export interface RisuBardGalleryCategory {
+    id: string
+    name: string
+}
+
+export interface RisuBardGallery {
+    title?: string
+    slotWidth?: number
+    slotHeight?: number
+    categories: RisuBardGalleryCategory[]
+    slots: RisuBardGallerySlot[]
+}
+
 export interface character{
     type?:"character"
     name:string
     image?:string
     firstMessage:string
     firstMessageStudio?:FirstMessageStudioProject
+    risuBardGallery?:RisuBardGallery
     desc:string
     notes:string
     chats:Chat[]
@@ -2582,6 +2609,8 @@ export interface Chat{
     note:string
     name:string
     localLore: loreBook[]
+    /** Legacy per-chat gallery. New data is stored on the character. */
+    risuBardGallery?:RisuBardGallery
     risuBardWikiGuide?: string
     risuBardSettings?: import('../risubard/risuBardSettings').RisuBardChatSettings
     risuBardWikiReboot?: import('../risubard/wikiReboot').WikiRebootJob

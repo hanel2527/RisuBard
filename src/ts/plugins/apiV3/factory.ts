@@ -59,6 +59,9 @@ await (async function() {
             if (refId) {
                 return { __type: 'REMOTE_REF', id: refId };
             }
+            if (Array.isArray(arg)) {
+                return arg.map(serializeArg);
+            }
             if (arg.constructor === Object) {
                 let out = null;
                 for (const [key, val] of Object.entries(arg)) {
@@ -73,6 +76,12 @@ await (async function() {
                         }
 
                         out[key] = { __type: 'ABORT_SIGNAL_REF', abortId, aborted: val.aborted };
+                    } else {
+                        const serialized = serializeArg(val);
+                        if (serialized !== val) {
+                            if (!out) out = { ...arg };
+                            out[key] = serialized;
+                        }
                     }
                 }
                 if (out) return out;
@@ -550,7 +559,7 @@ export class SandboxHost {
 
 
     private deserializeArgs(args: any[], usedAbortIds?: string[]) {
-        return args.map(arg => {
+        const deserializeArg = (arg: any): any => {
             if (arg && arg.__type === 'CALLBACK_REF') {
                 const cbRef = arg as CallbackRef;
 
@@ -608,6 +617,9 @@ export class SandboxHost {
                     return instance;
                 }
             }
+            if (Array.isArray(arg)) {
+                return arg.map(deserializeArg);
+            }
             if (arg && typeof arg === 'object' && arg.constructor === Object) {
                 let out: any = null;
                 for (const [key, val] of Object.entries<any>(arg)) {
@@ -620,12 +632,20 @@ export class SandboxHost {
 
                         usedAbortIds?.push(abortRef.abortId);
                         out[key] = controller.signal;
+                    } else {
+                        const deserialized = deserializeArg(val);
+                        if (deserialized !== val) {
+                            if (!out) out = { ...arg };
+                            out[key] = deserialized;
+                        }
                     }
                 }
                 if (out) return out;
             }
             return arg;
-        });
+        };
+
+        return args.map(deserializeArg);
     }
 
     private replaceStreamsWithPorts(obj: any): { result: any, ports: MessagePort[], cleanups: (() => void)[] } {

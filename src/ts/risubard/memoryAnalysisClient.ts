@@ -18,7 +18,14 @@ import {
     normalizeNarrativeBaseline,
     parseSingleJsonObject,
 } from '../../../packages/risubard-core/src/modelOutput'
-import { modelOutputRepairInstruction, readModelResponseText, runValidatedModelRequest, type ModelOutputError, type ModelResponse } from '../../../packages/risubard-core/src/modelResponse'
+import {
+    modelOutputRepairInstruction,
+    NativeStructuredOutputUnavailableError,
+    readModelResponseText,
+    runValidatedModelRequest,
+    type ModelOutputError,
+    type ModelResponse,
+} from '../../../packages/risubard-core/src/modelResponse'
 import {
     loadNarrativeInquiry,
 } from './narrativeContext'
@@ -818,14 +825,40 @@ export function createStoredResponseMemoryAnalysis(
         nativeV2Analysis: options.nativeV2Analysis,
         onError: options.onError,
         async analyze(request, signal) {
-            const boundedInput = fitAnalysisInput(
+            const nativeDraft = ['memory-draft', 'reboot-batch', 'canonical-batch']
+                .includes(request.format ?? '')
+            const structuredSchema = request.format === 'markdown'
+                ? undefined
+                : request.format === 'memory-draft'
+                    ? memoryWriterDraftSchema
+                    : request.format === 'reboot-batch'
+                        ? request.responseSchema ?? rebootBatchDraftSchema
+                        : request.format === 'canonical-batch'
+                            ? request.responseSchema ?? canonicalBatchSchema
+                            : request.schemaVersion === 2
+                                ? narrativeGraphDeltaSchema
+                                : memoryDeltaSchema
+            const promptSchemaMessage = request.structuredOutputMode === 'prompt'
+                && nativeDraft && structuredSchema
+                ? createStructuredOutputFallbackMessage(
+                    JSON.parse(structuredSchema) as Record<string, unknown>
+                )
+                : null
+            const usePromptSchemaFallback = Boolean(
+                promptSchemaMessage?.content
+            )
+            const requestSystem = [
                 request.system,
+                promptSchemaMessage?.content,
+            ].filter(Boolean).join('\n\n')
+            const boundedInput = fitAnalysisInput(
+                requestSystem,
                 request.input,
                 request.inputTokenLimit
             )
             const modelCall: MemoryAnalysisModelCall = {
                 formated: [
-                    { role: 'system', content: request.system },
+                    { role: 'system', content: requestSystem },
                     { role: 'user', content: boundedInput },
                 ],
                 useStreaming: false,
@@ -846,38 +879,29 @@ export function createStoredResponseMemoryAnalysis(
                         : 'bardwiki-analysis' as const,
                 } : {}),
                 ...(request.format === 'markdown'
+                    || usePromptSchemaFallback
                     ? {}
-                    : {
-                        schema: request.format === 'memory-draft'
-                            ? memoryWriterDraftSchema
-                            : request.format === 'reboot-batch'
-                                ? request.responseSchema
-                                    ?? rebootBatchDraftSchema
-                            : request.format === 'canonical-batch'
-                                ? request.responseSchema
-                                    ?? canonicalBatchSchema
-                                : request.schemaVersion === 2
-                                    ? narrativeGraphDeltaSchema
-                                    : memoryDeltaSchema,
-                    }),
+                    : { schema: structuredSchema }),
             }
-            const nativeDraft = ['memory-draft', 'reboot-batch', 'canonical-batch'].includes(request.format ?? '')
             const requestResponse = async (feedback?: ModelOutputError) => {
                     let response = await requestMemoryModel({
                         ...modelCall,
-                        formated: [{ role: 'system', content: request.system
+                        formated: [{ role: 'system', content: requestSystem
                             + (feedback ? `\n\n${modelOutputRepairInstruction(feedback)}` : '') },
                         modelCall.formated[1]],
                     }, signal)
                     if (nativeDraft && modelCall.schema
                         && rejectsNativeSchema(response)) {
+                        if (request.structuredOutputMode === 'native') {
+                            throw new NativeStructuredOutputUnavailableError()
+                        }
                         const fallbackMessage = createStructuredOutputFallbackMessage(
                             JSON.parse(modelCall.schema) as Record<string, unknown>
                         )
                         if (fallbackMessage
                             && typeof fallbackMessage.content === 'string') {
                             const fallbackSystem = [
-                                request.system,
+                                requestSystem,
                                 feedback
                                     ? modelOutputRepairInstruction(feedback)
                                     : '',

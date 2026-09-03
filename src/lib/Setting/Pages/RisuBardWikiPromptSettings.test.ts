@@ -37,12 +37,16 @@ describe('RisuBard Wiki Prompt settings', () => {
         )
     })
 
-    test('reuses the AI preset page hierarchy and exposes file actions', () => {
+    test('reuses the AI preset page hierarchy and exposes create and file actions', () => {
         const source = readFileSync(pagePath, 'utf8')
 
         expect(source).toContain('<SettingPage')
         expect(source).toContain('<PresetHeader')
         expect(source).toContain('<SettingTabs')
+        expect(source).toContain('createDefaultWikiPromptPreset')
+        expect(source).toContain('function createPreset()')
+        expect(source).toContain('onclick={createPreset}')
+        expect(source).toContain('language.risuBardWikiPrompt.createPreset')
         expect(source).toContain('duplicateWikiPromptPreset')
         expect(source).toContain('serializeWikiPromptPreset')
         expect(source).toContain('parseWikiPromptPreset')

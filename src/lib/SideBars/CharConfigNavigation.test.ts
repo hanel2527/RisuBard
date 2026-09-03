@@ -17,7 +17,7 @@ describe('character configuration navigation', () => {
             'people-nearby',
             'gallery-wide',
             'notebook',
-            'microphone-3',
+            'camera-rotate',
             'code-square',
             'settings',
         ]) {
@@ -38,19 +38,35 @@ describe('character configuration navigation', () => {
         expect(sidebar).not.toContain('data-sidebar-mode-tabs')
     })
 
-    test('retains every character section from information through advanced settings', () => {
+    test('uses gallery in the former TTS toolbar position', () => {
         const sidebar = source('src/lib/SideBars/Sidebar.svelte')
-        expect(sidebar.match(/data-character-config-tab/g)).toHaveLength(6)
+        expect(sidebar.match(/data-character-config-tab/g)).toHaveLength(5)
         for (const label of [
             'language.characterInfo',
             'language.characterDisplay',
             'language.loreBook',
-            '"TTS"',
             'language.scripts',
             'language.advancedSettings',
         ]) {
             expect(sidebar).toContain(`aria-label={${label}}`)
         }
+        expect(sidebar).toContain('data-risubard-gallery')
+        expect(sidebar).toContain('aria-label={language.gallery}')
+        expect(sidebar).toContain('<SolarBoldIcon name="camera-rotate"')
+        expect(sidebar).toContain('risuBardGalleryOpen.set(true)')
+        expect(sidebar).not.toContain('aria-label={"TTS"}')
+    })
+
+    test('moves TTS settings to the top of advanced settings before Bias', () => {
+        const config = source('src/lib/SideBars/CharConfig.svelte')
+        const advancedStart = config.indexOf('{:else if activeSubMenu === 2}')
+        const advanced = config.slice(advancedStart)
+
+        expect(config).not.toContain('{:else if activeSubMenu === 5}')
+        expect(advanced).toContain('data-character-tts-settings')
+        expect(advanced.indexOf('data-character-tts-settings'))
+            .toBeLessThan(advanced.indexOf('Bias <Help key="bias"'))
+        expect(advanced).toContain('bind:value={DBState.db.characters[$selectedCharID].ttsMode}')
     })
 
     test('keeps alternate greetings in a collapsed list below the first message', () => {
@@ -122,7 +138,10 @@ describe('character configuration navigation', () => {
         const styles = source('src/styles.css')
         expect(sidebar).toContain('character-toolbar-button--chat')
         expect(sidebar.match(/character-toolbar-button/g)?.length).toBeGreaterThanOrEqual(7)
-        expect(sidebar).toContain("class:is-active={!$botMakerMode && !devTool}")
+        expect(sidebar).toContain(
+            "class:is-active={!$botMakerMode && !devTool && !$risuBardGalleryOpen}",
+        )
+        expect(sidebar).toContain("class:is-active={$risuBardGalleryOpen}")
         expect(sidebar).toContain("class:is-active={$botMakerMode && !devTool && $CharConfigSubMenu === 0}")
         expect(styles).toContain('.character-toolbar-button--chat:not(.is-active)')
         expect(styles).toContain('.character-toolbar-button.is-active')

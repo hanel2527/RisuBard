@@ -418,7 +418,7 @@ describe('stored response memory analysis', () => {
         { result: '분석 결과를 만들지 못했습니다.' },
         { result: JSON.stringify({ schemaVersion: 1, title: '변화 없음', establishedEvents: [], stateChanges: [], characterKnowledge: [], persistentFacts: [], openContinuity: [], canonicalUpdateCandidates: [] }), finishReason: 'length' },
         { result: '<think>unfinished reasoning', finishReason: 'stop' },
-        { result: 'not JSON', repeat: true, expectedAttempts: 2 },
+        { result: 'not JSON', repeat: true, expectedAttempts: 3 },
         { result: '', finishReason: 'SAFETY', expectedAttempts: 1 },
         { result: 'not JSON', noRetry: true, expectedAttempts: 1 },
         { result: 'not JSON', toolExecuted: true, expectedAttempts: 1 },
@@ -546,6 +546,67 @@ describe('stored response memory analysis', () => {
         expect(requestModel).toHaveBeenCalledTimes(2)
         expect(requestModel.mock.calls[0][0].schema).toBeTruthy()
         expect(requestModel.mock.calls[1][0].schema).toBeUndefined()
+    })
+
+    test('falls back to prompt schema after corrected native output still fails validation', async () => {
+        const validDraft = JSON.stringify({
+            title: '변화 없음',
+            establishedEvents: [],
+            stateChanges: [],
+            characterKnowledge: [],
+            persistentFacts: [],
+            openContinuity: [],
+            canonicalUpdateCandidates: [],
+        })
+        const requestModel = vi.fn(async (request: MemoryAnalysisModelCall) => ({
+            type: 'success' as const,
+            result: request.schema ? '{"title":"incomplete"}' : validDraft,
+        }))
+        const analysis = createStoredResponseMemoryAnalysis({
+            requestModel,
+            fetchImpl: vi.fn(async (input) => {
+                const url = String(input)
+                if (url.endsWith('/view')) {
+                    return new Response(JSON.stringify({
+                        mode: 'markdown', wikiPath: 'wiki', documents: [],
+                        health: { danglingLinks: [], unlinkedDocumentIds: [] },
+                    }))
+                }
+                if (url.endsWith('/inquiry')) {
+                    return new Response(JSON.stringify({
+                        mode: 'v2-current', graphRevision: 0, indexRevision: 0,
+                        cacheStatus: 'current', sources: [], metrics: {
+                            candidateCount: 0, inspectedNodeCount: 0,
+                            inspectedEdgeCount: 0, selectedNodeCount: 0,
+                            selectedTokens: 0, hopCount: 0,
+                            auxiliaryModelCalls: 0,
+                        },
+                    }))
+                }
+                if (url.endsWith('/wiki/save')) {
+                    return new Response(JSON.stringify({
+                        document: null, revision: null,
+                    }))
+                }
+                throw new Error(`Unexpected request: ${url}`)
+            }) as unknown as typeof fetch,
+            createAuth: async () => 'test-jwt',
+            onError: vi.fn(),
+            nativeV2Analysis: true,
+        })
+
+        await expect(analysis.run({
+            characterId: 'character', chatId: 'chat',
+            messages: [{
+                messageId: 'assistant-1', role: 'assistant',
+                content: '아무 변화도 없었다.',
+            }],
+        })).resolves.toMatchObject({ facts: [], events: [] })
+        expect(requestModel).toHaveBeenCalledTimes(3)
+        expect(requestModel.mock.calls.map(([request]) => Boolean(request.schema)))
+            .toEqual([true, true, false])
+        expect(requestModel.mock.calls[2][0].formated[0].content)
+            .toContain('canonicalUpdateCandidates')
     })
 
     test('does not prepare or store a v1 snapshot for native v2 analysis', async () => {

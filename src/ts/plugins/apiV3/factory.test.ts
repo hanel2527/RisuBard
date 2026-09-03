@@ -5,6 +5,7 @@ describe('API v3 plugin sandbox document', () => {
     afterEach(() => {
         document.body.replaceChildren()
         vi.restoreAllMocks()
+        vi.unstubAllGlobals()
     })
 
     test('loads the sandbox from a blob URL and revokes it after load', async () => {
@@ -56,5 +57,55 @@ describe('API v3 plugin sandbox document', () => {
         expect(revokeObjectURL).toHaveBeenCalledWith(
             createObjectURL.mock.results[0].value
         )
+    })
+
+    test('bridges callbacks nested in API argument objects', async () => {
+        vi.stubGlobal('ImageBitmap', class ImageBitmap {})
+        const addProvider = vi.fn()
+        const iframe = document.createElement('iframe')
+        const host = new SandboxHost({ addProvider })
+        const stop = host.run(iframe, '')
+
+        window.dispatchEvent(new MessageEvent('message', {
+            source: iframe.contentWindow,
+            data: {
+                type: 'CALL_ROOT',
+                reqId: 'add-provider',
+                method: 'addProvider',
+                args: [
+                    'callback-repro',
+                    { __type: 'CALLBACK_REF', id: 'provider-callback' },
+                    {
+                        overrideRequestStatus: {
+                            __type: 'CALLBACK_REF',
+                            id: 'status-callback',
+                        },
+                    },
+                ],
+            },
+        }))
+
+        await vi.waitFor(() => expect(addProvider).toHaveBeenCalledOnce())
+        const [, provider, options] = addProvider.mock.calls[0]
+
+        expect(provider).toBeTypeOf('function')
+        expect(options.overrideRequestStatus).toBeTypeOf('function')
+
+        stop()
+    })
+
+    test('serializes callbacks nested in guest API argument objects', async () => {
+        const createObjectURL = vi.spyOn(URL, 'createObjectURL')
+        const iframe = document.createElement('iframe')
+        const host = new SandboxHost({})
+
+        const stop = host.run(iframe, '')
+        const documentBlob = createObjectURL.mock.calls[0][0] as Blob
+
+        const documentText = await documentBlob.text()
+        expect(documentText).toContain('const serialized = serializeArg(val);')
+        expect(documentText).toContain('out[key] = serialized;')
+
+        stop()
     })
 })

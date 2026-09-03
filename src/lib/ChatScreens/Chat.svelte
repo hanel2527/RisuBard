@@ -78,6 +78,7 @@
         isOptimizedStreamingMessage?: boolean;
         streamingOptimizationMode?: StreamingDisplayOptimizationMode;
         rawStreamingText?: string;
+        readOnly?: boolean;
     }
 
     let {
@@ -108,6 +109,7 @@
         isOptimizedStreamingMessage = false,
         streamingOptimizationMode = 'off',
         rawStreamingText = message,
+        readOnly = false,
     }: Props = $props();
 
     let msgDisplay = $state('')
@@ -328,6 +330,7 @@
     }
 
     async function handleButtonTriggerWithin(event: UIEvent) {
+        if(readOnly) return
         const currentChar = getCurrentCharacter()
         if(!currentChar){
             return
@@ -541,7 +544,7 @@
             class:prose-invert={$ColorSchemeTypeStore === 'dark'}
             bind:this={bodyRoot}
             onclick={() => {
-            if(DBState.db.clickToEdit && idx > -1 && !isOptimizedStreamingMessage){
+            if(!readOnly && DBState.db.clickToEdit && idx > -1 && !isOptimizedStreamingMessage){
                 editMode = true
             }
         }}
@@ -566,7 +569,7 @@
                     {renderRawStreaming}
                     {rawStreamingText} />
             {/key}
-            {#if idx >= 0 && !editMode && !isOptimizedStreamingMessage && partialEditEnabled && (DBState.db.enableBlockPartialEdit || DBState.db.enableDragPartialEdit)}
+            {#if idx >= 0 && !readOnly && !editMode && !isOptimizedStreamingMessage && partialEditEnabled && (DBState.db.enableBlockPartialEdit || DBState.db.enableDragPartialEdit)}
                 <PartialEditController
                     messageData={message}
                     chatIndex={idx}
@@ -581,6 +584,7 @@
 {/snippet}
 
 {#snippet iconButtons(options:{applyTextColors?:boolean} = {})}
+    {#if !readOnly}
     <div class="grow flex items-center justify-end" class:text-textcolor2={options?.applyTextColors !== false}>
         {#if isComment}
             <button
@@ -632,6 +636,7 @@
             </div>
         {/if}
     </div>
+    {/if}
 {/snippet}
 
 

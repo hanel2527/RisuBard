@@ -1141,6 +1141,9 @@ describe('RisuBardMemoryWiki', () => {
         ), 'utf8')
 
         expect(source).toMatch(
+            /\.workspace-split \.wiki-editor-region :global\(\.editor-pane\)\s*\{[^}]*min-height:\s*0/s
+        )
+        expect(source).toMatch(
             /\.workspace-split \.wiki-editor-region :global\(\.markdown-editor\),\s*\.workspace-split \.wiki-editor-region :global\(\.markdown-preview\)\s*\{[^}]*min-height:\s*0/s
         )
     })

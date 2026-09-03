@@ -3,7 +3,15 @@ import type {
     NarrativeMemoryState,
 } from '../../packages/risubard-core/src/memoryDelta'
 import { get_encoding, type Tiktoken } from '@dqbd/tiktoken'
-import { ModelOutputError, modelOutputRepairInstruction, readModelResponseText, runValidatedModelRequest, type ModelResponse } from '../../packages/risubard-core/src/modelResponse'
+import {
+    ModelOutputError,
+    modelOutputRepairInstruction,
+    readModelResponseText,
+    runStructuredModelRequest,
+    runValidatedModelRequest,
+    type ModelResponse,
+    type StructuredOutputMode,
+} from '../../packages/risubard-core/src/modelResponse'
 import {
     validateMemoryDelta,
 } from '../../packages/risubard-core/src/memoryDelta'
@@ -177,6 +185,7 @@ export interface MemoryAnalysisModelRequest {
     schemaVersion?: 1 | 2
     format?: 'markdown' | 'memory-draft' | 'reboot-batch' | 'canonical-batch'
     responseSchema?: string
+    structuredOutputMode?: StructuredOutputMode
     inputTokenLimit?: number
     /** Stable owning chat for body-free request evidence. */
     sessionChatId?: string
@@ -1002,7 +1011,10 @@ export function createMemoryAnalysisRunner(
                     'Include every required shared array even when it is empty.',
                 ].join('\n')
                 : ''
-            const analyzeDraft = async (validationError?: ModelOutputError) => analyzeResponse({
+            const analyzeDraft = async (
+                structuredOutputMode: StructuredOutputMode,
+                validationError?: ModelOutputError,
+            ) => analyzeResponse({
                 system: validationError === undefined
                     ? [
                         memoryWriterSystemPrompt,
@@ -1023,6 +1035,7 @@ export function createMemoryAnalysisRunner(
                 format: snapshot.rebootTurns
                     ? 'reboot-batch' as const
                     : 'memory-draft' as const,
+                structuredOutputMode,
                 ...(snapshot.rebootTurns ? {
                     responseSchema: buildRebootBatchDraftSchema(
                         snapshot.rebootTurns.length as 1 | 2
@@ -1053,24 +1066,25 @@ export function createMemoryAnalysisRunner(
                     } : {}),
                 }),
             })
-            const analyzeParsedDraft = () => runValidatedModelRequest({
-                request: analyzeDraft,
-                parse: (output) => {
-                    if (snapshot.rebootTurns) {
-                        const rebootDraft = parseRebootBatchDraft(
-                            output,
-                            snapshot.rebootTurns.map((turn) =>
-                                turn.assistantMessageId
-                            )
+            const parseAnalyzedDraft = (output: string) => {
+                if (snapshot.rebootTurns) {
+                    const rebootDraft = parseRebootBatchDraft(
+                        output,
+                        snapshot.rebootTurns.map((turn) =>
+                            turn.assistantMessageId
                         )
-                        return {
-                            output,
-                            rebootDraft,
-                            draft: rebootBatchToMemoryDraft(rebootDraft),
-                        }
+                    )
+                    return {
+                        output,
+                        rebootDraft,
+                        draft: rebootBatchToMemoryDraft(rebootDraft),
                     }
-                    return { output, draft: parseMemoryWriterDraft(output) }
                 }
+                return { output, draft: parseMemoryWriterDraft(output) }
+            }
+            const analyzeParsedDraft = () => runStructuredModelRequest({
+                request: analyzeDraft,
+                parse: parseAnalyzedDraft,
             })
             let analyzedDraft = await analyzeParsedDraft()
             let modelOutput = analyzedDraft.output

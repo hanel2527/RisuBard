@@ -11,6 +11,7 @@
     import { alertConfirm, notifyError, notifySuccess } from 'src/ts/alert'
     import { downloadFile } from 'src/ts/globalApi.svelte'
     import {
+        createDefaultWikiPromptPreset,
         deleteWikiPromptPreset,
         duplicateWikiPromptPreset,
         parseWikiPromptPreset,
@@ -95,6 +96,15 @@
             || activePreset.blocks[index]?.id === 'main-wiki-guide') return
         activePreset.blocks.splice(index, 1)
         touchPreset(activePreset)
+    }
+
+    function createPreset() {
+        const preset = createDefaultWikiPromptPreset(uuidv4())
+        preset.name = language.risuBardWikiPrompt.newPresetName
+        DBState.db.risuBardWikiPromptPresets ??= []
+        DBState.db.risuBardWikiPromptPresets.push(preset)
+        selectPreset(preset.id)
+        notifySuccess(language.risuBardWikiPrompt.presetCreated)
     }
 
     function duplicateActivePreset() {
@@ -251,6 +261,9 @@
                 <TextInput bind:value={activePreset.name} fullwidth />
             </label>
             <div class="file-actions">
+                <ShButton variant="default" onclick={createPreset}>
+                    <PlusIcon size={16} />{language.risuBardWikiPrompt.createPreset}
+                </ShButton>
                 <ShButton variant="default" onclick={duplicateActivePreset}>
                     <CopyIcon size={16} />{language.presetDuplicate}
                 </ShButton>

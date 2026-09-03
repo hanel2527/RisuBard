@@ -22,7 +22,7 @@
 
   } from "../../ts/stores.svelte";
     import { setDatabase } from "../../ts/storage/database.svelte";
-    import { DBState, SizeStore } from 'src/ts/stores.svelte';
+    import { DBState, MobileSideBar, risuBardGalleryOpen, SizeStore } from 'src/ts/stores.svelte';
     import BarIcon from "./BarIcon.svelte";
     import SidebarIndicator from "./SidebarIndicator.svelte";
     import {
@@ -1292,27 +1292,27 @@
       </div>
       {#if currentCharacter.license !== 'private'}
         <nav data-character-config-navigation aria-label={language.character} class="my-2 flex w-full items-center justify-evenly gap-1 rounded-lg bg-selected/25 p-1">
-          <button type="button" data-character-chat-home aria-label={language.Chat} aria-pressed={!$botMakerMode && !devTool} use:tooltip={language.Chat} class="character-toolbar-button character-toolbar-button--chat risu-button-lift" class:is-active={!$botMakerMode && !devTool} onclick={() => { devTool = false; botMakerMode.set(false) }}>
+          <button type="button" data-character-chat-home aria-label={language.Chat} aria-pressed={!$botMakerMode && !devTool && !$risuBardGalleryOpen} use:tooltip={language.Chat} class="character-toolbar-button character-toolbar-button--chat risu-button-lift" class:is-active={!$botMakerMode && !devTool && !$risuBardGalleryOpen} onclick={() => { devTool = false; risuBardGalleryOpen.set(false); botMakerMode.set(false) }}>
             <SolarBoldIcon name="chat-round-dots" size={22} />
           </button>
-          <button type="button" data-character-config-tab aria-label={language.characterInfo} use:tooltip={language.characterInfo} aria-pressed={$botMakerMode && !devTool && $CharConfigSubMenu === 0} class="character-toolbar-button risu-button-lift" class:is-active={$botMakerMode && !devTool && $CharConfigSubMenu === 0} onclick={() => { devTool = false; botMakerMode.set(true); CharConfigSubMenu.set(0) }}>
+          <button type="button" data-character-config-tab aria-label={language.characterInfo} use:tooltip={language.characterInfo} aria-pressed={$botMakerMode && !devTool && $CharConfigSubMenu === 0} class="character-toolbar-button risu-button-lift" class:is-active={$botMakerMode && !devTool && $CharConfigSubMenu === 0} onclick={() => { devTool = false; risuBardGalleryOpen.set(false); botMakerMode.set(true); CharConfigSubMenu.set(0) }}>
             <SolarBoldIcon name="people-nearby" size={22} />
           </button>
-          <button type="button" data-character-config-tab aria-label={language.characterDisplay} use:tooltip={language.characterDisplay} aria-pressed={$botMakerMode && !devTool && $CharConfigSubMenu === 1} class="character-toolbar-button risu-button-lift" class:is-active={$botMakerMode && !devTool && $CharConfigSubMenu === 1} onclick={() => { devTool = false; botMakerMode.set(true); CharConfigSubMenu.set(1) }}>
+          <button type="button" data-character-config-tab aria-label={language.characterDisplay} use:tooltip={language.characterDisplay} aria-pressed={$botMakerMode && !devTool && $CharConfigSubMenu === 1} class="character-toolbar-button risu-button-lift" class:is-active={$botMakerMode && !devTool && $CharConfigSubMenu === 1} onclick={() => { devTool = false; risuBardGalleryOpen.set(false); botMakerMode.set(true); CharConfigSubMenu.set(1) }}>
             <SolarBoldIcon name="gallery-wide" size={22} />
           </button>
-          <button type="button" data-character-config-tab aria-label={language.loreBook} use:tooltip={language.loreBook} aria-pressed={$botMakerMode && !devTool && $CharConfigSubMenu === 3} class="character-toolbar-button risu-button-lift" class:is-active={$botMakerMode && !devTool && $CharConfigSubMenu === 3} onclick={() => { devTool = false; botMakerMode.set(true); CharConfigSubMenu.set(3) }}>
+          <button type="button" data-character-config-tab aria-label={language.loreBook} use:tooltip={language.loreBook} aria-pressed={$botMakerMode && !devTool && $CharConfigSubMenu === 3} class="character-toolbar-button risu-button-lift" class:is-active={$botMakerMode && !devTool && $CharConfigSubMenu === 3} onclick={() => { devTool = false; risuBardGalleryOpen.set(false); botMakerMode.set(true); CharConfigSubMenu.set(3) }}>
             <SolarBoldIcon name="notebook" size={22} />
           </button>
           {#if currentCharacter.type === 'character'}
-            <button type="button" data-character-config-tab aria-label={"TTS"} use:tooltip={"TTS"} aria-pressed={$botMakerMode && !devTool && $CharConfigSubMenu === 5} class="character-toolbar-button risu-button-lift" class:is-active={$botMakerMode && !devTool && $CharConfigSubMenu === 5} onclick={() => { devTool = false; botMakerMode.set(true); CharConfigSubMenu.set(5) }}>
-              <SolarBoldIcon name="microphone-3" size={22} />
+            <button type="button" data-risubard-gallery aria-label={language.gallery} use:tooltip={language.gallery} aria-pressed={$risuBardGalleryOpen} class="character-toolbar-button risu-button-lift" class:is-active={$risuBardGalleryOpen} onclick={() => { devTool = false; botMakerMode.set(false); risuBardGalleryOpen.set(true); MobileSideBar.set(0) }}>
+              <SolarBoldIcon name="camera-rotate" size={22} />
             </button>
-            <button type="button" data-character-config-tab aria-label={language.scripts} use:tooltip={language.scripts} aria-pressed={$botMakerMode && !devTool && $CharConfigSubMenu === 4} class="character-toolbar-button risu-button-lift" class:is-active={$botMakerMode && !devTool && $CharConfigSubMenu === 4} onclick={() => { devTool = false; botMakerMode.set(true); CharConfigSubMenu.set(4) }}>
+            <button type="button" data-character-config-tab aria-label={language.scripts} use:tooltip={language.scripts} aria-pressed={$botMakerMode && !devTool && $CharConfigSubMenu === 4} class="character-toolbar-button risu-button-lift" class:is-active={$botMakerMode && !devTool && $CharConfigSubMenu === 4} onclick={() => { devTool = false; risuBardGalleryOpen.set(false); botMakerMode.set(true); CharConfigSubMenu.set(4) }}>
               <SolarBoldIcon name="code-square" size={22} />
             </button>
           {/if}
-          <button type="button" data-character-config-tab aria-label={language.advancedSettings} use:tooltip={language.advancedSettings} aria-pressed={$botMakerMode && !devTool && $CharConfigSubMenu === 2} class="character-toolbar-button risu-button-lift" class:is-active={$botMakerMode && !devTool && $CharConfigSubMenu === 2} onclick={() => { devTool = false; botMakerMode.set(true); CharConfigSubMenu.set(2) }}>
+          <button type="button" data-character-config-tab aria-label={language.advancedSettings} use:tooltip={language.advancedSettings} aria-pressed={$botMakerMode && !devTool && $CharConfigSubMenu === 2} class="character-toolbar-button risu-button-lift" class:is-active={$botMakerMode && !devTool && $CharConfigSubMenu === 2} onclick={() => { devTool = false; risuBardGalleryOpen.set(false); botMakerMode.set(true); CharConfigSubMenu.set(2) }}>
             <SolarBoldIcon name="settings" size={22} />
           </button>
         </nav>

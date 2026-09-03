@@ -1715,6 +1715,9 @@
         min-height: 0;
         border-bottom: 0;
     }
+    .workspace-split .wiki-editor-region :global(.editor-pane) {
+        min-height: 0;
+    }
     .workspace-split .wiki-editor-region :global(.markdown-editor),
     .workspace-split .wiki-editor-region :global(.markdown-preview) {
         min-height: 0;

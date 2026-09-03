@@ -38,9 +38,10 @@ const charactersSource = readFileSync(resolve(
 describe('chat file save slot connections', () => {
     test('opens save mode in every chat theme and only writes after choosing a slot', () => {
         expect(chatScreenSource.match(/onSaveChat=\{\(\) => openSaveSlots\('save'\)\}/g))
-            .toHaveLength(3)
+            .toHaveLength(1)
         expect(chatScreenSource.match(/onOpenChatLoad=\{\(\) => openSaveSlots\('load'\)\}/g))
-            .toHaveLength(3)
+            .toHaveLength(1)
+        expect(chatScreenSource.match(/\{@render chatViewport\(/g)).toHaveLength(3)
         expect(chatScreenSource).toContain('bind:mode={saveSlotsMode}')
         expect(chatScreenSource).toContain('onSave={saveCurrentChat}')
         expect(chatScreenSource).toContain('saveId: saveId ?? v4()')
