@@ -126,6 +126,16 @@ describe('Character Vault sidebar integration', () => {
         expect(sidebar).not.toContain('const createFolder =')
     })
 
+    test('highlights and clears the desktop quick-inventory drop target', () => {
+        const sidebar = source('src/lib/SideBars/Sidebar.svelte')
+        const dragOverStart = sidebar.indexOf('const avatarDragOver =')
+        const dragOver = sidebar.slice(dragOverStart, sidebar.indexOf('const avatarDrop =', dragOverStart))
+
+        expect(dragOver).toContain("classList.add('ring-2', 'ring-success')")
+        expect(sidebar).toContain('const clearAvatarDragFeedback =')
+        expect(sidebar).toContain('ondragleave={!isTouchDevice ? clearAvatarDragFeedback : undefined}')
+    })
+
     test('pins successful CharX imports at the bottom of quick access', () => {
         const cards = source('src/ts/characterCards.ts')
         const charxStart = cards.indexOf("if(f.name.endsWith('charx')")

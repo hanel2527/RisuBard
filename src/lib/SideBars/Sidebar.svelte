@@ -334,7 +334,21 @@
     }
   }
 
+  let desktopDropTarget: HTMLDivElement | null = null
+
+  const clearAvatarDragFeedback = (e?: DragEv) => {
+    if(e?.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)){
+      return
+    }
+    const target = e?.currentTarget ?? desktopDropTarget
+    target?.classList.remove('ring-2', 'ring-success')
+    if(desktopDropTarget === target){
+      desktopDropTarget = null
+    }
+  }
+
   const clearCurrentDrag = () => {
+    clearAvatarDragFeedback()
     currentDrag = null
   }
 
@@ -366,6 +380,11 @@
     e.preventDefault()
     e.stopPropagation()
     e.dataTransfer.dropEffect = 'move'
+    if(desktopDropTarget !== e.currentTarget){
+      clearAvatarDragFeedback()
+      desktopDropTarget = e.currentTarget
+    }
+    e.currentTarget.classList.add('ring-2', 'ring-success')
   }
 
   const avatarDrop = (target:DropData, e:DragEv) => {
@@ -798,6 +817,7 @@
         ondragstart={!isTouchDevice ? (e) => {avatarDragStart({ kind: char.type === 'normal' ? 'character' : 'folder', id: char.id }, e)} : undefined}
         ondragend={!isTouchDevice ? clearCurrentDrag : undefined}
         ondragover={!isTouchDevice ? avatarDragOver : undefined}
+        ondragleave={!isTouchDevice ? clearAvatarDragFeedback : undefined}
         ondrop={!isTouchDevice ? (e) => {avatarDrop(char.type === 'folder'
           ? {index:char.folder.length, folder:char.id}
           : {index:ind}, e)} : undefined}
@@ -980,6 +1000,7 @@
               ondragstart={!isTouchDevice ? (e) => {avatarDragStart({ kind:'character', id:char2.id, folder:char.id }, e)} : undefined}
               ondragend={!isTouchDevice ? clearCurrentDrag : undefined}
               ondragover={!isTouchDevice ? avatarDragOver : undefined}
+              ondragleave={!isTouchDevice ? clearAvatarDragFeedback : undefined}
               ondrop={!isTouchDevice ? (e) => {avatarDrop({index: ind, folder:char.id}, e)} : undefined}
               ondragenter={!isTouchDevice ? preventAll : undefined}
               ontouchstart={touchDragEnabled ? (e) => {onTouchDragStart({ kind:'character', id:char2.id, folder:char.id }, e)} : undefined}
