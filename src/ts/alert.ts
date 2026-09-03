@@ -387,13 +387,19 @@ export async function alertTOS(){
     return false
 }
 
-export async function alertInput(msg:string, datalist?:[string, string][], defaultValue?:string) {
+export async function alertInput(
+    msg:string,
+    datalist?:[string, string][],
+    defaultValue?:string,
+    options: AlertConfirmOptions = {},
+) {
 
     alertStoreImported.set({
         'type': 'input',
         'msg': msg,
         'datalist': datalist ?? [],
-        'defaultValue': defaultValue ?? ''
+        'defaultValue': defaultValue ?? '',
+        'tier': options.tier,
     })
 
     await waitAlert()

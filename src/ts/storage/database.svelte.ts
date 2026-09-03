@@ -1385,6 +1385,13 @@ export interface PersonaBuilderPromptPreset {
     content: string
 }
 
+export interface LoreBuilderPromptPreset {
+    id: string
+    kind: 'task' | 'style'
+    name: string
+    content: string
+}
+
 export interface Database{
     characterVault?: import('../characterVault').CharacterVaultState
     characters: character[],
@@ -1464,6 +1471,7 @@ export interface Database{
     themePresetsId:number
     togglePresets?:TogglePreset[]
     personaBuilderPromptPresets?:PersonaBuilderPromptPreset[]
+    loreBuilderPromptPresets?:LoreBuilderPromptPreset[]
     sdProvider: string
     webUiUrl:string
     sdSteps:number

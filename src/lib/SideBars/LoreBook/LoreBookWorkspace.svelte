@@ -40,6 +40,7 @@
     import { resizeHandle } from 'src/ts/gui/resizeHandle'
     import { tooltip } from 'src/ts/gui/tooltip'
     import BardLoreActivationSelect from './BardLoreActivationSelect.svelte'
+    import LoreBuilder from 'src/lib/Others/LoreBuilder.svelte'
     import { loreBookVisualStatus } from './loreBookVisualStatus'
     import {
         readLorebookWorkspaceSession,
@@ -107,6 +108,8 @@
     let mobileView = $state<'list' | 'editor'>('list')
     let conditionView = $state(false)
     let linksDialogOpen = $state(false)
+    let loreBuilderOpen = $state(false)
+    let loreBuilderTarget = $state<{ id: string; name: string; content: string } | null>(null)
     const editorId = $props.id()
     const keyFields = ['key', 'secondkey'] as const
     let expandedKeys = $state({ key: false, secondkey: false })
@@ -600,6 +603,31 @@
             ? removeKeysFromEntries(base, selectedIds, field, keys)
             : addKeysToEntries(base, selectedIds, field, keys)
         emit(next)
+    }
+
+    function openLoreBuilder() {
+        if (!activeEntry?.id || activeEntry.mode === 'folder' || activeEntry.mode === 'child') return
+        const target = {
+            id: activeEntry.id,
+            name: drafts.comment.trim() || activeEntry.comment.trim() || activeEntry.key.trim() || language.lorebookWorkspace.untitledLore,
+            content: drafts.content,
+        }
+        commitDraft('content')
+        loreBuilderTarget = target
+        loreBuilderOpen = true
+    }
+
+    function applyLoreBuilderDraft(content: string) {
+        if (!loreBuilderTarget || !normalizedEntries.some((entry) => entry.id === loreBuilderTarget?.id)) {
+            throw new Error(language.lorebookWorkspace.loreBuilder.targetMissing)
+        }
+        if (activeId === loreBuilderTarget.id) {
+            const nextDirty = new Set(dirtyDraftFields)
+            nextDirty.delete('content')
+            dirtyDraftFields = nextDirty
+            drafts.content = content
+        }
+        patchEntry(loreBuilderTarget.id, { content })
     }
 
     function batchBardFieldState(field: 'activation'): BardLoreActivation | 'mixed'
@@ -1287,10 +1315,15 @@
                     <div class="content-field">
                         <div class="content-heading">
                             <span>{language.lorebookWorkspace.content}</span>
-                            <button type="button" data-cbs-view-toggle aria-pressed={conditionView} onclick={() => {
-                                commitDraft('content')
-                                conditionView = !conditionView
-                            }}>{conditionView ? language.cbsEditor.source : language.cbsEditor.view}</button>
+                            <div class="content-actions">
+                                <button type="button" data-lore-builder-open onclick={openLoreBuilder}>
+                                    {language.lorebookWorkspace.loreBuilder.launch}
+                                </button>
+                                <button type="button" data-cbs-view-toggle aria-pressed={conditionView} onclick={() => {
+                                    commitDraft('content')
+                                    conditionView = !conditionView
+                                }}>{conditionView ? language.cbsEditor.source : language.cbsEditor.view}</button>
+                            </div>
                         </div>
                         {#if conditionView}
                             <CbsConditionView
@@ -1504,6 +1537,16 @@
     </main>
 </section>
 
+{#if loreBuilderTarget}
+    <LoreBuilder
+        bind:open={loreBuilderOpen}
+        targetEntryId={loreBuilderTarget.id}
+        entryName={loreBuilderTarget.name}
+        currentContent={loreBuilderTarget.content}
+        onApplyDraft={applyLoreBuilderDraft}
+    />
+{/if}
+
 {#if activeBardEntry}
     <ShDialog
         bind:open={linksDialogOpen}
@@ -1676,6 +1719,7 @@
     .editor-fields input, .editor-fields textarea { min-width: 0; width: 100%; padding: .48rem .55rem; color: var(--color-textcolor); }
     .content-field { display: grid; min-height: 6rem; flex: 1; gap: .3rem; grid-template-rows: auto minmax(0, 1fr); }
     .content-heading { display: flex; align-items: center; justify-content: space-between; gap: .5rem; color: var(--color-textcolor2); font-size: .74rem; font-weight: 650; }
+    .content-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .4rem; }
     .content-heading button { padding: .25rem .6rem; border: 1px solid var(--color-darkborderc); border-radius: .35rem; color: var(--color-textcolor); font-size: .72rem; font-weight: 500; }
     .content-heading button:hover, .content-heading button[aria-pressed='true'] { background: var(--color-selected); }
     .lore-content {

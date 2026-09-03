@@ -5,6 +5,7 @@ import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, tick, unmount } from 'svelte'
 import { createClassComponent } from 'svelte/legacy'
+import { writable } from 'svelte/store'
 import type { loreBook } from 'src/ts/storage/database.svelte'
 import { languageEnglish } from 'src/lang/en'
 import { languageKorean } from 'src/lang/ko'
@@ -55,6 +56,9 @@ vi.mock('src/ts/lorebook/workspaceOperations', async (importOriginal) => {
 
 vi.mock('src/ts/stores.svelte', () => ({
     DBState: { db: environmentMock.db },
+    selIdState: { selId: 0 },
+    isTouchDevice: writable(false),
+    selectedCharID: writable(0),
 }))
 
 vi.mock('src/ts/alert', () => ({
@@ -1723,6 +1727,28 @@ describe('LoreBookWorkspace', () => {
             .map((row) => row.dataset.lorebookRow)).toEqual(['a', 'b', 'c'])
         expect(onChange).not.toHaveBeenCalled()
     })
+
+    it('opens Lore Builder for the active entry and applies the edited draft only there', async () => {
+        const onChange = vi.fn()
+        await render([entry('one'), entry('two')], { onChange })
+        click('[data-lorebook-row="one"] [data-lorebook-open]')
+        await tick()
+        click('[data-lore-builder-open]')
+        await vi.waitFor(() => expect(document.body.querySelector('[data-lore-builder-draft]')).not.toBeNull())
+
+        const draft = document.body.querySelector<HTMLTextAreaElement>('[data-lore-builder-draft]')!
+        expect(draft.value).toBe('content:one')
+        draft.value = '# Rewritten one'
+        draft.dispatchEvent(new Event('input', { bubbles: true }))
+        await tick()
+        click('[data-lore-builder-apply]')
+        await tick()
+
+        const changed = onChange.mock.calls.at(-1)?.[0] as loreBook[]
+        expect(changed.find((item) => item.id === 'one')?.content).toBe('# Rewritten one')
+        expect(changed.find((item) => item.id === 'two')?.content).toBe('content:two')
+        await vi.waitFor(() => expect(document.body.querySelector('[data-lore-builder-draft]')).toBeNull())
+    })
 })
 
 describe('LoreBookWorkspaceDialog source contract', () => {
@@ -1989,5 +2015,20 @@ describe('LoreBookWorkspaceDialog source contract', () => {
         west.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
         expect(dialog.style.getPropertyValue('--lore-dialog-width')).toBe('')
         expect(dialog.style.getPropertyValue('--lore-dialog-height')).toBe('')
+    })
+})
+
+describe('LoreBookWorkspace lore builder connection', () => {
+    it('opens against a captured normal entry and applies only its content', () => {
+        const workspace = readFileSync(resolve('src/lib/SideBars/LoreBook/LoreBookWorkspace.svelte'), 'utf8')
+
+        expect(workspace).toContain("import LoreBuilder from 'src/lib/Others/LoreBuilder.svelte'")
+        expect(workspace).toContain('data-lore-builder-open')
+        expect(workspace).toContain('function openLoreBuilder()')
+        expect(workspace).toContain("commitDraft('content')")
+        expect(workspace).toContain('function applyLoreBuilderDraft(content: string)')
+        expect(workspace).toContain("patchEntry(loreBuilderTarget.id, { content })")
+        expect(workspace).toContain('<LoreBuilder')
+        expect(workspace).toContain('targetEntryId={loreBuilderTarget.id}')
     })
 })

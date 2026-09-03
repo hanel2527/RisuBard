@@ -17,6 +17,7 @@ describe('application overlay layering', () => {
         const toaster = source('src/lib/UI/GUI/Toaster.svelte')
         const tooltip = source('src/ts/gui/tooltip.ts')
         const personaBuilder = source('src/lib/Others/PersonaBuilder.svelte')
+        const loreBuilder = source('src/lib/Others/LoreBuilder.svelte')
         const pluginApi = source('src/ts/plugins/apiV3/v3.svelte.ts')
 
         expect(app).not.toContain('observeModalLayers')
@@ -36,6 +37,8 @@ describe('application overlay layering', () => {
         expect(tooltip).not.toContain('layerAbove')
         expect(personaBuilder).toContain('overlayClass="z-[45]"')
         expect(personaBuilder).toContain('contentClass="persona-builder-dialog z-[45]"')
+        expect(loreBuilder).toContain('tier="alert"')
+        expect(loreBuilder).not.toContain('tier="base"')
         expect(pluginApi).toContain('iframe.style.zIndex = "1000"')
         expect(pluginApi).not.toContain('iframe.dataset.risuModalTier')
     })
@@ -66,6 +69,20 @@ describe('application overlay layering', () => {
         expect(alertApi).toContain('options: AlertConfirmOptions = {}')
         expect(alertApi).toContain("'tier': options.tier")
         expect(ask).toContain("tier={$alertStore.tier ?? 'alert'}")
+    })
+
+    test('lets a nested preset name input opt into the top tier', () => {
+        const alertApi = source('src/ts/alert.ts')
+        const alertHost = source('src/lib/Others/AlertComp.svelte')
+        const presetEditor = source('src/lib/Others/LorePromptPresetEditor.svelte')
+        const inputDialog = alertHost.slice(
+            alertHost.indexOf("open={$alertStore.type === 'input'}"),
+            alertHost.indexOf('</ShDialog>', alertHost.indexOf("open={$alertStore.type === 'input'}")),
+        )
+
+        expect(alertApi).toContain('options: AlertConfirmOptions = {}')
+        expect(inputDialog).toContain("tier={$alertStore.tier ?? 'alert'}")
+        expect(presetEditor).toContain("{ tier: 'top' }")
     })
 
     test('keeps the BardWiki dock below base editor dialogs', () => {

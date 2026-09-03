@@ -843,6 +843,7 @@
 
 <ShDialog
     open={$alertStore.type === 'input'}
+    tier={$alertStore.tier ?? 'alert'}
     closable={false}
     closeOnOutsideClick={false}
 >
