@@ -122,10 +122,21 @@ import {
 
 function resolvedRisuBardSettings(chat?: Chat) {
     const settings = resolveRisuBardChatSettings(DBState.db, chat?.risuBardSettings)
-    if (settings.risuBardWikiLanguageSync && chat?.message?.length) {
+    if (settings.risuBardWikiLanguageSync
+        && chat?.risuBardSettings?.risuBardWikiWritingLanguage === undefined
+        && chat?.message?.length) {
+        // The help text promises the recent chat window, not the whole
+        // history, and a per-chat language override wins over the sync.
+        const recentWindow = Math.max(
+            normalizeNarrativeWorkingMessageLimit(
+                settings.risuBardResponseMessageCount
+            ),
+            4,
+        )
         const detected = detectChatWritingLanguage(
-            chat.message
-                .filter((message) => typeof message.data === 'string' && (message.data as string).trim().length > 0)
+            chat.message.slice(-recentWindow * 2)
+                .filter((message) => typeof message.data === 'string'
+                    && (message.data as string).trim().length > 0)
                 .map((message) => message.data as string)
         )
         if (detected) settings.risuBardWikiWritingLanguage = detected

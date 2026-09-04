@@ -3,6 +3,8 @@ import {
     buildWikiWritingLanguageGuard,
     detectChatWritingLanguage,
     detectWikiWritingLanguage,
+    expandQueryTerm,
+    isJapaneseQueryStopword,
     localizeWikiHeadings,
     normalizeWikiWritingLanguage,
     wikiWritingHeadings,
@@ -94,5 +96,31 @@ describe('detectChatWritingLanguage', () => {
     it('returns undefined for empty or non-text input', () => {
         expect(detectChatWritingLanguage([])).toBeUndefined()
         expect(detectChatWritingLanguage(['', undefined, '12345 !!!'])).toBeUndefined()
+    })
+})
+
+
+describe('expandQueryTerm', () => {
+    it('strips Japanese particles so clause queries match titles', () => {
+        expect(expandQueryTerm('シロの現在の状態は'))
+            .toEqual(['シロの現在の状態は', 'シロの現在の状態'])
+        expect(expandQueryTerm('校則データベースで'))
+            .toEqual(['校則データベースで', '校則データベース'])
+    })
+
+    it('keeps terms without strippable suffixes unchanged', () => {
+        expect(expandQueryTerm('クリットリング')).toEqual(['クリットリング'])
+    })
+
+    it('returns non-Japanese terms unchanged', () => {
+        expect(expandQueryTerm('관련 문서')).toEqual(['관련 문서'])
+        expect(expandQueryTerm('Story Summary')).toEqual(['Story Summary'])
+    })
+})
+
+describe('isJapaneseQueryStopword', () => {
+    it('flags bare clause-tail particles', () => {
+        expect(isJapaneseQueryStopword('どう')).toBe(true)
+        expect(isJapaneseQueryStopword('シロ')).toBe(false)
     })
 })

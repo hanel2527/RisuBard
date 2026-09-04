@@ -84,3 +84,61 @@ export function detectChatWritingLanguage(
     if (hangul > 0) return 'ko'
     return 'en'
 }
+
+/**
+ * Strips common Japanese query particles and tail conjugations so clause-like
+ * Japanese tokens can match document titles and body terms. Mirrors
+ * KOREAN_QUERY_SUFFIXES on the server inquiry: the longest suffix wins and the
+ * remainder must stay at least two characters.
+ */
+const JAPANESE_QUERY_SUFFIXES = [
+    'ながらも', 'ながら', 'ましょう', 'ません', 'ました', 'まして',
+    'なかったり', 'なかった', 'なくて', 'ないで',
+    'られる', 'れる', 'させる', 'される', 'された', 'れた',
+    'であり', 'でした', 'ですが', 'だけど', 'けれど', 'けど',
+    'ながらの', 'までの', 'からの', 'まで', 'から', 'より', 'ほど',
+    'でも', 'にも', 'では', 'には', 'ので', 'のに',
+    'たち', 'など', 'くらい', 'ぐらい', 'だけ', 'ばかり', 'ごと', 'ため',
+    '的な', '的に', 'って', 'んで', 'ます', 'です',
+    'へ', 'と', 'に', 'で', 'を', 'は', 'が', 'の', 'も', 'や', 'か', 'ね', 'よ', 'な',
+] as const
+
+const JAPANESE_QUERY_STOPWORDS: Record<string, true> = {
+    'これ': true, 'それ': true, 'あれ': true, 'どれ': true,
+    'ここ': true, 'そこ': true, 'あそこ': true, 'どこ': true,
+    'これまで': true, '今': true, 'いま': true,
+    'なに': true, '何': true, 'どう': true, 'どうやって': true, 'なぜ': true,
+    'とき': true, '時': true, 'こと': true, 'もの': true, 'ため': true,
+    'よう': true, 'みたい': true, 'らしい': true,
+    'する': true, 'した': true, 'します': true, 'して': true, 'され': true,
+    'なる': true, 'なった': true, 'ある': true, 'いる': true, 'いた': true,
+    'ない': true, 'ください': true, 'たい': true, 'たかった': true, 'ほしい': true,
+}
+
+function stripJapaneseQuerySuffixes(term: string): string {
+    let value = term
+    while (true) {
+        const suffix = JAPANESE_QUERY_SUFFIXES.find((candidate) =>
+            value.endsWith(candidate)
+            && value.length - candidate.length >= 2)
+        if (!suffix) return value
+        value = value.slice(0, -suffix.length)
+    }
+}
+
+/**
+ * Expands a query term into candidate match keys. Japanese clause tokens get a
+ * particle-stripped variant appended so lexical substring matching against
+ * titles and body text can hit; other scripts return the term unchanged.
+ */
+export function expandQueryTerm(value: string): string[] {
+    if (!/^[ぁ-ゖァ-ヺー\u30FC\u4E00-\u9FFF\u3400-\u4DBF々〆〤]+$/u.test(value)) {
+        return [value]
+    }
+    const stripped = stripJapaneseQuerySuffixes(value)
+    return stripped === value ? [value] : [...new Set([value, stripped])]
+}
+
+export function isJapaneseQueryStopword(value: string): boolean {
+    return JAPANESE_QUERY_STOPWORDS[value] === true
+}
