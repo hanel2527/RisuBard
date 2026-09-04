@@ -126,12 +126,19 @@ describe('Character Vault sidebar integration', () => {
         expect(sidebar).not.toContain('const createFolder =')
     })
 
-    test('highlights and clears the desktop quick-inventory drop target', () => {
+    test('shows a gap insertion indicator instead of outlining character cards', () => {
         const sidebar = source('src/lib/SideBars/Sidebar.svelte')
         const dragOverStart = sidebar.indexOf('const avatarDragOver =')
         const dragOver = sidebar.slice(dragOverStart, sidebar.indexOf('const avatarDrop =', dragOverStart))
 
-        expect(dragOver).toContain("classList.add('ring-2', 'ring-success')")
+        expect(dragOver).toContain('quick-inventory-drop-before')
+        expect(dragOver).toContain('quick-inventory-drop-after')
+        expect(sidebar).toContain('resolveQuickInventoryCardDrop')
+        expect(sidebar).toContain('const avatarCardDrop =')
+        expect(sidebar).toContain('getComputedStyle(target.parentElement).gridTemplateColumns')
+        expect(sidebar).not.toContain("classList.add('ring-2', 'ring-success')")
+        expect(sidebar).toMatch(/:global\(\.quick-inventory-drop-before\)::before[\s\S]*background:\s*var\(--color-success\)/)
+        expect(sidebar).toMatch(/:global\(\.quick-inventory-drop-after\)::after[\s\S]*background:\s*var\(--color-success\)/)
         expect(sidebar).toContain('const clearAvatarDragFeedback =')
         expect(sidebar).toContain('ondragleave={!isTouchDevice ? clearAvatarDragFeedback : undefined}')
     })
