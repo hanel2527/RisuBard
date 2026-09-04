@@ -853,8 +853,11 @@ export function createMarkdownNarrativeWiki(
         const workspace = workspaceFor(characterId, chatId)
         const documents = await refreshDocuments(characterId, chatId)
         const indexLanguage = writingLanguage ?? (
-            documents.some((document) => /^###\s+(Story Summary|Story History|Related Documents)\s*$/mi.test(document.content))
-                && !documents.some((document) => /^###\s+이야기 요약\s*$/m.test(document.content))
+            documents.some((document) => /^###\s+(物語要約|作中行動|関連文書)\s*$/mi.test(document.content))
+                && !documents.some((document) => /^###\s+(이야기 요약|Story Summary)\s*$/mi.test(document.content))
+                ? 'ja'
+                : documents.some((document) => /^###\s+(Story Summary|Story History|Related Documents)\s*$/mi.test(document.content))
+                    && !documents.some((document) => /^###\s+이야기 요약\s*$/m.test(document.content))
                 ? 'en' : 'ko'
         )
         const index = [
@@ -863,7 +866,9 @@ export function createMarkdownNarrativeWiki(
             'status: active',
             '---',
             '',
-            indexLanguage === 'en' ? '## Narrative Wiki' : '## 서사 위키',
+            indexLanguage === 'en' ? '## Narrative Wiki'
+                : indexLanguage === 'ja' ? '## ナラティブウィキ'
+                : '## 서사 위키',
             '',
             ...documents.map((item) =>
                 `- [[${item.relativePath.replace(/\.md$/, '')}|${item.title}]]`

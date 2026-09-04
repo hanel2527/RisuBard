@@ -42,6 +42,10 @@ import {
 } from "../risubard/memoryAnalysisClient";
 import { projectActiveNarrativeSources } from "../risubard/sourceProjection";
 import {
+    detectChatWritingLanguage,
+    normalizeWikiWritingLanguage,
+} from "../risubard/wikiWritingLanguage";
+import {
     createNarrativeSourcesPrompt,
     isNarrativeContextOptedIn,
     loadNarrativeInquiry,
@@ -117,7 +121,19 @@ import {
 } from '../risubard/wikiGenerationState';
 
 function resolvedRisuBardSettings(chat?: Chat) {
-    return resolveRisuBardChatSettings(DBState.db, chat?.risuBardSettings)
+    const settings = resolveRisuBardChatSettings(DBState.db, chat?.risuBardSettings)
+    if (settings.risuBardWikiLanguageSync && chat?.message?.length) {
+        const detected = detectChatWritingLanguage(
+            chat.message
+                .filter((message) => typeof message.data === 'string' && (message.data as string).trim().length > 0)
+                .map((message) => message.data as string)
+        )
+        if (detected) settings.risuBardWikiWritingLanguage = detected
+    }
+    settings.risuBardWikiWritingLanguage = normalizeWikiWritingLanguage(
+        settings.risuBardWikiWritingLanguage
+    )
+    return settings
 }
 
 function resolvedArcPlotterSettings() {
