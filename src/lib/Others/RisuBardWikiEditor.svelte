@@ -1,5 +1,6 @@
 <script lang="ts">
     import markdownit from 'markdown-it'
+    import { resolveWikiLinkTarget, wikiLinkPlugin } from 'src/ts/risubard/wikiLink'
     import {
         FileIcon,
         FileLock2Icon,
@@ -94,12 +95,38 @@
     let restoredTreeExpanded = false
     let restoredEditorExpanded = true
 
-    const markdownRenderer = markdownit({
-        html: false,
-        breaks: false,
-        linkify: false,
-        typographer: true,
+    // Rebuilt when documents change so the plugin can flag links whose target
+    // no longer exists.
+    let markdownRenderer = $derived.by(() => {
+        const renderer = markdownit({
+            html: false,
+            breaks: false,
+            linkify: false,
+            typographer: true,
+        })
+        renderer.use(wikiLinkPlugin, {
+            resolves: (target: string) =>
+                resolveWikiLinkTarget(target, documents) !== null,
+        })
+        return renderer
     })
+
+    // Rendered markdown is injected as HTML, so its links cannot carry Svelte
+    // handlers; the preview container delegates for them instead.
+    function activateWikiLink(event: Event) {
+        const anchor = (event.target as HTMLElement | null)
+            ?.closest?.('[data-wikilink]')
+        if (!anchor) return
+        event.preventDefault()
+        const target = anchor.getAttribute('data-wikilink') ?? ''
+        const document = resolveWikiLinkTarget(target, documents)
+        if (document) selectDocument(document)
+    }
+
+    function onWikiLinkKeydown(event: KeyboardEvent) {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        activateWikiLink(event)
+    }
 
     let tree = $derived(buildWikiFileTree(documents))
     let recentlyUpdatedIds = $derived(highlightedDocumentIds === null
@@ -737,7 +764,15 @@
             </div>
         {/if}
         {#if markdownPreview}
-            <article class="markdown-preview" data-wiki-markdown-preview>
+            <!-- Delegated because injected HTML cannot carry Svelte handlers.
+                 The links themselves are focusable and key-activated. -->
+            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+            <article
+                class="markdown-preview"
+                data-wiki-markdown-preview
+                onclick={activateWikiLink}
+                onkeydown={onWikiLinkKeydown}
+            >
                 {@html markdownRenderer.render(markdown)}
             </article>
         {:else}
@@ -831,6 +866,10 @@
     .markdown-editor:focus { box-shadow: inset 3px 0 color-mix(in srgb, var(--risu-theme-primary) 60%, transparent); }
     .markdown-editor[readonly] { opacity: .86; }
     .markdown-preview { flex: 1; min-height: 20rem; margin: 0; overflow-x: auto; overflow-y: scroll; padding: 1rem 1.15rem 2rem; border-top: 1px solid color-mix(in srgb, var(--risu-theme-darkborderc) 60%, transparent); color: var(--risu-theme-textcolor); font-size: .82rem; line-height: 1.7; scrollbar-gutter: stable; scrollbar-width: thin; }
+    .markdown-preview :global(.wikilink) { color: var(--risu-theme-primary); text-decoration: underline; text-underline-offset: .15em; cursor: pointer; }
+    .markdown-preview :global(.wikilink:hover) { filter: brightness(1.2); }
+    .markdown-preview :global(.wikilink:focus-visible) { outline: 2px solid var(--risu-theme-primary); outline-offset: 2px; border-radius: .12rem; }
+    .markdown-preview :global(.wikilink-unresolved) { color: var(--risu-theme-textcolor2); text-decoration-style: dashed; cursor: default; }
     .markdown-preview :global(h1), .markdown-preview :global(h2), .markdown-preview :global(h3), .markdown-preview :global(h4) { margin: 1.2em 0 .5em; color: var(--risu-theme-textcolor); line-height: 1.3; }
     .markdown-preview :global(h1:first-child), .markdown-preview :global(h2:first-child), .markdown-preview :global(h3:first-child) { margin-top: 0; }
     .markdown-preview :global(h1) { font-size: 1.35rem; }
