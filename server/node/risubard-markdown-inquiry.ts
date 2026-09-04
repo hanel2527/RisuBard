@@ -173,7 +173,8 @@ function queryTerms(value: string): string[] {
     const expanded = rawTerms.flatMap((term) => {
         if (QUERY_STOPWORDS.has(term)) return []
         return expandQueryTerm(normalizedQueryTerm(term))
-            .filter((candidate) => candidate.length > 1
+            .filter((candidate) => (candidate.length > 1
+                || /^[〆々\u3400-\u4DBF\u4E00-\u9FFF]$/u.test(candidate))
                 && !QUERY_STOPWORDS.has(candidate)
                 && !isJapaneseQueryStopword(candidate))
     })

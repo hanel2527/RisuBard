@@ -85,11 +85,15 @@ export function detectChatWritingLanguage(
     return 'en'
 }
 
+const JAPANESE_WORD_PATTERN = /^[ぁ-ゖァ-ヺー\u30FC\u4E00-\u9FFF\u3400-\u4DBF々〆〤]+$/u
+const KATAKANA_RUN_PATTERN = /^[ァ-ヺー\u30FC]+$/u
+const CJK_IDEOGRAPH_PATTERN = /^[〆々\u3400-\u4DBF\u4E00-\u9FFF]$/u
+
+
 /**
- * Strips common Japanese query particles and tail conjugations so clause-like
- * Japanese tokens can match document titles and body terms. Mirrors
- * KOREAN_QUERY_SUFFIXES on the server inquiry: the longest suffix wins and the
- * remainder must stay at least two characters.
+ * Fallback particle/conjugation stripping for runtimes without
+ * Intl.Segmenter: the longest suffix wins and the remainder must stay at
+ * least two characters.
  */
 const JAPANESE_QUERY_SUFFIXES = [
     'ながらも', 'ながら', 'ましょう', 'ません', 'ました', 'まして',
@@ -115,28 +119,75 @@ const JAPANESE_QUERY_STOPWORDS: Record<string, true> = {
     'ない': true, 'ください': true, 'たい': true, 'たかった': true, 'ほしい': true,
 }
 
-function stripJapaneseQuerySuffixes(term: string): string {
-    let value = term
-    while (true) {
-        const suffix = JAPANESE_QUERY_SUFFIXES.find((candidate) =>
-            value.endsWith(candidate)
-            && value.length - candidate.length >= 2)
-        if (!suffix) return value
-        value = value.slice(0, -suffix.length)
+let japaneseSegmenter: Intl.Segmenter | undefined
+
+function japaneseWordSegmenter(): Intl.Segmenter | undefined {
+    if (typeof Intl === 'undefined' || !('Segmenter' in Intl)) {
+        return undefined
     }
+    return japaneseSegmenter ??= new Intl.Segmenter(
+        'ja',
+        { granularity: 'word' },
+    )
+}
+
+function keepAsQueryTerm(term: string): boolean {
+    if (isJapaneseQueryStopword(term)) return false
+    if (term.length >= 2) return true
+    // Single CJK ideographs are meaningful nouns in Japanese (寮, 現, 錠).
+    return term.length === 1 && CJK_IDEOGRAPH_PATTERN.test(term)
 }
 
 /**
- * Expands a query term into candidate match keys. Japanese clause tokens get a
- * particle-stripped variant appended so lexical substring matching against
- * titles and body text can hit; other scripts return the term unchanged.
+ * Segments a Japanese clause token into content words. Katakana loanwords are
+ * recombined into maximal runs because the segmenter splits loanwords
+ * (クリットリング → ク|リット|リング) that must stay whole for matching.
+ */
+function segmentedJapaneseTerms(value: string): string[] {
+    const segmenter = japaneseWordSegmenter()
+    if (!segmenter) return []
+    const words: string[] = []
+    const runs: string[] = []
+    let run = ''
+    let runEnd = -1
+    for (const item of segmenter.segment(value)) {
+        if (!item.isWordLike || !keepAsQueryTerm(item.segment)) continue
+        if (KATAKANA_RUN_PATTERN.test(item.segment)
+            && item.index === runEnd) {
+            // Adjacent katakana segments recombine into the loanword.
+            run += item.segment
+            runEnd = item.index + item.segment.length
+            continue
+        }
+        if (run) runs.push(run)
+        if (KATAKANA_RUN_PATTERN.test(item.segment)) {
+            run = item.segment
+            runEnd = item.index + item.segment.length
+        }
+        else {
+            run = ''
+            runEnd = -1
+            words.push(item.segment)
+        }
+    }
+    if (run) runs.push(run)
+    return [...words, ...runs]
+}
+
+/**
+ * Expands a query term into candidate match keys. Japanese clause tokens are
+ * morphologically segmented into content words so lexical substring matching
+ * against titles and body text can hit; the particle-strip fallback covers
+ * runtimes without Intl.Segmenter. Other scripts return the term unchanged.
  */
 export function expandQueryTerm(value: string): string[] {
-    if (!/^[ぁ-ゖァ-ヺー\u30FC\u4E00-\u9FFF\u3400-\u4DBF々〆〤]+$/u.test(value)) {
-        return [value]
+    if (!JAPANESE_WORD_PATTERN.test(value)) return [value]
+    const segmented = segmentedJapaneseTerms(value)
+    if (segmented.length === 0) {
+        const stripped = stripJapaneseQuerySuffixes(value)
+        return stripped === value ? [value] : [...new Set([value, stripped])]
     }
-    const stripped = stripJapaneseQuerySuffixes(value)
-    return stripped === value ? [value] : [...new Set([value, stripped])]
+    return [...new Set([value, ...segmented])]
 }
 
 export function isJapaneseQueryStopword(value: string): boolean {

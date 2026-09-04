@@ -101,15 +101,20 @@ describe('detectChatWritingLanguage', () => {
 
 
 describe('expandQueryTerm', () => {
-    it('strips Japanese particles so clause queries match titles', () => {
+    it('segments Japanese clause queries into content words', () => {
         expect(expandQueryTerm('シロの現在の状態は'))
-            .toEqual(['シロの現在の状態は', 'シロの現在の状態'])
-        expect(expandQueryTerm('校則データベースで'))
-            .toEqual(['校則データベースで', '校則データベース'])
+            .toEqual(['シロの現在の状態は', '現在', '状態', 'シロ'])
+        expect(expandQueryTerm('寮に行く'))
+            .toEqual(['寮に行く', '寮', '行く'])
     })
 
-    it('keeps terms without strippable suffixes unchanged', () => {
-        expect(expandQueryTerm('クリットリング')).toEqual(['クリットリング'])
+    it('recombines katakana loanword fragments into contiguous runs', () => {
+        expect(expandQueryTerm('クリットリング'))
+            .toEqual(['クリットリング', 'リットリング'])
+    })
+
+    it('keeps single CJK ideograph content words', () => {
+        expect(expandQueryTerm('寮')).toEqual(['寮'])
     })
 
     it('returns non-Japanese terms unchanged', () => {
