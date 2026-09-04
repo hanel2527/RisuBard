@@ -24,6 +24,10 @@
         openPersonaManager.set(false)
     }
 
+    function closeFromBackdrop(event: MouseEvent) {
+        if (event.target === event.currentTarget) close()
+    }
+
     function selectPersona(selection: PersonaSelection): void {
         $personaSelectCallback?.(selection)
     }
@@ -79,7 +83,10 @@
     })
 </script>
 
-<div class="risu-modal-overlay persona-manager-backdrop">
+<!-- Backdrop dismissal has a keyboard-equivalent close-button path. -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="risu-modal-overlay persona-manager-backdrop" onclick={closeFromBackdrop}>
     <dialog open class="risu-modal-surface persona-manager" style={`--persona-manager-width: ${managerWidth}px`} aria-labelledby="persona-manager-title">
         <header class="risu-modal-header">
             <div class="persona-manager-title">

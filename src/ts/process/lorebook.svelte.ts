@@ -744,9 +744,14 @@ export async function loadLoreBookV3Prompt(search?: { character: character; text
         if (bardEntry && bardEntry.bard.kind !== 'character') return []
         const rawNames = bardEntry
             ? [entry.comment, ...bardEntry.bard.aliases]
-            : [entry.comment, ...entry.key.split(','), ...entry.secondkey.split(',')]
+            : [
+                entry.comment,
+                ...(typeof entry.key === 'string' ? entry.key.split(',') : []),
+                ...(typeof entry.secondkey === 'string' ? entry.secondkey.split(',') : []),
+            ]
         const seen = new Set<string>()
         const names = rawNames.flatMap((value) => {
+            if (typeof value !== 'string') return []
             const name = value.trim().slice(0, 128)
             const key = name.normalize('NFKC').toLocaleLowerCase()
             if (!name || seen.has(key)) return []

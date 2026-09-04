@@ -4,6 +4,8 @@
     import { language } from 'src/lang'
     import ShButton from 'src/lib/UI/GUI/ShButton.svelte'
     import ShDialog from 'src/lib/UI/GUI/ShDialog.svelte'
+    import ManagerResizeHandles from 'src/lib/UI/GUI/ManagerResizeHandles.svelte'
+    import DraftSplitHandle from 'src/lib/UI/GUI/DraftSplitHandle.svelte'
     import { getModuleLorebooksWithSources } from 'src/ts/process/modules'
     import { requestChatData } from 'src/ts/process/request/request'
     import {
@@ -36,6 +38,7 @@
     let taskPresetId = $state('builtin:lore-task-default')
     let stylePresetId = $state('builtin:lore-style-ko')
     let userInstruction = $state('')
+    let originalDraft = $state('')
     let draft = $state('')
     let previousDraft = $state('')
     let canUndoDraft = $state(false)
@@ -49,6 +52,8 @@
     let generating = $state(false)
     let error = $state('')
     let abortController: AbortController | null = null
+    let dialogElement = $state<HTMLElement | null>(null)
+    let draftComparisonElement = $state<HTMLElement | null>(null)
     let wasOpen = false
 
     function abortRequest() {
@@ -57,7 +62,7 @@
         generating = false
     }
 
-    async function initializeBuilder(initialDraft = currentContent) {
+    async function initializeBuilder(initialDraft = '') {
         abortRequest()
         currentCharacter = getCurrentCharacter() ?? undefined
         sources = collectLoreBuilderSources({
@@ -77,6 +82,7 @@
         taskPresetId = 'builtin:lore-task-default'
         stylePresetId = 'builtin:lore-style-ko'
         userInstruction = ''
+        originalDraft = currentContent
         draft = initialDraft
         previousDraft = ''
         canUndoDraft = false
@@ -94,7 +100,8 @@
         error = ''
         const requestCharacter = currentCharacter
         const requestInput = {
-            taskInstruction, styleInstruction, userInstruction, draft,
+            taskInstruction, styleInstruction, userInstruction,
+            draft: draft.trim() ? draft : originalDraft,
             selections: { ...selections },
             sources: { ...sources, characterLorebook: '' },
         }
@@ -189,7 +196,8 @@
     onDestroy(abortRequest)
 </script>
 
-<ShDialog bind:open size="xl" tier="alert" closeOnEscape={true} closeOnOutsideClick={false}
+<ShDialog bind:open size="xl" tier="alert" closeOnEscape={true} closeOnOutsideClick={true}
+    bind:contentElement={dialogElement}
     contentClass="lore-builder-dialog" bodyClass="min-h-0 overflow-y-auto" closeAriaLabel={copy.close}>
     {#snippet title()}<span class="inline-flex items-center gap-2"><SparklesIcon size={19} />{copy.title}</span>{/snippet}
     {#snippet description()}{copy.description(entryName)}{/snippet}
@@ -203,7 +211,7 @@
         <fieldset data-lore-builder-context class="context-panel">
             <legend>{copy.contextTitle}</legend>
             <p class="context-hint">{copy.contextHint}</p>
-            <div class="grid gap-2 sm:grid-cols-2">
+            <div class="context-options">
                 <label class:unavailable={!sources.systemPrompt}>
                     <input type="checkbox" bind:checked={selections.systemPrompt} disabled={!sources.systemPrompt} />
                     <span>{copy.systemPrompt}{#if !sources.systemPrompt}<small>{copy.contextUnavailable}</small>{/if}</span>
@@ -242,17 +250,29 @@
         </section>
 
         <section class="builder-section draft-section" aria-busy={generating}>
-            <div class="draft-heading flex items-center justify-between gap-2">
-                <label for="lore-builder-draft">{copy.draftTitle}</label>
-                <div class="flex items-center gap-2">
-                    {#if generating}<LoaderCircleIcon class="animate-spin text-textcolor2" size={17} />{/if}
-                    <ShButton data-lore-builder-undo variant="outline" size="sm" disabled={!canUndoDraft || generating} onclick={undoDraft}>
-                        <Undo2Icon size={15} />{copy.undo}
-                    </ShButton>
+            <div bind:this={draftComparisonElement} data-lore-builder-draft-comparison class="draft-comparison">
+                <div class="draft-pane" data-draft-pane="original">
+                    <div class="draft-heading">
+                        <label for="lore-builder-original">{copy.originalDraft}</label>
+                    </div>
+                    <textarea id="lore-builder-original" data-lore-builder-original class="builder-textarea draft"
+                        value={originalDraft} readonly aria-label={copy.originalDraft}></textarea>
+                </div>
+                <DraftSplitHandle target={draftComparisonElement} ariaLabel={`${copy.originalDraft} / ${copy.revisedDraft}`} />
+                <div class="draft-pane" data-draft-pane="revision">
+                    <div class="draft-heading flex items-center justify-between gap-2">
+                        <label for="lore-builder-draft">{copy.revisedDraft}</label>
+                        <div class="flex items-center gap-2">
+                            {#if generating}<LoaderCircleIcon class="animate-spin text-textcolor2" size={17} />{/if}
+                            <ShButton data-lore-builder-undo variant="outline" size="sm" disabled={!canUndoDraft || generating} onclick={undoDraft}>
+                                <Undo2Icon size={15} />{copy.undo}
+                            </ShButton>
+                        </div>
+                    </div>
+                    <textarea id="lore-builder-draft" data-lore-builder-draft class="builder-textarea draft" bind:value={draft}
+                        placeholder={copy.draftPlaceholder} disabled={generating}></textarea>
                 </div>
             </div>
-            <textarea id="lore-builder-draft" data-lore-builder-draft class="builder-textarea draft" bind:value={draft}
-                placeholder={copy.draftPlaceholder} disabled={generating}></textarea>
         </section>
 
         {#if error}<p role="alert" class="error-message">{error}</p>{/if}
@@ -261,13 +281,16 @@
                 {copy.applyDraft}
             </ShButton>
         </div>
+        <ManagerResizeHandles target={dialogElement} centered />
     </div>
 </ShDialog>
 
 <style>
     :global(.lore-builder-dialog) {
-        height: 90vh;
-        max-height: 90vh;
+        width: min(var(--manager-width, 56rem), calc(100vw - 2rem));
+        max-width: calc(100vw - 2rem);
+        height: min(var(--manager-height, 90dvh), calc(100dvh - 2rem));
+        max-height: calc(100dvh - 2rem);
         background: var(--color-surface-base);
         overflow: hidden;
     }
@@ -278,14 +301,15 @@
         background: var(--color-surface-raised);
     }
     .context-panel legend, .builder-section label { color: var(--color-textcolor); font-size: .88rem; font-weight: 650; }
+    .context-options { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .5rem; }
     .context-panel label {
-        display: flex; align-items: center; gap: .55rem; min-height: 2.25rem; border-radius: .45rem;
+        display: flex; align-items: center; gap: .55rem; min-height: 2.75rem; border-radius: .45rem;
         padding: .45rem .6rem; color: var(--color-textcolor); background: var(--color-surface-inset); cursor: pointer;
     }
     .context-panel label.unavailable { opacity: .42; cursor: not-allowed; }
-    .context-panel input { accent-color: var(--color-primary); }
-    .context-panel label span { display: flex; min-width: 0; flex-direction: column; }
-    .context-panel label small { color: var(--color-textcolor2); font-size: .68rem; font-weight: 400; }
+    .context-panel input { flex: 0 0 auto; accent-color: var(--color-primary); }
+    .context-panel label span { display: flex; min-width: 0; flex-direction: column; font-size: .75rem; line-height: 1.3; overflow-wrap: anywhere; }
+    .context-panel label small { color: var(--color-textcolor2); font-size: .75rem; font-weight: 400; }
     .context-panel p { margin: .55rem 0 0; color: var(--color-textcolor2); font-size: .78rem; }
     .context-panel .context-hint { margin: 0 0 .65rem; }
     .builder-section { display: flex; flex-direction: column; gap: .55rem; }
@@ -303,9 +327,28 @@
     .builder-textarea.draft { min-height: 14rem; }
     .builder-textarea:disabled { opacity: .65; }
     .draft-section { min-height: 17rem; }
+    .draft-comparison { display: grid; grid-template-columns: minmax(0, var(--draft-left-width, 1fr)) 1rem minmax(0, var(--draft-right-width, 1fr)); min-height: 0; align-items: stretch; }
+    .draft-pane { display: grid; min-width: 0; min-height: 0; grid-template-rows: 2rem minmax(14rem, 1fr); gap: .5rem; }
+    .draft-pane:first-child { padding-right: .375rem; }
+    .draft-pane:last-child { padding-left: .375rem; }
+    .draft-heading { display: flex; min-width: 0; height: 2rem; align-items: center; }
+    .draft-pane .builder-textarea { box-sizing: border-box; min-height: 0; height: 100%; resize: none; overflow-y: auto; scrollbar-gutter: stable; }
     .error-message {
         margin: 0; border: 1px solid color-mix(in srgb, var(--color-draculared) 55%, var(--color-darkborderc));
         border-radius: .55rem; padding: .7rem .8rem; color: var(--color-draculared);
         background: color-mix(in srgb, var(--color-draculared) 10%, var(--color-surface-base)); font-size: .85rem;
+    }
+    @media (max-width: 700px) {
+        :global(.lore-builder-dialog) {
+            width: calc(100vw - 1rem);
+            max-width: calc(100vw - 1rem);
+            height: calc(100dvh - 1rem);
+            max-height: calc(100dvh - 1rem);
+        }
+        .draft-comparison { grid-template-columns: 1fr; }
+        .draft-pane:first-child, .draft-pane:last-child { padding: 0; }
+        .context-panel, .builder-section { padding: .65rem; }
+        .context-options { gap: .3rem; }
+        .context-panel label { min-height: 2.75rem; gap: .3rem; padding: .35rem .3rem; }
     }
 </style>

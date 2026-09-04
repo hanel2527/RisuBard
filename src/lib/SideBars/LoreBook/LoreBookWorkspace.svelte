@@ -61,6 +61,7 @@
     import folderOpenIcon from 'src/assets/solar-bold/folder-open-bold.svg'
     import folderIcon from 'src/assets/solar-bold/folder-bold.svg'
     import editIcon from 'src/assets/solar-bold/pen-2-bold.svg'
+    import magicWandIcon from 'src/assets/solar-bold/magic-wand-bold.svg'
 
     interface Props {
         entries: loreBook[]
@@ -1316,10 +1317,11 @@
                         <div class="content-heading">
                             <span>{language.lorebookWorkspace.content}</span>
                             <div class="content-actions">
-                                <button type="button" data-lore-builder-open onclick={openLoreBuilder}>
+                                <button type="button" data-lore-builder-open class="content-action lore-builder-launch" onclick={openLoreBuilder}>
+                                    <SolarIcon src={magicWandIcon} name="magic-wand-bold" size="1.15rem" />
                                     {language.lorebookWorkspace.loreBuilder.launch}
                                 </button>
-                                <button type="button" data-cbs-view-toggle aria-pressed={conditionView} onclick={() => {
+                                <button type="button" data-cbs-view-toggle class="content-action" aria-pressed={conditionView} onclick={() => {
                                     commitDraft('content')
                                     conditionView = !conditionView
                                 }}>{conditionView ? language.cbsEditor.source : language.cbsEditor.view}</button>
@@ -1720,7 +1722,8 @@
     .content-field { display: grid; min-height: 6rem; flex: 1; gap: .3rem; grid-template-rows: auto minmax(0, 1fr); }
     .content-heading { display: flex; align-items: center; justify-content: space-between; gap: .5rem; color: var(--color-textcolor2); font-size: .74rem; font-weight: 650; }
     .content-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .4rem; }
-    .content-heading button { padding: .25rem .6rem; border: 1px solid var(--color-darkborderc); border-radius: .35rem; color: var(--color-textcolor); font-size: .72rem; font-weight: 500; }
+    .content-heading .content-action { display: inline-flex; min-height: 2.15rem; align-items: center; justify-content: center; gap: .38rem; padding: 0 .62rem; border: 1px solid var(--color-darkborderc); border-radius: .5rem; color: var(--color-textcolor); font-size: .8rem; font-weight: 650; }
+    .content-heading .lore-builder-launch { background: var(--color-selected); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-borderc) 55%, transparent); }
     .content-heading button:hover, .content-heading button[aria-pressed='true'] { background: var(--color-selected); }
     .lore-content {
         min-height: 0;

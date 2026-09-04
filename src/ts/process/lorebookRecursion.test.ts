@@ -419,6 +419,44 @@ describe('lorebook recursion steps', () => {
         }])
     })
 
+    it('tolerates a missing secondary key in model-visible legacy character lore', async () => {
+        mockModuleSources.length = 0
+        const legacyEntry = {
+            ...lore('Official Proper Noun Glossary', 'proper noun,transliteration', 'Glossary body'),
+            alwaysActive: true,
+        }
+        delete (legacyEntry as Partial<typeof legacyEntry>).secondkey
+        mockDBState.db = {
+            username: 'user',
+            loreBookDepth: 5,
+            loreBookToken: 8_000,
+            characters: [{
+                chaId: 'legacy-character',
+                name: 'storywriter',
+                chatPage: 0,
+                globalLore: [legacyEntry],
+                chats: [{
+                    localLore: [],
+                    message: [{ role: 'user', data: 'continue' }],
+                }],
+                loreSettings: {
+                    tokenBudget: 8_000,
+                    scanDepth: 3,
+                    recursiveScanning: false,
+                    maxRecursionSteps: 1,
+                    matchingMode: 'partial',
+                },
+            }],
+        }
+
+        const result = await loadLoreBookV3Prompt()
+
+        expect(result.bardWikiEntityHints).toEqual([{
+            kind: 'character',
+            names: ['Official Proper Noun Glossary', 'proper noun', 'transliteration'],
+        }])
+    })
+
     it('injects a legacy lore body for a multi-word whitespace key', async () => {
         mockModuleSources.length = 0
         mockDBState.db = {

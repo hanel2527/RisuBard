@@ -1216,7 +1216,7 @@ import ShButton from "../UI/GUI/ShButton.svelte";
             <Check bind:check={(DBState.db.characters[$selectedCharID] as import('src/ts/storage/database.svelte').character).escapeOutput} name={language.escapeOutput}/>
         </div>
 
-        {#if DBState.db.hypaV3}
+        {#if DBState.db.showMenuHypaMemoryModal && DBState.db.hypaV3}
             <Button
                 onclick={() => {
                     $hypaV3ModalOpen = true

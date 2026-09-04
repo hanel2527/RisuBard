@@ -1736,8 +1736,10 @@ describe('LoreBookWorkspace', () => {
         click('[data-lore-builder-open]')
         await vi.waitFor(() => expect(document.body.querySelector('[data-lore-builder-draft]')).not.toBeNull())
 
+        const original = document.body.querySelector<HTMLTextAreaElement>('[data-lore-builder-original]')!
         const draft = document.body.querySelector<HTMLTextAreaElement>('[data-lore-builder-draft]')!
-        expect(draft.value).toBe('content:one')
+        expect(original.value).toBe('content:one')
+        expect(draft.value).toBe('')
         draft.value = '# Rewritten one'
         draft.dispatchEvent(new Event('input', { bubbles: true }))
         await tick()
@@ -2030,5 +2032,19 @@ describe('LoreBookWorkspace lore builder connection', () => {
         expect(workspace).toContain("patchEntry(loreBuilderTarget.id, { content })")
         expect(workspace).toContain('<LoreBuilder')
         expect(workspace).toContain('targetEntryId={loreBuilderTarget.id}')
+    })
+
+    it('gives the builder and condition actions the new-lore hierarchy', () => {
+        const workspace = readFileSync(resolve('src/lib/SideBars/LoreBook/LoreBookWorkspace.svelte'), 'utf8')
+
+        expect(workspace).toContain("import magicWandIcon from 'src/assets/solar-bold/magic-wand-bold.svg'")
+        expect(workspace).toMatch(/data-lore-builder-open[^>]*class="content-action lore-builder-launch"/)
+        expect(workspace).toContain('<SolarIcon src={magicWandIcon} name="magic-wand-bold" size="1.15rem" />')
+        expect(workspace).toMatch(/data-cbs-view-toggle[^>]*class="content-action"/)
+        expect(workspace).toContain('.content-heading .content-action')
+        expect(workspace).toContain('font-size: .8rem')
+        expect(workspace).toContain('font-weight: 650')
+        expect(workspace).toContain('.content-heading .lore-builder-launch')
+        expect(workspace).toContain('background: var(--color-selected)')
     })
 })

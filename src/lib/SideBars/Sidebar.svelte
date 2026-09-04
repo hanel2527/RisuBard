@@ -1558,20 +1558,18 @@
   }
   @keyframes sidebar-transition {
     from {
-      width: 0rem;
+      transform: translate3d(-100%, 0, 0);
     }
     to {
-      width: var(--sidebar-size);
+      transform: translate3d(0, 0, 0);
     }
   }
   @keyframes sidebar-transition-close {
     from {
-      width: var(--sidebar-size);
-      right:0rem;
+      transform: translate3d(0, 0, 0);
     }
     to {
-      width: 0rem;
-      right: 10rem;
+      transform: translate3d(-100%, 0, 0);
     }
   }
   @keyframes sidebar-transition-non-dynamic {
@@ -1654,8 +1652,6 @@
   .risu-sidebar-close.dynamic-sidebar {
     animation-name: sidebar-transition-close;
     animation-duration: var(--risu-animation-speed);
-    position: relative;
-    right: 3rem;
   }
 
 

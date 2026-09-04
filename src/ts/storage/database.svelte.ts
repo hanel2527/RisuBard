@@ -716,6 +716,9 @@ export function setDatabase(data:Database){
     data.showPromptComparison ??= false
     data.OaiCompAPIKeys ??= {}
     data.reasoningEffort ??= 0
+    data.hypaV3 ??= false
+    data.memoryAlgorithmType ??= data.hypaV3 ? 'hypaMemoryV3' : 'none'
+    data.showMenuHypaMemoryModal ??= false
     data.hypaV3Presets ??= [
         createHypaV3Preset("Default", {
             summarizationPrompt: (data as any).supaMemoryPrompt || "",
@@ -1073,9 +1076,9 @@ export function setCurrentChat(chat:Chat){
 }
 
 /**
- * Model-mode fields seeded into a freshly created (empty) chat so the
+ * Defaults seeded into a freshly created (empty) chat. The model-mode fields make the
  * "default model mode for new chats" preference (useModelPresetByDefault)
- * applies AT BIRTH — a snapshot, not a runtime fallback. A runtime fallback
+ * apply AT BIRTH — a snapshot, not a runtime fallback. A runtime fallback
  * would retroactively flip every existing chat that never chose a mode, and
  * couple un-opened chats live to db.defaultModelBinding. Snapshotting here keeps
  * each chat independent. Returns {} when the default is legacy (leave the field
@@ -1083,11 +1086,13 @@ export function setCurrentChat(chat:Chat){
  * literals. Do NOT call for hydration placeholders or chats being restored with
  * their own mode.
  */
-export function newChatModelDefaults(): Partial<Pick<Chat, 'useModelPreset' | 'modelBinding'>> {
+export function newChatModelDefaults(): Partial<Pick<Chat, 'useModelPreset' | 'modelBinding' | 'supaMemory'>> {
     const db = getDatabase()
-    if (!db.useModelPresetByDefault) return {}
+    const defaults = { supaMemory: false }
+    if (!db.useModelPresetByDefault) return defaults
     const def = db.defaultModelBinding
     return {
+        ...defaults,
         useModelPreset: true,
         modelBinding: def ? structuredClone($state.snapshot(def)) : emptyModelBinding(),
     }
@@ -2598,6 +2603,7 @@ export function normalizeChat(chat: Partial<Chat>): Chat {
     if (typeof c.note !== 'string') c.note = ''
     if (typeof c.name !== 'string') c.name = ''
     if (!Array.isArray(c.localLore)) c.localLore = []
+    c.supaMemory ??= false
     if (typeof c.risuBardWikiGuide !== 'string') c.risuBardWikiGuide = ''
     if (c.savedToggleValues && !c.GLGlobalVariables) {
         c.GLGlobalVariables = { ...c.savedToggleValues }
