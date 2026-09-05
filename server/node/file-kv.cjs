@@ -253,6 +253,20 @@ function createFileKv(options = {}) {
         saveManifest();
     }
 
+    function kvDelMany(keys) {
+        let count = 0;
+        let bytes = 0;
+        for (const key of new Set(keys)) {
+            const entry = manifest.entries[key];
+            if (!entry) continue;
+            bytes += entry.size ?? 0;
+            delete manifest.entries[key];
+            count += 1;
+        }
+        if (count > 0) saveManifest();
+        return { count, bytes };
+    }
+
     function kvSize(key) {
         return manifest.entries[key]?.size ?? 0;
     }
@@ -377,6 +391,7 @@ function createFileKv(options = {}) {
         kvReplaceAll,
         kvReplaceAllAsync,
         kvDel,
+        kvDelMany,
         kvSize,
         kvGetUpdatedAt,
         kvCopyValue,

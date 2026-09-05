@@ -202,6 +202,7 @@
             { label: language.basicInfo, value: 1 },
         ]}
         bind:selected={activeTab}
+        variant="prominent"
     />
 
     {#if activePreset && activeTab === 0}

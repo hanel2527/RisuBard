@@ -60,6 +60,44 @@ describe('lore builder prompt contract', () => {
         expect(sources.moduleLorebook).not.toContain('target body')
     })
 
+    it('resolves main prompt blocks with the current chat toggle values', () => {
+        const sources = collectLoreBuilderSources({
+            database: {
+                promptTemplate: [{
+                    type: 'plain',
+                    type2: 'main',
+                    role: 'system',
+                    text: 'Always\n{{#when::toggle::detail}}Chat detail{{/}}',
+                }],
+            } as unknown as Database,
+            character: { name: 'Character', globalLore: [] } as character,
+            moduleLorebooks: [],
+            targetEntryId: 'target',
+            parsePrompt: (text) => text.replace('{{#when::toggle::detail}}', '').replace('{{/}}', ''),
+        })
+
+        expect(sources.systemPrompt).toContain('Chat detail')
+        expect(sources.systemPrompt).not.toContain('{{#when')
+    })
+
+    it('does not fall back to the legacy prompt when toggles hide every main block', () => {
+        const sources = collectLoreBuilderSources({
+            database: {
+                mainPrompt: 'Legacy prompt',
+                promptTemplate: [{
+                    type: 'plain', type2: 'main', role: 'system',
+                    text: '{{#when::toggle::detail}}Chat detail{{/}}',
+                }],
+            } as Database,
+            character: { name: 'Character', globalLore: [] } as character,
+            moduleLorebooks: [],
+            targetEntryId: 'target',
+            parsePrompt: (text) => text === 'Legacy prompt' ? text : '',
+        })
+
+        expect(sources.systemPrompt).toBe('')
+    })
+
     it('serializes only selected context plus the current draft and latest instruction', () => {
         const messages = buildLoreBuilderMessages({
             taskInstruction: 'task contract',

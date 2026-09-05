@@ -30,11 +30,11 @@ export const settingsSections: SettingsNavigationSection[] = [
                 route: SettingsRoute.ModelPreset,
                 aliases: [
                     SettingsRoute.ChatBot,
-                    SettingsRoute.PromptPreset,
                     SettingsRoute.OtherBots,
                 ],
                 scope: 'full',
             },
+            { id: 'chat-prompt-presets', route: SettingsRoute.PromptPreset, scope: 'full' },
             { id: 'advanced', route: SettingsRoute.Advanced, scope: 'full' },
         ],
     },

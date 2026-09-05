@@ -18,10 +18,6 @@
         promptPresetAdvancedItems,
     } from "src/ts/setting/promptPresetSettingsData.svelte";
 
-    let {
-        embedded = false,
-    }: { embedded?: boolean } = $props();
-
     function openPresetSelector() {
         openPresetList.set(true);
     }
@@ -30,7 +26,7 @@
 
 <SettingPage
     title={language.settingsWorkspace.aiWorkspace.sections['chat-prompt-presets'].title}
-    showTitle={!embedded}
+    description={language.settingsWorkspace.aiWorkspace.sections['chat-prompt-presets'].description}
 >
     <PresetHeader
         label={language.currentPromptPreset}
@@ -45,6 +41,7 @@
             { label: language.advancedSettings, value: 3 },
         ]}
         bind:selected={$PromptPresetSubmenuIndex}
+        variant="prominent"
     />
 
     {#if $PromptPresetSubmenuIndex === 0}

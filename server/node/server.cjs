@@ -23,7 +23,7 @@ const getVips = () => {
     }
     return _vipsPromise
 }
-const { kvGet, kvSet, kvSetMany, kvSetManyAsync, kvReplacePrefixesAsync, kvReplacePrefixesFromFilesAsync, kvReplaceAllAsync, kvDel, kvList,
+const { kvGet, kvSet, kvSetMany, kvSetManyAsync, kvReplacePrefixesAsync, kvReplacePrefixesFromFilesAsync, kvReplaceAllAsync, kvDel, kvDelMany, kvList,
         kvDelPrefix, kvListWithSizes, kvSize, kvGetUpdatedAt, kvCopyValue,
         gcChunks, reclaimableChunkBytes, objectStoreBytes, isDbBlobChunked, snapshotFootprint, repository: userDataRepository } = require('./db.cjs');
 const {
@@ -39,6 +39,13 @@ const { releaseToUpdateInfo } = require('./release-update.cjs');
 const { createChatContentPage } = require('./chat-content-page.cjs');
 const { stageBackupEntries } = require('./backup-entry-stream.cjs');
 const { createCanonicalProjectionSync } = require('./canonical-projection-sync.cjs');
+const {
+    collectDatabaseAssetReferences,
+    collectNestedAssetReferences,
+    collectHypaSummaryTexts,
+    findUnreferencedAssets,
+    findUnusedHypaVectors,
+} = require('./orphan-cleanup.cjs');
 const {
     createRisuBardMemoryJsonParser,
     registerRisuBardMemoryRoutes,
@@ -5296,7 +5303,7 @@ app.post('/api/migrate/save-folder/cleanup/execute', async (req, res, next) => {
 
 const DB_BLOB_KEY = 'database/database.bin';
 const DB_BACKUP_PREFIX = 'database/dbbackup-';
-const ASSET_PREFIXES = ['assets/', 'remotes/', 'inlay/', 'inlay_thumb/', 'inlay_meta/', 'inlay_info/', 'coldstorage/'];
+const ASSET_PREFIXES = ['assets/', 'remotes/', 'inlay/', 'inlay_thumb/', 'inlay_meta/', 'inlay_info/', 'coldstorage/', 'cache/hypa-vector/'];
 
 function statsBasename(s) {
     if (!s) return '';
@@ -5321,53 +5328,7 @@ function statsBasename(s) {
 // them behind. Module *icons* are not gated: they are tiny and part of the
 // module's identity in the list UI.
 function buildUncleanableSet(dbObj, { includeModuleAssets = true } = {}) {
-    const set = new Set();
-    const add = (v) => {
-        const bn = statsBasename(v);
-        if (bn) set.add(bn);
-    };
-    if (!dbObj) return set;
-    add(dbObj.customBackground);
-    add(dbObj.userIcon);
-    // Notification sounds. Bundled-preset values (e.g. "bell") are not asset
-    // paths and just add a basename that matches no stored asset.
-    add(dbObj.messageSound);
-    add(dbObj.translateSound);
-    if (Array.isArray(dbObj.customSounds)) for (const s of dbObj.customSounds) add(s?.path);
-    // Image-gen reference images hang off settings, not off a character.
-    add(dbObj.NAIImgConfig?.character_image);
-    add(dbObj.NAIImgConfig?.image);
-    add(dbObj.wavespeedImage?.reference_image);
-    if (Array.isArray(dbObj.characters)) {
-        for (const cha of dbObj.characters) {
-            if (!cha) continue;
-            add(cha.image);
-            if (Array.isArray(cha.emotionImages)) for (const em of cha.emotionImages) add(em?.[1]);
-            if (Array.isArray(cha.additionalAssets)) for (const em of cha.additionalAssets) add(em?.[1]);
-            if (cha.vits?.files) for (const k of Object.keys(cha.vits.files)) add(cha.vits.files[k]);
-            if (Array.isArray(cha.ccAssets)) for (const a of cha.ccAssets) add(a?.uri);
-        }
-    }
-    if (Array.isArray(dbObj.modules)) {
-        for (const m of dbObj.modules) {
-            if (includeModuleAssets && Array.isArray(m?.assets)) for (const a of m.assets) add(a?.[1]);
-            add(m?.icon);
-        }
-    }
-    if (Array.isArray(dbObj.personas)) {
-        for (const p of dbObj.personas) {
-            add(p?.icon);
-            const embedded = p?.embeddedModule;
-            if (includeModuleAssets && Array.isArray(embedded?.assets)) for (const a of embedded.assets) add(a?.[1]);
-            add(embedded?.icon);
-        }
-    }
-    if (Array.isArray(dbObj.characterOrder)) {
-        for (const item of dbObj.characterOrder) {
-            if (item && typeof item === 'object' && 'imgFile' in item) add(item.imgFile);
-        }
-    }
-    return set;
+    return collectDatabaseAssetReferences(dbObj, { includeModuleAssets });
 }
 
 function statSafe(p) {
@@ -5730,6 +5691,61 @@ app.post('/api/db/optimize', async (req, res, next) => {
                 postDbSize: postStoreBytes,
                 reclaimed: gcResult.bytes,
                 chunksReclaimed: gcResult.count,
+            };
+        });
+        res.json(result);
+    } catch (err) { next(err); }
+});
+
+app.post('/api/db/orphans/cleanup', async (req, res, next) => {
+    if (!await checkAuth(req, res)) return;
+    if (!checkActiveSession(req, res)) return;
+    try {
+        const result = await queueStorageOperation(async () => {
+            await flushPendingDb();
+            await ensureChatStore();
+
+            const raw = kvGet(DB_BLOB_KEY);
+            const database = raw ? await decodeRisuSave(raw) : {};
+            const referencedAssets = collectDatabaseAssetReferences(database);
+            collectNestedAssetReferences(database, referencedAssets);
+            collectNestedAssetReferences(fullChatStore, referencedAssets);
+            for (const key of kvList('cache/plugin-storage/')) {
+                if (!key.endsWith('.json')) continue;
+                const value = kvGet(key);
+                if (!value) throw new Error(`Plugin storage is unavailable: ${key}`);
+                let payload;
+                try {
+                    payload = JSON.parse(value.toString('utf-8'));
+                } catch {
+                    throw new Error(`Plugin storage is invalid: ${key}`);
+                }
+                collectNestedAssetReferences(payload, referencedAssets);
+            }
+
+            const orphanAssets = findUnreferencedAssets(kvListWithSizes('assets/'), referencedAssets);
+            const summaryTexts = collectHypaSummaryTexts(fullChatStore);
+            const hypaVectors = kvListWithSizes('cache/hypa-vector/').map(entry => {
+                const value = kvGet(entry.key);
+                let payload = null;
+                try { payload = value ? JSON.parse(value.toString('utf-8')) : null; } catch {}
+                return { ...entry, payload };
+            });
+            const unusedHypaVectors = findUnusedHypaVectors(hypaVectors, summaryTexts);
+            const deleted = kvDelMany([
+                ...orphanAssets.map(entry => entry.key),
+                ...unusedHypaVectors.map(entry => entry.key),
+            ]);
+            const gcResult = gcChunks();
+            const sumBytes = entries => entries.reduce((total, entry) => total + (entry.size || 0), 0);
+
+            return {
+                ok: true,
+                assets: { count: orphanAssets.length, bytes: sumBytes(orphanAssets) },
+                hypaVectors: { count: unusedHypaVectors.length, bytes: sumBytes(unusedHypaVectors) },
+                entries: deleted,
+                objects: { count: gcResult.count, bytes: gcResult.bytes },
+                reclaimed: gcResult.bytes,
             };
         });
         res.json(result);

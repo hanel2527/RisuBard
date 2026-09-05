@@ -1441,6 +1441,9 @@ export const languageKorean = {
   botSettingsParamScopeDesc: "이 페이지의 파라미터는 [채팅 봇]에서 선택한 모델에만 적용됩니다. 모델 프리셋을 사용 중이라면 해당 프리셋 안에서 파라미터를 수정하세요.",
   currentThemePreset: "현재 테마 프리셋",
   currentPromptPreset: "현재 프롬프트 프리셋",
+  promptPresetDescription: "프롬프트 소개",
+  promptPresetDescriptionPlaceholder: "이 프롬프트 프리셋을 간단히 소개하세요.",
+  promptPresetDescriptionLinkHint: "웹 주소는 Shift+클릭하여 열 수 있습니다.",
   presetDuplicate: "복제하기",
   presetExport: "내보내기",
   presetImport: "불러오기",
@@ -1949,6 +1952,12 @@ export const languageKorean = {
     moveFolderUp: "폴더 위로 이동",
     moveFolderDown: "폴더 아래로 이동",
     searchPlaceholder: "이름과 상세 내용 검색",
+    filterStatus: "상태로 필터링",
+    allStatuses: "모든 상태",
+    enabledStatus: "활성",
+    disabledStatus: "비활성",
+    enableItem: "{} 활성화",
+    disableItem: "{} 비활성화",
     selectVisible: "보이는 항목 선택",
     clearSelection: "선택 해제",
     selectedCount: "{}개 선택",
@@ -2562,6 +2571,9 @@ export const languageKorean = {
     "플러그인 업데이트가 발견되었습니다. 업데이트를 설치하시겠습니까?",
   pluginUpdateSuccess: "플러그인을 업데이트했습니다.",
   pluginUpdateFailed: "플러그인 업데이트에 실패했습니다. 업데이트 주소나 플러그인 소스를 확인해 주세요.",
+  editPluginCode: "플러그인 코드 편집",
+  pluginCode: "플러그인 코드",
+  pluginCodeApplied: "플러그인 코드를 적용했습니다.",
   branchedText: "이 채팅은 {}에서 분기되었습니다.",
   disableMessage: "메시지 비활성화",
   disableFirstMessageConfirm: "퍼스널 메세지를 비활성화할까요? 컨텍스트에서 제외됩니다.",
@@ -3036,6 +3048,26 @@ export const languageKorean = {
   storageOptimizeFailed: "정리 실패",
 
   storageCleanup: "미참조 오브젝트 정리",
+
+  storageOrphanCleanupTitle: "고아 데이터 정리",
+  storageOrphanCleanupDesc:
+    "현재 캐릭터·페르소나·모듈·휴지통·플러그인에서 참조하지 않는 미디어와 사용하지 않는 Hypa 벡터 캐시, 미참조 저장 오브젝트를 한 번에 정리합니다.",
+  storageOrphanCleanupMedia: "고아 미디어",
+  storageOrphanCleanupHypa: "검사할 Hypa 벡터",
+  storageOrphanCleanupObjects: "미참조 오브젝트",
+  storageOrphanCleanupCountSize: (count: number, size: number) =>
+    `${count.toLocaleString()}개 · ${(size / 1024 / 1024).toFixed(1)} MB`,
+  storageOrphanCleanupSize: (size: number) => `${(size / 1024 / 1024).toFixed(1)} MB`,
+  storageOrphanCleanupUnavailable: "측정할 수 없음",
+  storageOrphanCleanupInlayNote:
+    "인레이 이미지는 오인 삭제를 막기 위해 인레이 갤러리의 고아 필터에서 별도로 관리합니다.",
+  storageOrphanCleanupConfirm: (mediaCount: number, mediaSize: number, hypaCount: number, hypaSize: number, objectSize: number) =>
+    `고아 미디어 ${mediaCount.toLocaleString()}개 (${(mediaSize / 1024 / 1024).toFixed(1)} MB), Hypa 벡터 최대 ${hypaCount.toLocaleString()}개 (${(hypaSize / 1024 / 1024).toFixed(1)} MB), 미참조 오브젝트 ${(objectSize / 1024 / 1024).toFixed(1)} MB를 검사하고 정리할까요?`,
+  storageOrphanCleanupAll: "고아 데이터 모두 정리",
+  storageOrphanCleanuping: "참조를 다시 확인하고 고아 데이터를 정리하는 중...",
+  storageOrphanCleanupDone: (mediaCount: number, hypaCount: number, objectCount: number, reclaimed: number) =>
+    `고아 미디어 ${mediaCount.toLocaleString()}개, Hypa 벡터 ${hypaCount.toLocaleString()}개, 미참조 오브젝트 ${objectCount.toLocaleString()}개를 정리해 ${(reclaimed / 1024 / 1024).toFixed(1)} MB를 회수했습니다.`,
+  storageOrphanCleanupFailed: "고아 데이터 정리 실패",
 
   storageBackups: "백업",
   storageBackupsManage: "백업 관리",

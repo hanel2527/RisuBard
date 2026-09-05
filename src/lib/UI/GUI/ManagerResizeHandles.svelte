@@ -17,7 +17,9 @@
         const parent = element.parentElement
         const parentStyle = parent && host.getComputedStyle(parent)
         const parentWidth = parent ? parent.clientWidth - (parseFloat(parentStyle!.paddingLeft) || 0) - (parseFloat(parentStyle!.paddingRight) || 0) : host.innerWidth
-        const maxWidth = Math.max(0, centered ? host.innerWidth - 16 : Math.min(parentWidth, host.innerWidth - 16))
+        const settingsViewport = element.closest<HTMLElement>('.settings-content')
+        const viewportWidth = settingsViewport?.clientWidth ?? host.innerWidth
+        const maxWidth = Math.max(0, centered ? viewportWidth - 16 : Math.min(parentWidth, viewportWidth - 16))
         const maxHeight = Math.max(0, host.innerHeight - 16)
         const x = edge.includes('e') ? 1 : edge.includes('w') ? -1 : 0
         const y = edge.includes('s') ? 1 : edge.includes('n') ? -1 : 0

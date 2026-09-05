@@ -28,8 +28,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build
-        run: pnpm build
+      - name: Verify release
+        run: pnpm verify:release
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
 

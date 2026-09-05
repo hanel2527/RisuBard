@@ -69,20 +69,28 @@ function formatLorebooks(entries: Array<{ scopeId?: string; entry: loreBook }>):
     return { content: sources.map((source) => source.content).join('\n\n'), sources }
 }
 
-function resolveSystemPrompt(database: Database, currentCharacter?: character | null): string {
+function resolveSystemPrompt(
+    database: Database,
+    currentCharacter?: character | null,
+    parsePrompt?: (text: string, role?: string) => string,
+): string {
+    const parse = (text: string, role?: string) => (parsePrompt ? parsePrompt(text, role) : text).trim()
     if (Array.isArray(database.promptTemplate)) {
         const mainBlocks: string[] = []
+        let hasMainBlock = false
         for (const item of database.promptTemplate) {
             if (item.type === 'plain' && item.type2 === 'main' && item.text.trim()) {
-                mainBlocks.push(item.text.trim())
+                hasMainBlock = true
+                const content = parse(item.text, item.role)
+                if (content) mainBlocks.push(content)
             }
         }
-        if (mainBlocks.length > 0) return mainBlocks.join('\n\n')
+        if (hasMainBlock) return mainBlocks.join('\n\n')
     }
     const main = database.mainPrompt?.trim() ?? ''
-    return currentCharacter?.systemPrompt?.trim()
+    return parse(currentCharacter?.systemPrompt?.trim()
         ? currentCharacter.systemPrompt.replaceAll('{{original}}', main).trim()
-        : main
+        : main)
 }
 
 function resolveCharacterDescription(currentCharacter?: character | null): string {
@@ -100,13 +108,14 @@ export function collectLoreBuilderSources(input: {
     character?: character | null
     moduleLorebooks: Array<{ scopeId: string; entry: loreBook }>
     targetEntryId: string
+    parsePrompt?: (text: string, role?: string) => string
 }): LoreBuilderSourceSnapshot {
     const characterLorebook = formatLorebooks((input.character?.globalLore ?? [])
         .filter((entry) => entry.id !== input.targetEntryId).map((entry) => ({ entry })))
     const moduleLorebook = formatLorebooks(input.moduleLorebooks
         .filter(({ entry }) => entry.id !== input.targetEntryId))
     return {
-        systemPrompt: resolveSystemPrompt(input.database, input.character),
+        systemPrompt: resolveSystemPrompt(input.database, input.character, input.parsePrompt),
         characterDescription: resolveCharacterDescription(input.character),
         characterLorebook: characterLorebook.content,
         moduleLorebook: moduleLorebook.content,

@@ -66,6 +66,53 @@ describe('persona builder source compiler', () => {
         expect(sources.systemPrompt).not.toMatch(/Legacy|Jailbreak|CoT|Global note|override/)
     })
 
+    test('resolves main prompt blocks with the current chat toggle values', () => {
+        const sources = collectPersonaBuilderSources({
+            database: database({
+                promptTemplate: [{
+                    type: 'plain', type2: 'main', role: 'system',
+                    text: 'Always\n{{#when::toggle::detail}}Chat detail{{/}}',
+                }],
+                globalChatVariables: { toggle_detail: '0' },
+            }),
+            character: currentCharacter(),
+            moduleLorebooks: [],
+            parsePrompt: (text) => text.replace('{{#when::toggle::detail}}', '').replace('{{/}}', ''),
+        })
+
+        expect(sources.systemPrompt).toContain('Chat detail')
+        expect(sources.systemPrompt).not.toContain('{{#when')
+    })
+
+    test('does not fall back to the legacy prompt when toggles hide every main block', () => {
+        const sources = collectPersonaBuilderSources({
+            database: database({
+                mainPrompt: 'Legacy prompt',
+                promptTemplate: [{
+                    type: 'plain', type2: 'main', role: 'system',
+                    text: '{{#when::toggle::detail}}Chat detail{{/}}',
+                }],
+            }),
+            character: currentCharacter(),
+            moduleLorebooks: [],
+            parsePrompt: (text) => text === 'Legacy prompt' ? text : '',
+        })
+
+        expect(sources.systemPrompt).toBe('')
+    })
+
+    test('makes system prompt unavailable when no character is active', () => {
+        const sources = collectPersonaBuilderSources({
+            database: database({
+                promptTemplate: [{ type: 'plain', type2: 'main', role: 'system', text: 'Main' }],
+            }),
+            character: undefined,
+            moduleLorebooks: [],
+        })
+
+        expect(sources.systemPrompt).toBe('')
+    })
+
     test('applies the legacy character system-prompt override', () => {
         const sources = collectPersonaBuilderSources({
             database: database({ mainPrompt: 'BASE' }),

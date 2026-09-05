@@ -430,6 +430,7 @@ export async function importPlugin(code:string|null = null, argu:{
         }
 
         await loadPlugins()
+        return true
         
     } catch (error) {
         console.error(error)

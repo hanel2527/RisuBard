@@ -11,11 +11,13 @@ import { decodeRisuSave, encodeRisuSaveLegacy } from "./risuSave"
 import { normalizeChat, type Chat, type Message } from "./database.svelte"
 import {
     assembleChatContentPages,
+    getRemainingChatContentPageOffsets,
     type ChatContentPageEnvelope,
 } from './chatContentPage'
 import { isCanonicalFilesChangedResponse } from './canonicalConflict'
 
 const CHAT_CONTENT_TRANSFER_PAGE_SIZE = 200
+const CHAT_CONTENT_TRANSFER_CONCURRENCY = 4
 
 // ── User-gesture recency for the write lock ─────────────────────────────────
 // The server moves the single-writer lock only on writes that follow a real
@@ -761,26 +763,45 @@ export class NodeStorage{
 
     async fetchChatContent(chaId: string, chatIndex: number, chatId: string): Promise<any | null> {
         const pages: ChatContentPageEnvelope<Message, Omit<Chat, 'message'>>[] = []
-        let offset = 0
-
-        while (true) {
+        const fetchPage = async (offset: number) => {
             const da = await this.authFetch(
                 `/api/chat-content/${encodeURIComponent(chaId)}/${chatIndex}/page?offset=${offset}&limit=${CHAT_CONTENT_TRANSFER_PAGE_SIZE}`,
                 { headers: { 'x-chat-id': chatId } },
             )
-            if (da.status === 404 && offset === 0) {
-                return this.fetchFullChatContent(chaId, chatIndex, chatId)
-            }
             if (da.status < 200 || da.status >= 300) {
                 throw new Error(`fetchChatContent page error: ${da.status}`)
             }
 
             const buffer = new Uint8Array(await da.arrayBuffer())
-            const page = await decodeRisuSave(buffer) as ChatContentPageEnvelope<Message, Omit<Chat, 'message'>>
-            pages.push(page)
-            if (page.total === 0 || page.offset + page.messages.length >= page.total) break
-            if (page.messages.length === 0) throw new Error('fetchChatContent page made no progress')
-            offset = page.offset + page.messages.length
+            return await decodeRisuSave(buffer) as ChatContentPageEnvelope<Message, Omit<Chat, 'message'>>
+        }
+
+        const firstResponse = await this.authFetch(
+            `/api/chat-content/${encodeURIComponent(chaId)}/${chatIndex}/page?offset=0&limit=${CHAT_CONTENT_TRANSFER_PAGE_SIZE}`,
+            { headers: { 'x-chat-id': chatId } },
+        )
+        if (firstResponse.status === 404) {
+            return this.fetchFullChatContent(chaId, chatIndex, chatId)
+        }
+        if (firstResponse.status < 200 || firstResponse.status >= 300) {
+            throw new Error(`fetchChatContent page error: ${firstResponse.status}`)
+        }
+        const firstBuffer = new Uint8Array(await firstResponse.arrayBuffer())
+        const firstPage = await decodeRisuSave(firstBuffer) as ChatContentPageEnvelope<Message, Omit<Chat, 'message'>>
+        if (firstPage.total > 0 && firstPage.messages.length === 0) {
+            throw new Error('fetchChatContent page made no progress')
+        }
+        pages.push(firstPage)
+
+        const offsets = getRemainingChatContentPageOffsets(
+            firstPage.total,
+            firstPage.offset + firstPage.messages.length,
+            CHAT_CONTENT_TRANSFER_PAGE_SIZE,
+        )
+        for (let index = 0; index < offsets.length; index += CHAT_CONTENT_TRANSFER_CONCURRENCY) {
+            pages.push(...await Promise.all(
+                offsets.slice(index, index + CHAT_CONTENT_TRANSFER_CONCURRENCY).map(fetchPage),
+            ))
         }
 
         return normalizeChat(assembleChatContentPages(pages))

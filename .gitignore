@@ -54,6 +54,9 @@ dist.zip
 !/scripts/check-public-boundary.mjs
 !/scripts/check-public-boundary.test.ts
 !/scripts/check-brand-boundary.test.ts
+!/scripts/dev-launcher.mjs
+!/scripts/dev-launcher.test.ts
+!/scripts/launch-risubard-dev.cmd
 .env
 /server/node/ssl/certificate
 /bin/

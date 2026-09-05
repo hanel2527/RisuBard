@@ -8,6 +8,13 @@ const componentPath = resolve(process.cwd(), 'src/lib/Setting/SettingsNavigation
 const workspacePath = resolve(process.cwd(), 'src/lib/Setting/Settings.svelte')
 
 describe('SettingsNavigation', () => {
+    test('places chat prompt presets immediately after AI settings', () => {
+        expect(settingsSections[0].items.slice(0, 2)).toEqual([
+            expect.objectContaining({ id: 'ai-settings', route: SettingsRoute.ModelPreset }),
+            expect.objectContaining({ id: 'chat-prompt-presets', route: SettingsRoute.PromptPreset }),
+        ])
+    })
+
     test('places the unified RisuBard common page and wiki prompt directly below AI', () => {
         expect(settingsSections.map((section) => section.id).slice(0, 3)).toEqual([
             'ai',

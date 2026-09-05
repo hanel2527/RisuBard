@@ -4,6 +4,9 @@ import { describe, expect, test } from 'vitest'
 
 const modules = readFileSync(resolve(process.cwd(), 'src/lib/Setting/Pages/Module/ModuleSettings.svelte'), 'utf8')
 const plugins = readFileSync(resolve(process.cwd(), 'src/lib/Setting/Pages/PluginSettings.svelte'), 'utf8')
+const organizer = readFileSync(resolve(process.cwd(), 'src/lib/UI/CollectionOrganizerList.svelte'), 'utf8')
+const settingPage = readFileSync(resolve(process.cwd(), 'src/lib/UI/GUI/SettingPage.svelte'), 'utf8')
+const resizeHandles = readFileSync(resolve(process.cwd(), 'src/lib/UI/GUI/ManagerResizeHandles.svelte'), 'utf8')
 
 function styleRule(source: string, selector: string) {
     const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -12,14 +15,119 @@ function styleRule(source: string, selector: string) {
 
 describe('collection manager item layout', () => {
     test('opts only the module list into the resizable settings page', () => {
-        expect(modules).toMatch(/\{#if mode === 0\}\s*<SettingPage resizable title=\{language\.modules\}>/)
+        expect(modules).toMatch(/\{#if mode === 0\}\s*<SettingPage resizable title=\{language\.modules\} description=\{language\.collectionOrganizer\.description\}>/)
         expect(modules.match(/<SettingPage resizable\b/g)).toHaveLength(1)
         expect(modules).toContain('<SettingPage title={language.createModule}>')
         expect(modules).toContain('<SettingPage title={language.editModule}>')
     })
 
     test('opts the plugin list into the resizable settings page', () => {
-        expect(plugins).toContain('<SettingPage resizable title={language.plugin}>')
+        expect(plugins).toContain('<SettingPage resizable title={language.plugin} description={language.collectionOrganizer.description}>')
+    })
+
+    test('uses the shared settings header hierarchy for both collection pages', () => {
+        expect(modules).toContain('description={language.collectionOrganizer.description}')
+        expect(plugins).toContain('description={language.collectionOrganizer.description}')
+        expect(plugins).toContain('<ShAlert variant="warning"')
+        expect(plugins).not.toContain('text-draculared')
+    })
+
+    test('offers the plugin manager inspired enabled-state filter', () => {
+        expect(organizer).toContain('statusOptions?: CollectionOrganizerStatusOption[]')
+        expect(organizer).toContain('bind:value={selectedStatus}')
+        expect(organizer).toContain('getVisibleCollectionItems(')
+        expect(plugins).toContain("status: plugin.enabled ? 'enabled' : 'disabled'")
+        expect(plugins).toContain('statusOptions={pluginStatusOptions}')
+    })
+
+    test('opts both extension lists into the plugin-manager card layout', () => {
+        expect(organizer).toContain('managerLayout?: boolean')
+        expect(modules).toMatch(/<CollectionOrganizerList[\s\S]*?managerLayout[\s\S]*?kind="modules"/)
+        expect(plugins).toMatch(/<CollectionOrganizerList[\s\S]*?managerLayout[\s\S]*?kind="plugins"/)
+        expect(organizer).toContain('collection-item-order-rail')
+        expect(organizer).toContain('{#if !managerLayout}')
+        expect(organizer).toContain('class:collection-items--manager={managerLayout}')
+        expect(organizer).toContain('class:collection-item--manager={managerLayout}')
+    })
+
+    test('lets the extension manager resize from every edge within the settings viewport', () => {
+        expect(settingPage).toContain('<ManagerResizeHandles target={pageElement} centered />')
+        expect(settingPage).toMatch(/\.settings-standard-page--resizable\s*\{[^}]*left:\s*50%[^}]*align-self:\s*center[^}]*transform:\s*translateX\(-50%\)[^}]*max-width:\s*calc\(100vw - 1rem\)/s)
+        expect(resizeHandles).toContain("closest<HTMLElement>('.settings-content')")
+        expect(resizeHandles).toContain("['n', 'e', 's', 'w', 'ne', 'se', 'sw', 'nw']")
+    })
+
+    test('opens a per-plugin source editor with apply and download actions', () => {
+        expect(plugins).toContain('data-plugin-code-editor={plugin.name}')
+        expect(plugins).toContain('<ShDialog')
+        expect(plugins).toContain('bind:value={pluginCodeDraft}')
+        expect(plugins).toContain("isUpdate: true")
+        expect(plugins).toContain('originalPluginName: pluginCodeName')
+        expect(plugins).toContain('downloadFile(pluginCodeFilename(pluginCodeName), pluginCodeDraft)')
+    })
+
+    test('places the plugin setting count beside the title instead of in metadata', () => {
+        const nameBlock = plugins.match(/<div class="plugin-item-name[^>]*>([\s\S]*?)<\/div>/)?.[1] ?? ''
+        const metaBlock = plugins.match(/<div class="plugin-item-meta[^>]*>([\s\S]*?)<\/div>/)?.[1] ?? ''
+        expect(nameBlock).toContain('visibleArgumentCount')
+        expect(metaBlock).not.toContain('language.settings')
+    })
+
+    test('uses the shared settings surface tokens for the collection frame', () => {
+        const rule = styleRule(organizer, '.collection-organizer')
+        expect(rule).toContain('var(--settings-surface')
+        expect(rule).toContain('var(--settings-border')
+        expect(rule).toContain('var(--settings-radius')
+    })
+
+    test('keeps plugin metadata but removes redundant module row metadata', () => {
+        expect(plugins).toContain('import ShBadge from "src/lib/UI/GUI/ShBadge.svelte"')
+        expect(plugins).toContain('class="plugin-item-meta')
+        expect(modules).not.toContain('class="module-item-meta')
+    })
+
+    test('uses two bordered vertical action columns for module rows', () => {
+        expect(modules).toContain('class="module-action-column"')
+        expect(modules).toContain('class="module-action-column module-action-column--end"')
+        expect(modules).toContain('variant="outline"')
+        expect(modules).toContain('module-activation-icon--active')
+        expect(modules).not.toContain('personaAssignmentCount(')
+        expect(modules).not.toContain('<Share2Icon')
+    })
+
+    test('centers the module title and description in the same row as its actions', () => {
+        const titleBlock = modules.match(/<div class="module-item-title[^>]*>([\s\S]*?)<\/div>\s*<div class="module-item-actions">/)?.[1] ?? ''
+        expect(titleBlock).toContain('module-item-name')
+        expect(titleBlock).toContain('module-item-description')
+        expect(styleRule(modules, '.module-item-title')).toContain('justify-content: center')
+        expect(styleRule(modules, '.module-item-title')).toContain('flex-direction: column')
+    })
+
+    test('uses the same larger action button size in module and plugin rows', () => {
+        const moduleActions = modules.match(/<div class="module-item-actions">([\s\S]*?)<\/div>\s*<\/div>\s*\{\/if\}/)?.[1] ?? ''
+        const pluginActions = plugins.match(/<div class="plugin-item-actions">([\s\S]*?)<\/div>\s*<\/div>\s*\{#if plugin\.version/)?.[1] ?? ''
+        expect(moduleActions).toContain('size="icon"')
+        expect(pluginActions).toContain('size="icon"')
+        expect(styleRule(organizer, '.collection-item--manager .collection-item-content')).toContain('padding: .45rem .7rem')
+    })
+
+    test('moves module download into the edit page', () => {
+        expect(modules).toMatch(/\{:else if mode === 2\}[\s\S]*?exportModule\(tempModule\)/)
+    })
+
+    test('syncs plugin actions to the same bordered column layout', () => {
+        expect(plugins).toContain('class="plugin-action-column"')
+        expect(plugins).toContain('class="plugin-action-column plugin-action-column--end"')
+        expect(plugins).toContain('plugin-activation-icon--active')
+        expect(plugins).toMatch(/class="plugin-action-column plugin-action-column--end"[\s\S]*?data-plugin-code-editor=\{plugin\.name\}[\s\S]*?variant="destructive"/)
+    })
+
+    test('renders folder name and count above a dedicated action row', () => {
+        expect(organizer).toContain('class="collection-folder-summary')
+        expect(organizer).toContain('class="collection-folder-actions')
+        expect(organizer).not.toContain('group-hover:hidden')
+        expect(styleRule(organizer, '.collection-folder')).toContain('flex-direction: column')
+        expect(styleRule(organizer, '.collection-folder-actions')).toContain('width: 100%')
     })
 
     test.each([
@@ -49,7 +157,7 @@ describe('collection manager item layout', () => {
     })
 
     test('keeps long module descriptions within the item width', () => {
-        expect(modules).toContain('class="module-item-description ')
+        expect(modules).toContain('class="module-item-description"')
         expect(styleRule(modules, '.module-item-description')).toMatch(/overflow-wrap:\s*anywhere/)
     })
 

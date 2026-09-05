@@ -57,8 +57,7 @@ export async function loadData() {
                 }
                 try {
                     const decoded = await decodeRisuSave(gotStorage)
-                    setPatchSyncBaseline(safeStructuredClone(decoded))
-                    console.log(decoded)
+                    setPatchSyncBaseline(decoded)
                     setDatabase(decoded)
                 } catch (error) {
                     console.error(error)
@@ -69,7 +68,7 @@ export async function loadData() {
                             LoadingStatusState.text = `Reading Backup File ${backup}...`
                             const backupData: Uint8Array = await forageStorage.getItem(`database/dbbackup-${backup}.bin`) as unknown as Uint8Array
                             const backupDecoded = await decodeRisuSave(backupData)
-                            setPatchSyncBaseline(safeStructuredClone(backupDecoded))
+                            setPatchSyncBaseline(backupDecoded)
                             setDatabase(backupDecoded)
                             backupLoaded = true
                             break
@@ -458,13 +457,21 @@ async function checkNewFormat(): Promise<void> {
  */
 async function cleanChunks() {
     const db = getDatabase()
-    const indexes = await forageStorage.keys()
     const assetCleanupRequested = isAutoAssetCleanupEnabled(db)
+    const remoteKeysPromise = forageStorage.keys('remotes/')
+    const [remoteKeys, assetKeys, pluginStorageKeys] = assetCleanupRequested
+        ? await Promise.all([
+            remoteKeysPromise,
+            forageStorage.keys('assets/'),
+            forageStorage.keys('cache/plugin-storage/')
+        ])
+        : [await remoteKeysPromise, [], []]
+    const indexes = [...remoteKeys, ...assetKeys]
     const uncleanable = assetCleanupRequested ? new Set(getUncleanables(db)) : new Set<string>()
     let pluginStorageScanSucceeded = true
     if (assetCleanupRequested) {
-        for (const key of indexes) {
-            if (!key.startsWith('cache/plugin-storage/') || !key.endsWith('.json')) continue
+        for (const key of pluginStorageKeys) {
+            if (!key.endsWith('.json')) continue
             try {
                 const data = await forageStorage.getItem(key) as unknown as Uint8Array
                 for (const asset of collectNestedAssetReferences(JSON.parse(new TextDecoder().decode(data)))) {
@@ -478,7 +485,7 @@ async function cleanChunks() {
         }
     }
     const cleanAssets = canDeleteAssetsAfterPluginStorageScan(assetCleanupRequested, pluginStorageScanSucceeded)
-    const allKeys = new Set(indexes)
+    const allKeys = new Set(remoteKeys)
     const characterIds = new Set<string>(
         db.characters.map((v) => v.chaId)
     )

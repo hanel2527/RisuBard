@@ -14,6 +14,7 @@ afterEach(async () => {
 
 async function manager() {
     const host = document.body.appendChild(document.createElement('div'))
+    host.className = 'settings-content'
     Object.defineProperty(host, 'clientWidth', { value: 1000 })
     mounted = mount(SettingPage, { target: host, props: { title: 'Modules', resizable: true } })
     await tick()
@@ -34,9 +35,9 @@ describe('manager window resize controls', () => {
     test('resizes an inline manager with the keyboard and resets with Home', async () => {
         const { page, handle } = await manager()
         handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
-        expect(page.style.getPropertyValue('--manager-width')).toBe('816px')
+        expect(page.style.getPropertyValue('--manager-width')).toBe('832px')
         handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', shiftKey: true, bubbles: true }))
-        expect(page.style.getPropertyValue('--manager-height')).toBe('548px')
+        expect(page.style.getPropertyValue('--manager-height')).toBe('596px')
         handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
         expect(page.style.getPropertyValue('--manager-width')).toBe('')
         expect(page.style.getPropertyValue('--manager-height')).toBe('')
@@ -49,7 +50,7 @@ describe('manager window resize controls', () => {
         handle.releasePointerCapture = vi.fn()
         handle.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 3, clientX: 800, clientY: 500, bubbles: true }))
         window.dispatchEvent(new PointerEvent('pointermove', { pointerId: 3, clientX: 3000, clientY: 3000 }))
-        expect(parseFloat(page.style.getPropertyValue('--manager-width'))).toBe(1000)
+        expect(parseFloat(page.style.getPropertyValue('--manager-width'))).toBe(984)
         expect(parseFloat(page.style.getPropertyValue('--manager-height'))).toBeLessThanOrEqual(window.innerHeight - 16)
         window.dispatchEvent(new PointerEvent('pointercancel', { pointerId: 3 }))
         const saved = page.getAttribute('style')
@@ -102,13 +103,14 @@ describe('manager window resize controls', () => {
         expect(onResizeEnd).toHaveBeenCalledWith(target)
     })
 
-    test('uses 1.3x base widths only for the requested managers', () => {
+    test('uses the full settings width for resizable managers while keeping preset comparison bounded', () => {
         const settingPage = readFileSync('src/lib/UI/GUI/SettingPage.svelte', 'utf8')
         const settings = readFileSync('src/lib/Setting/Settings.svelte', 'utf8')
         const presets = readFileSync('src/lib/Setting/botpreset.svelte', 'utf8')
-        expect(settingPage).toContain('(var(--settings-content-width, 58rem) - 2 * var(--settings-page-gutter, 0rem)) * 1.3')
+        expect(settingPage).toContain('width: var(--manager-width, 100%)')
+        expect(settingPage).toContain('max-width: calc(100vw - 1rem)')
         expect(settings).toContain('settings-page--collection')
-        expect(settings).toContain('.settings-page.settings-page--collection:has(:global(.settings-standard-page--resizable))')
+        expect(settings).toContain('.settings-content--mobile-collection:has(:global(.settings-standard-page--resizable))')
         expect(presets).toContain('83.2rem')
         expect(presets).toContain('<ManagerResizeHandles')
         expect(presets).toContain('<ShDialog')

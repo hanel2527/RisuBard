@@ -12,6 +12,7 @@
     import ModuleSettings from './Pages/Module/ModuleSettings.svelte'
     import NotificationSoundSettings from './Pages/NotificationSoundSettings.svelte'
     import PluginSettings from './Pages/PluginSettings.svelte'
+    import PromptPresetSettings from './Pages/PromptPresetSettings.svelte'
     import PromptSettings from './Pages/PromptSettings.svelte'
     import RemoteAccessSettings from './Pages/RemoteAccessSettings.svelte'
     import SystemSettings from './Pages/SystemSettings.svelte'
@@ -107,6 +108,8 @@
                     <div class="settings-page" class:settings-page--collection={$SettingsMenuIndex === SettingsRoute.Module || $SettingsMenuIndex === SettingsRoute.Plugin}>
                         {#if $SettingsMenuIndex === SettingsRoute.Migration}
                             <MigrationSettings />
+                        {:else if $SettingsMenuIndex === SettingsRoute.PromptPreset}
+                            <PromptPresetSettings />
                         {:else if isAISettingsRoute($SettingsMenuIndex as SettingsRouteValue)}
                             <AISettingsWorkspace
                                 activeRoute={$SettingsMenuIndex as SettingsRouteValue}
@@ -403,5 +406,4 @@
             width: min(100%, var(--settings-content-width));
         }
     }
-    .settings-page.settings-page--collection:has(:global(.settings-standard-page--resizable)) { width: 100%; }
 </style>

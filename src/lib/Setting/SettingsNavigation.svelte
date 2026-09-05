@@ -56,6 +56,7 @@
 
     const icons = {
         'ai-settings': SparklesIcon,
+        'chat-prompt-presets': ScrollTextIcon,
         'risubard-common': SettingsIcon,
         'risubard-wiki-prompt': ScrollTextIcon,
         prompt: SparklesIcon,
@@ -81,6 +82,7 @@
     function itemLabel(item: SettingsNavigationItem): string {
         const labels: Record<string, string> = {
             'ai-settings': language.settingsWorkspace.sections.ai,
+            'chat-prompt-presets': language.settingsWorkspace.aiWorkspace.sections['chat-prompt-presets'].title,
             'risubard-common': language.risuBardSettings.common.title,
             'risubard-wiki-prompt': language.risuBardWikiPrompt.title,
             prompt: language.promptTemplate,

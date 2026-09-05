@@ -155,6 +155,19 @@ describe('collection organizer state', () => {
         expect(getVisibleCollectionItems(state, items, undefined, 'creative')).toEqual([items[0]])
     })
 
+    it('combines text search with an optional item status filter', () => {
+        const state = normalizeCollectionOrganizerState({ itemOrder: ['a', 'b', 'c'] }, ['a', 'b', 'c'])
+        const items = [
+            { id: 'a', title: 'Alpha helper', status: 'enabled' },
+            { id: 'b', title: 'Beta helper', status: 'disabled' },
+            { id: 'c', title: 'Gamma tool', status: 'enabled' },
+        ]
+
+        expect(getVisibleCollectionItems(state, items, undefined, 'helper', 'enabled')).toEqual([items[0]])
+        expect(getVisibleCollectionItems(state, items, undefined, '', 'disabled')).toEqual([items[1]])
+        expect(getVisibleCollectionItems(state, items, undefined, '', '')).toEqual(items)
+    })
+
     it('reports all, uncategorized, and per-folder counts', () => {
         const state = normalizeCollectionOrganizerState({
             folders: [

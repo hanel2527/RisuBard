@@ -21,6 +21,7 @@
     "test": "vitest run && vitest run --config vitest.config.server.ts",
     "test:compat": "vitest run --config vitest.config.compat.ts",
     "test:server": "vitest run --config vitest.config.server.ts",
+    "verify:release": "npm run check && npm test && npm run test:compat && npm run build",
     "verify:risubard-memory-wiki": "vitest run src/ts/risubard/memoryAnalysisClient.test.ts src/ts/risubard/automaticWikiUpdate.test.ts src/ts/risubard/narrativeContext.test.ts src/ts/risubard/memoryWiki.test.ts src/ts/risubard/memoryWikiLayout.test.ts src/ts/risubard/markdownWikiWriter.test.ts src/ts/risubard/wikiFileTree.test.ts src/ts/risubard/memoryActivity.test.ts src/ts/process/request/modelPresetBinding.test.ts src/lib/Others/RisuBardMemoryWiki.test.ts src/lib/Others/RisuBardMarkdownWorkbench.test.ts src/lib/Others/RisuBardWikiBatchDrafts.test.ts src/lib/Others/RisuBardWikiEditor.test.ts src/lib/Others/RisuBardMemoryActivity.test.ts && vitest run --config vitest.config.server.ts server/node/reveal-local-file.test.ts server/node/risubard-markdown-inquiry.test.ts server/node/risubard-markdown-wiki.test.ts server/node/risubard-memory-analysis.test.ts server/node/risubard-memory-runtime.test.ts server/node/risubard-memory-routes.test.ts server/node/risubard-memory-wiki-smoke.test.ts",
     "runserver": "node server/node/server.cjs",
     "hono:build": "vite build --sourcemap && node server/hono/src/utils/postbuild.js"

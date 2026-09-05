@@ -250,6 +250,9 @@ export function setDatabase(data:Database){
             if (preset && !preset.id) {
                 preset.id = uuidv4()
             }
+            if (preset && typeof preset.description !== 'string') {
+                preset.description = ''
+            }
         }
     }
     if(checkNullish(data.botPresetsId)){
@@ -2296,6 +2299,7 @@ export function purgeUnsupportedGroupChats(db: Database): number {
 export interface botPreset{
     id?: string
     name?:string
+    description?: string
     apiType?: string
     openAIKey?: string
     localNetworkMode?: boolean
@@ -2835,6 +2839,7 @@ export const defaultOoba:OobaSettings = {
 export const presetTemplate:botPreset = {
     id: '',
     name: "New Preset",
+    description: '',
     apiType: "gemini-3-flash-preview",
     openAIKey: "",
     localNetworkMode: false,
@@ -3018,6 +3023,7 @@ export function saveCurrentPreset(){
     const savedPreset:botPreset =  {
         id: pres[db.botPresetsId]?.id || uuidv4(),
         name: pres[db.botPresetsId].name,
+        description: pres[db.botPresetsId]?.description ?? '',
         apiType: db.apiType,
         openAIKey: db.openAIKey,
         localNetworkMode: db.localNetworkMode,

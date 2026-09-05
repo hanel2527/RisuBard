@@ -46,13 +46,14 @@ describe('inline collection organizer list', () => {
         expect(page).not.toContain('organizerOpen')
     })
 
-    test('modules render native enable, persona, export, edit, and delete actions inline', () => {
+    test('modules keep export in the editor while rendering enable, persona, edit, and delete actions inline', () => {
         const page = source('src/lib/Setting/Pages/Module/ModuleSettings.svelte')
 
         expect(page).toContain('CollectionOrganizerList')
         expect(page).toContain('{#snippet itemContent(moduleId)}')
         expect(page).toContain('openPersonaAssignments(rmodule.id)')
-        expect(page).toContain('exportModule(rmodule)')
+        expect(page).not.toContain('exportModule(rmodule)')
+        expect(page).toContain('exportModule(tempModule)')
         expect(page).toContain('assignModuleToFolder')
         expect(page).not.toContain('CollectionOrganizerDialog')
         expect(page).not.toContain('organizerOpen')

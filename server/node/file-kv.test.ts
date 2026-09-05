@@ -140,6 +140,23 @@ describe('file-native KV compatibility projection', () => {
         expect(fs.existsSync(path.join(dataRoot, 'trash'))).toBe(false)
     })
 
+    it('bulk-deletes unique keys with one logical result', () => {
+        const dataRoot = root()
+        const store = createFileKv({ dataRoot })
+        store.kvSet('assets/a', Buffer.from('aaa'))
+        store.kvSet('assets/b', Buffer.from('bbbb'))
+        store.kvSet('settings/c', Buffer.from('cc'))
+
+        expect(store.kvDelMany(['assets/a', 'assets/b', 'assets/a', 'missing'])).toEqual({
+            count: 2,
+            bytes: 7,
+        })
+
+        const reopened = createFileKv({ dataRoot })
+        expect(reopened.kvList()).toEqual(['settings/c'])
+        expect(reopened.reclaimableChunkBytes()).toBe(7)
+    })
+
     it('keeps recent unreachable objects during grace-period cleanup', () => {
         const dataRoot = root()
         const store = createFileKv({ dataRoot })

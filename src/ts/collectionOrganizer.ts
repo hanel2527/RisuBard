@@ -17,6 +17,7 @@ export interface CollectionOrganizerItem {
     id: string
     title: string
     detail?: string
+    status?: string
 }
 
 export interface CollectionFolderCounts {
@@ -174,6 +175,7 @@ export function getVisibleCollectionItems(
     items: readonly CollectionOrganizerItem[],
     folderId: FolderFilter,
     search: string,
+    status = '',
 ): CollectionOrganizerItem[] {
     const itemById = new Map(items.map((item) => [item.id, item]))
     const query = search.trim().toLocaleLowerCase()
@@ -181,6 +183,7 @@ export function getVisibleCollectionItems(
         .map((itemId) => itemById.get(itemId))
         .filter((item): item is CollectionOrganizerItem => Boolean(item))
         .filter((item) => !query || `${item.title}\n${item.detail ?? ''}`.toLocaleLowerCase().includes(query))
+        .filter((item) => !status || item.status === status)
 }
 
 export function getCollectionFolderCounts(state: CollectionOrganizerState): CollectionFolderCounts {

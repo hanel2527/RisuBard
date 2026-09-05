@@ -72,11 +72,13 @@
 
     async function initializeBuilder(initialDraft = '') {
         abortRequest()
+        const { risuChatParser } = await import('src/ts/parser/parser.svelte')
         currentCharacter = getCurrentCharacter() ?? undefined
         sources = collectPersonaBuilderSources({
             database: DBState.db,
             character: currentCharacter,
             moduleLorebooks: getModuleLorebooksWithSources(),
+            parsePrompt: (text, role) => risuChatParser(text, { chara: currentCharacter, role }),
         })
         selections = {
             systemPrompt: !!sources.systemPrompt,

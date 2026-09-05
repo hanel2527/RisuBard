@@ -40,6 +40,7 @@ const {
     getBotPresetById,
     getBotPresetIndexById,
     setActiveBotPresetById,
+    saveCurrentPreset,
     withStableActivePreset,
 } = databaseModule
 const { DBState } = storesModule as any
@@ -73,6 +74,24 @@ describe('createBotPresetTemplate', () => {
         const b = createBotPresetTemplate()
         a.name = 'Mutated'
         expect(b.name).not.toBe('Mutated')
+    })
+
+    test('provides an empty optional description for old preset compatibility', () => {
+        expect(createBotPresetTemplate().description).toBe('')
+    })
+
+    test('keeps the edited description when the active preset mirror is saved', () => {
+        const preset = createBotPresetTemplate()
+        preset.description = '설명 https://example.com'
+        DBState.db = {
+            ...preset,
+            botPresets: [preset],
+            botPresetsId: 0,
+        }
+
+        saveCurrentPreset()
+
+        expect(DBState.db.botPresets[0].description).toBe('설명 https://example.com')
     })
 })
 

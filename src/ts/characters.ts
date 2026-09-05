@@ -19,6 +19,7 @@ import { PngChunk } from "./pngChunk";
 import { clearCharacterVaultNew, pinCharacterVaultQuickAccess } from './characterVault'
 import { resetImportedBardWikiState } from './risubard/chatImportMemory'
 import { completeMemoryWikiFork, forkMemoryWiki } from './risubard/memoryWikiFork'
+import { needsCharacterRuntimeNormalization } from './characterRuntime'
 
 export function createNewCharacter() {
     let db = getDatabase()
@@ -886,9 +887,13 @@ export function changeChar(index: number, arg:{
     }
     reseter();
     chatDeselected.set(false)
-    characterFormatUpdate(index, {
-      updateInteraction: true,
-    });
+    if(needsCharacterRuntimeNormalization(char)){
+        characterFormatUpdate(index, {
+          updateInteraction: true,
+        });
+    } else {
+        char.lastInteraction = Date.now()
+    }
     selectedCharID.set(index);
     const chat = getCurrentChat()
     if(chat){
