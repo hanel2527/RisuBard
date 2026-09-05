@@ -121,6 +121,25 @@ describe('expandQueryTerm', () => {
         expect(expandQueryTerm('관련 문서')).toEqual(['관련 문서'])
         expect(expandQueryTerm('Story Summary')).toEqual(['Story Summary'])
     })
+    it('strips particles when Intl.Segmenter is unavailable', () => {
+        const originalSegmenter = Intl.Segmenter
+        Object.defineProperty(Intl, 'Segmenter', {
+            value: undefined,
+            configurable: true,
+        })
+        try {
+            expect(expandQueryTerm('猫のために'))
+                .toEqual(['猫のために', '猫の'])
+            expect(expandQueryTerm('ライラックの花'))
+                .toEqual(['ライラックの花'])
+        }
+        finally {
+            Object.defineProperty(Intl, 'Segmenter', {
+                value: originalSegmenter,
+                configurable: true,
+            })
+        }
+    })
 })
 
 describe('isJapaneseQueryStopword', () => {

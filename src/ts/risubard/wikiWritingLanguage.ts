@@ -119,10 +119,22 @@ const JAPANESE_QUERY_STOPWORDS: Record<string, true> = {
     'ない': true, 'ください': true, 'たい': true, 'たかった': true, 'ほしい': true,
 }
 
+function stripJapaneseQuerySuffixes(term: string): string {
+    let value = term
+    while (true) {
+        const suffix = JAPANESE_QUERY_SUFFIXES.find((candidate) =>
+            value.endsWith(candidate)
+            && value.length - candidate.length >= 2)
+        if (!suffix) return value
+        value = value.slice(0, -suffix.length)
+    }
+}
+
 let japaneseSegmenter: Intl.Segmenter | undefined
 
 function japaneseWordSegmenter(): Intl.Segmenter | undefined {
-    if (typeof Intl === 'undefined' || !('Segmenter' in Intl)) {
+    if (typeof Intl === 'undefined'
+        || typeof Intl.Segmenter !== 'function') {
         return undefined
     }
     return japaneseSegmenter ??= new Intl.Segmenter(
