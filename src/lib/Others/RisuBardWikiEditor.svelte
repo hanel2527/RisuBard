@@ -90,10 +90,17 @@
     let treeExpanded = $state(false)
     let editorExpanded = $state(true)
     let editorFocus = $state(false)
-    let markdownPreview = $state(false)
+    let markdownPreview = $state(
+        DBState.db.risuBardWikiMarkdownPreview === true
+    )
     let treeHeight = $state(normalizeMemoryWikiTreeHeight(undefined))
     let restoredTreeExpanded = false
     let restoredEditorExpanded = true
+
+    function setMarkdownPreview(event: Event) {
+        markdownPreview = (event.currentTarget as HTMLInputElement).checked
+        DBState.db.risuBardWikiMarkdownPreview = markdownPreview
+    }
 
     // Rebuilt when documents change so the plugin can flag links whose target
     // no longer exists.
@@ -747,7 +754,8 @@
                 <label class="markdown-preview-toggle" title="마크다운 미리보기">
                     <input
                         type="checkbox"
-                        bind:checked={markdownPreview}
+                        checked={markdownPreview}
+                        onchange={setMarkdownPreview}
                         aria-label="마크다운 미리보기"
                         data-wiki-markdown-toggle
                     />

@@ -873,6 +873,10 @@ export function setDatabase(data:Database){
         typeof data.risuBardAutoWikiEnabled === 'boolean'
             ? data.risuBardAutoWikiEnabled
             : true
+    data.risuBardWikiMarkdownPreview =
+        typeof data.risuBardWikiMarkdownPreview === 'boolean'
+            ? data.risuBardWikiMarkdownPreview
+            : false
     data.showRisuBardSaveLoadShortcuts ??= true
     data.risuBardAutosaveInterval = normalizeAutosaveInterval(
         data.risuBardAutosaveInterval
@@ -1703,6 +1707,7 @@ export interface Database{
     }>
     risuBardModelMode?: 'memory' | 'model'
     risuBardAutoWikiEnabled?: boolean
+    risuBardWikiMarkdownPreview?: boolean
     risuBardRecentMessageCount?: number
     risuBardResponseMessageCount?: number
     risuBardResponseIncludeUserMessages?: boolean

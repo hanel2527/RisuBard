@@ -13,7 +13,10 @@ const mocks = vi.hoisted(() => ({
     createAuth: vi.fn(async () => 'token'),
     requestImmediateSave: vi.fn(async () => undefined),
     alertConfirmMulti: vi.fn(async () => 0),
-    db: { characters: [] as Array<Record<string, any>> },
+    db: {
+        characters: [] as Array<Record<string, any>>,
+        risuBardWikiMarkdownPreview: undefined as boolean | undefined,
+    },
 }))
 
 vi.mock('src/ts/risubard/memoryWiki', async (importOriginal) => ({
@@ -71,6 +74,7 @@ afterEach(async () => {
     document.body.replaceChildren()
     vi.clearAllMocks()
     vi.unstubAllGlobals()
+    mocks.db.risuBardWikiMarkdownPreview = undefined
 })
 
 describe('RisuBardWikiEditor', () => {
@@ -323,6 +327,37 @@ describe('RisuBardWikiEditor', () => {
         expect(editor.dataset.editorFocus).toBe('true')
         expect(editor.dataset.editorExpanded).toBe('true')
         expect(onFocusModeChange).toHaveBeenLastCalledWith(true)
+    })
+
+    it('restores the Markdown preview toggle from the persisted database setting', async () => {
+        mocks.db.risuBardWikiMarkdownPreview = true
+        mounted = mount(RisuBardWikiEditor, {
+            target: document.body,
+            props: { characterId: 'character', chatId: 'chat', documents },
+        })
+        await tick()
+
+        const toggle = document.querySelector<HTMLInputElement>(
+            '[data-wiki-markdown-toggle]'
+        )!
+        expect(toggle.checked).toBe(true)
+        expect(document.querySelector('[data-wiki-markdown-preview]')).not.toBeNull()
+
+        toggle.click()
+        await tick()
+        expect(mocks.db.risuBardWikiMarkdownPreview).toBe(false)
+
+        await unmount(mounted)
+        mounted = mount(RisuBardWikiEditor, {
+            target: document.body,
+            props: { characterId: 'character', chatId: 'chat', documents },
+        })
+        await tick()
+
+        expect(document.querySelector<HTMLInputElement>(
+            '[data-wiki-markdown-toggle]'
+        )?.checked).toBe(false)
+        expect(document.querySelector('[data-wiki-markdown-preview]')).toBeNull()
     })
 
     it('uses an explicit mobile overlay drawer instead of stacking the tree above the editor', () => {

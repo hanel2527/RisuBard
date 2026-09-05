@@ -16,6 +16,23 @@ vi.mock('../../lang', () => ({ language: {}, changeLanguage: vi.fn() }))
 const { getDatabase, newChatModelDefaults, normalizeChat, setDatabase } = await import('./database.svelte')
 
 describe('RisuBard settings persistence', () => {
+    test.each([
+        { stored: true, expected: true },
+        { stored: false, expected: false },
+        { stored: 'true', expected: false },
+        { stored: undefined, expected: false },
+    ])('normalizes the BardWiki Markdown preview setting: $stored', ({
+        stored, expected,
+    }) => {
+        setDatabase({
+            characters: [], formatingOrder: ['main'], loreBook: [],
+            personas: [], username: 'User', userIcon: '', userNote: '',
+            risuBardWikiMarkdownPreview: stored,
+        } as any)
+
+        expect(getDatabase().risuBardWikiMarkdownPreview).toBe(expected)
+    })
+
     test('defaults legacy HypaMemory controls and new chats to off', () => {
         setDatabase({
             characters: [], formatingOrder: ['main'], loreBook: [],
