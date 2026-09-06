@@ -59,6 +59,11 @@ describe('plugin provider structured output contract', () => {
         }
         expect(module.isPluginStructuredOutputRejection(ambiguousInvalidArgument)).toBe(false)
         expect(module.shouldFallbackFromNativeStructuredOutput(ambiguousInvalidArgument)).toBe(true)
+        const pageFoldWrappedProviderError = {
+            success: false,
+            content: '[PageFold] Provider returned error',
+        }
+        expect(module.shouldFallbackFromNativeStructuredOutput(pageFoldWrappedProviderError)).toBe(true)
         expect(module.isPluginStructuredOutputRejection({
             success: false,
             content: 'rate limit exceeded',

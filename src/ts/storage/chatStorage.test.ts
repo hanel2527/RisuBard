@@ -1,17 +1,31 @@
 import { describe, test, expect, vi } from 'vitest'
 
+const mocks = vi.hoisted(() => ({
+    fetchChatContent: vi.fn(),
+}))
+
 // Stub out the heavy reactive modules so loading chatStorage.ts doesn't trigger
 // unrelated $effect chains that fail in a stripped-down test environment.
 // Mirror the production isChatStub semantics including the hybrid guard so
 // the chat-data-loss tests below exercise the real intent.
-vi.mock('../globalApi.svelte', () => ({ forageStorage: { realStorage: null } }))
+vi.mock('../globalApi.svelte', () => ({
+    forageStorage: {
+        realStorage: { fetchChatContent: mocks.fetchChatContent },
+    },
+}))
 vi.mock('./database.svelte', () => ({
     isChatStub: (chat: any) => chat
         && chat._stub === true
         && !Array.isArray(chat.message),
 }))
 
-const { chatToStub, stubToPlaceholder, convertStubsToPlaceholders, classifyChat } = await import('./chatStorage')
+const {
+    chatToStub,
+    stubToPlaceholder,
+    convertStubsToPlaceholders,
+    classifyChat,
+    ensureChatHydrated,
+} = await import('./chatStorage')
 type Chat = any
 type ChatStub = any
 
@@ -213,5 +227,29 @@ describe('hybrid corruption (chat with _stub:true + message)', () => {
         expect('note' in stub).toBe(false)
         // Once stripped, the chat-data guard would see no chat-internal field
         // ops in a baseline-vs-current diff between two of these stubs.
+    })
+})
+
+describe('ensureChatHydrated', () => {
+    test('applies the loaded chat when the browser never delivers the next animation frame', async () => {
+        vi.useFakeTimers()
+        vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1))
+        try {
+            const placeholder = stubToPlaceholder({ id: 'chat-1', name: 'Chat 1', _stub: true })
+            const full = blankChat({ id: 'chat-1', name: 'Chat 1', message: [
+                { role: 'char', data: 'loaded' },
+            ] })
+            const chats = [placeholder]
+            mocks.fetchChatContent.mockResolvedValueOnce(full)
+
+            const hydration = ensureChatHydrated(chats, 0, 'char-1')
+            await vi.advanceTimersByTimeAsync(1_000)
+
+            expect(chats[0]).toBe(full)
+            await expect(hydration).resolves.toBe(full)
+        } finally {
+            vi.useRealTimers()
+            vi.unstubAllGlobals()
+        }
     })
 })

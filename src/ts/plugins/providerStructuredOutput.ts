@@ -25,6 +25,8 @@ const OUTPUT_VALIDATION_ERROR_MARKERS = [
     'structured-output validation failed',
 ]
 
+const PAGEFOLD_WRAPPED_PROVIDER_ERROR = /^\[pagefold\]\s+provider returned error\.?$/i
+
 export const pluginStructuredOutputRepairMessage = [
     'The previous model output failed validation against the supplied JSON Schema.',
     'Generate the complete response again. Return exactly one valid JSON value matching every required field and no commentary.',
@@ -93,5 +95,6 @@ export function shouldFallbackFromNativeStructuredOutput(
         || isPluginStructuredOutputRejection(response)
         || Boolean(response && !response.success
             && typeof response.content === 'string'
-            && /\binvalid[_ ]argument\b/i.test(response.content))
+            && (/\binvalid[_ ]argument\b/i.test(response.content)
+                || PAGEFOLD_WRAPPED_PROVIDER_ERROR.test(response.content.trim())))
 }

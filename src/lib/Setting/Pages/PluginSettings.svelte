@@ -6,9 +6,9 @@
     import { TriangleAlert } from '@lucide/svelte';
 
     import { DBState, hotReloading } from "src/ts/stores.svelte";
-    import { checkPluginUpdate, createBlankPlugin, importPlugin, loadPlugins, updatePlugin } from "src/ts/plugins/plugins.svelte";
+    import { checkPluginUpdate, createBlankPlugin, customProviderStore, importPlugin, loadPlugins, pluginProviderOwners, pluginV2, updatePlugin } from "src/ts/plugins/plugins.svelte";
     import { downloadFile, requestImmediateSave } from "src/ts/globalApi.svelte";
-    import { resetPluginPermission } from "src/ts/plugins/apiV3/v3.svelte";
+    import { customV3ProviderMetaStore, resetPluginPermission } from "src/ts/plugins/apiV3/v3.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
     import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
@@ -73,6 +73,47 @@
         for (const plugin of DBState.db.plugins ?? []) {
             if (!previousNames.has(plugin.name)) assignPluginToFolder(plugin.name, selectedPluginFolder)
         }
+    }
+
+    async function removePlugins(pluginNames: readonly string[]) {
+        const pluginNamesToDelete = new Set(pluginNames)
+        const providerNamesToDelete = new Set(
+            [...pluginProviderOwners.entries()]
+                .filter(([, pluginName]) => pluginNamesToDelete.has(pluginName))
+                .map(([providerName]) => providerName),
+        )
+        for (const providerName of providerNamesToDelete) {
+            pluginV2.providers.delete(providerName)
+            pluginV2.providerOptions.delete(providerName)
+            pluginProviderOwners.delete(providerName)
+        }
+        customProviderStore.update((providerNames) => providerNames.filter((providerName) => !providerNamesToDelete.has(providerName)))
+        for (let index = customV3ProviderMetaStore.length - 1; index >= 0; index--) {
+            const providerName = customV3ProviderMetaStore[index].id.replace(/^pluginmodel:::/, '')
+            if (providerNamesToDelete.has(providerName)) customV3ProviderMetaStore.splice(index, 1)
+        }
+        if (providerNamesToDelete.has(DBState.db.currentPluginProvider)) DBState.db.currentPluginProvider = ""
+        DBState.db.plugins = (DBState.db.plugins ?? []).filter((plugin) => !pluginNamesToDelete.has(plugin.name))
+        if (DBState.db.collectionOrganizers) {
+            DBState.db.collectionOrganizers = {
+                ...DBState.db.collectionOrganizers,
+                plugins: normalizeCollectionOrganizerState(
+                    DBState.db.collectionOrganizers.plugins,
+                    DBState.db.plugins.map((plugin) => plugin.name),
+                ),
+            }
+        }
+        await requestImmediateSave()
+        await loadPlugins()
+    }
+
+    async function deletePlugins(pluginNames: string[]) {
+        const existingCount = (DBState.db.plugins ?? []).filter((plugin) => pluginNames.includes(plugin.name)).length
+        if (!existingCount) return false
+        if (!await alertConfirm(language.collectionOrganizer.deleteSelectedConfirm.replace('{}', String(existingCount)))) return false
+        await removePlugins(pluginNames)
+        notifySuccess(language.collectionOrganizer.deleteSelectedDone.replace('{}', String(existingCount)))
+        return true
     }
 
     function openPluginCodeEditor(plugin: (typeof DBState.db.plugins)[number]) {
@@ -142,6 +183,7 @@
     items={organizerPluginItems}
     collectionLabel={language.plugin}
     statusOptions={pluginStatusOptions}
+    onDeleteItems={deletePlugins}
     bind:selectedFolderId={selectedPluginFolder}
 >
     {#snippet toolbar(_selectedFolderId)}
@@ -340,14 +382,7 @@
                             (plugin.displayName ?? plugin.name),
                     );
                     if (v) {
-                        if (DBState.db.currentPluginProvider === plugin.name) {
-                            DBState.db.currentPluginProvider = "";
-                        }
-                        let plugins = DBState.db.plugins ?? [];
-                        plugins.splice(i, 1);
-                        DBState.db.plugins = plugins;
-                        loadPlugins()
-                        void requestImmediateSave()
+                        await removePlugins([plugin.name])
                     }
                 }}
             >

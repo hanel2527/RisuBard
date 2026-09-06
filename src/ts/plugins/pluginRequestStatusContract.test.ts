@@ -24,6 +24,16 @@ describe('plugin provider host request status contract', () => {
         expect(apiV3).toContain('overrideRequestStatus?: boolean | (() => boolean);')
     })
 
+    test('records provider ownership in both plugin runtimes', () => {
+        const runtime = source('src/ts/plugins/plugins.svelte.ts')
+        const runtimeV3 = source('src/ts/plugins/apiV3/v3.svelte.ts')
+
+        expect(runtime).toContain('export const pluginProviderOwners = new Map<string, string>()')
+        expect(runtime).toContain('pluginProviderOwners.set(name, pluginName)')
+        expect(runtime).toContain('getV2PluginAPIs(plugin.name)')
+        expect(runtimeV3).toContain('pluginProviderOwners.set(name, plugin.name)')
+    })
+
     test('publishes a provider compatibility reference from the main README', () => {
         const docs = source('docs/ko/plugin-provider-compatibility.md')
         const readme = source('README.md')

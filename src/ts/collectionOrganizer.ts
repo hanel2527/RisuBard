@@ -219,6 +219,33 @@ export function getCollectionItemDragState(
     }
 }
 
+export function reorderCollectionItemDragGroup(
+    visibleItemIds: readonly string[],
+    draggedItemIds: readonly string[],
+    primaryItemId: string,
+    targetItemId: string,
+): string[] {
+    const visibleIds = validItemIds(visibleItemIds)
+    const visibleIdSet = new Set(visibleIds)
+    const dragged = new Set(validItemIds(draggedItemIds).filter((itemId) => visibleIdSet.has(itemId)))
+    const primaryIndex = visibleIds.indexOf(primaryItemId)
+    const targetIndex = visibleIds.indexOf(targetItemId)
+    if (primaryIndex < 0 || targetIndex < 0 || dragged.has(targetItemId)) return visibleIds
+
+    const movingDown = primaryIndex < targetIndex
+    const group = visibleIds.filter((itemId) => dragged.has(itemId))
+    const remaining = visibleIds.filter((itemId) => !dragged.has(itemId))
+    const remainingTargetIndex = remaining.indexOf(targetItemId)
+    if (!group.length || remainingTargetIndex < 0) return visibleIds
+
+    const insertionIndex = remainingTargetIndex + (movingDown ? 1 : 0)
+    return [
+        ...remaining.slice(0, insertionIndex),
+        ...group,
+        ...remaining.slice(insertionIndex),
+    ]
+}
+
 export function reorderVisibleCollectionItems(
     state: CollectionOrganizerState,
     visibleItemIds: readonly string[],

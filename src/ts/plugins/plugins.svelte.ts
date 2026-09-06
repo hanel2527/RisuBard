@@ -16,6 +16,7 @@ import { PluginChatOutputListeners, V2_CHAT_OUTPUT_OWNER, createV2ChatOutputApi 
 import type { PluginProviderStructuredOutput } from './providerStructuredOutput';
 
 export const customProviderStore = writable([] as string[])
+export const pluginProviderOwners = new Map<string, string>()
 
 interface ProviderPlugin {
     name: string
@@ -527,7 +528,7 @@ export const allowedDbKeys = [
     'characterOrder'
 ]
 
-export const getV2PluginAPIs = () => {
+export const getV2PluginAPIs = (pluginName = '') => {
     const chatOutputApi = createV2ChatOutputApi(pluginV2.chatOutput)
     return {
         risuFetch: globalFetch,
@@ -555,6 +556,7 @@ export const getV2PluginAPIs = () => {
             provs.push(name)
             pluginV2.providers.set(name, func)
             pluginV2.providerOptions.set(name, options ?? {})
+            if (pluginName) pluginProviderOwners.set(name, pluginName)
             customProviderStore.set(provs)
         },
         addRisuScriptHandler: (name: ScriptMode, func: EditFunction) => {
@@ -854,6 +856,7 @@ export async function loadV2Plugin(plugins: RisuPlugin[]) {
     globalThis.__pluginApis__ = getV2PluginAPIs()
 
     for (const plugin of plugins) {
+        globalThis.__pluginApis__ = getV2PluginAPIs(plugin.name)
         let data = ''
         let version = plugin.version || 2
 

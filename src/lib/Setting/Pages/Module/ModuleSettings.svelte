@@ -120,6 +120,32 @@
         }
     }
 
+    function removeModules(moduleIds:readonly string[]){
+        const moduleIdsToDelete = new Set(moduleIds)
+        DBState.db.enabledModules = DBState.db.enabledModules.filter((moduleId) => !moduleIdsToDelete.has(moduleId))
+        DBState.db.modules = DBState.db.modules.filter((module) => !moduleIdsToDelete.has(module.id))
+        if(DBState.db.collectionOrganizers){
+            DBState.db.collectionOrganizers = {
+                ...DBState.db.collectionOrganizers,
+                modules: normalizeCollectionOrganizerState(
+                    DBState.db.collectionOrganizers.modules,
+                    DBState.db.modules.map((module) => module.id),
+                ),
+            }
+        }
+        normalizeAssignments()
+        void requestImmediateSave()
+    }
+
+    async function deleteModules(moduleIds:string[]){
+        const existingCount = DBState.db.modules.filter((module) => moduleIds.includes(module.id)).length
+        if(!existingCount) return false
+        if(!await alertConfirm(language.collectionOrganizer.deleteSelectedConfirm.replace('{}', String(existingCount)))) return false
+        removeModules(moduleIds)
+        notifySuccess(language.collectionOrganizer.deleteSelectedDone.replace('{}', String(existingCount)))
+        return true
+    }
+
     onDestroy(() => {
         refreshModules()
     })
@@ -132,6 +158,7 @@
         kind="modules"
         items={organizerModuleItems}
         collectionLabel={language.modules}
+        onDeleteItems={deleteModules}
         bind:selectedFolderId={selectedModuleFolder}
     >
         {#snippet toolbar(_selectedFolderId)}
@@ -213,14 +240,7 @@
                             e.stopPropagation()
                             const d = await alertConfirm(`${language.removeConfirm}` + rmodule.name)
                             if(d){
-                                if(DBState.db.enabledModules.includes(rmodule.id)){
-                                    DBState.db.enabledModules.splice(DBState.db.enabledModules.indexOf(rmodule.id), 1)
-                                    DBState.db.enabledModules = DBState.db.enabledModules
-                                }
-                                const index = DBState.db.modules.findIndex((v) => v.id === rmodule.id)
-                                DBState.db.modules.splice(index, 1)
-                                DBState.db.modules = DBState.db.modules
-                                normalizeAssignments()
+                                removeModules([rmodule.id])
                                 notifySuccess(language.moduleDeleted)
                             }
                         }}>

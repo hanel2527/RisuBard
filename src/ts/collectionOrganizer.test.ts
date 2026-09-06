@@ -11,6 +11,7 @@ import {
     normalizeCollectionOrganizers,
     normalizeCollectionOrganizerState,
     renameCollectionFolder,
+    reorderCollectionItemDragGroup,
     retainVisibleCollectionSelection,
     reorderVisibleCollectionItems,
 } from './collectionOrganizer'
@@ -212,5 +213,27 @@ describe('collection organizer state', () => {
             primaryItemId: 'b',
             itemIds: ['a', 'b'],
         })
+    })
+
+    it('reorders a dragged selection as one stable block around the drop target', () => {
+        const visible = ['a', 'b', 'c', 'd', 'e']
+
+        expect(reorderCollectionItemDragGroup(visible, ['d', 'b'], 'b', 'e'))
+            .toEqual(['a', 'c', 'e', 'b', 'd'])
+        expect(reorderCollectionItemDragGroup(visible, ['d', 'b'], 'd', 'a'))
+            .toEqual(['b', 'd', 'a', 'c', 'e'])
+    })
+
+    it('ignores hidden selected ids and preserves their slots when reordering visible items', () => {
+        const state = normalizeCollectionOrganizerState({ itemOrder: ['a', 'b', 'c', 'd', 'e'] }, ['a', 'b', 'c', 'd', 'e'])
+        const reorderedVisible = reorderCollectionItemDragGroup(['a', 'c', 'e'], ['c', 'd'], 'c', 'e')
+
+        expect(reorderVisibleCollectionItems(state, reorderedVisible).itemOrder)
+            .toEqual(['a', 'b', 'e', 'd', 'c'])
+    })
+
+    it('does not reorder when dropping on the dragged selection', () => {
+        expect(reorderCollectionItemDragGroup(['a', 'b', 'c'], ['a', 'b'], 'a', 'b'))
+            .toEqual(['a', 'b', 'c'])
     })
 })

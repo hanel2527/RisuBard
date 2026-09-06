@@ -60,6 +60,7 @@ import {
 import {
     createPluginRequestEvidenceRecorder,
     formatPluginProviderFailure,
+    runPluginProviderWithTimeout,
 } from './pluginRequestEvidence';
 import { isLocalNetworkUrl } from "src/ts/network/localNetwork";
 import { createRequestLogScope, recordRequestLog, requestLogEnabled, type RequestLogRoute, type RequestLogSource, type RequestLogUsage } from "src/ts/requestLog";
@@ -1760,33 +1761,44 @@ async function requestPlugin(arg:RequestDataArgumentExtended):Promise<requestDat
             : resolveApiSamplingParameter('temperature', arg.temperature)
         const legacyPluginPresencePenalty = resolveStoredSamplingParameter('presence_penalty', db.PresensePenalty)
         const legacyPluginFrequencyPenalty = resolveStoredSamplingParameter('frequency_penalty', db.frequencyPenalty)
+        const providerTimeoutMs = Number.isFinite(db.localNetworkTimeoutSec)
+            && db.localNetworkTimeoutSec > 0
+            ? db.localNetworkTimeoutSec * 1000
+            : 600_000
+        const providerDeadlineAt = startedAt + providerTimeoutMs
+        const runProvider = <T>(invoke: (signal: AbortSignal) => Promise<T>) =>
+            runPluginProviderWithTimeout(
+                invoke,
+                Math.max(1, providerDeadlineAt - Date.now()),
+                arg.abortSignal,
+            )
         let d = v2Function
-            ? await v2Function(pluginArguments, arg.abortSignal)
-            : await pluginProcess({
+            ? await runProvider(signal => v2Function(pluginArguments, signal))
+            : await runProvider(() => pluginProcess({
                 bias: bias,
                 prompt_chat: formated,
                 max_tokens: maxTokens,
                 ...(legacyPluginTemperature === undefined ? {} : { temperature: legacyPluginTemperature }),
                 ...(legacyPluginPresencePenalty === undefined ? {} : { presence_penalty: legacyPluginPresencePenalty }),
                 ...(legacyPluginFrequencyPenalty === undefined ? {} : { frequency_penalty: legacyPluginFrequencyPenalty }),
-            })
+            }))
         if(v2Function && nativeStructuredOutput){
-            d = await normalizePluginStructuredOutputFailure(d)
+            d = await runProvider(() => normalizePluginStructuredOutputFailure(d))
             if(isPluginStructuredOutputValidationFailure(d)){
-                d = await v2Function({
+                d = await runProvider(signal => v2Function({
                     ...pluginArguments,
                     prompt_chat: [
                         ...pluginArguments.prompt_chat,
                         { role: 'user', content: pluginStructuredOutputRepairMessage },
                     ],
-                }, arg.abortSignal)
-                d = await normalizePluginStructuredOutputFailure(d)
+                }, signal))
+                d = await runProvider(() => normalizePluginStructuredOutputFailure(d))
             }
             if(shouldFallbackFromNativeStructuredOutput(d)){
-                d = await v2Function({
+                d = await runProvider(signal => v2Function({
                     ...pluginArguments,
                     response_schema: undefined,
-                }, arg.abortSignal)
+                }, signal))
             }
         }
     
@@ -1806,7 +1818,9 @@ async function requestPlugin(arg:RequestDataArgumentExtended):Promise<requestDat
             }
         }
         else if(!d.success){
-            const errorText = d.content instanceof ReadableStream ? await (new Response(d.content)).text() : d.content
+            const errorText = d.content instanceof ReadableStream
+                ? await runProvider(() => (new Response(d.content)).text())
+                : d.content
             if(reportStatus) safeStatus(() => endStatus(genId, 'failed', {
                 now: Date.now(), error: String(errorText),
             }))
@@ -1824,11 +1838,16 @@ async function requestPlugin(arg:RequestDataArgumentExtended):Promise<requestDat
         else if(d.content instanceof ReadableStream){
             const reader = d.content.getReader()
             let fullText = ''
+            let terminalStreamError: unknown
             const statusStream = new ReadableStream<StreamResponseChunk>({
                 async pull(controller) {
                     try {
                         const { done, value } = await reader.read()
                         if(done){
+                            if(terminalStreamError){
+                                controller.error(terminalStreamError)
+                                return
+                            }
                             if(reportStatus) safeStatus(() => endStatus(genId, 'done', { now: Date.now() }))
                             await evidenceRecorder.finish({
                                 success: true,
@@ -1868,7 +1887,14 @@ async function requestPlugin(arg:RequestDataArgumentExtended):Promise<requestDat
             })
 
             if(arg.useStreaming === false){
-                const text = await collectStreamingText(statusStream)
+                let text: string
+                try {
+                    text = await runProvider(() => collectStreamingText(statusStream))
+                } catch (error) {
+                    terminalStreamError = error
+                    await reader.cancel(error).catch(() => {})
+                    throw error
+                }
                 return {
                     type: 'success',
                     result: text,

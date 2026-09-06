@@ -44,10 +44,26 @@ describe('collection manager item layout', () => {
         expect(organizer).toContain('managerLayout?: boolean')
         expect(modules).toMatch(/<CollectionOrganizerList[\s\S]*?managerLayout[\s\S]*?kind="modules"/)
         expect(plugins).toMatch(/<CollectionOrganizerList[\s\S]*?managerLayout[\s\S]*?kind="plugins"/)
-        expect(organizer).toContain('collection-item-order-rail')
+        expect(organizer).toContain('collection-item-selection-rail')
         expect(organizer).toContain('{#if !managerLayout}')
         expect(organizer).toContain('class:collection-items--manager={managerLayout}')
         expect(organizer).toContain('class:collection-item--manager={managerLayout}')
+    })
+
+    test('connects manager bulk deletion to domain cleanup', () => {
+        expect(modules).toContain('onDeleteItems={deleteModules}')
+        expect(modules).toContain('DBState.db.enabledModules = DBState.db.enabledModules.filter')
+        expect(modules).toContain('normalizeAssignments()')
+        expect(modules).toMatch(/modules:\s*normalizeCollectionOrganizerState\(/)
+        expect(plugins).toContain('onDeleteItems={deletePlugins}')
+        expect(plugins).toContain('[...pluginProviderOwners.entries()]')
+        expect(plugins).toContain('customProviderStore.update')
+        expect(plugins).toContain('customV3ProviderMetaStore.splice')
+        expect(plugins).toMatch(/plugins:\s*normalizeCollectionOrganizerState\(/)
+        expect(plugins).toContain('await loadPlugins()')
+        const removePlugins = plugins.match(/async function removePlugins[\s\S]*?\n    }\n\n    async function deletePlugins/)?.[0] ?? ''
+        expect(removePlugins.indexOf('await requestImmediateSave()')).toBeLessThan(removePlugins.indexOf('await loadPlugins()'))
+        expect(removePlugins).not.toContain('!pluginV2.providers.has(DBState.db.currentPluginProvider)')
     })
 
     test('lets the extension manager resize from every edge within the settings viewport', () => {
