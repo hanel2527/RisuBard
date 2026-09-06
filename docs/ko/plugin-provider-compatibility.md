@@ -15,7 +15,7 @@ await Risuai.addProvider('Yumi', requestWithYumi, {
 - 옵션을 생략하거나 `false`로 두면 RisuBard 요청 상태 창이 계속 표시됩니다.
 - `true`일 때는 해당 플러그인 제공자의 요청에서 RisuBard 창만 숨깁니다. 플러그인의 생성 정보 창을 표시하고 닫는 책임은 플러그인에 있습니다.
 - 자체 생성 정보 UI가 없는 플러그인은 이 옵션을 켜지 않습니다.
-- 실행 중 선택을 바꿔야 하면 `() => boolean` 콜백을 사용할 수 있습니다.
+- 실행 중 선택을 바꿔야 하면 동기 `() => boolean` 또는 비동기 `() => Promise<boolean>` 콜백을 사용할 수 있습니다. RisuBard는 콜백 결과를 기다린 뒤 요청 상태 창 표시 여부를 결정합니다.
 
 ```ts
 await Risuai.addProvider('Yumi', requestWithYumi, {

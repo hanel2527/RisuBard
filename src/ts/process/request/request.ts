@@ -1645,7 +1645,7 @@ async function requestPlugin(arg:RequestDataArgumentExtended):Promise<requestDat
     const model = isV3Model ? arg.aiModel.replace('pluginmodel:::', '') : db.currentPluginProvider
     const providerOptions = pluginV2.providerOptions.get(model)
     const reportStatus = statusEnabled(arg.realChatId)
-        && resolvePluginRequestStatus(providerOptions)
+        && await resolvePluginRequestStatus(providerOptions)
     const genId = arg.chatId ?? `aux-${uuidv4()}`
     let injectionManifest: RequestInjectionManifest | undefined
 

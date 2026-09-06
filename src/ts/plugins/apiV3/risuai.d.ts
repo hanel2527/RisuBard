@@ -1194,9 +1194,9 @@ interface ProviderOptions {
     /** Custom tokenizer function */
     tokenizerFunc?: (content: string) => number[] | Promise<number[]>;
     /** RisuBard keeps its host status UI by default; set true only when the plugin replaces the host request status UI. */
-    overrideRequestStatus?: boolean | (() => boolean);
+    overrideRequestStatus?: boolean | (() => boolean | Promise<boolean>);
     /** Legacy inverse switch. Prefer `overrideRequestStatus: true` for plugin-owned status UI. */
-    hostRequestStatus?: boolean | (() => boolean);
+    hostRequestStatus?: boolean | (() => boolean | Promise<boolean>);
     /** Plugin storage key whose `risubard` value opts in dynamically. */
     hostRequestStatusStorageKey?: string;
     /** Receive response_schema and translate it to the upstream provider's native structured-output format. */

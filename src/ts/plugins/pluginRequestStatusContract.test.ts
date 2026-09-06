@@ -10,7 +10,7 @@ describe('plugin provider host request status contract', () => {
 
         expect(request).toContain('const providerOptions = pluginV2.providerOptions.get(model)')
         expect(request).toContain('const reportStatus = statusEnabled(arg.realChatId)')
-        expect(request).toContain('resolvePluginRequestStatus(providerOptions)')
+        expect(request).toContain('await resolvePluginRequestStatus(providerOptions)')
     })
 
     test('documents the explicit plugin override contract in both plugin APIs', () => {
@@ -20,8 +20,10 @@ describe('plugin provider host request status contract', () => {
 
         expect(runtime).toContain(contract)
         expect(apiV3).toContain(contract)
-        expect(runtime).toContain('overrideRequestStatus?: boolean | (() => boolean)')
-        expect(apiV3).toContain('overrideRequestStatus?: boolean | (() => boolean);')
+        expect(runtime).toContain('overrideRequestStatus?: boolean | (() => boolean | Promise<boolean>)')
+        expect(apiV3).toContain('overrideRequestStatus?: boolean | (() => boolean | Promise<boolean>);')
+        expect(runtime).toContain('hostRequestStatus?: boolean | (() => boolean | Promise<boolean>)')
+        expect(apiV3).toContain('hostRequestStatus?: boolean | (() => boolean | Promise<boolean>);')
     })
 
     test('records provider ownership in both plugin runtimes', () => {
@@ -40,6 +42,7 @@ describe('plugin provider host request status contract', () => {
 
         expect(readme).toContain('docs/ko/plugin-provider-compatibility.md')
         expect(docs).toContain('overrideRequestStatus: true')
+        expect(docs).toContain('() => Promise<boolean>')
         expect(docs).toContain('RisuBard 요청 상태 창')
         expect(docs).toContain('플러그인의 생성 정보 창')
     })
