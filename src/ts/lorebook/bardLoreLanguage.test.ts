@@ -11,6 +11,8 @@ describe('Grimoire analysis language', () => {
         expect(normalizeBardLoreAnalysisLanguage('invalid')).toBe('follow-bardwiki')
         expect(resolveBardLoreAnalysisLanguage('follow-bardwiki', 'ko')).toBe('ko')
         expect(resolveBardLoreAnalysisLanguage('follow-bardwiki', 'en')).toBe('en')
+        expect(resolveBardLoreAnalysisLanguage('follow-bardwiki', 'ja')).toBe('ja')
+        expect(resolveBardLoreAnalysisLanguage('follow-bardwiki', 'zh-Hans')).toBe('zh-Hans')
     })
 
     it('keeps explicit English, Korean, and bilingual selections independent of BardWiki', () => {
@@ -29,5 +31,12 @@ describe('Grimoire analysis language', () => {
         expect(bilingual).toContain('both English and Korean')
         expect(bilingual).toContain('Korean sentence followed by its English counterpart')
         expect(new Set([english, korean, bilingual]).size).toBe(3)
+    })
+
+    it('builds a shared metadata contract for new BardWiki locales', () => {
+        expect(buildBardLoreAnalysisLanguageInstruction('follow-bardwiki', 'ja'))
+            .toContain('Japanese (ja)')
+        expect(buildBardLoreAnalysisLanguageInstruction('follow-bardwiki', 'zh-Hant'))
+            .toContain('Traditional Chinese (zh-Hant)')
     })
 })

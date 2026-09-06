@@ -1,4 +1,9 @@
-import { buildWikiWritingLanguageGuard, normalizeWikiWritingLanguage, type WikiWritingLanguage } from './wikiWritingLanguage'
+import {
+    buildWikiWritingLanguageGuard,
+    normalizeWikiWritingLanguage,
+    wikiWritingHeadings,
+    type WikiWritingLanguage,
+} from './wikiWritingLanguage'
 
 export const RISUBARD_ANALYSIS_TOKEN_LIMIT_DEFAULT = 8_192
 export const RISUBARD_ADDITIONAL_SEARCH_LIMIT_DEFAULT = 1
@@ -228,34 +233,19 @@ export function normalizeRisuBardCanonicalCustomStyle(value: unknown): string {
         : ''
 }
 
-const CONCISE_CANONICAL_STYLE = [
-    '장식적 설명과 기존 사실의 반복을 제거한다.',
-    '사실 하나당 한 문장을 사용한다.',
-    '주체, 대상, 부정, 시간과 인물별 지식 경계는 생략하지 않는다.',
-    '임의의 약어를 만들지 않는다.',
-].join(' ')
-
 function resolveRisuBardWritingStyleInstruction(
     style: unknown,
     customStyle: unknown,
-    language: WikiWritingLanguage = 'ko'
 ): string {
     const normalizedStyle = normalizeRisuBardCanonicalWritingStyle(style)
     const normalizedCustom = normalizeRisuBardCanonicalCustomStyle(customStyle)
-    if (language === 'en') {
-        if (normalizedStyle === 'custom' && normalizedCustom) return `User style preference: ${normalizedCustom}`
-        if (normalizedStyle === 'standard') return 'Use natural, complete short sentences without unnecessary embellishment or repetition.'
-        if (normalizedStyle === 'ultra-concise') return 'Use telegraphic sentences and stable field labels, one atomic fact per line. Explicitly preserve subjects, objects, negation, time and character knowledge boundaries. Do not invent abbreviations.'
-        return 'Remove decorative prose and repeated facts. Use one sentence per fact. Preserve subjects, objects, negation, time and character knowledge boundaries. Do not invent abbreviations.'
-    }
-    const styleInstruction = normalizedStyle === 'standard'
-        ? '자연스럽고 완결된 짧은 문장을 사용하되 불필요한 수식과 반복을 피한다.'
+    return normalizedStyle === 'standard'
+        ? 'Use natural, complete short sentences without unnecessary embellishment or repetition.'
         : normalizedStyle === 'ultra-concise'
-            ? '전보체에 가까운 짧은 문장과 안정된 필드 표현을 사용한다. 원자적 사실 하나당 한 줄을 사용하고 주체, 대상, 부정, 시간과 인물별 지식 경계는 반드시 명시한다. 임의의 약어를 만들지 않는다.'
+            ? 'Use telegraphic sentences and stable field labels, one atomic fact per line. Explicitly preserve subjects, objects, negation, time and character knowledge boundaries. Do not invent abbreviations.'
             : normalizedStyle === 'custom' && normalizedCustom.length > 0
-                ? `사용자 문체 선호: ${normalizedCustom}`
-                : CONCISE_CANONICAL_STYLE
-    return styleInstruction
+                ? `User style preference: ${normalizedCustom}`
+                : 'Remove decorative prose and repeated facts. Use one sentence per fact. Preserve subjects, objects, negation, time and character knowledge boundaries. Do not invent abbreviations.'
 }
 
 export function buildRisuBardEventWritingPolicy(
@@ -263,21 +253,12 @@ export function buildRisuBardEventWritingPolicy(
     customStyle: unknown,
     language: WikiWritingLanguage = 'ko'
 ): string {
-    if (language === 'en') return [
+    return [
         '## Canonical writing policy',
-        resolveRisuBardWritingStyleInstruction(style, customStyle, language),
+        resolveRisuBardWritingStyleInstruction(style, customStyle),
         'When compressing, do not invent action targets or locations, turn temporal order into causation, or cross character knowledge boundaries at the time of an event.',
         'Preserve observed puzzle elements, order, spatial layout, pairings, blanks, mechanism positions and attempt outcomes. Separate observations from inferred rules or solutions; retain unresolved clues as open continuity.',
         'Style affects expression only; it cannot change fact selection, evidence, structure or safety rules.',
-        buildWikiWritingLanguageGuard(language),
-    ].join('\n')
-    return [
-        '## 정본 집필 정책',
-        '사건 이야기 요약과 정본 Markdown 본문은 한국어로 작성한다.',
-        resolveRisuBardWritingStyleInstruction(style, customStyle),
-        '압축할 때도 원문에 없는 행동 대상이나 장소를 보충하지 않는다. 시간적 선후를 인과로 바꾸지 않는다. 사건 당시 인물별 지식 경계를 유지한다.',
-        '퍼즐, 암호, 의식, 조합 장치나 규칙 기반 단서는 관찰된 요소, 순서, 공간 배치, 짝, 빈칸, 장치 위치와 시도 결과를 보존한다. 확정 관찰과 추론한 규칙·정답을 분리하고 미해결 부분은 연속성으로 남긴다.',
-        '이 문체 정책은 표현 형식에만 적용하며 사실 선택, 근거, 구조 및 안전 규칙을 변경하지 않는다.',
         buildWikiWritingLanguageGuard(language),
     ].join('\n')
 }
@@ -287,11 +268,13 @@ export function buildRisuBardCanonicalWritingPolicy(
     customStyle: unknown,
     language: WikiWritingLanguage = 'ko'
 ): string {
-    if (language === 'en') return [
+    const normalizedLanguage = normalizeWikiWritingLanguage(language)
+    const headings = wikiWritingHeadings[normalizedLanguage]
+    return [
         buildRisuBardEventWritingPolicy(style, customStyle, language),
         'Treat each character document as a dynamic lorebook entry: keep durable identity, role, traits, capabilities and rules, relationships, knowledge boundaries, goals, possessions, constraints, and open continuity that help the character operate in the next scene.',
-        'A compact self-contained `### Current State` snapshot near the top is recommended when useful, but no exact heading is required and its absence is valid.',
-        'An optional `### Story History` or turning-point map should contain about 3-6 major irreversible or causally useful transitions, not a turn-by-turn action log.',
+        `A compact self-contained \`### ${headings.currentState}\` snapshot near the top is recommended when useful, but no exact heading is required and its absence is valid.`,
+        `An optional \`### ${headings.history}\` or turning-point map should contain about 3-6 major irreversible or causally useful transitions, not a turn-by-turn action log.`,
         'Link exact [[event document titles]] from turning points. Retrieve exact chronology, actions, targets, locations, and evidence from event documents rather than copying those details into character canon.',
         'Do not update a character document merely because the character participated in an event. Update it only for a durable lorebook fact or a major transition.',
         'Events own exact historical observations and actions. Other canon owns durable current state and rules; do not copy event sentences or paragraphs into it.',
@@ -299,19 +282,5 @@ export function buildRisuBardCanonicalWritingPolicy(
         'Give a named sublocation its own location canon when it has independent persistent state, structure, people, secrets, or repeated scene use; keep only a short link summary in its parent.',
         'Do not create canon for every clue. Keep one compact investigation thread in other canon only when clues cross events or remain unresolved and affect future decisions.',
         'When new facts replace old ones, do not present both states as current. Preserve unrelated established facts.',
-    ].join('\n')
-    return [
-        buildRisuBardEventWritingPolicy(style, customStyle, language),
-        '각 캐릭터 정본은 다음 장면에서 인물을 기동시키는 다이나믹 로어북으로 쓴다. 지속되는 정체성·역할, 성격, 능력과 규칙, 관계, 지식 경계, 목표, 소지품과 제약, 열린 연속성을 우선한다.',
-        '유용할 때 문서 상단에 자족적인 `### 현재 상태` 스냅샷을 두는 것을 권장하지만 정확한 절 이름은 필수가 아니며 없어도 유효하다.',
-        '선택적인 `### 작중 행적` 또는 전환점 맵은 되돌리기 어렵거나 인과상 중요한 큰 전환점 약 3~6개만 남기고 턴별 행동 기록을 누적하지 않는다.',
-        '전환점에는 정확한 `[[사건 문서 제목]]`을 연결한다. 상세 과거 행적은 사건 문서에서 조회하며 시간순 세부 행위, 대상, 장소와 근거를 캐릭터 정본에 복사하지 않는다.',
-        '인물이 사건에 참여했다는 이유만으로 캐릭터 정본을 갱신하지 않는다. 지속되는 로어북 사실이나 큰 전환점이 생긴 경우에만 갱신한다.',
-        '사건은 정확한 과거 관찰과 행동을 소유한다. 다른 정본은 이후에도 유효한 현재 상태와 규칙만 소유하며 사건의 문장이나 문단을 복사하지 않는다.',
-        '반복 등장하거나 고유한 지속 규칙이 있는 종족·생물·몬스터 종류는 creature 정본으로 등록한다. 개별 조우나 외형 차이는 만들지 않고 변종은 공통 종류와 다른 지속 규칙이 있을 때만 분리한다.',
-        '이름 있는 하위 장소가 독립된 지속 상태·구조·인물·비밀을 가지거나 반복되는 사건 무대이면 별도 location 정본으로 만들고 상위 장소에는 짧은 링크 요약만 둔다.',
-        '단서마다 정본을 만들지 않는다. 여러 사건을 연결하거나 해결되지 않아 향후 판단에 영향을 주는 조사 줄기만 하나의 간결한 other 정본으로 관리한다.',
-        '새 사실이 기존 사실을 대체하면 이전 상태를 현재 사실처럼 병기하지 않는다.',
-        '관련 없는 기존 정본 사실은 보존한다.',
     ].join('\n')
 }

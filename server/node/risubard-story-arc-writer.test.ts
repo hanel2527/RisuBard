@@ -66,9 +66,9 @@ describe('story arc writer', () => {
 
         expect(plan?.events).toHaveLength(4)
         expect(storyArcRewriteInstruction('ko', settings)).toContain(
-            '아크 글머리표 최대 5개, 전환점 최대 9개, 미해결 줄기 최대 3개'
+            'at most 5 chronological arc bullets, 9 turning-point bullets, and 3 open-thread bullets'
         )
-        expect(storyArcRewriteInstruction('ko', settings)).toContain('4,500자')
+        expect(storyArcRewriteInstruction('ko', settings)).toContain('4,500 characters')
     })
 
     test('continues from the program checkpoint and updates one reserved map', () => {
@@ -133,5 +133,23 @@ describe('story arc writer', () => {
         expect(isStoryArcTitle('Story Arc Plot')).toBe(true)
         expect(isStoryArcTitle('스토리 아크 지도')).toBe(true)
         expect(isStoryArcTitle('Story Arc Map')).toBe(true)
+    })
+
+    test.each([
+        ['ja', 'ストーリーアークプロット', 'アーク概要'],
+        ['zh-Hans', '故事篇章情节', '篇章概览'],
+        ['zh-Hant', '故事篇章情節', '篇章概覽'],
+    ] as const)('uses locale data for the %s story arc', (locale, title, overview) => {
+        const plan = buildStoryArcUpdatePlan({
+            documents: Array.from(
+                { length: STORY_ARC_CHECKPOINT_SIZE },
+                (_, index) => event(index + 1)
+            ),
+            savedEvents: [],
+            writingLanguage: locale,
+        })
+        expect(plan?.candidate.title).toBe(title)
+        expect(storyArcRewriteInstruction(locale)).toContain(overview)
+        expect(isStoryArcTitle(title)).toBe(true)
     })
 })

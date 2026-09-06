@@ -31,19 +31,17 @@ describe('RisuBard analysis settings', () => {
         }).risuBardWikiWritingLanguage).toBe('ko')
     })
 
-    test.each(['standard', 'concise', 'ultra-concise', 'custom'])(
-        'uses only English built-in writing instructions for %s', (style) => {
-            const event = buildRisuBardEventWritingPolicy(style, 'Use short sentences.', 'en')
-            const canon = buildRisuBardCanonicalWritingPolicy(style, 'Use short sentences.', 'en')
-            expect(event).toContain('English')
+    test.each(['ko', 'en', 'ja', 'zh-Hans', 'zh-Hant'] as const)(
+        'uses one canonical policy with a locale-specific output contract for %s', (locale) => {
+            const event = buildRisuBardEventWritingPolicy('concise', '', locale)
+            const canon = buildRisuBardCanonicalWritingPolicy('concise', '', locale)
+            expect(event).toContain(`(${locale})`)
             expect(canon).toContain('dynamic lorebook')
-            expect(canon).toContain('### Current State')
-            expect(canon).toContain('### Story History')
             expect(canon).toContain('recommended')
             expect(canon).toContain('3-6')
             expect(canon).toContain('entire body')
             expect(canon).toContain('existing document titles')
-            expect(event + canon).not.toMatch(/[가-힣]/)
+            expect(event).toContain('When compressing')
         }
     )
 
@@ -107,43 +105,42 @@ describe('RisuBard analysis settings', () => {
             .toBe('가'.repeat(1_000))
     })
 
-    test('builds Korean style-only instructions without weakening memory rules', () => {
+    test('keeps custom style text without weakening the shared memory rules', () => {
         expect(buildRisuBardCanonicalWritingPolicy('concise', '')).toContain(
-            '사실 하나당 한 문장'
+            'Use one sentence per fact'
         )
         const custom = buildRisuBardCanonicalWritingPolicy(
             'custom',
             '항목마다 짧은 명사형으로 끝낸다.'
         )
-        expect(custom).toContain('한국어로 작성')
+        expect(custom).toContain('Output locale: Korean (ko)')
         expect(custom).toContain('항목마다 짧은 명사형으로 끝낸다.')
-        expect(custom).toContain('사실 선택, 근거, 구조 및 안전 규칙을 변경하지 않는다')
+        expect(custom).toContain('cannot change fact selection, evidence, structure or safety rules')
         expect(custom).not.toContain('undefined')
     })
 
     test('keeps character canon compact while preserving detailed event evidence', () => {
         const policy = buildRisuBardCanonicalWritingPolicy('concise', '')
 
-        expect(policy).toContain('다이나믹 로어북')
-        expect(policy).toContain('권장')
-        expect(policy).toContain('큰 전환점')
-        expect(policy).toContain('턴별 행동 기록을 누적하지 않는다')
-        expect(policy).toContain('상세 과거 행적은 사건 문서')
-        expect(policy).toContain('이전 상태를 현재 사실처럼 병기하지 않는다')
+        expect(policy).toContain('dynamic lorebook')
+        expect(policy).toContain('major irreversible or causally useful transitions')
+        expect(policy).toContain('not a turn-by-turn action log')
+        expect(policy).toContain('event documents')
+        expect(policy).toContain('do not present both states as current')
         expect(policy).toContain('### 현재 상태')
         expect(policy).toContain('### 작중 행적')
-        expect(policy).toContain('3~6개')
-        expect(policy).toContain('[[사건 문서 제목]]')
-        expect(policy).toContain('원문에 없는 행동 대상이나 장소를 보충하지 않는다')
-        expect(policy).toContain('시간적 선후를 인과로 바꾸지 않는다')
-        expect(policy).toContain('사건 당시 인물별 지식 경계를 유지한다')
-        expect(policy).toContain('퍼즐')
-        expect(policy).toContain('배치')
-        expect(policy).toContain('확정 관찰과 추론')
-        expect(policy).toContain('종족·생물')
-        expect(policy).toContain('이름 있는 하위 장소')
-        expect(policy).toContain('조사 줄기')
-        expect(policy).toContain('문장이나 문단을 복사하지 않는다')
+        expect(policy).toContain('3-6')
+        expect(policy).toContain('[[event document titles]]')
+        expect(policy).toContain('do not invent action targets or locations')
+        expect(policy).toContain('turn temporal order into causation')
+        expect(policy).toContain('character knowledge boundaries')
+        expect(policy).toContain('puzzle')
+        expect(policy).toContain('spatial layout')
+        expect(policy).toContain('observations from inferred rules')
+        expect(policy).toContain('species, creatures, and monster kinds')
+        expect(policy).toContain('named sublocation')
+        expect(policy).toContain('investigation thread')
+        expect(policy).toContain('do not copy event sentences or paragraphs')
     })
 
     test('resolves current-chat overrides over normalized global defaults', () => {

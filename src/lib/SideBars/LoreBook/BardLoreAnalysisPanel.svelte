@@ -60,6 +60,7 @@
         resolveBardLoreAnalysisLanguage,
         type ResolvedBardLoreAnalysisLanguage,
     } from 'src/ts/lorebook/bardLoreLanguage'
+    import { normalizeWikiWritingLanguage } from 'src/ts/risubard/wikiWritingLanguage'
 
     interface Props {
         entries: BardLoreEntry[]
@@ -168,7 +169,7 @@
             const { tokenize } = await import('src/ts/tokenizer')
             const analysisLanguage = resolveBardLoreAnalysisLanguage(
                 DBState.db.risuBardGrimoireLanguage,
-                DBState.db.risuBardWikiWritingLanguage === 'en' ? 'en' : 'ko',
+                normalizeWikiWritingLanguage(DBState.db.risuBardWikiWritingLanguage),
             )
             plannedTargets = targets
             plannedLanguage = analysisLanguage

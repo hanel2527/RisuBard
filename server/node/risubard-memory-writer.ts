@@ -2,8 +2,6 @@ import {
     parseSingleJsonObject,
     parseSingleJsonObjectMatching,
 } from '../../packages/risubard-core/src/modelOutput'
-import skillInstructions from '../../src/ts/risubard/skills/bardwiki-memory-writer/SKILL.md?raw'
-import eventSchemaReference from '../../src/ts/risubard/skills/bardwiki-memory-writer/references/event-schema.md?raw'
 import englishContract from '../../src/ts/risubard/skills/bardwiki-memory-writer/references/english-contract.md?raw'
 import { normalizeWikiWritingLanguage, wikiWritingHeadings, type WikiWritingLanguage } from '../../src/ts/risubard/wikiWritingLanguage'
 import { normalizeCanonicalSectionHeading } from './risubard-markdown-section-patch'
@@ -223,17 +221,10 @@ export function buildCanonicalSingleSchema(): string {
 
 export const canonicalSingleSchema = buildCanonicalSingleSchema()
 
-export const memoryWriterSystemPrompt = [
-    skillInstructions.trim(),
-    '## 런타임 필드 계약',
-    eventSchemaReference.trim(),
-    'update의 targetDocumentId는 existingNotes의 실제 ID, create는 null이다.',
-    '같은 실체는 제목이 달라도 update다. confidence는 0~1이다.',
-    '반드시 제공된 JSON Schema에 맞는 JSON 객체 하나만 반환하라. Markdown, YAML, 코드 펜스, 해설을 반환하지 마라.',
-].join('\n\n')
+export const memoryWriterSystemPrompt = englishContract.trim()
 
-export function buildMemoryWriterSystemPrompt(language: WikiWritingLanguage): string {
-    return language === 'en' ? englishContract.trim() : memoryWriterSystemPrompt
+export function buildMemoryWriterSystemPrompt(_language: WikiWritingLanguage): string {
+    return memoryWriterSystemPrompt
 }
 
 export interface MemoryWriterDraft {

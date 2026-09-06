@@ -61,7 +61,11 @@ import {
     normalizeRisuBardInquiryTokenBudget,
     type RisuBardCanonicalWritingStyle,
 } from '../../src/ts/risubard/risuBardSettings'
-import { normalizeWikiWritingLanguage, type WikiWritingLanguage } from '../../src/ts/risubard/wikiWritingLanguage'
+import {
+    normalizeWikiWritingLanguage,
+    wikiWritingHeadings,
+    type WikiWritingLanguage,
+} from '../../src/ts/risubard/wikiWritingLanguage'
 import {
     normalizeArcPlotterRuntimeSettings,
     type ArcPlotterRuntimeSettings,
@@ -110,7 +114,9 @@ function normalizeNewCharacterCurrentState(
     if (overviewIndex < 0) return patches
     return patches.map((patch, index) => index === overviewIndex ? {
         ...patch,
-        heading: language === 'en' ? 'Current State' : '현재 상태',
+        heading: wikiWritingHeadings[
+            normalizeWikiWritingLanguage(language)
+        ].currentState,
     } : patch)
 }
 

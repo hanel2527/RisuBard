@@ -119,7 +119,7 @@ describe('memory analysis runner', () => {
         expect(systems).toHaveLength(2)
         for (const system of systems) {
             expect(system).not.toMatch(/[가-힣]/)
-            expect(system.lastIndexOf('Output language: English')).toBeGreaterThan(system.indexOf('Write in Korean.'))
+            expect(system.lastIndexOf('Output locale: English (en)')).toBeGreaterThan(system.indexOf('Write in Korean.'))
         }
         expect(saveConfirmedTurn).toHaveBeenCalledWith(expect.objectContaining({
             writingLanguage: 'en', markdown: expect.stringContaining('### Story Summary'),
@@ -350,7 +350,7 @@ describe('memory analysis runner', () => {
         )
         if (wikiWritingLanguage === 'en') {
             expect(systems.join('\n')).not.toMatch(/[가-힣]/)
-            expect(systems.every((system) => system.includes('Output language: English'))).toBe(true)
+            expect(systems.every((system) => system.includes('Output locale: English (en)'))).toBe(true)
         }
         expect(savedEvents).toEqual([['u1', 'a1'], ['u2', 'a2']])
         expect(saveCanonicalDocument).toHaveBeenCalledOnce()
@@ -829,7 +829,7 @@ describe('memory analysis runner', () => {
             systems[1].indexOf('정본의 RPG 능력치 표 형식을 유지한다.')
         )
         expect(systems.every((system) => system.includes(
-            '사실 선택, 근거, 구조 및 안전 규칙을 변경하지 않는다'
+            'cannot change fact selection, evidence, structure or safety rules'
         ))).toBe(true)
         expect(inquiry).toHaveBeenCalledWith(expect.objectContaining({
             currentInput: expect.stringContaining('북쪽으로 떠났다'),
@@ -3007,9 +3007,9 @@ describe('memory analysis runner', () => {
             if (request.format === 'canonical-batch') {
                 canonicalInputs.push(JSON.parse(request.input))
                 expect(request.system).toContain(
-                    '아크 글머리표 최대 5개, 전환점 최대 9개, 미해결 줄기 최대 3개'
+                    'at most 5 chronological arc bullets, 9 turning-point bullets, and 3 open-thread bullets'
                 )
-                expect(request.system).toContain('4,500자')
+                expect(request.system).toContain('4,500 characters')
                 const schema = JSON.parse(request.responseSchema ?? '{}')
                 expect(schema).toMatchObject({
                     type: 'object',

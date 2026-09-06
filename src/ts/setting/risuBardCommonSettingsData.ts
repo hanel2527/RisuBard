@@ -1,5 +1,6 @@
 import type { SettingItem } from './types'
 import { normalizeRisuBardCanonicalCustomStyle } from '../risubard/risuBardSettings'
+import { wikiWritingLanguageOptions } from '../risubard/wikiWritingLanguage'
 import { normalizeArcaChatTitleImageStyle } from '../arcaChatSaverSettings'
 import {
     ARC_PLOTTER_CUSTOM_SELECTION_ID,
@@ -243,10 +244,7 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
         labelKey: 'risuBardWikiWritingLanguage',
         helpKey: 'risuBardWikiWritingLanguage',
         bindKey: 'risuBardWikiWritingLanguage',
-        options: { selectOptions: [
-            { value: 'ko', label: '한국어' },
-            { value: 'en', label: 'English' },
-        ] },
+        options: { selectOptions: wikiWritingLanguageOptions },
         keywords: ['wiki', 'language', 'English', '위키', '언어', '영어'],
     },
     {

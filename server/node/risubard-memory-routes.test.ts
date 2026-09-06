@@ -75,10 +75,10 @@ describe('RisuBard memory routes', () => {
             markdown: '# 사건\n\n새 사건.',
         } },
         { route: 'wiki/save', method: 'saveMarkdownWikiTurn', extra: {
-            sourceMessageIds: ['turn-en'], markdown: '## Arrival\n\n### Story Summary\n\n- Alice arrived.', writingLanguage: 'en',
+            sourceMessageIds: ['turn-ja'], markdown: '## 到着\n\n### 物語の要約\n\n- アリスが到着した。', writingLanguage: 'ja',
         } },
         { route: 'wiki/document/save', method: 'saveCanonicalWikiDocument', extra: {
-            sourceMessageIds: ['turn-en'], type: 'character', title: 'Alice', markdown: '## Alice\n\nA traveler.', writingLanguage: 'en',
+            sourceMessageIds: ['turn-zh'], type: 'character', title: '爱丽丝', markdown: '## 爱丽丝\n\n旅行者。', writingLanguage: 'zh-Hans',
         } },
         { route: 'wiki/document/save', method: 'saveCanonicalWikiDocument', extra: {
             sourceMessageIds: Array.from({ length: 13 }, (_, index) => `message-${index}`),

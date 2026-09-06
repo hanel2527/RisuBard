@@ -3,6 +3,11 @@
     import type { Chat } from 'src/ts/storage/database.svelte'
     import type { RisuBardChatSettings } from 'src/ts/risubard/risuBardSettings'
     import { resolveRisuBardChatSettings } from 'src/ts/risubard/risuBardSettings'
+    import {
+        normalizeWikiWritingLanguage,
+        wikiWritingLanguageOptions,
+        wikiWritingLocales,
+    } from 'src/ts/risubard/wikiWritingLanguage'
 
     interface Props {
         chat?: Chat
@@ -79,8 +84,10 @@
         <select value={chat?.risuBardSettings?.risuBardWikiWritingLanguage ?? ''}
             onchange={(event) => setValue('risuBardWikiWritingLanguage',
                 (event.currentTarget.value || undefined) as RisuBardChatSettings['risuBardWikiWritingLanguage'])}>
-            <option value="">{language.risuBardWikiLanguageGlobal} ({global.risuBardWikiWritingLanguage === 'en' ? 'English' : '한국어'})</option>
-            <option value="ko">한국어</option><option value="en">English</option>
+            <option value="">{language.risuBardWikiLanguageGlobal} ({wikiWritingLocales[normalizeWikiWritingLanguage(global.risuBardWikiWritingLanguage)].label})</option>
+            {#each wikiWritingLanguageOptions as option}
+                <option value={option.value}>{option.label}</option>
+            {/each}
         </select>
     </label>
     {#if settings.risuBardCanonicalWritingStyle === 'custom'}

@@ -46,6 +46,7 @@ import {
     normalizeRisuBardInquiryTokenBudget,
 } from '../risubard/risuBardSettings';
 import { normalizeWikiRebootJob } from '../risubard/wikiReboot';
+import { normalizeWikiWritingLanguage } from '../risubard/wikiWritingLanguage';
 import { createTogglePresetBaseline, type TogglePresetBaseline } from './togglePresetBaseline';
 import type { CanonicalTurnReceipt } from '../risubard/memoryWiki';
 import {
@@ -942,7 +943,9 @@ export function setDatabase(data:Database){
         normalizeRisuBardHistoricalSourceMatchLimit(
             data.risuBardHistoricalSourceMatchLimit
         )
-    data.risuBardWikiWritingLanguage = data.risuBardWikiWritingLanguage === 'en' ? 'en' : 'ko'
+    data.risuBardWikiWritingLanguage = normalizeWikiWritingLanguage(
+        data.risuBardWikiWritingLanguage
+    )
     data.risuBardGrimoireLanguage = normalizeBardLoreAnalysisLanguage(
         data.risuBardGrimoireLanguage
     )

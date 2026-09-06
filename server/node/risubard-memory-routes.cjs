@@ -1,3 +1,5 @@
+const wikiWritingLocales = require('../../src/ts/risubard/wikiWritingLocales.json')
+
 function isRecord(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -62,6 +64,11 @@ function validSemanticMatches(value) {
             && match.score > 0
             && match.score <= 1
         )
+}
+
+function validWikiWritingLanguage(value) {
+    return typeof value === 'string'
+        && Object.prototype.hasOwnProperty.call(wikiWritingLocales, value)
 }
 
 function validEntityHints(value) {
@@ -619,7 +626,8 @@ function registerRisuBardMemoryRoutes(app, options) {
             const optionalKeys = ['append', 'writingLanguage']
                 .filter((key) => req.body?.[key] !== undefined)
             if (!hasExactKeys(req.body, [...keys, ...optionalKeys])
-                || (req.body.writingLanguage !== undefined && !['ko', 'en'].includes(req.body.writingLanguage))
+                || (req.body.writingLanguage !== undefined
+                    && !validWikiWritingLanguage(req.body.writingLanguage))
                 || !hasBoundedId(req.body.characterId)
                 || !hasBoundedId(req.body.chatId)
                 || !Array.isArray(req.body.sourceMessageIds)
@@ -661,7 +669,8 @@ function registerRisuBardMemoryRoutes(app, options) {
                     ...keys, ...optionalKeys,
                 ])
                 if (!validShape
-                    || (req.body.writingLanguage !== undefined && !['ko', 'en'].includes(req.body.writingLanguage))
+                    || (req.body.writingLanguage !== undefined
+                        && !validWikiWritingLanguage(req.body.writingLanguage))
                     || !hasBoundedId(req.body.characterId)
                     || !hasBoundedId(req.body.chatId)
                     || (req.body.documentId !== undefined
