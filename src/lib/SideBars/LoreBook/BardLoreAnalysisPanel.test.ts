@@ -40,6 +40,7 @@ let mounted: ReturnType<typeof mount> | undefined
 afterEach(async () => {
     if (mounted) await unmount(mounted)
     mounted = undefined
+    await new Promise((resolve) => window.setTimeout(resolve, 30))
     document.body.replaceChildren()
     requestChatData.mockReset()
     tokenizerMock.mockClear()
