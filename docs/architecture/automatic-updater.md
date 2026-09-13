@@ -25,6 +25,8 @@
 6. 릴리즈 빌드가 생성하는 포터블 `update.bat`과 `update.sh`는 독립 업데이터를 실행해 같은 저장소의 최신 릴리즈 파일을 사용한다.
 7. 저장소 루트의 소스 빌드용 `update.sh`도 같은 저장소의 최신 태그 소스를 받아 다시 빌드한다.
 
+Windows의 독립 `update.bat`은 파일 교체 전에 같은 포터블 폴더의 `node.exe`와 `cloudflared.exe`가 실행 중인지 확인한다. 실행 중이면 설치 파일을 변경하지 않고 종료하며, 후처리 중 실행 파일 복사가 실패한 경우에는 `.update-tmp/backup`을 즉시 복원한다. 롤백을 수행하는 동안 실행 중인 `update.bat` 자체는 덮어쓰지 않는다.
+
 GitHub가 `404`를 반환하는 경우는 공개 릴리즈가 없는 상태로 간주한다. 이때 서버는 실패 팝업을 표시하지 않고 “업데이트 없음”으로 응답한다.
 
 ## 릴리즈 요구사항
@@ -37,13 +39,17 @@ GitHub가 `404`를 반환하는 경우는 공개 릴리즈가 없는 상태로 �
 - `package.json`의 현재 버전보다 태그 버전이 높아야 한다.
 - 포터블 자동 설치에는 실행 환경과 일치하는 릴리즈 파일이 필요하다.
 
-현재 `.github/workflows/release.yml`은 릴리즈를 `draft: true`로 생성한다. 빌드가 끝난 뒤 GitHub에서 초안을 검토하고 **Publish release**를 눌러야 사용자 앱이 새 버전을 발견한다.
+현재 `.github/workflows/release.yml`은 `workflow_dispatch`에서 배포할 버전을 입력받는다. 입력 버전이 `package.json` 및 `patchnote/X.Y.Z.md`와 일치하는지 먼저 검사하고, 전체 검증과 네 플랫폼 패키징이 모두 성공한 뒤에만 태그와 `draft: true` 초안을 생성한다. 빌드가 끝난 뒤 GitHub에서 초안을 검토하고 **Publish release**를 눌러야 사용자 앱이 새 버전을 발견한다.
 
-태그를 만들기 전에는 다음 단일 명령으로 타입 검사, 클라이언트·서버 테스트, 호환성 테스트와 프로덕션 빌드를 순서대로 실행한다. 같은 명령을 태그 릴리즈 워크플로도 패키징 전에 실행하므로 검증 실패가 있는 커밋은 릴리즈 아티팩트를 만들지 않는다.
+포터블에 포함하는 Cloudflared 버전은 릴리즈 워크플로에 고정한다. 일반 앱 릴리즈마다 외부의 `latest`가 달라져 Windows 실행 파일 교체가 불필요하게 발생하지 않도록 하며, 버전 갱신은 명시적인 릴리즈 변경으로 수행한다.
+
+릴리즈 준비 커밋을 `main`에 푸시한 뒤 다음 명령으로 워크플로를 시작한다. 전체 검증은 태그 생성 전에 CI에서 한 번만 실행하므로 릴리즈를 위해 로컬에서 같은 전체 명령을 다시 실행하지 않는다. CI가 실패하면 태그와 초안은 만들어지지 않는다.
 
 ```powershell
-npm run verify:release
+gh workflow run release.yml --ref main -f version=X.Y.Z
 ```
+
+실행이 끝나면 해당 워크플로의 커밋, 초안 본문, 네 플랫폼 아티팩트와 해시를 확인한 뒤 공개한다. 코드 변경을 구현할 때 수행하는 검증은 이 릴리즈 절차와 별개이며 생략하지 않는다.
 
 ## 포터블 파일명 규칙
 
@@ -78,6 +84,8 @@ npm run verify:release
 
 ## 변경 파일
 
+- `scripts/updater-recovery.cjs`: Windows 후처리 실패 시 이전 설치 복원
+- `scripts/portable/update.bat`: Windows 실행 파일 후처리와 자동 롤백
 - `server/node/server.cjs`: GitHub 최신 릴리즈 직접 조회, 대상 저장소 변경
 - `server/node/release-update.cjs`: 릴리즈 태그 정규화와 버전 비교
 - `scripts/updater.cjs`: 독립 업데이터 대상 저장소 변경

@@ -1,10 +1,16 @@
 name: Create GitHub Release with Portable Packages
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: SemVer version to release without the v prefix
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -12,9 +18,41 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release-version.outputs.version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Validate release metadata
+        id: release-version
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Releases must run from main, got $GITHUB_REF" >&2
+            exit 1
+          fi
+          if [[ ! "$REQUESTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Version must use X.Y.Z format: $REQUESTED_VERSION" >&2
+            exit 1
+          fi
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$PACKAGE_VERSION" != "$REQUESTED_VERSION" ]; then
+            echo "package.json is $PACKAGE_VERSION, requested $REQUESTED_VERSION" >&2
+            exit 1
+          fi
+          NOTES="patchnote/${PACKAGE_VERSION}.md"
+          if [ ! -s "$NOTES" ] || ! grep -Fxq "# RisuBard v${PACKAGE_VERSION}" "$NOTES"; then
+            echo "Missing or invalid release notes: $NOTES" >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v${PACKAGE_VERSION}" >/dev/null 2>&1; then
+            echo "Tag already exists: v${PACKAGE_VERSION}" >&2
+            exit 1
+          fi
+          echo "version=${PACKAGE_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -123,16 +161,6 @@ jobs:
           cat "$LOG_FILE"
           exit 1
 
-      - name: Extract version
-        id: version
-        shell: bash
-        run: |
-          if [[ "$GITHUB_REF_NAME" == v* ]]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
-          else
-            echo "version=$(node -e "console.log(require('./portable/package.json').version)")" >> $GITHUB_OUTPUT
-          fi
-
       - name: Download Node.js binary (Windows)
         if: matrix.platform == 'win'
         shell: bash
@@ -170,25 +198,28 @@ jobs:
         if: matrix.platform == 'win'
         shell: bash
         run: |
-          curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -o portable/bin/cloudflared.exe
+          CLOUDFLARED_VERSION="2026.9.0"
+          curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-windows-amd64.exe" -o portable/bin/cloudflared.exe
 
       - name: Download cloudflared (Linux)
         if: matrix.platform == 'linux'
         shell: bash
         run: |
+          CLOUDFLARED_VERSION="2026.9.0"
           if [ "${{ matrix.arch }}" = "arm64" ]; then
             CLOUDFLARED_ARCH="arm64"
           else
             CLOUDFLARED_ARCH="amd64"
           fi
-          curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CLOUDFLARED_ARCH}" -o portable/bin/cloudflared
+          curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-${CLOUDFLARED_ARCH}" -o portable/bin/cloudflared
           chmod +x portable/bin/cloudflared
 
       - name: Download cloudflared (macOS)
         if: matrix.platform == 'macos'
         shell: bash
         run: |
-          curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64.tgz" -o cloudflared.tgz
+          CLOUDFLARED_VERSION="2026.9.0"
+          curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-darwin-arm64.tgz" -o cloudflared.tgz
           tar -xzf cloudflared.tgz
           mv cloudflared portable/bin/cloudflared
           chmod +x portable/bin/cloudflared
@@ -212,7 +243,7 @@ jobs:
         if: matrix.platform == 'macos'
         shell: bash
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${{ needs.build.outputs.version }}"
           APP="portable/RisuBard.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           ICONSET="$(mktemp -d)/AppIcon.iconset"
@@ -274,7 +305,7 @@ jobs:
         shell: bash
         run: |
           cp scripts/portable/V2-to-V1.bat portable/V2-to-V1.bat
-          printf '@echo off\r\n"%%~dp0bin\\node.exe" "%%~dp0scripts\\updater.cjs"\r\nif errorlevel 1 goto :fail\r\nif exist "%%~dp0.update-tmp" (\r\nif exist "%%~dp0.update-tmp\\new-bin\\" (\r\nxcopy /E /I /Y "%%~dp0.update-tmp\\new-bin\\*" "%%~dp0bin\\" >nul\r\nif errorlevel 1 goto :fail\r\n) else (\r\nif not exist "%%~dp0.update-tmp\\skip-bin-update" goto :fail\r\n)\r\nif not exist "%%~dp0.update-tmp\\latest-version" goto :fail\r\ncopy /Y "%%~dp0.update-tmp\\latest-version" "%%~dp0.installed-version" >nul\r\nif errorlevel 1 goto :fail\r\nrmdir /s /q "%%~dp0.update-tmp" 2>nul\r\n)\r\necho Update complete.\r\npause\r\nexit /b 0\r\n:fail\r\necho Update finalization failed. Existing installation was left in place where possible.\r\npause\r\nexit /b 1\r\n' > portable/update.bat
+          cp scripts/portable/update.bat portable/update.bat
 
       - name: Add launcher scripts (Unix)
         if: matrix.platform != 'win'
@@ -307,6 +338,7 @@ jobs:
         run: |
           mkdir -p portable/scripts
           cp scripts/updater.cjs portable/scripts/updater.cjs 2>/dev/null || true
+          cp scripts/updater-recovery.cjs portable/scripts/updater-recovery.cjs
           cp scripts/convert-v2-to-v0925.cjs portable/scripts/convert-v2-to-v0925.cjs
           touch portable/.portable
 
@@ -314,7 +346,7 @@ jobs:
         if: matrix.platform == 'win'
         shell: bash
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${{ needs.build.outputs.version }}"
           NAME="RisuBard-v${VERSION}-win-x64"
           cd portable
           7z a -tzip "../${NAME}.zip" .
@@ -323,7 +355,7 @@ jobs:
         if: matrix.platform != 'win'
         shell: bash
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${{ needs.build.outputs.version }}"
           NAME="RisuBard-v${VERSION}-${{ matrix.platform }}-${{ matrix.arch }}"
           mv portable "$NAME"
           tar -czf "${NAME}.tar.gz" "$NAME"
@@ -337,21 +369,39 @@ jobs:
           retention-days: 1
 
   release:
-    needs: portable
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - build
+      - portable
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout release notes
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            patchnote
+
       - name: Download all portable artifacts
         uses: actions/download-artifact@v8
         with:
           pattern: portable-*
           merge-multiple: true
 
+      - name: Create release tag
+        shell: bash
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${VERSION}" "$GITHUB_SHA" -m "RisuBard v${VERSION}"
+          git push origin "v${VERSION}"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ github.ref_name }}
-          name: "RisuBard ${{ github.ref_name }}"
-          generate_release_notes: true
+          tag_name: v${{ needs.build.outputs.version }}
+          name: "RisuBard v${{ needs.build.outputs.version }}"
+          target_commitish: ${{ github.sha }}
+          body_path: patchnote/${{ needs.build.outputs.version }}.md
           draft: true
           files: RisuBard-*
