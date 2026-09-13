@@ -510,6 +510,32 @@ describe('Markdown narrative wiki', () => {
             .toEqual([expect.objectContaining({ target: '대장' })])
     })
 
+    test('does not adopt a previous title that another document already owns', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        const wiki = createMarkdownNarrativeWiki(root)
+        await wiki.saveManualDocument({
+            characterId: 'character', chatId: 'chat', type: 'character',
+            title: '아리스', markdown: '## 아리스\n\n도서부 부장이다.',
+        })
+        // The companion page is first titled after the other character by mistake.
+        const companion = await wiki.saveManualDocument({
+            characterId: 'character', chatId: 'chat', type: 'character',
+            title: '아리스', markdown: '## 아리스\n\n아리스와 함께 다니는 친구.',
+        })
+        await wiki.saveManualDocument({
+            characterId: 'character', chatId: 'chat', documentId: companion.id,
+            type: 'character', title: '케이',
+            markdown: '## 케이\n\n아리스의 단짝 친구다.',
+        })
+
+        const view = await wiki.loadView('character', 'chat')
+        const renamed = view.documents.find((document) => document.id === companion.id)!
+        expect(renamed.title).toBe('케이')
+        expect(renamed.aliases).not.toContain('아리스')
+        expect(view.health.danglingLinks).toEqual([])
+    })
+
     test('projects legacy H1 files as nested headings when loading them', async () => {
         const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
         temporaryDirectories.push(root)

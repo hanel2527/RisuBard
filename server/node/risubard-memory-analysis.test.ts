@@ -1872,6 +1872,71 @@ describe('memory analysis runner', () => {
         }))
     })
 
+    test('never lets a candidate title steal another document identity as an alias', async () => {
+        const saveCanonicalDocument = vi.fn(async (input) => ({
+            ...input,
+            id: input.documentId ?? 'character.alice',
+            relativePath: 'characters/alice.md',
+            contentHash: 'new-hash',
+        }))
+        // The model mixes up the two classmates and returns the friend's name as
+        // the candidate title for Alice's document. Persisting it would give both
+        // documents one identifier, and `[[케이]]` would stop resolving.
+        const analyze = vi.fn(async (request: MemoryAnalysisModelRequest) =>
+            request.format === 'canonical-batch'
+                ? canonicalBatch('# 아리스\n\n### 현재 상태\n\n- 도서실에서 케이를 만났다.')
+                : JSON.stringify({
+                    schemaVersion: 1, title: '도서실에서의 만남',
+                    establishedEvents: ['아리스가 도서실에서 케이를 만났다.'],
+                    stateChanges: [], characterKnowledge: [],
+                    persistentFacts: ['아리스는 도서부 부장이다.'],
+                    openContinuity: [], canonicalUpdateCandidates: [{
+                        type: 'character', title: '케이',
+                        aliases: ['케이'],
+                        reason: '같은 인물로 잘못 묶었다.',
+                        action: 'update',
+                        targetDocumentId: 'character.alice',
+                        confidence: 0.9,
+                    }],
+                })
+        )
+        const runner = createMemoryAnalysisRunner({
+            memoryService: { loadState: vi.fn(), applyDelta: vi.fn() },
+            nativeV2Analysis: true,
+            markdownWikiService: {
+                inquire: vi.fn(async () => ({ graphRevision: 0, sources: [] })),
+                saveConfirmedTurn: vi.fn(async () => undefined),
+                loadDocuments: vi.fn(async () => [{
+                    id: 'character.alice', type: 'character' as const,
+                    title: '아리스', aliases: [],
+                    relativePath: 'characters/alice.md',
+                    content: '## 아리스\n\n도서부 부장이다.',
+                    sourceMessageIds: [], contentHash: 'alice-hash',
+                }, {
+                    id: 'character.kay', type: 'character' as const,
+                    title: '케이', aliases: [],
+                    relativePath: 'characters/kay.md',
+                    content: '## 케이\n\n아리스의 단짝 친구다.',
+                    sourceMessageIds: [], contentHash: 'kay-hash',
+                }]),
+                saveCanonicalDocument,
+            },
+            onError: vi.fn(), analyze,
+        })
+
+        await runner.run({
+            characterId: 'character', chatId: 'chat',
+            messages: [{ messageId: 'assistant-1', role: 'assistant',
+                content: '아리스가 도서실에서 케이를 만났다.' }],
+        })
+
+        expect(saveCanonicalDocument).toHaveBeenCalledWith(expect.objectContaining({
+            documentId: 'character.alice',
+            title: '아리스',
+        }))
+        expect(saveCanonicalDocument.mock.calls[0][0]).not.toHaveProperty('aliases')
+    })
+
     test('performs only bounded fallback searches for unresolved create candidates', async () => {
         const inquire = vi.fn()
             .mockResolvedValueOnce({ graphRevision: 0, sources: [] })

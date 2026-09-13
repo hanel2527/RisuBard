@@ -121,7 +121,8 @@ function normalizeAliases(
 function aliasesForSave(input: {
     aliases?: readonly string[]
     title: string
-    existing?: Pick<MarkdownWikiDocument, 'title' | 'aliases'>
+    existing?: Pick<MarkdownWikiDocument, 'title' | 'aliases' | 'id'>
+    documents: readonly Pick<MarkdownWikiDocument, 'id' | 'title' | 'aliases'>[]
 }): string[] {
     const values = input.aliases === undefined
         ? [...(input.existing?.aliases ?? [])]
@@ -129,7 +130,18 @@ function aliasesForSave(input: {
     if (input.existing
         && input.existing.title.normalize('NFKC').toLocaleLowerCase()
             !== input.title.normalize('NFKC').toLocaleLowerCase()) {
-        values.push(input.existing.title)
+        const previousTitle = input.existing.title
+            .normalize('NFKC').toLocaleLowerCase()
+        // The previous title only becomes an alias when no other document
+        // already owns it. Otherwise both documents would share one identifier
+        // and every `[[previous title]]` link would stop resolving.
+        const ownedByAnother = (input.documents ?? []).some((document) =>
+            document.id !== input.existing?.id
+            && [document.title, ...(document.aliases ?? [])].some((identity) =>
+                identity.normalize('NFKC').toLocaleLowerCase() === previousTitle
+            )
+        )
+        if (!ownedByAnother) values.push(input.existing.title)
     }
     return normalizeAliases(values, input.title)
 }
@@ -1490,6 +1502,7 @@ export function createMarkdownNarrativeWiki(
                     aliases: input.aliases,
                     title: normalized.title,
                     existing,
+                    documents,
                 }),
                 relativePath,
                 sourceMessageIds: [...new Set([
@@ -1692,6 +1705,7 @@ export function createMarkdownNarrativeWiki(
                     aliases: input.aliases,
                     title,
                     existing,
+                    documents,
                 }),
                 relativePath,
                 sourceMessageIds: existing?.sourceMessageIds ?? [],

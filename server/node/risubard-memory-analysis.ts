@@ -757,12 +757,27 @@ function mergeEvidenceBackedAliases(
         'title' | 'aliases'
     >,
     target: LoadedCanonicalDocument | undefined,
-    messages: readonly MemoryAnalysisMessage[]
+    messages: readonly MemoryAnalysisMessage[],
+    documents: readonly LoadedCanonicalDocument[]
 ): string[] {
     const evidence = messages.map((message) => message.content).join('\n')
         .normalize('NFKC').toLocaleLowerCase()
     const canonicalTitle = (target?.title ?? candidate.title)
         .normalize('NFKC').toLocaleLowerCase()
+    // A candidate often names the same entity under a different title. When the
+    // model misattributes a subject (the user persona has no name in the chat
+    // text), that title can belong to a different canonical document. Persisting
+    // it as an alias would make both documents own one identifier, and wiki link
+    // resolution refuses ambiguous identifiers, so every `[[name]]` would dangle.
+    const foreignIdentities = new Set<string>()
+    for (const document of documents) {
+        if (document.id === target?.id) continue
+        for (const identity of [document.title, ...(document.aliases ?? [])]) {
+            foreignIdentities.add(
+                identity.normalize('NFKC').toLocaleLowerCase()
+            )
+        }
+    }
     const aliases: string[] = []
     const seen = new Set<string>([canonicalTitle])
     const existing = target?.aliases ?? []
@@ -776,7 +791,8 @@ function mergeEvidenceBackedAliases(
         const normalized = alias.trim()
         const key = normalized.normalize('NFKC').toLocaleLowerCase()
         const isExisting = existing.includes(alias)
-        if (!normalized || seen.has(key) || (!isExisting && !evidence.includes(key))) {
+        if (!normalized || seen.has(key) || foreignIdentities.has(key)
+            || (!isExisting && !evidence.includes(key))) {
             continue
         }
         seen.add(key)
@@ -1589,7 +1605,8 @@ export function createMemoryAnalysisRunner(
                                 const aliases = mergeEvidenceBackedAliases(
                                     entry.candidate,
                                     entry.target,
-                                    snapshot.messages
+                                    snapshot.messages,
+                                    documents,
                                 )
                                 const saved = await options.markdownWikiService
                                     .saveCanonicalDocument({
