@@ -155,6 +155,13 @@ describe('canonical Markdown section patches', () => {
         ])
     })
 
+    test.each([4_000, 4_001])('allows fallback sections with %i characters', (length) => {
+        const content = 'A'.repeat(length)
+        expect(parseCanonicalSectionPatchMarkdown(
+            `### History\n\n${content}`
+        )[0].content).toBe(content)
+    })
+
     test.each([
         '설명문\n\n### 정체성\n\n- 기록관',
         '## 문서 제목\n\n### 정체성\n\n- 기록관',

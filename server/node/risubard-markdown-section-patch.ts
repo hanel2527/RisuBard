@@ -136,7 +136,7 @@ export function parseCanonicalSectionPatchMarkdown(
             heading.line.end,
             headings[index + 1]?.line.start ?? value.length,
         ).trim()
-        if (!content || content.length > 4_000) {
+        if (!content) {
             throw new Error(`Canonical Markdown patch has invalid content: ${heading.text}`)
         }
         return { heading: heading.text, operation: 'upsert', content }

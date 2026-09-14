@@ -251,6 +251,32 @@ describe('BardWiki memory writer skill', () => {
         }), 1).documents[0]?.sections).toEqual([])
     })
 
+    test('allows canonical section content beyond the former 4,000-character cap', () => {
+        const content = 'A'.repeat(4_001)
+        const schema = JSON.parse(canonicalBatchSchema)
+        expect(schema.properties.documents.items.properties.sections.items
+            .properties.content).not.toHaveProperty('maxLength')
+        expect(parseCanonicalBatch(JSON.stringify({
+            documents: [{
+                candidateIndex: 0,
+                sections: [{ heading: 'History', operation: 'upsert', content }],
+            }],
+        }), 1).documents[0].sections[0].content).toBe(content)
+    })
+
+    test('accepts content ending exactly at the former 4,000-character boundary', () => {
+        const content = 'A'.repeat(4_000)
+        expect(parseCanonicalBatch(JSON.stringify({
+            documents: [{
+                candidateIndex: 0,
+                sections: [{
+                    heading: 'History', operation: 'upsert',
+                    content,
+                }],
+            }],
+        }), 1).documents[0].sections[0].content).toBe(content)
+    })
+
     test('uses a compact single-document contract for protocol recovery', () => {
         const schema = JSON.parse(buildCanonicalSingleSchema())
         expect(schema).toMatchObject({

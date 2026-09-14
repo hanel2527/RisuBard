@@ -188,9 +188,7 @@ export function buildCanonicalBatchSchema(candidateCount?: number): string {
                                     operation: {
                                         type: 'string', enum: ['upsert', 'delete'],
                                     },
-                                    content: {
-                                        type: 'string', maxLength: 4_000,
-                                    },
+                                    content: { type: 'string' },
                                 },
                             },
                         },
@@ -628,8 +626,7 @@ export function parseCanonicalBatch(
                     `canonical batch documents[${index}].sections[${sectionIndex}].operation is invalid`
                 )
             }
-            if (typeof section.content !== 'string'
-                || section.content.length > 4_000) {
+            if (typeof section.content !== 'string') {
                 throw new Error(
                     `canonical batch documents[${index}].sections[${sectionIndex}].content is invalid`
                 )
