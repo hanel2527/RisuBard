@@ -30,6 +30,9 @@ describe('save observation log', () => {
             kind: 'compatibility-persist',
             trigger: 'patch-debounce',
             outcome: 'success',
+            strategy: 'bot-presets-direct',
+            fallbackUsed: true,
+            fallbackCode: 'EIO',
             durationMs: 12.75,
             databaseBytes: 4096,
             characterCount: 3,
@@ -47,6 +50,9 @@ describe('save observation log', () => {
             kind: 'compatibility-persist',
             trigger: 'patch-debounce',
             outcome: 'success',
+            strategy: 'bot-presets-direct',
+            fallbackUsed: true,
+            fallbackCode: 'EIO',
             durationMs: 12.75,
             databaseBytes: 4096,
             characterCount: 3,
@@ -68,6 +74,37 @@ describe('save observation log', () => {
         const previous = fs.readFileSync(path.join(dataRoot, 'logs', 'storage-observation.previous.jsonl'), 'utf8')
         expect(JSON.parse(current).kind).toBe('canonical-sync')
         expect(JSON.parse(previous).kind).toBe('compatibility-persist')
+    })
+
+    it('records content-free S1 shadow outcomes', async () => {
+        const dataRoot = tempRoot()
+        const observation = createSaveObservation({ dataRoot, sessionId: 'shadow-session', now: () => 5678 })
+
+        observation.record({
+            kind: 'projection-shadow',
+            trigger: 'flush',
+            outcome: 'mismatch',
+            errorStage: 'semantic-compare',
+            durationMs: 42.5,
+            plannedFiles: 12,
+            semanticMatch: false,
+            content: 'private message body',
+        })
+        await observation.flush()
+
+        const row = JSON.parse(fs.readFileSync(path.join(dataRoot, 'logs', 'storage-observation.jsonl'), 'utf8'))
+        expect(row).toEqual({
+            schemaVersion: 1,
+            timestamp: 5678,
+            sessionId: 'shadow-session',
+            kind: 'projection-shadow',
+            trigger: 'flush',
+            outcome: 'mismatch',
+            errorStage: 'semantic-compare',
+            durationMs: 42.5,
+            plannedFiles: 12,
+            semanticMatch: false,
+        })
     })
 
     it('never rejects the caller when observation storage is unavailable', async () => {

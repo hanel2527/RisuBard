@@ -37,6 +37,8 @@ const {
 } = require('./logs.cjs');
 const { createRequestLogs } = require('./request-logs.cjs');
 const { createSaveObservation } = require('./save-observation.cjs');
+const { createProjectionShadow } = require('./projection-shadow.cjs');
+const { generateStorageDiagnosticReport } = require('./storage-diagnostic-report.cjs');
 const { commitTransaction, moveToTrash } = require('./file-store.cjs');
 const { createRuntimeMemoryService } = require('./risubard-memory-runtime.cjs');
 const { openServerBrowser } = require('./open-server-browser.cjs');
@@ -45,6 +47,8 @@ const { createChatContentPage } = require('./chat-content-page.cjs');
 const { stageBackupEntries } = require('./backup-entry-stream.cjs');
 const { encodeCanonicalBackupName, decodeCanonicalBackupName } = require('./canonical-backup-name.cjs');
 const { createCanonicalProjectionSync } = require('./canonical-projection-sync.cjs');
+const { createDirectWriteTracker } = require('./direct-write-tracker.cjs');
+const { writeCanonicalProjection } = require('./canonical-projection-writer.cjs');
 const { createExternalEditSession } = require('./external-edit-session.cjs');
 const {
     collectDatabaseAssetReferences,
@@ -58,13 +62,14 @@ const {
     registerRisuBardMemoryRoutes,
 } = require('./risubard-memory-routes.cjs');
 const { applyPatch } = require('fast-json-patch');
-const { decodeRisuSave, encodeRisuSaveLegacy, calculateHash, normalizeJSON, normalizeForwardHeaders, hasRemoteBlocks } = require('./utils.cjs');
+const { decodeRisuSave, encodeRisuSaveLegacyBuffer, calculateHash, normalizeJSON, normalizeForwardHeaders, hasRemoteBlocks } = require('./utils.cjs');
 const { spawn, execSync } = require('child_process');
 const os = require('os');
 const { Readable, Transform } = require('stream');
 
 // Install process-level error handlers before any other init so early crashes get logged.
 installProcessHandlers();
+const directWriteTracker = createDirectWriteTracker();
 
 // Node.js version check
 const [nodeMajor] = process.version.slice(1).split('.').map(Number);
@@ -93,7 +98,7 @@ function computeBufferEtag(buffer) {
 }
 
 function computeDatabaseEtagFromObject(databaseObject) {
-    return computeBufferEtag(Buffer.from(encodeRisuSaveLegacy(databaseObject)));
+    return computeBufferEtag(encodeRisuSaveLegacyBuffer(databaseObject));
 }
 
 let storageOperationQueue = Promise.resolve();
@@ -246,7 +251,9 @@ async function flushPendingDb() {
         clearTimeout(saveTimers[DB_HEX_KEY]);
         delete saveTimers[DB_HEX_KEY];
         if (dbCache[DB_HEX_KEY]) {
-            await persistDbCacheWithChats(DB_HEX_KEY, 'database/database.bin', 'flush');
+            await persistDbCacheWithChats(DB_HEX_KEY, 'database/database.bin', 'flush', {
+                directCollection: directWriteTracker.take(DB_HEX_KEY),
+            });
         } else if (fullChatStore && fullChatStore.size > 0) {
             // No stripped cache but chat store has data — merge and persist directly
             await persistChatStoreWithoutCache('flush');
@@ -256,6 +263,7 @@ async function flushPendingDb() {
 }
 
 function invalidateDbCache() {
+    directWriteTracker.clear(DB_HEX_KEY);
     delete dbCache[DB_HEX_KEY];
     fullChatStore = null;
     canonicalProjectionReady = false;
@@ -338,7 +346,7 @@ async function decodeDatabaseWithPersistentChatIds(raw, options = {}) {
     }
 
     if (needsPersist) {
-        kvSet('database/database.bin', Buffer.from(encodeRisuSaveLegacy(dbObj)));
+        kvSet('database/database.bin', encodeRisuSaveLegacyBuffer(dbObj));
         persistCanonicalProjection(dbObj);
         if (runMaintenance) maybeCollectUnreferencedObjects();
     }
@@ -542,7 +550,7 @@ async function migrateRemoteBlocksIfNeeded() {
         },
     });
 
-    const reEncoded = encodeRisuSaveLegacy(dbObj, 'compression');
+    const reEncoded = encodeRisuSaveLegacyBuffer(dbObj, 'compression');
 
     // Single transaction so swap + marker move together.
     // remotes/ files are intentionally NOT deleted here: pre-migration
@@ -738,7 +746,7 @@ async function persistChatStoreWithoutCache(trigger) {
         Object.assign(metrics, summarizeDatabaseShape(fullDb));
         errorStage = 'encode';
         phaseStartedAt = performance.now();
-        data = Buffer.from(encodeRisuSaveLegacy(fullDb));
+        data = encodeRisuSaveLegacyBuffer(fullDb);
         metrics.encodeMs = elapsedMs(phaseStartedAt);
         metrics.databaseBytes = data.length;
         errorStage = 'kv-write';
@@ -769,7 +777,7 @@ async function persistChatStoreWithoutCache(trigger) {
     }
 }
 
-async function persistDbCacheWithChats(filePath, decodedKey, trigger = 'unknown') {
+async function persistDbCacheWithChats(filePath, decodedKey, trigger = 'unknown', observationContext = {}) {
     const strippedDb = dbCache[filePath];
     if (!strippedDb) return;
     const operationId = nodeCrypto.randomUUID();
@@ -814,7 +822,7 @@ async function persistDbCacheWithChats(filePath, decodedKey, trigger = 'unknown'
 
         errorStage = 'encode';
         phaseStartedAt = performance.now();
-        data = Buffer.from(encodeRisuSaveLegacy(fullDb));
+        data = encodeRisuSaveLegacyBuffer(fullDb);
         metrics.encodeMs = elapsedMs(phaseStartedAt);
         metrics.databaseBytes = data.length;
         errorStage = 'kv-write';
@@ -824,7 +832,11 @@ async function persistDbCacheWithChats(filePath, decodedKey, trigger = 'unknown'
         if (decodedKey === 'database/database.bin') {
             errorStage = 'canonical-sync';
             phaseStartedAt = performance.now();
-            persistCanonicalProjection(fullDb, { operationId, trigger });
+            persistCanonicalProjection(fullDb, {
+                operationId,
+                trigger,
+                directCollection: observationContext.directCollection,
+            });
             metrics.canonicalSyncMs = elapsedMs(phaseStartedAt);
         }
         // Refresh fullChatStore from the persisted snapshot so subsequent
@@ -926,6 +938,11 @@ if(!existsSync(savePath)){
 }
 const saveObservation = createSaveObservation({ dataRoot: savePath })
 saveObservation.record({ kind: 'session', trigger: 'server-start', outcome: 'started' })
+const projectionShadow = createProjectionShadow({
+    repository: userDataRepository,
+    observation: saveObservation,
+    isPersisting: () => activeCompatibilityPersists > 0,
+})
 const CANONICAL_PROJECTION_REVISION_KEY = 'database/canonical-projection-revision'
 const canonicalProjectionSync = createCanonicalProjectionSync({
     repository: userDataRepository,
@@ -943,6 +960,9 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
     const startedAt = performance.now()
     const operationId = observationContext.operationId || nodeCrypto.randomUUID()
     const trigger = observationContext.trigger || 'unspecified'
+    let strategy = observationContext.directCollection === 'botPresets' ? 'bot-presets-direct' : 'full-sync'
+    let fallbackUsed = false
+    let fallbackCode
     let errorStage = 'external-change-check'
     try {
         if (externalEditSession?.isActive()) {
@@ -956,7 +976,15 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
             throw error
         }
         errorStage = 'transaction'
-        const result = userDataRepository.importLegacyDatabase(databaseObject, { mode: 'sync' })
+        const write = writeCanonicalProjection({
+            repository: userDataRepository,
+            database: databaseObject,
+            directCollection: observationContext.directCollection,
+        })
+        const result = write.result
+        strategy = write.strategy
+        fallbackUsed = write.fallbackUsed
+        fallbackCode = write.fallbackCode
         canonicalProjectionSync.accept()
         canonicalProjectionReady = true
         saveObservation.record({
@@ -965,13 +993,26 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
             publishedFiles: result.transaction?.published,
             skippedFiles: result.transaction?.skipped,
             stagedBytes: result.transaction?.stagedBytes,
+            strategy, fallbackUsed, ...(fallbackCode ? { fallbackCode } : {}),
+        })
+        projectionShadow.schedule({
+            database: databaseObject,
+            trigger,
+            plannedFiles: result.files,
         })
         return result
     } catch (error) {
+        const writeMeta = error?.canonicalWriteMeta
+        if (writeMeta) {
+            strategy = writeMeta.strategy || strategy
+            fallbackUsed = writeMeta.fallbackUsed === true
+            fallbackCode = writeMeta.fallbackCode
+        }
         saveObservation.record({
             kind: 'canonical-sync', trigger, outcome: 'failure', operationId, errorStage,
             errorCode: String(error?.code || ''), errorName: String(error?.name || 'Error'),
             durationMs: elapsedMs(startedAt),
+            strategy, fallbackUsed, ...(fallbackCode ? { fallbackCode } : {}),
         })
         throw error
     }
@@ -986,13 +1027,14 @@ function adoptExternallyChangedCanonicalProjection() {
         clearTimeout(saveTimers[DB_HEX_KEY])
         delete saveTimers[DB_HEX_KEY]
     }
+    directWriteTracker.clear(DB_HEX_KEY)
     const fullDb = normalizeJSON(changed.database)
-    const encoded = Buffer.from(encodeRisuSaveLegacy(fullDb))
+    const encoded = encodeRisuSaveLegacyBuffer(fullDb)
     kvSet('database/database.bin', encoded)
     initChatStore(fullDb)
     const stripped = normalizeJSON(stripChatsFromDb(fullDb))
     dbCache[DB_HEX_KEY] = stripped
-    dbEtag = computeBufferEtag(Buffer.from(encodeRisuSaveLegacy(stripped)))
+    dbEtag = computeBufferEtag(encodeRisuSaveLegacyBuffer(stripped))
     externallyAdoptedDbEtag = dbEtag
     canonicalProjectionSync.accept(changed.revision)
     logger.info('[CanonicalProjection] Adopted externally edited canonical entity files')
@@ -3663,7 +3705,7 @@ app.get('/api/read', async (req, res, next) => {
                     const stripped = normalizeJSON(stripChatsFromDb(dbObj));
                     // Populate dbCache so patch endpoint uses the same data
                     dbCache[filePath] = stripped;
-                    value = Buffer.from(encodeRisuSaveLegacy(stripped));
+                    value = encodeRisuSaveLegacyBuffer(stripped);
                 } catch (e) {
                     // Log the Error itself (not just e.message) so logger.*
                     // tags it and the Express middleware won't re-log after next().
@@ -3822,6 +3864,18 @@ app.get('/api/logs', async (req, res, next) => {
     }
 });
 
+app.get('/api/storage-diagnostics/report', async (req, res, next) => {
+    if (!await checkAuth(req, res)) return;
+    try {
+        res.json(await generateStorageDiagnosticReport({
+            dataRoot: savePath,
+            appVersion: getCurrentVersion(),
+        }));
+    } catch (error) {
+        next(error);
+    }
+});
+
 app.delete('/api/logs', async (req, res, next) => {
     if (!await checkAuth(req, res)) return;
     if (!checkActiveSession(req, res)) return;
@@ -3974,7 +4028,7 @@ app.post('/api/write', async (req, res, next) => {
 
                     errorStage = 'encode';
                     phaseStartedAt = performance.now();
-                    const mergedContent = Buffer.from(encodeRisuSaveLegacy(fullDb));
+                    const mergedContent = encodeRisuSaveLegacyBuffer(fullDb);
                     metrics.encodeMs = elapsedMs(phaseStartedAt);
                     metrics.databaseBytes = mergedContent.length;
                     // Re-init chat store from merged result
@@ -4140,7 +4194,7 @@ app.post('/api/patch', async (req, res, next) => {
                 );
                 let currentEtag;
                 try {
-                    currentEtag = computeBufferEtag(Buffer.from(encodeRisuSaveLegacy(dbCache[filePath])));
+                    currentEtag = computeBufferEtag(encodeRisuSaveLegacyBuffer(dbCache[filePath]));
                     dbEtag = currentEtag;
                 } catch {}
                 res.status(409).send({
@@ -4158,7 +4212,7 @@ app.post('/api/patch', async (req, res, next) => {
                 console.log(`[Patch] Hash mismatch for ${decodedKey}: expected=${expectedHash}, server=${serverHash}`);
                 let currentEtag = undefined;
                 if (decodedKey === 'database/database.bin') {
-                    currentEtag = computeBufferEtag(Buffer.from(encodeRisuSaveLegacy(dbCache[filePath])));
+                    currentEtag = computeBufferEtag(encodeRisuSaveLegacyBuffer(dbCache[filePath]));
                     dbEtag = currentEtag;
                 }
                 if (currentEtag && currentEtag === externallyAdoptedDbEtag) {
@@ -4180,9 +4234,11 @@ app.post('/api/patch', async (req, res, next) => {
             } catch (patchErr) {
                 // Invalidate corrupted cache entry to force reload on next request
                 delete dbCache[filePath];
+                directWriteTracker.clear(filePath);
                 throw patchErr;
             }
             dbCache[filePath] = snapshot;
+            if (decodedKey === 'database/database.bin') directWriteTracker.observe(filePath, patch);
 
             // Schedule save to KV (debounced) — merge full chats back for database.bin
             if (saveTimers[filePath]) {
@@ -4191,9 +4247,11 @@ app.post('/api/patch', async (req, res, next) => {
             saveTimers[filePath] = setTimeout(async () => {
                 try {
                     if (decodedKey === 'database/database.bin') {
-                        await persistDbCacheWithChats(filePath, decodedKey, 'patch-debounce');
+                        await persistDbCacheWithChats(filePath, decodedKey, 'patch-debounce', {
+                            directCollection: directWriteTracker.take(filePath),
+                        });
                     } else {
-                        const data = Buffer.from(encodeRisuSaveLegacy(dbCache[filePath]));
+                        const data = encodeRisuSaveLegacyBuffer(dbCache[filePath]);
                         try {
                             kvSet(decodedKey, data);
                         } catch (err) {
@@ -4223,7 +4281,7 @@ app.post('/api/patch', async (req, res, next) => {
 
             // Update ETag after successful patch (based on stripped version)
             if (decodedKey === 'database/database.bin') {
-                dbEtag = computeBufferEtag(Buffer.from(encodeRisuSaveLegacy(dbCache[filePath])));
+                dbEtag = computeBufferEtag(encodeRisuSaveLegacyBuffer(dbCache[filePath]));
             }
 
             const responsePayload = {
@@ -4383,7 +4441,7 @@ async function buildSettingsOnlyPlan({ includeModuleAssets = true } = {}) {
     // variant runs chat-id and cold-storage migrations and can persist. Both
     // concern data we are about to drop anyway.
     const trimmed = stripToSettingsOnly(await decodeRisuSave(raw));
-    const dbValue = Buffer.from(encodeRisuSaveLegacy(trimmed, 'compression'));
+    const dbValue = encodeRisuSaveLegacyBuffer(trimmed, 'compression');
 
     const withModules = buildUncleanableSet(trimmed);
     const withoutModules = buildUncleanableSet(trimmed, { includeModuleAssets: false });
@@ -5176,7 +5234,7 @@ app.get('/api/chat-content/:chaId/:chatIndex/page', async (req, res, next) => {
         }
 
         const page = createChatContentPage(chat, req.query.offset, req.query.limit);
-        const encoded = Buffer.from(encodeRisuSaveLegacy(page));
+        const encoded = encodeRisuSaveLegacyBuffer(page);
         res.setHeader('Content-Type', 'application/octet-stream');
         res.send(encoded);
     } catch (error) {
@@ -5201,7 +5259,7 @@ app.get('/api/chat-content/:chaId/:chatIndex', async (req, res, next) => {
                 if (!restoreColdStorageChat(chat)) {
                     return res.status(500).json({ error: 'Cold storage restore failed' });
                 }
-                const encoded = Buffer.from(encodeRisuSaveLegacy(chat));
+                const encoded = encodeRisuSaveLegacyBuffer(chat);
                 res.setHeader('Content-Type', 'application/octet-stream');
                 return res.send(encoded);
             }
@@ -5225,7 +5283,7 @@ app.get('/api/chat-content/:chaId/:chatIndex', async (req, res, next) => {
         if (!restoreColdStorageChat(chat)) {
             return res.status(500).json({ error: 'Cold storage restore failed' });
         }
-        const encoded = Buffer.from(encodeRisuSaveLegacy(chat));
+        const encoded = encodeRisuSaveLegacyBuffer(chat);
         res.setHeader('Content-Type', 'application/octet-stream');
         res.send(encoded);
     } catch (error) {

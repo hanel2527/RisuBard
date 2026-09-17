@@ -86,6 +86,7 @@ import {
     isStoryArcCandidate,
     stampStoryArcCheckpoint,
     storyArcRewriteInstruction,
+    validateStoryArcCheckpointEventLink,
     type StoryArcUpdatePlan,
 } from './risubard-story-arc-writer'
 
@@ -220,26 +221,30 @@ export interface MemoryAnalysisRunResult extends NarrativeMemoryState {
 export interface NarrativeMemoryService {
     loadState(
         characterId: string,
-        chatId: string
+        chatId: string,
+        signal?: AbortSignal
     ): Promise<NarrativeMemoryState>
     applyDelta(
-        input: ApplyNarrativeMemoryDeltaInput
+        input: ApplyNarrativeMemoryDeltaInput,
+        signal?: AbortSignal
     ): Promise<NarrativeMemoryState>
 }
 
 export interface NarrativeGraphWriteService {
     applyDelta(
-        input: ApplyNarrativeGraphDeltaInput
+        input: ApplyNarrativeGraphDeltaInput,
+        signal?: AbortSignal
     ): Promise<unknown>
     reconcileV1?(
         characterId: string,
-        chatId: string
+        chatId: string,
+        signal?: AbortSignal
     ): Promise<unknown>
     inquire?(input: {
         characterId: string
         chatId: string
         currentInput: string
-    }): Promise<{
+    }, signal?: AbortSignal): Promise<{
         graphRevision: number
         sources: readonly {
             id: string
@@ -256,7 +261,8 @@ export interface NarrativeGraphWriteService {
         result: {
             status: 'success' | 'failed'
             appliedCount: number
-        }
+        },
+        signal?: AbortSignal
     ): void | Promise<void>
 }
 
@@ -270,7 +276,7 @@ export interface NarrativeMarkdownWikiWriteService {
             events?: number
             maximum: number
         }
-    }): Promise<{
+    }, signal?: AbortSignal): Promise<{
         graphRevision: number
         sources: readonly { id: string; content: string }[]
         entityCandidates?: readonly { id: string; title: string }[]
@@ -282,21 +288,22 @@ export interface NarrativeMarkdownWikiWriteService {
         markdown: string
         append?: boolean
         writingLanguage?: WikiWritingLanguage
-    }): Promise<MarkdownWikiDocument>
+    }, signal?: AbortSignal): Promise<MarkdownWikiDocument>
     recordRebootBatchReceipt?(input: {
         characterId: string
         chatId: string
         receipt: CanonicalTurnReceipt
-    }): Promise<unknown>
+    }, signal?: AbortSignal): Promise<unknown>
     beginRebootBatch?(input: {
         characterId: string
         chatId: string
         sourceMessageIds: string[]
         eventSourceGroups: string[][]
-    }): Promise<{ canonicalCount: number }>
+    }, signal?: AbortSignal): Promise<{ canonicalCount: number }>
     loadDocuments?(
         characterId: string,
-        chatId: string
+        chatId: string,
+        signal?: AbortSignal
     ): Promise<Array<AutomaticWikiDocumentDescriptor & {
         relativePath: string
         content: string
@@ -315,7 +322,7 @@ export interface NarrativeMarkdownWikiWriteService {
         expectedContentHash?: string
         reviewStatus?: 'unreviewed' | 'reviewed'
         writingLanguage?: WikiWritingLanguage
-    }): Promise<MarkdownWikiDocument>
+    }, signal?: AbortSignal): Promise<MarkdownWikiDocument>
 }
 
 export interface MemoryAnalysisRunnerOptions {
@@ -328,6 +335,10 @@ export interface MemoryAnalysisRunnerOptions {
         signal?: AbortSignal
     ): Promise<string | ModelResponse>
     onError(error: unknown): void | Promise<void>
+}
+
+function optionalSignalArgument(signal?: AbortSignal): [] | [AbortSignal] {
+    return signal ? [signal] : []
 }
 
 const analysisSystemPrompt = [
@@ -938,13 +949,15 @@ export function createMemoryAnalysisRunner(
         characterId: string,
         chatId: string,
         status: 'success' | 'failed',
-        appliedCount: number
+        appliedCount: number,
+        signal?: AbortSignal
     ): Promise<void> => {
         try {
             await options.graphService?.recordAnalysis?.(
                 characterId,
                 chatId,
-                { status, appliedCount }
+                { status, appliedCount },
+                ...optionalSignalArgument(signal)
             )
         }
         catch (error) {
@@ -961,7 +974,7 @@ export function createMemoryAnalysisRunner(
             return options.analyze({
                 ...request,
                 sessionChatId: snapshot.modelSessionChatId ?? snapshot.chatId,
-            }, signal)
+            }, ...optionalSignalArgument(signal))
         }
         const analyzeResponse = async (request: MemoryAnalysisModelRequest): Promise<ModelResponse> => {
             const response = await analyzeRaw(request)
@@ -1006,7 +1019,8 @@ export function createMemoryAnalysisRunner(
                 try {
                     documents = await options.markdownWikiService.loadDocuments(
                         snapshot.characterId,
-                        snapshot.chatId
+                        snapshot.chatId,
+                        ...optionalSignalArgument(signal)
                     )
                 }
                 catch (error) {
@@ -1025,7 +1039,7 @@ export function createMemoryAnalysisRunner(
                         eventSourceGroups: snapshot.rebootTurns.map((turn) =>
                             [...turn.sourceMessageIds]
                         ),
-                    })
+                    }, ...optionalSignalArgument(signal))
                     rebootRecoveryStarted = true
                 }
                 catch (error) {
@@ -1043,7 +1057,7 @@ export function createMemoryAnalysisRunner(
                 ...(snapshot.inquiryTokenBudget ? {
                     tokenBudget: snapshot.inquiryTokenBudget,
                 } : {}),
-            })
+            }, ...optionalSignalArgument(signal))
             let candidateDocuments = resolveInquiryDocuments(
                 inquiry.sources,
                 documents,
@@ -1163,7 +1177,7 @@ export function createMemoryAnalysisRunner(
                     ...(snapshot.inquiryTokenBudget ? {
                         tokenBudget: snapshot.inquiryTokenBudget,
                     } : {}),
-                })
+                }, ...optionalSignalArgument(signal))
                 const discovered = resolveInquiryDocuments(
                     expanded.sources,
                     documents,
@@ -1221,7 +1235,7 @@ export function createMemoryAnalysisRunner(
                             characterId: snapshot.characterId,
                             chatId: snapshot.chatId,
                             receipt: canonicalReceipt,
-                        })
+                        }, ...optionalSignalArgument(signal))
                     }
                     catch (error) {
                         await reportError(error)
@@ -1255,7 +1269,7 @@ export function createMemoryAnalysisRunner(
                     markdown: serializeMemoryWriterDraft(event.draft, snapshot.wikiWritingLanguage),
                     writingLanguage: snapshot.wikiWritingLanguage,
                     ...(snapshot.additionalAnalysis ? { append: true } : {}),
-                    })
+                    }, ...optionalSignalArgument(signal))
                 if (savedEvent && typeof savedEvent.id === 'string') {
                     savedEvents.push(savedEvent)
                 }
@@ -1492,21 +1506,36 @@ export function createMemoryAnalysisRunner(
                                     }
                                     for (const document of parsed.documents) {
                                         const target = targets[document.candidateIndex]
-                                        if (target?.candidate.type !== 'character') continue
-                                        if (!target.target) {
-                                            document.sections = normalizeNewCharacterCurrentState(
-                                                document.sections,
-                                                snapshot.wikiWritingLanguage,
+                                        if (target?.candidate.type === 'character') {
+                                            if (!target.target) {
+                                                document.sections = normalizeNewCharacterCurrentState(
+                                                    document.sections,
+                                                    snapshot.wikiWritingLanguage,
+                                                )
+                                            }
+                                            applyCanonicalSectionPatches({
+                                                ...(target.target ? {
+                                                    markdown: target.target.content,
+                                                } : {}),
+                                                title: target.target?.title
+                                                    ?? target.candidate.title,
+                                                patches: document.sections,
+                                            })
+                                        }
+                                        else if (target?.storyArcPlan) {
+                                            const rewritten = applyCanonicalSectionPatches({
+                                                ...(target.target ? {
+                                                    markdown: target.target.content,
+                                                } : {}),
+                                                title: target.target?.title
+                                                    ?? target.candidate.title,
+                                                patches: document.sections,
+                                            })
+                                            validateStoryArcCheckpointEventLink(
+                                                rewritten,
+                                                target.storyArcPlan.events
                                             )
                                         }
-                                        applyCanonicalSectionPatches({
-                                            ...(target.target ? {
-                                                markdown: target.target.content,
-                                            } : {}),
-                                            title: target.target?.title
-                                                ?? target.candidate.title,
-                                            patches: document.sections,
-                                        })
                                     }
                                     return parsed
                                 },
@@ -1631,7 +1660,7 @@ export function createMemoryAnalysisRunner(
                                             entry.target.contentHash,
                                     } : {}),
                                     reviewStatus: 'reviewed',
-                                    })
+                                    }, ...optionalSignalArgument(signal))
                                 receiptChanges.push({
                                     documentId: saved.id,
                                     type: saved.type as Exclude<
@@ -1680,7 +1709,7 @@ export function createMemoryAnalysisRunner(
                             characterId: snapshot.characterId,
                             chatId: snapshot.chatId,
                             receipt: canonicalReceipt,
-                        })
+                        }, ...optionalSignalArgument(signal))
                 }
                 catch (error) {
                     await reportError(error)
@@ -1756,7 +1785,8 @@ export function createMemoryAnalysisRunner(
                     snapshot.characterId,
                     snapshot.chatId,
                     'failed',
-                    0
+                    0,
+                    signal
                 )
                 throw analysisError
             }
@@ -1767,14 +1797,15 @@ export function createMemoryAnalysisRunner(
                     chatId: snapshot.chatId,
                     delta: parsedOutput,
                     availableEvidence,
-                    })
+                    }, ...optionalSignalArgument(signal))
                 }
                 if (parsedOutput.operations.length === 0) {
                     await recordNativeAnalysis(
                         snapshot.characterId,
                         snapshot.chatId,
                         'success',
-                        0
+                        0,
+                        signal
                     )
                 }
                 return emptyNativeState()
@@ -1784,7 +1815,8 @@ export function createMemoryAnalysisRunner(
                     snapshot.characterId,
                     snapshot.chatId,
                     'failed',
-                    0
+                    0,
+                    signal
                 )
                 throw error
             }
@@ -1816,7 +1848,8 @@ export function createMemoryAnalysisRunner(
         }
         const memoryState = await options.memoryService.loadState(
             snapshot.characterId,
-            snapshot.chatId
+            snapshot.chatId,
+            ...optionalSignalArgument(signal)
         )
         const delta = validateMemoryDelta(
             parsedOutput,
@@ -1828,7 +1861,7 @@ export function createMemoryAnalysisRunner(
             chatId: snapshot.chatId,
             delta,
             availableEvidence,
-        })
+        }, ...optionalSignalArgument(signal))
         if (options.graphService && delta.operations.length > 0) {
             try {
                 await options.graphService.applyDelta({
@@ -1840,7 +1873,7 @@ export function createMemoryAnalysisRunner(
                         snapshot.chatId
                     ),
                     availableEvidence,
-                })
+                }, ...optionalSignalArgument(signal))
             }
             catch (error) {
                 await reportError(error)
@@ -1848,7 +1881,8 @@ export function createMemoryAnalysisRunner(
                     try {
                         await options.graphService.reconcileV1(
                             snapshot.characterId,
-                            snapshot.chatId
+                            snapshot.chatId,
+                            ...optionalSignalArgument(signal)
                         )
                     }
                     catch (reconciliationError) {
