@@ -52,6 +52,8 @@ describe('release artifact contract', () => {
 
     it('ships runtime source trees in the Docker image', () => {
         const dockerfile = readFileSync(resolve('Dockerfile'), 'utf8')
+        expect(dockerfile).toContain('CMD ["node", "server/node/server.cjs"]')
+        expect(dockerfile).not.toContain('CMD ["pnpm", "runserver"]')
 
         expect(dockerfile).toMatch(
             /^COPY --from=builder \/app\/packages\/risubard-core \.\/packages\/risubard-core$/m,

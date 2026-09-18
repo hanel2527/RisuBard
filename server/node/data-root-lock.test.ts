@@ -38,6 +38,51 @@ afterEach(() => {
 })
 
 describe('data-root process lock', () => {
+    test.each(['SIGINT', 'SIGTERM'])('releases the lock on %s without a shutdown handler', (signal) => {
+        const root = tempRoot()
+        const result = spawnSync(process.execPath, ['-e', `
+            require(process.env.LOCK_MODULE).acquireDataRootLock(process.env.DATA_ROOT)
+            // Windows cannot deliver POSIX signals; exercise the same Node event.
+            if (process.platform === 'win32') process.emit(process.env.STOP_SIGNAL)
+            else process.kill(process.pid, process.env.STOP_SIGNAL)
+            setInterval(() => {}, 1000)
+        `], {
+            env: { ...process.env, LOCK_MODULE: lockModule, DATA_ROOT: root, STOP_SIGNAL: signal },
+            encoding: 'utf8',
+            timeout: 3000,
+        })
+        expect(result.error).toBeUndefined()
+        expect(existsSync(join(root, '.risubard-server.lock'))).toBe(false)
+        if (process.platform !== 'win32') expect(result.signal).toBe(signal)
+    })
+
+    test.each(['SIGINT', 'SIGTERM'])('keeps the lock during asynchronous %s shutdown', (signal) => {
+        const root = tempRoot()
+        const result = spawnSync(process.execPath, ['-e', `
+            const assert = require('node:assert/strict')
+            const fs = require('node:fs')
+            const { acquireDataRootLock } = require(process.env.LOCK_MODULE)
+            const lock = acquireDataRootLock(process.env.DATA_ROOT)
+            let calls = 0
+            process.on(process.env.STOP_SIGNAL, async () => {
+                assert.equal(++calls, 1)
+                assert.ok(fs.existsSync(lock.lockPath))
+                await new Promise(resolve => setTimeout(resolve, 50))
+                assert.ok(fs.existsSync(lock.lockPath))
+                assert.throws(() => acquireDataRootLock(process.env.DATA_ROOT), { code: 'DATA_ROOT_IN_USE' })
+                process.exit(0)
+            })
+            process.emit(process.env.STOP_SIGNAL)
+        `], {
+            env: { ...process.env, LOCK_MODULE: lockModule, DATA_ROOT: root, STOP_SIGNAL: signal },
+            encoding: 'utf8',
+            timeout: 3000,
+        })
+        expect(result.error).toBeUndefined()
+        expect(result.status, result.stderr).toBe(0)
+        expect(existsSync(join(root, '.risubard-server.lock'))).toBe(false)
+    })
+
     test('rejects a second live process before it can initialize the shared data root', async () => {
         const root = tempRoot()
         const holderPath = join(root, 'holder.cjs')
@@ -71,6 +116,9 @@ describe('data-root process lock', () => {
         expect(existsSync(sentinel)).toBe(false)
         holder.kill('SIGTERM')
         await new Promise<void>(resolveExit => holder.once('exit', () => resolveExit()))
+        if (process.platform !== 'win32') {
+            expect(existsSync(join(root, '.risubard-server.lock'))).toBe(false)
+        }
     })
 
     test('reclaims a lock left by a dead process', () => {
