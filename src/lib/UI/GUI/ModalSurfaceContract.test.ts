@@ -48,7 +48,6 @@ describe('modal surface contract', () => {
             'src/lib/Others/PluginAlertModal.svelte',
             'src/lib/Others/PopupEditor.svelte',
             'src/lib/Others/PromptDiffModal.svelte',
-            'src/lib/Others/RisuBardMemoryWiki.svelte',
             'src/lib/FirstMessageStudio/FirstMessageStudioEditor.svelte',
             'src/lib/ChatScreens/PartialEditController.svelte',
             'src/lib/Setting/listedHypaV3Preset.svelte',
@@ -83,6 +82,18 @@ describe('modal surface contract', () => {
         expect(saveSlots).toMatch(
             /:global\(\.save-slot-dialog\)[^}]*background:\s*var\(--color-darkbg\)/,
         )
+    })
+
+    test('wiki dialogs use the shared modal surface through ShDialog', () => {
+        for (const file of [
+            'src/lib/Others/RisuBardMemoryWiki.svelte',
+            'src/lib/Others/RisuBardWikiExportDialog.svelte',
+            'src/lib/ChatScreens/RisuBardChatFindReplaceDialog.svelte',
+        ]) {
+            const component = source(file)
+            expect(component, file).toContain("import ShDialog from 'src/lib/UI/GUI/ShDialog.svelte'")
+            expect(component, file).toMatch(/<ShDialog\s/)
+        }
     })
 
     test('keeps fixed-width legacy modal surfaces inside narrow viewports', () => {
