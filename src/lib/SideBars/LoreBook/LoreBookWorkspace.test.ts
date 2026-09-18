@@ -12,6 +12,7 @@ import { languageKorean } from 'src/lang/ko'
 import LoreBookWorkspace from './LoreBookWorkspace.svelte'
 import LoreBookWorkspaceDialog from './LoreBookWorkspaceDialog.svelte'
 import { createLorebookOwnerBinding } from './loreBookWorkspaceConnections'
+import { createBardLoreEntry } from 'src/ts/lorebook/bardLore'
 import { clearLorebookWorkspaceSessions } from './loreBookWorkspaceSession'
 
 const sortableMock = vi.hoisted(() => ({
@@ -423,6 +424,38 @@ describe('LoreBookWorkspace', () => {
         })
     })
 
+    it('creates and duplicates lore directly below the active entry in the same folder', async () => {
+        const folderKey = '\uf000folder:places'
+        const onChange = vi.fn()
+        await render([
+            entry('folder', { mode: 'folder', key: folderKey, comment: 'Places' }),
+            entry('first', { folder: folderKey, comment: 'Cafe', content: 'Original body' }),
+            entry('second', { folder: folderKey, comment: 'Station' }),
+            entry('root', { comment: 'Root' }),
+        ], { onChange })
+        click('[data-lorebook-folder-toggle]')
+        await tick()
+        click('[data-lorebook-row="first"] [data-lorebook-open]')
+        await tick()
+
+        click('[data-lorebook-add]')
+        await tick()
+        const added = onChange.mock.calls.at(-1)?.[0] as loreBook[]
+        expect(added.map((item) => item.comment)).toEqual(['Places', 'Cafe', 'New lore', 'Station', 'Root'])
+        expect(added[2].folder).toBe(folderKey)
+
+        click('[data-lorebook-row="first"] [data-lorebook-open]')
+        await tick()
+        click('[data-lorebook-duplicate]')
+        await tick()
+        const duplicated = onChange.mock.calls.at(-1)?.[0] as loreBook[]
+        expect(duplicated.map((item) => item.comment)).toEqual([
+            'Places', 'Cafe', 'Cafe (2)', 'New lore', 'Station', 'Root',
+        ])
+        expect(duplicated[2]).toMatchObject({ folder: folderKey, content: 'Original body' })
+        expect(duplicated[2].id).not.toBe('first')
+    })
+
     it('removes dangling Bard links when their target is deleted', async () => {
         const onChange = vi.fn()
         const bard = (id: string, links: any[] = []) => ({
@@ -473,6 +506,33 @@ describe('LoreBookWorkspace', () => {
         expect(document.body.querySelector('[data-lorebook-row="unreachable"]')?.classList.contains('unreachable-entry')).toBe(true)
         expect(document.body.querySelector('[data-lorebook-row="hidden"] [data-lorebook-status-hidden]')).not.toBeNull()
         expect(document.body.querySelector('[data-lorebook-row="hidden"]')?.classList.contains('hidden-entry')).toBe(true)
+    })
+
+    it('synchronizes the Grimoire sidebar checkbox with the existing required policy', async () => {
+        const onChange = await render([createBardLoreEntry(entry('one'))], { bardMode: true })
+        click('[data-lorebook-row="one"] [data-lorebook-open]')
+        await tick()
+        expect(document.body.querySelector('.editor-fields [data-lorebook-settings-toolbar]')).toBeNull()
+        const toggles = document.body.querySelector('.lore-state-rail [data-bard-lore-activation-toggles]')!
+        expect(toggles.querySelectorAll('input[type="checkbox"]')).toHaveLength(2)
+        const always = toggles.querySelector<HTMLInputElement>('[data-bard-lore-always-active]')!
+        expect(always.checked).toBe(false)
+        always.click()
+        await tick()
+        expect((onChange as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0][0].bard.activation).toBe('required')
+        expect(document.body.querySelector('[data-bard-lore-activation]')?.textContent).toContain(languageEnglish.lorebookWorkspace.bardRequired)
+        always.click()
+        await tick()
+        expect((onChange as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0][0].bard.activation).toBe('retrieve')
+        click('[data-bard-lore-activation]')
+        await tick()
+        click('[data-bard-lore-activation-option="required"]')
+        await tick()
+        expect(always.checked).toBe(true)
+        click('[data-lorebook-hidden]')
+        await tick()
+        expect((onChange as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0][0]).toMatchObject({ enabled: false, bard: { activation: 'required' } })
+        expect(languageKorean.lorebookWorkspace.bardRequired).toBe('항상 활성화')
     })
 
     it('renders Grimoire activation policies as text labels instead of legacy lorebook icons', async () => {
@@ -695,7 +755,7 @@ describe('LoreBookWorkspace', () => {
     })
 
     it('resizes the settings and variables independently with keyboard reset', async () => {
-        await render([entry('one', { content: '{{getvar::test}}' })])
+        await render([createBardLoreEntry(entry('one', { content: '{{getvar::test}}' }))], { bardMode: true })
         click('[data-lorebook-row="one"] [data-lorebook-open]')
         await tick()
         const grid = document.body.querySelector<HTMLElement>('.lore-editor-grid')!
@@ -1013,18 +1073,20 @@ describe('LoreBookWorkspace', () => {
         expect(list.textContent).not.toContain('Weather')
     })
 
-    it('keeps every explicit move action when drag is disabled', async () => {
-        await render([
-            entry('folder', { mode: 'folder', key: 'places', comment: 'Places' }),
-            entry('one'),
-        ], { dragEnabled: false })
-
+    it('groups six actions in the vertical toolbar and legacy settings above the editor', async () => {
+        await render([entry('one')], { dragEnabled: false })
+        const toolbar = document.body.querySelector('[data-lorebook-action-toolbar]')!
+        expect(toolbar.getAttribute('aria-orientation')).toBe('vertical')
+        expect(toolbar.querySelectorAll('button')).toHaveLength(6)
+        expect(toolbar.querySelector<HTMLButtonElement>('[data-lorebook-duplicate]')!.disabled).toBe(true)
         click('[data-lorebook-row="one"] [data-lorebook-open]')
         await tick()
-
-        for (const action of ['up', 'down', 'folder', 'root']) {
-            expect(document.body.querySelector(`[data-lorebook-move="${action}"]`)).not.toBeNull()
-        }
+        expect(toolbar.querySelector<HTMLButtonElement>('[data-lorebook-duplicate]')!.disabled).toBe(false)
+        expect(document.body.querySelector('.entry-actions')).toBeNull()
+        expect(document.body.querySelector('.lore-state-rail')).toBeNull()
+        const settings = document.body.querySelector('.editor-fields [data-lorebook-settings-toolbar]')!
+        expect(settings.querySelectorAll('input[type="checkbox"]')).toHaveLength(4)
+        expect(settings.querySelector('[data-lorebook-activation-percent]')).not.toBeNull()
     })
 
     it('toggles and edits a folder from the full folder row without a separate disclosure button', async () => {
@@ -1053,11 +1115,7 @@ describe('LoreBookWorkspace', () => {
         name.dispatchEvent(new FocusEvent('blur', { bubbles: true }))
         await tick()
         expect(onChange.mock.calls.at(-1)?.[0][0]).toMatchObject({ comment: 'Locations' })
-        expect(document.body.querySelector('[data-lorebook-move="up"]')).not.toBeNull()
-        click('[data-lorebook-move="down"]')
-        await tick()
-        expect((onChange.mock.calls.at(-1)?.[0] as loreBook[]).map((item) => item.id))
-            .toEqual(['folder-two', 'folder', 'child'])
+        expect(document.body.querySelector('[data-lorebook-action-toolbar] [data-lorebook-delete]')).not.toBeNull()
     })
 
     it('renders expanded folder children directly after their parent when source children come first', async () => {
@@ -1444,9 +1502,6 @@ describe('LoreBookWorkspace', () => {
             click('[data-lorebook-select="same"]')
             click('[data-lorebook-row="removed"] [data-lorebook-open]')
             await tick()
-            const folderTarget = document.body.querySelector<HTMLSelectElement>('[aria-label="Move target folder"]')!
-            folderTarget.value = 'folder'
-            folderTarget.dispatchEvent(new Event('change', { bubbles: true }))
 
             ownerA.data = [
                 entry('same'),
@@ -1460,7 +1515,6 @@ describe('LoreBookWorkspace', () => {
 
             click('[data-lorebook-row="same"] [data-lorebook-open]')
             await tick()
-            expect(document.body.querySelector<HTMLSelectElement>('[aria-label="Move target folder"]')?.value).toBe('')
             const content = document.body.querySelector<HTMLTextAreaElement>('[data-lorebook-field="content"]')!
             content.value = 'scope-a draft'
             content.dispatchEvent(new Event('input', { bubbles: true }))
@@ -1910,7 +1964,9 @@ describe('LoreBookWorkspaceDialog source contract', () => {
         expect(workspaceSource).toContain('var(--lore-state-width, 20rem)')
         expect(workspaceSource).toContain('class="bard-field"')
         expect(workspaceSource).toContain('flex-wrap: wrap')
-        expect(workspaceSource).not.toContain('flex-wrap: nowrap')
+        const toolbarRule = workspaceSource.match(/\.lore-toolbar\s*\{([^}]*)\}/)?.[1]
+        expect(toolbarRule).toContain('flex-wrap: wrap')
+        expect(toolbarRule).not.toContain('flex-wrap: nowrap')
         expect(workspaceSource).toContain('compact')
     })
 

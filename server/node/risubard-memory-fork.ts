@@ -157,7 +157,7 @@ async function copyDirectoryContents(
 
 export async function forkMemoryWorkspace(
     input: MemoryForkInput,
-    options: { fileSystem?: ForkFileSystem } = {}
+    options: { fileSystem?: ForkFileSystem; wikiOnly?: boolean } = {}
 ): Promise<MemoryForkReceipt> {
     required(input.characterId, 'characterId')
     required(input.sourceChatId, 'sourceChatId')
@@ -222,7 +222,19 @@ export async function forkMemoryWorkspace(
             if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
         }
         if (sourceExists) {
-            await copyDirectoryContents(fileSystem, source.directory, staging)
+            if (options.wikiOnly) {
+                const wikiSource = join(source.directory, 'wiki')
+                const wikiStatus = await fileSystem.lstat(wikiSource)
+                if (wikiStatus.isSymbolicLink() || !wikiStatus.isDirectory()) {
+                    throw new Error('Memory fork source wiki is unsafe')
+                }
+                const wikiDestination = join(staging, 'wiki')
+                await fileSystem.mkdir(wikiDestination)
+                await copyDirectoryContents(fileSystem, wikiSource, wikiDestination)
+            }
+            else {
+                await copyDirectoryContents(fileSystem, source.directory, staging)
+            }
         }
         await fileSystem.rm(join(staging, FORK_MARKER), { force: true })
         const warnings: string[] = []

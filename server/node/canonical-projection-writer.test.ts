@@ -51,6 +51,24 @@ describe('W1 canonical projection writer', () => {
         })
     })
 
+    it('writes preset companion settings without syncing unrelated entities', () => {
+        expect(writeCanonicalProjection).toBeTypeOf('function')
+        if (!writeCanonicalProjection) return
+
+        const direct = vi.fn(() => ({ files: 4 }))
+        const full = vi.fn()
+        const database = { botPresetsId: 1, botPresets: [{ id: 'preset-2' }] }
+        const result = writeCanonicalProjection({
+            repository: { syncLegacyPresetState: direct, importLegacyDatabase: full },
+            database,
+            directCollection: 'botPresetState',
+        })
+
+        expect(direct).toHaveBeenCalledWith(database)
+        expect(full).not.toHaveBeenCalled()
+        expect(result).toMatchObject({ strategy: 'bot-presets-direct', fallbackUsed: false, result: { files: 4 } })
+    })
+
     it('is wired into the patch debounce boundary without changing mixed patches', () => {
         const server = fs.readFileSync(path.join(process.cwd(), 'server', 'node', 'server.cjs'), 'utf8')
 

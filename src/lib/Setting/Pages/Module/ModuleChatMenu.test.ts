@@ -55,10 +55,46 @@ async function openMenu(alertMode = false) {
 }
 
 function scopeButton(scope: 'global' | 'chat') {
-    return document.querySelector<HTMLButtonElement>(`button[aria-label="Test module: ${language.chatModuleActivation[scope]}"]`)!
+    return document.querySelector<HTMLButtonElement>(`button[aria-label^="Test module: ${language.chatModuleActivation[scope]}"]`)!
 }
 
 describe('chat module manager', () => {
+    test.each([' Risuco, Other ', 'one'])('highlights preset integration %s without changing manual activation', async (integration) => {
+        DBState.db.modules[0].namespace = 'Risuco'
+        DBState.db.moduleIntergration = integration
+        await openMenu()
+        const button = scopeButton('global')
+        expect(button.classList.contains('preset-enabled')).toBe(true)
+        expect(button.title).toContain(language.chatModuleActivation.presetEnabled)
+        expect(button.getAttribute('aria-label')).toContain(language.chatModuleActivation.presetEnabled)
+        expect(button.getAttribute('aria-pressed')).toBe('false')
+        expect(scopeButton('chat').classList.contains('preset-enabled')).toBe(false)
+        expect(DBState.db.enabledModules).toEqual([])
+        expect(requestImmediateSave).not.toHaveBeenCalled()
+        button.click()
+        expect(DBState.db.enabledModules).toEqual(['one'])
+        button.click()
+        expect(DBState.db.enabledModules).toEqual([])
+        expect(DBState.db.moduleIntergration).toBe(integration)
+        expect(button.classList.contains('preset-enabled')).toBe(true)
+    })
+
+    test('keeps preset highlighting when also enabled manually', async () => {
+        DBState.db.moduleIntergration = 'one'
+        DBState.db.enabledModules = ['one']
+        await openMenu()
+        expect(scopeButton('global').classList.contains('preset-enabled')).toBe(true)
+        expect(scopeButton('global').getAttribute('aria-pressed')).toBe('true')
+    })
+
+    test.each(['', 'risuco', 'RisucoExtra', 'Test module'])('does not highlight unmatched integration %s', async (integration) => {
+        DBState.db.modules[0].namespace = 'Risuco'
+        DBState.db.moduleIntergration = integration
+        await openMenu()
+        expect(scopeButton('global').classList.contains('preset-enabled')).toBe(false)
+        expect(scopeButton('global').title).toBe(language.chatModuleActivation.globalHint)
+    })
+
     test('portals the shared folder list outside a shifted chat container', async () => {
         const { host } = await openMenu()
         expect(host.querySelector('[role="dialog"]')).toBeNull()

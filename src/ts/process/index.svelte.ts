@@ -119,6 +119,11 @@ import {
     endWikiGeneration,
 } from '../risubard/wikiGenerationState';
 import { composePromptBlockOverlay } from '../promptBlockOverlay';
+import {
+    attachScriptstateCheckpoint,
+    selectResponseScriptstateBefore,
+    snapshotChatScriptstate,
+} from '../chatScriptstateCheckpoint';
 
 function resolvedRisuBardSettings(chat?: Chat) {
     return resolveRisuBardChatSettings(DBState.db, chat?.risuBardSettings)
@@ -1319,7 +1324,15 @@ export async function sendChat(chatProcessIndex = -1,arg:{
 
     let chatAdditonalTokens = arg.chatAdditonalTokens ?? caculatedChatTokens
     const tokenizer = new ChatTokenizer(chatAdditonalTokens, DBState.db.aiModel.startsWith('gpt') ? 'noName' : 'name')
+    const scriptstateBeforeSend = snapshotChatScriptstate(nowChatroom.chats[selectedChat].scriptstate)
     let currentChat = runCurrentChatFunction(nowChatroom.chats[selectedChat])
+    const continuedResponseCheckpoint = arg.continue
+        ? currentChat.message[currentChat.message.length - 1]?.scriptstateCheckpoint
+        : undefined
+    const scriptstateBeforeResponse = selectResponseScriptstateBefore(
+        scriptstateBeforeSend,
+        continuedResponseCheckpoint,
+    )
     const narrativeSessionChatId = realChatId
         ?? ensureNarrativeSessionChatId(currentChat, v4)
     nowChatroom.chats[selectedChat] = currentChat
@@ -3121,6 +3134,14 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             chatIndex: selectedChat,
             messageIndex: findMessageIndexByChatId(currentChat, outputMessageId),
         })
+        const outputMessageIndex = findMessageIndexByChatId(currentChat, outputMessageId)
+        if(outputMessageIndex >= 0){
+            attachScriptstateCheckpoint(
+                currentChat.message[outputMessageIndex],
+                scriptstateBeforeResponse,
+                snapshotChatScriptstate(currentChat.scriptstate),
+            )
+        }
         if(DBState.db.ttsAutoSpeech){
             await sayTTS(currentChar, result)
         }
@@ -3211,6 +3232,14 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             chatIndex: selectedChat,
             messageIndex: findMessageIndexByChatId(currentChat, outputMessageId),
         })
+        const outputMessageIndex = findMessageIndexByChatId(currentChat, outputMessageId)
+        if(outputMessageIndex >= 0){
+            attachScriptstateCheckpoint(
+                currentChat.message[outputMessageIndex],
+                scriptstateBeforeResponse,
+                snapshotChatScriptstate(currentChat.scriptstate),
+            )
+        }
     }
 
     let needsAutoContinue = false

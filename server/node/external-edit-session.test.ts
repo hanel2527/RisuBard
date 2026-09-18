@@ -78,4 +78,14 @@ describe('external edit session server wiring', () => {
         expect(server.match(/externalEditSession\.isActive\(\)/g)?.length ?? 0).toBeGreaterThanOrEqual(5)
         expect(server).toContain("code: 'EXTERNAL_EDIT_MODE'")
     })
+
+    it('serializes canonical adoption before serving the compatibility database', () => {
+        const readRoute = server.slice(
+            server.indexOf("app.get('/api/read'"),
+            server.indexOf("app.get('/api/remove'"),
+        )
+        expect(readRoute).toContain('prepared = await queueStorageOperation(async () => {')
+        expect(readRoute).toContain('return await prepareDatabaseRead(filePath, key, { flush: shouldFlush });')
+        expect(server).toContain('async function prepareDatabaseRead(filePath, key, options = {})')
+    })
 })

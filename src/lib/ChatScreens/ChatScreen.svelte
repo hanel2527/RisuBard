@@ -317,8 +317,9 @@
     {/if}
 {/snippet}
 
+<div class="relative flex h-full min-h-0 min-w-0 w-full" data-chat-dock-workspace>
 {#if DBState.db.theme === 'waifu'}
-    <div class="grow h-full min-h-0 flex justify-center relative overflow-hidden" style="{bgImg.length < 4 ? wallPaper : bgImg}">
+    <div class="grow flex-1 h-full min-h-0 min-w-0 flex justify-center relative overflow-hidden" style="{bgImg.length < 4 ? wallPaper : bgImg}">
         {@render chatChrome()}
         <BackgroundDom />
         {#if $selectedCharID >= 0}
@@ -333,7 +334,7 @@
         </div>
     </div>
 {:else if DBState.db.theme === 'waifuMobile'}
-    <div class="grow h-full min-h-0 relative overflow-hidden" style={bgImg.length < 4 ? wallPaper : bgImg}>
+    <div class="grow flex-1 h-full min-h-0 min-w-0 relative overflow-hidden" style={bgImg.length < 4 ? wallPaper : bgImg}>
         {@render chatChrome()}
         <BackgroundDom />
         <div class="w-full absolute z-10 bottom-0 left-0"
@@ -351,7 +352,7 @@
         {/if}
     </div>
 {:else}
-    <div class="grow h-full min-h-0 min-w-0 relative justify-center flex overflow-hidden">
+    <div class="grow flex-1 h-full min-h-0 min-w-0 relative justify-center flex overflow-hidden">
         {@render chatChrome()}
         <BackgroundDom />
         <div style={bgImg} class="h-full w-full" class:max-w-6xl={DBState.db.classicMaxWidth}>
@@ -364,6 +365,7 @@
         </div>
     </div>
 {/if}
+</div>
 {#if openChatList}
     <ChatList close={() => {openChatList = false}}/>
 {:else if openModuleList}

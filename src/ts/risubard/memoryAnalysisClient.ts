@@ -882,6 +882,7 @@ export function createStoredResponseMemoryAnalysis(
             expectedContentHash?: string
             reviewStatus?: 'unreviewed' | 'reviewed'
             writingLanguage?: WikiWritingLanguage
+            retrievalMetadata?: import('../../../server/node/risubard-memory-metadata').MemoryRetrievalMetadata
         }, signal?: AbortSignal) {
             return saveCanonicalWikiDocument({
                 ...input,
@@ -897,6 +898,7 @@ export function createStoredResponseMemoryAnalysis(
             markdown: string
             append?: boolean
             writingLanguage?: WikiWritingLanguage
+            retrievalMetadata?: import('../../../server/node/risubard-memory-metadata').MemoryRetrievalMetadata
         }, signal?: AbortSignal) {
             const document = await readJson(await postJson(
                 options.fetchImpl,
@@ -939,7 +941,7 @@ export function createStoredResponseMemoryAnalysis(
             const structuredSchema = request.format === 'markdown'
                 ? undefined
                 : request.format === 'memory-draft'
-                    ? memoryWriterDraftSchema
+                    ? request.responseSchema ?? memoryWriterDraftSchema
                     : request.format === 'reboot-batch'
                         ? request.responseSchema ?? rebootBatchDraftSchema
                         : request.format === 'canonical-batch'

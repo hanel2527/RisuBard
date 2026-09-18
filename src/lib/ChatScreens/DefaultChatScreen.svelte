@@ -38,7 +38,7 @@
         stopCurrentWikiReboot,
         sendChat,
     } from "../../ts/process/index.svelte";
-    import { abortGeneration, chatGenKey, endGeneration, generationStates, registerAbort } from "../../ts/process/generationState";
+    import { abortGeneration, chatGenKey, endGeneration, generationStates, registerAbort, isAnyGenerating } from "../../ts/process/generationState";
     import { claimPendingSend, clearPendingSend, markResumable, resumableSends, takeResumable } from "../../ts/process/request/pendingSends";
     import { ensureCurrentChatReady } from "../../ts/storage/chatStorage";
     import { sleep } from "../../ts/util";
@@ -48,6 +48,12 @@
     import { playNotificationSound } from '../../ts/notificationSound'
 import { isMobile } from 'src/ts/platform'
     import { processScript } from "src/ts/process/scripts";
+    import {
+        getSwipeScriptstateCheckpoints,
+        restoreScriptstateBeforeReroll,
+        restoreSelectedSwipeScriptstate,
+        snapshotChatScriptstate,
+    } from 'src/ts/chatScriptstateCheckpoint';
     import CreatorQuote from "./CreatorQuote.svelte";
     import { stopTTS } from "src/ts/process/tts";
     import MainMenu from '../UI/MainMenu.svelte';
@@ -80,6 +86,7 @@ import { isMobile } from 'src/ts/platform'
     import RisuBardMemoryWiki from '../Others/RisuBardMemoryWiki.svelte';
     import ArcaChatLogDialog from './ArcaChatLogDialog.svelte'
     import RisuBardSaveLoadShortcuts from './RisuBardSaveLoadShortcuts.svelte';
+    import RisuBardChatFindReplaceDialog from './RisuBardChatFindReplaceDialog.svelte';
     import type { StorySourceRef } from 'src/ts/risubard/storySoFar';
     import feedIcon from 'src/assets/solar-bold/feed-bold.svg';
     import loadIcon from 'src/assets/solar-bold/undo-left-square-bold.svg';
@@ -164,6 +171,7 @@ import { isMobile } from 'src/ts/platform'
         savingSlot = false,
     }: Props = $props();
     let currentCharacter = $derived(DBState.db.characters[$selectedCharID])
+    let findReplaceOpen = $state(false)
     let currentChatSlot = $derived(currentCharacter?.chats[currentCharacter.chatPage])
     let wikiRebootBlocksGeneration = $derived(
         blocksChatGeneration(currentChatSlot?.risuBardWikiReboot)
@@ -780,6 +788,10 @@ import { isMobile } from 'src/ts/platform'
 
         // Save existing swipes before clone replaces the array
         const savedSwipes = lastMsg.swipes ? [...lastMsg.swipes] : [lastMsg.data]
+        const savedSwipeCheckpoints = getSwipeScriptstateCheckpoints(lastMsg, savedSwipes.length)
+        const originalScriptstate = snapshotChatScriptstate(
+            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate,
+        )
 
         // Generate new response
         // Preserve trailing comment/disabled messages (e.g. branch comments)
@@ -804,6 +816,10 @@ import { isMobile } from 'src/ts/platform'
             let msg = cha.pop()
             if(!msg) return
         }
+        restoreScriptstateBeforeReroll(
+            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage],
+            lastMsg,
+        )
         DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message = cha
         const generated = await sendChatMain()
 
@@ -812,6 +828,9 @@ import { isMobile } from 'src/ts/platform'
         // If generation failed, restore original messages
         if (!generated) {
             DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message = originalMessages
+            const currentChat = DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage]
+            if(originalScriptstate === null) delete currentChat.scriptstate
+            else currentChat.scriptstate = { ...originalScriptstate }
             return
         }
 
@@ -826,6 +845,10 @@ import { isMobile } from 'src/ts/platform'
         if (newLastMsg && !newLastMsg.swipes) {
             newLastMsg.swipes = [...savedSwipes, newLastMsg.data]
             newLastMsg.swipeId = newLastMsg.swipes.length - 1
+            newLastMsg.scriptstateSwipeCheckpoints = [
+                ...savedSwipeCheckpoints,
+                newLastMsg.scriptstateCheckpoint ?? null,
+            ]
         }
     }
 
@@ -836,6 +859,10 @@ import { isMobile } from 'src/ts/platform'
 
         lastMsg.swipeId = lastMsg.swipeId <= 0 ? lastMsg.swipes.length - 1 : lastMsg.swipeId - 1
         lastMsg.data = lastMsg.swipes[lastMsg.swipeId]
+        restoreSelectedSwipeScriptstate(
+            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage],
+            lastMsg,
+        )
         DBState.db.characters[$selectedCharID].reloadKeys += 1
     }
 
@@ -845,6 +872,10 @@ import { isMobile } from 'src/ts/platform'
 
         lastMsg.swipeId = lastMsg.swipeId >= lastMsg.swipes.length - 1 ? 0 : lastMsg.swipeId + 1
         lastMsg.data = lastMsg.swipes[lastMsg.swipeId]
+        restoreSelectedSwipeScriptstate(
+            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage],
+            lastMsg,
+        )
         DBState.db.characters[$selectedCharID].reloadKeys += 1
     }
 
@@ -853,7 +884,9 @@ import { isMobile } from 'src/ts/platform'
         if (!lastMsg || !lastMsg.swipes || lastMsg.swipes.length <= 1) return
 
         const idx = lastMsg.swipeId ?? 0
+        const swipeCheckpoints = getSwipeScriptstateCheckpoints(lastMsg, lastMsg.swipes.length)
         lastMsg.swipes.splice(idx, 1)
+        swipeCheckpoints.splice(idx, 1)
 
         if (idx >= lastMsg.swipes.length) {
             lastMsg.swipeId = lastMsg.swipes.length - 1
@@ -863,7 +896,18 @@ import { isMobile } from 'src/ts/platform'
         if (lastMsg.swipes.length === 1) {
             delete lastMsg.swipes
             delete lastMsg.swipeId
+            delete lastMsg.scriptstateSwipeCheckpoints
+            const checkpoint = swipeCheckpoints[0]
+            if(checkpoint) lastMsg.scriptstateCheckpoint = checkpoint
+            else delete lastMsg.scriptstateCheckpoint
         }
+        else{
+            lastMsg.scriptstateSwipeCheckpoints = swipeCheckpoints
+        }
+        restoreSelectedSwipeScriptstate(
+            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage],
+            lastMsg,
+        )
         DBState.db.characters[$selectedCharID].reloadKeys += 1
     }
 
@@ -1326,6 +1370,8 @@ import { isMobile } from 'src/ts/platform'
                             pageCount={chatBounds.pageCount}
                             turnCount={targetPageTurnNavigation.turnCount}
                             onJump={jumpToPageTurn}
+                            onFindReplace={() => findReplaceOpen = true}
+                            findReplaceDisabled={$isWikiGenerating || $isAnyGenerating || !!currentChatSlot?.isStreaming || !!currentChatSlot?.risuBardWikiReboot}
                         />
                     </div>
                 {/if}
@@ -1889,6 +1935,9 @@ import { isMobile } from 'src/ts/platform'
         />
     </main>
     {#if currentCharacter?.chaId && currentChatSlot?.id}
+        {#key currentCharacter.chaId + currentChatSlot.id}
+            <RisuBardChatFindReplaceDialog bind:open={findReplaceOpen} characterId={currentCharacter.chaId} chatId={currentChatSlot.id} blocked={!!currentChatSlot.isStreaming || !!currentChatSlot.risuBardWikiReboot} />
+        {/key}
         <RisuBardMemoryWiki
             bind:open={memoryWikiOpen}
             characterId={currentCharacter.chaId}

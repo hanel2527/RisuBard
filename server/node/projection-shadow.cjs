@@ -1,6 +1,7 @@
 'use strict';
 
 const { isDeepStrictEqual } = require('node:util');
+const { normalizeJSON } = require('./utils.cjs');
 
 function defaultScheduleTask(task) {
     const handle = setImmediate(() => { void task(); });
@@ -39,7 +40,7 @@ function createProjectionShadow(options = {}) {
         const startedAt = now();
         try {
             const projected = repository.exportLegacyDatabase();
-            const semanticMatch = isDeepStrictEqual(projected, candidate.database);
+            const semanticMatch = isDeepStrictEqual(projected, normalizeJSON(candidate.database));
             record({
                 kind: 'projection-shadow',
                 trigger: candidate.trigger,

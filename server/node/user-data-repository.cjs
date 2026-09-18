@@ -8,6 +8,7 @@ const {
     commitTransaction,
     moveToTrash,
     readVerifiedJson,
+    refreshChecksum,
     recoverTransactions,
     resolveInside,
 } = require('./file-store.cjs');
@@ -76,6 +77,31 @@ function stableId(value, prefix) {
     return `${prefix}-${crypto.randomUUID()}`;
 }
 
+function orderedIds(previousIds, discoveredIds) {
+    const discovered = new Set(discoveredIds);
+    const ordered = [];
+    for (const id of previousIds || []) {
+        if (discovered.delete(id)) ordered.push(id);
+    }
+    return [...ordered, ...[...discovered].sort()];
+}
+
+function characterUpdatedAt(character, fallback) {
+    const value = character?.modification_date;
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+        return Math.trunc(value >= 1_000_000_000_000 ? value : value * 1000);
+    }
+    return Math.trunc(fallback);
+}
+
+function sidebarMeaning(sidebar) {
+    return JSON.stringify({
+        schemaVersion: 1,
+        characters: Array.isArray(sidebar?.characters) ? sidebar.characters : [],
+        collections: isPlainObject(sidebar?.collections) ? sidebar.collections : {},
+    });
+}
+
 function without(source, names) {
     const result = {};
     for (const [key, value] of Object.entries(source || {})) {
@@ -89,6 +115,117 @@ function createUserDataRepository(options = {}) {
     fs.mkdirSync(dataRoot, { recursive: true });
     recoverTransactions(dataRoot);
 
+    function checksumMismatch(relativePath) {
+        const error = new Error(`Canonical file checksum mismatch: ${relativePath}`);
+        error.code = 'CANONICAL_FILES_CHANGED';
+        return error;
+    }
+
+    function readCanonicalBytes(relativePath) {
+        const target = resolveInside(dataRoot, relativePath);
+        const bytes = fs.readFileSync(target);
+        const checksumPath = `${target}.sha256`;
+        if (!fs.existsSync(checksumPath)) throw checksumMismatch(relativePath);
+        const expected = fs.readFileSync(checksumPath, 'utf8').trim();
+        const actual = crypto.createHash('sha256').update(bytes).digest('hex');
+        if (!/^[a-f0-9]{64}$/i.test(expected) || expected.toLowerCase() !== actual) {
+            throw checksumMismatch(relativePath);
+        }
+        return bytes;
+    }
+
+    function readCanonicalJson(relativePath) {
+        let parsed;
+        try {
+            parsed = JSON.parse(readCanonicalBytes(relativePath).toString('utf8'));
+        } catch (error) {
+            if (error?.code === 'CANONICAL_FILES_CHANGED') throw error;
+            const invalid = new Error(`Invalid canonical JSON: ${relativePath}`);
+            invalid.code = 'CANONICAL_FILES_CHANGED';
+            throw invalid;
+        }
+        if (!isPlainObject(parsed)) {
+            const invalid = new Error(`Canonical file validation failed: ${relativePath}`);
+            invalid.code = 'CANONICAL_FILES_CHANGED';
+            throw invalid;
+        }
+        return parsed;
+    }
+
+    function listJsonIds(directory) {
+        const absolute = path.join(dataRoot, directory);
+        if (!fs.existsSync(absolute)) return [];
+        return fs.readdirSync(absolute, { withFileTypes: true })
+            .filter(entry => entry.isFile() && !entry.name.startsWith('.') && entry.name.endsWith('.json'))
+            .map(entry => entry.name.slice(0, -'.json'.length));
+    }
+
+    function listDirectoryIds(directory) {
+        const absolute = path.join(dataRoot, directory);
+        if (!fs.existsSync(absolute)) return [];
+        return fs.readdirSync(absolute, { withFileTypes: true })
+            .filter(entry => entry.isDirectory() && !entry.name.startsWith('.'))
+            .map(entry => entry.name);
+    }
+
+    function collectCanonicalSourcePaths() {
+        const relativePaths = [];
+        for (const relativePath of ['settings/app.json', 'secrets/credentials.json']) {
+            if (fs.existsSync(resolveInside(dataRoot, relativePath))) relativePaths.push(relativePath);
+        }
+        for (const [, directory] of COLLECTIONS) {
+            for (const id of listJsonIds(directory)) relativePaths.push(path.join(directory, `${id}.json`));
+        }
+        for (const characterId of listDirectoryIds('characters')) {
+            const metadataPath = path.join('characters', characterId, 'metadata.json');
+            if (!fs.existsSync(resolveInside(dataRoot, metadataPath))) {
+                const error = new Error(`Canonical character metadata is missing: ${characterId}`);
+                error.code = 'CANONICAL_FILES_CHANGED';
+                throw error;
+            }
+            relativePaths.push(metadataPath);
+            const chatsDirectory = path.join('characters', characterId, 'chats');
+            for (const chatId of listDirectoryIds(chatsDirectory)) {
+                const metadata = chatMetadataPath(characterId, chatId);
+                const messages = messagesPath(characterId, chatId);
+                if (!fs.existsSync(resolveInside(dataRoot, metadata))
+                    || !fs.existsSync(resolveInside(dataRoot, messages))) {
+                    const error = new Error(`Canonical chat files are incomplete: ${characterId}/${chatId}`);
+                    error.code = 'CANONICAL_FILES_CHANGED';
+                    throw error;
+                }
+                relativePaths.push(metadata, messages);
+            }
+        }
+        return relativePaths.map(value => value.split(path.sep).join('/')).sort();
+    }
+
+    function sourceRevision(relativePaths = collectCanonicalSourcePaths()) {
+        const revision = crypto.createHash('sha256');
+        for (const relativePath of relativePaths) {
+            const target = resolveInside(dataRoot, relativePath);
+            const stat = fs.statSync(target, { bigint: true });
+            const checksumPath = `${target}.sha256`;
+            const sidecar = fs.existsSync(checksumPath)
+                ? fs.readFileSync(checksumPath, 'utf8').trim()
+                : 'missing';
+            revision.update(`${relativePath}\0${stat.size}\0${stat.mtimeNs}\0${sidecar}\n`);
+        }
+        return revision.digest('hex');
+    }
+
+    function readPreviousSidebarForReconciliation() {
+        const relativePath = 'index/sidebar.json';
+        if (!fs.existsSync(resolveInside(dataRoot, relativePath))) return null;
+        try {
+            const value = readCanonicalJson(relativePath);
+            if (!Array.isArray(value.characters) || !isPlainObject(value.collections)) return null;
+            return value;
+        } catch {
+            return null;
+        }
+    }
+
     function loadSidebarIndex(options = {}) {
         const indexPath = path.join(dataRoot, 'index', 'sidebar.json');
         if (!fs.existsSync(indexPath)) {
@@ -101,40 +238,18 @@ function createUserDataRepository(options = {}) {
     }
 
     function getProjectionRevision() {
-        const indexPath = path.join(dataRoot, 'index', 'sidebar.json');
-        if (!fs.existsSync(indexPath)) return null;
-
-        const index = loadSidebarIndex({ acceptExternalChanges: true });
-        const relativePaths = new Set([
-            'index/sidebar.json',
-            'settings/app.json',
-            'secrets/credentials.json',
-        ]);
-        for (const [legacyName, directory] of COLLECTIONS) {
-            for (const id of index.collections?.[legacyName] || []) {
-                relativePaths.add(path.join(directory, `${stableId(id, directory.slice(0, -1))}.json`));
-            }
-        }
-        for (const character of index.characters || []) {
-            const characterId = stableId(character?.id, 'character');
-            relativePaths.add(path.join('characters', characterId, 'metadata.json'));
-            for (const chat of character?.chats || []) {
-                const chatId = stableId(chat?.id, 'chat');
-                relativePaths.add(chatMetadataPath(characterId, chatId));
-                relativePaths.add(messagesPath(characterId, chatId));
-            }
-        }
-
+        const sources = collectCanonicalSourcePaths();
+        if (sources.length === 0) return null;
         const revision = crypto.createHash('sha256');
-        for (const relativePath of [...relativePaths].sort()) {
-            const normalizedPath = relativePath.split(path.sep).join('/');
+        revision.update(`sources\0${sourceRevision(sources)}\n`);
+        for (const relativePath of ['index/sidebar.json', 'index/sidebar.json.sha256']) {
             const target = resolveInside(dataRoot, relativePath);
             try {
                 const stat = fs.statSync(target, { bigint: true });
-                revision.update(`${normalizedPath}\0${stat.size}\0${stat.mtimeNs}\n`);
+                revision.update(`${relativePath}\0${stat.size}\0${stat.mtimeNs}\n`);
             } catch (error) {
                 if (error?.code !== 'ENOENT') throw error;
-                revision.update(`${normalizedPath}\0missing\n`);
+                revision.update(`${relativePath}\0missing\n`);
             }
         }
         return revision.digest('hex');
@@ -171,6 +286,125 @@ function createUserDataRepository(options = {}) {
         });
     }
 
+    function parseCanonicalMessages(characterId, chatId) {
+        const relativePath = messagesPath(characterId, chatId);
+        const text = readCanonicalBytes(relativePath).toString('utf8');
+        return text.split(/\r?\n/).filter(Boolean).map((line, index) => {
+            try { return JSON.parse(line); }
+            catch {
+                const error = new Error(`Invalid chat JSONL at ${relativePath}:${index + 1}`);
+                error.code = 'CANONICAL_FILES_CHANGED';
+                throw error;
+            }
+        });
+    }
+
+    function reconcileCanonicalProjection(options = {}) {
+        const includeDatabase = options.includeDatabase !== false;
+        const sourcePathsBefore = collectCanonicalSourcePaths();
+        if (sourcePathsBefore.length === 0) {
+            return { database: null, revision: null, sidebar: null, sidebarWritten: false, transaction: null };
+        }
+        const revisionBefore = sourceRevision(sourcePathsBefore);
+        const previousIndex = readPreviousSidebarForReconciliation();
+        const settings = fs.existsSync(path.join(dataRoot, 'settings', 'app.json'))
+            ? readCanonicalJson('settings/app.json') : {};
+        const secrets = fs.existsSync(path.join(dataRoot, 'secrets', 'credentials.json'))
+            ? readCanonicalJson('secrets/credentials.json') : {};
+        const collections = {};
+        const collectionValues = {};
+        for (const [legacyName, directory] of COLLECTIONS) {
+            const ids = orderedIds(previousIndex?.collections?.[legacyName], listJsonIds(directory));
+            collections[legacyName] = ids;
+            if (includeDatabase) {
+                collectionValues[legacyName] = ids.map(id => readCanonicalJson(path.join(directory, `${id}.json`)));
+            }
+        }
+
+        const characterIds = orderedIds(
+            previousIndex?.characters?.map(character => character?.id).filter(Boolean),
+            listDirectoryIds('characters'),
+        );
+        const characters = [];
+        const sidebarCharacters = [];
+        for (const characterId of characterIds) {
+            const metadataPath = path.join('characters', characterId, 'metadata.json');
+            const metadata = readCanonicalJson(metadataPath);
+            const previousCharacter = previousIndex?.characters?.find(character => character?.id === characterId);
+            const chatIds = orderedIds(
+                previousCharacter?.chats?.map(chat => chat?.id).filter(Boolean),
+                listDirectoryIds(path.join('characters', characterId, 'chats')),
+            );
+            const chats = [];
+            const chatSummaries = [];
+            for (const chatId of chatIds) {
+                const chatMetadata = readCanonicalJson(chatMetadataPath(characterId, chatId));
+                const previousChat = previousCharacter?.chats?.find(chat => chat?.id === chatId);
+                const legacyMessagePresent = previousChat?.legacyMessagePresent !== false;
+                if (includeDatabase) {
+                    const loaded = { ...chatMetadata, message: parseCanonicalMessages(characterId, chatId) };
+                    chats.push(legacyMessagePresent ? loaded : without(loaded, new Set(['message'])));
+                }
+                chatSummaries.push({
+                    id: chatId,
+                    name: chatMetadata?.name || '',
+                    lastDate: chatMetadata?.lastDate ?? 0,
+                    legacyMessagePresent,
+                });
+            }
+            if (includeDatabase) characters.push({ ...metadata, chats });
+            sidebarCharacters.push({
+                id: characterId,
+                name: metadata?.name || '',
+                // Normal saves use a save timestamp when modification_date is
+                // absent. Preserve it on reopen: replacing it with file mtime
+                // rewrites our index and falsely signals an external edit.
+                updatedAt: characterUpdatedAt(metadata, options.preserveSidebarTimestamps && Number.isFinite(previousCharacter?.updatedAt)
+                    ? previousCharacter.updatedAt
+                    : fs.statSync(resolveInside(dataRoot, metadataPath)).mtimeMs),
+                chats: chatSummaries,
+            });
+        }
+
+        const sourcePathsAfter = collectCanonicalSourcePaths();
+        const revisionAfter = sourceRevision(sourcePathsAfter);
+        if (revisionBefore !== revisionAfter
+            || JSON.stringify(sourcePathsBefore) !== JSON.stringify(sourcePathsAfter)) {
+            const error = new Error('Canonical files changed while reconciliation was reading them');
+            error.code = 'CANONICAL_FILES_CHANGED';
+            throw error;
+        }
+
+        const derived = { schemaVersion: 1, characters: sidebarCharacters, collections };
+        const unchanged = previousIndex && sidebarMeaning(previousIndex) === sidebarMeaning(derived);
+        const sidebar = {
+            schemaVersion: 1,
+            updatedAt: unchanged && Number.isFinite(previousIndex.updatedAt)
+                ? previousIndex.updatedAt
+                : Date.now(),
+            characters: sidebarCharacters,
+            collections,
+        };
+        const transaction = unchanged ? null : commitTransaction(dataRoot, [
+            { path: 'index/sidebar.json', data: jsonBytes(sidebar) },
+        ]);
+        let database = null;
+        if (includeDatabase) {
+            const { schemaVersion: _settingsSchema, ...plainSettings } = settings;
+            const { schemaVersion: _secretsSchema, ...plainSecrets } = secrets;
+            database = deepMerge(plainSettings, plainSecrets);
+            for (const [legacyName] of COLLECTIONS) database[legacyName] = collectionValues[legacyName];
+            database.characters = characters;
+        }
+        return {
+            database,
+            revision: getProjectionRevision(),
+            sidebar,
+            sidebarWritten: !unchanged,
+            transaction,
+        };
+    }
+
     function loadChat(characterId, chatId, options = {}) {
         const metadata = readJson(chatMetadataPath(characterId, chatId), options);
         return { ...metadata, message: loadMessages(characterId, chatId) };
@@ -187,6 +421,7 @@ function createUserDataRepository(options = {}) {
         } finally {
             fs.closeSync(fd);
         }
+        refreshChecksum(dataRoot, messagesPath(characterId, chatId));
     }
 
     function commitUserMessage(characterId, chatId, message) {
@@ -283,7 +518,7 @@ function createUserDataRepository(options = {}) {
             characters.push({
                 id: characterId,
                 name: rawCharacter?.name || '',
-                updatedAt: Date.now(),
+                updatedAt: characterUpdatedAt(rawCharacter, Date.now()),
                 chats: mode === 'merge' ? mergeById(previousCharacter?.chats, chats) : chats,
             });
         }
@@ -355,6 +590,46 @@ function createUserDataRepository(options = {}) {
         return { legacyName, files: operations.length, transaction };
     }
 
+    function syncLegacyPresetState(database) {
+        if (!database || typeof database !== 'object') throw new Error('Legacy database must be an object');
+        if (!Array.isArray(database.botPresets)) throw new Error('Legacy collection must be an array: botPresets');
+
+        const previousIndex = loadSidebarIndex();
+        const excluded = new Set(['characters', ...COLLECTIONS.map(([legacy]) => legacy)]);
+        const incoming = splitSecrets(without(database, excluded));
+        const values = database.botPresets;
+        const incomingIds = [];
+        const operations = [
+            { path: 'settings/app.json', data: jsonBytes({ schemaVersion: 1, ...incoming.settings }) },
+            { path: 'secrets/credentials.json', data: jsonBytes({ schemaVersion: 1, ...incoming.secrets }) },
+        ];
+        for (const item of values) {
+            const id = stableId(item?.id, 'preset');
+            incomingIds.push(id);
+            operations.push({ path: path.join('presets', `${id}.json`), data: jsonBytes({ ...item, id }) });
+        }
+        const sidebar = {
+            ...previousIndex,
+            schemaVersion: 1,
+            updatedAt: Date.now(),
+            collections: {
+                ...(previousIndex.collections || {}),
+                botPresets: incomingIds,
+            },
+        };
+        operations.push({ path: 'index/sidebar.json', data: jsonBytes(sidebar) });
+        const transaction = commitTransaction(dataRoot, operations);
+
+        const retained = new Set(incomingIds);
+        for (const id of previousIndex.collections?.botPresets || []) {
+            const relativePath = path.join('presets', `${stableId(id, 'preset')}.json`);
+            if (!retained.has(id) && fs.existsSync(resolveInside(dataRoot, relativePath))) {
+                moveToTrash(dataRoot, relativePath);
+            }
+        }
+        return { files: operations.length, transaction };
+    }
+
     function loadCollection(directory, ids, options = {}) {
         return (ids || []).map(id => readJson(path.join(directory, `${stableId(id, directory.slice(0, -1))}.json`), options));
     }
@@ -385,6 +660,10 @@ function createUserDataRepository(options = {}) {
         return database;
     }
 
+    if (collectCanonicalSourcePaths().length > 0) {
+        reconcileCanonicalProjection({ includeDatabase: false, preserveSidebarTimestamps: true });
+    }
+
     return {
         dataRoot,
         appendMessage,
@@ -398,7 +677,9 @@ function createUserDataRepository(options = {}) {
         loadChat,
         loadMessages,
         loadSidebarIndex,
+        reconcileCanonicalProjection,
         saveAssistantDraft,
+        syncLegacyPresetState,
         syncLegacyCollection,
     };
 }

@@ -5,7 +5,7 @@ function createCanonicalProjectionSync(options = {}) {
     const readAcceptedRevision = options.readAcceptedRevision;
     const writeAcceptedRevision = options.writeAcceptedRevision;
     if (!repository || typeof repository.getProjectionRevision !== 'function'
-        || typeof repository.exportLegacyDatabase !== 'function') {
+        || typeof repository.reconcileCanonicalProjection !== 'function') {
         throw new Error('Canonical projection repository is required');
     }
     if (typeof readAcceptedRevision !== 'function' || typeof writeAcceptedRevision !== 'function') {
@@ -15,9 +15,11 @@ function createCanonicalProjectionSync(options = {}) {
     function loadExternalChanges() {
         const revision = repository.getProjectionRevision();
         if (!revision || revision === readAcceptedRevision()) return null;
+        const reconciled = repository.reconcileCanonicalProjection();
         return {
-            revision,
-            database: repository.exportLegacyDatabase({ acceptExternalChanges: true }),
+            revision: reconciled.revision,
+            database: reconciled.database,
+            sidebarWritten: reconciled.sidebarWritten,
         };
     }
 

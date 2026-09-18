@@ -30,6 +30,7 @@
     {:else}
         <ol>
             {#each entries as entry, index (entry.id)}
+                {@const localSourceIds = entry.source.messageIds.filter(id => !id.startsWith('inherited:'))}
                 <li data-story-entry={entry.id}>
                     <span class="chapter-mark">{String(index + 1).padStart(2, '0')}</span>
                     <article class="story-card">
@@ -53,11 +54,12 @@
                             type="button"
                             class="source-button"
                             data-story-source
-                            onclick={() => onNavigate?.(entry.source)}
-                            title="원문으로 이동"
+                            onclick={() => onNavigate?.({ kind: 'chat', messageIds: localSourceIds })}
+                            disabled={localSourceIds.length === 0}
+                            title={localSourceIds.length ? '원문으로 이동' : '이전 챗 원문 없음'}
                         >
                             <LocateFixedIcon size={14} />
-                            <span>원문으로 이동</span>
+                            <span>{localSourceIds.length ? '원문으로 이동' : '이전 챗 원문 없음'}</span>
                         </button>
                     </article>
                 </li>

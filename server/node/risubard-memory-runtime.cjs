@@ -28,6 +28,7 @@ const {
     renameMemorySaveSlot,
 } = require('./risubard-memory-save.ts')
 const { revealLocalFile } = require('./reveal-local-file.cjs')
+const { inheritWikiWorkspace, importWikiWorkspace } = require('./risubard-wiki-transfer.ts')
 
 function createRuntimeMemoryService(userDataDirectory, options = {}) {
     const memory = createNarrativeMemoryService(userDataDirectory)
@@ -73,6 +74,14 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
     )
     return {
         ...memory,
+        inheritWiki: (input) => serializedMany([
+            [input.characterId, input.sourceChatId],
+            [input.characterId, input.destinationChatId],
+        ], () => inheritWikiWorkspace({ userDataDirectory, ...input })),
+        importWiki: (input) => serialized(input.characterId, input.chatId, async () => {
+            try { return await importWikiWorkspace({ userDataDirectory, ...input }) }
+            finally { wiki.invalidateCache(input.characterId, input.chatId) }
+        }),
         applyDelta: (input) => serialized(
             input.characterId,
             input.chatId,

@@ -960,7 +960,7 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
     const startedAt = performance.now()
     const operationId = observationContext.operationId || nodeCrypto.randomUUID()
     const trigger = observationContext.trigger || 'unspecified'
-    let strategy = observationContext.directCollection === 'botPresets' ? 'bot-presets-direct' : 'full-sync'
+    let strategy = ['botPresets', 'botPresetState'].includes(observationContext.directCollection) ? 'bot-presets-direct' : 'full-sync'
     let fallbackUsed = false
     let fallbackCode
     let errorStage = 'external-change-check'
@@ -3643,6 +3643,27 @@ async function readStorageItemPayload(key) {
     return value === null ? kvGet(key) : value;
 }
 
+async function prepareDatabaseRead(filePath, key, options = {}) {
+    if (options.flush === true) await flushPendingDb();
+    const stored = await readStorageItemPayload(key);
+    if (stored === null) return { value: null, etag: null };
+    let database;
+    try {
+        database = await decodeDatabaseWithPersistentChatIds(stored, {
+            runMaintenance: true,
+        });
+    } catch (error) {
+        logger.error('[Read] Failed to strip chats from database.bin', error);
+        throw error;
+    }
+    initChatStore(database);
+    const stripped = normalizeJSON(stripChatsFromDb(database));
+    dbCache[filePath] = stripped;
+    const value = encodeRisuSaveLegacyBuffer(stripped);
+    dbEtag = computeBufferEtag(value);
+    return { value, etag: dbEtag };
+}
+
 function sendStorageEtagConflict(res, currentEtag) {
     if (currentEtag && currentEtag === externallyAdoptedDbEtag) {
         sendCanonicalProjectionConflict(res, { etag: currentEtag });
@@ -3687,36 +3708,28 @@ app.get('/api/read', async (req, res, next) => {
     }
     try {
         const key = Buffer.from(filePath, 'hex').toString('utf-8');
-        // Flush pending patches before reading database.bin
-        if (key === 'database/database.bin' && !externalEditSession.isActive()) {
-            await flushPendingDb();
+        let value;
+        let prepared;
+        // Adopt canonical edits and capture the matching compatibility bytes
+        // and cache state under one writer queue operation.
+        if (key === 'database/database.bin') {
+            const shouldFlush = !externalEditSession.isActive();
+            prepared = await queueStorageOperation(async () => {
+                return await prepareDatabaseRead(filePath, key, { flush: shouldFlush });
+            });
+            value = prepared.value;
+        } else {
+            value = await readStorageItemPayload(key);
         }
-        let value = await readStorageItemPayload(key);
         if(value === null){
             res.send();
         } else {
             // Strip chat payloads from database.bin — client gets stubs only
             if (key === 'database/database.bin') {
-                try {
-                    const dbObj = await decodeDatabaseWithPersistentChatIds(value, {
-                        runMaintenance: true,
-                    });
-                    initChatStore(dbObj);
-                    const stripped = normalizeJSON(stripChatsFromDb(dbObj));
-                    // Populate dbCache so patch endpoint uses the same data
-                    dbCache[filePath] = stripped;
-                    value = encodeRisuSaveLegacyBuffer(stripped);
-                } catch (e) {
-                    // Log the Error itself (not just e.message) so logger.*
-                    // tags it and the Express middleware won't re-log after next().
-                    logger.error('[Read] Failed to strip chats from database.bin', e);
-                    return next(e);
-                }
-                dbEtag = computeBufferEtag(value);
-                if (req.headers['if-none-match'] === dbEtag) {
+                if (req.headers['if-none-match'] === prepared.etag) {
                     return res.status(304).end();
                 }
-                res.setHeader('x-db-etag', dbEtag);
+                res.setHeader('x-db-etag', prepared.etag);
             }
             if (value.length > 0) {
                 res.setHeader('x-item-etag', computeBufferEtag(Buffer.from(value)));
@@ -5299,6 +5312,11 @@ app.post('/api/chat-content/:chaId/:chatIndex', async (req, res, next) => {
         await queueStorageOperation(async () => {
             if (externalEditSession.isActive()) {
                 sendExternalEditModeLocked(res);
+                return;
+            }
+            const adopted = adoptExternallyChangedCanonicalProjection();
+            if (adopted) {
+                sendCanonicalProjectionConflict(res, adopted);
                 return;
             }
             const chaId = req.params.chaId;

@@ -846,22 +846,35 @@
                     <input aria-label="별칭" bind:value={aliasesText} maxlength="3000" readonly={readOnly} placeholder="쉼표로 구분" />
                 </label>
             </div>
+            {#if selected?.retrievalMetadata}
+                <div class="retrieval-metadata" data-wiki-retrieval-metadata>
+                    {#if selected.retrievalMetadata.keywords.length}
+                        <span>검색어: {selected.retrievalMetadata.keywords.join(', ')}</span>
+                    {/if}
+                    {#if selected.retrievalMetadata.storyTime}
+                        {@const time = selected.retrievalMetadata.storyTime}
+                        <span title={time.evidence}>작중 시간: {time.day === null ? '미상' : `시작 기준 ${time.day}일`}{time.precision === 'origin' ? ' (기준점)' : ''}</span>
+                    {/if}
+                </div>
+            {/if}
             <div class="editor-actions" data-wiki-action-toolbar>
                 {#if selected && selected.sourceMessageIds.length > 0 && onNavigateSource}
+                    {@const localSourceIds = selected.sourceMessageIds.filter(id => !id.startsWith('inherited:'))}
                     <span class="editor-source-action" data-wiki-source-action>
                         <ShButton
                             size="sm"
                             variant="ghost"
-                            aria-label="원문으로 이동"
-                            title="원문으로 이동"
+                            aria-label={localSourceIds.length ? '원문으로 이동' : '이전 챗 원문 없음'}
+                            title={localSourceIds.length ? '원문으로 이동' : '이전 챗 원문 없음'}
                             data-wiki-source
+                            disabled={localSourceIds.length === 0}
                             onclick={() => onNavigateSource({
                                 kind: 'chat',
-                                messageIds: selected.sourceMessageIds,
+                                messageIds: localSourceIds,
                             })}
                         >
                             <LocateFixedIcon size={14} />
-                            <span data-wiki-source-label>원문으로 이동</span>
+                            <span data-wiki-source-label>{localSourceIds.length ? '원문으로 이동' : '이전 챗 원문 없음'}</span>
                         </ShButton>
                     </span>
                 {/if}
@@ -1011,6 +1024,7 @@
     .editor-title-row select, .editor-title-row input { box-sizing: border-box; width: 100%; min-height: 2rem; padding: .3rem .45rem; border: 1px solid var(--risu-theme-darkborderc); border-radius: .32rem; color: var(--risu-theme-textcolor); background: var(--risu-theme-darkbg); }
     .title-field { flex: 1 1 12rem; }
     .aliases-field { flex: 1 1 12rem; }
+    .retrieval-metadata { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; font-size: 0.75rem; color: var(--risu-theme-textcolor2); overflow-wrap: anywhere; }
     .editor-actions { display: flex; min-width: 0; flex-wrap: nowrap; align-items: center; justify-content: flex-end; gap: .25rem; overflow-x: auto; padding: .45rem .75rem; border-top: 1px solid color-mix(in srgb, var(--risu-theme-darkborderc) 60%, transparent); }
     .editor-source-action { display: inline-flex; flex: 0 0 auto; margin-right: auto; }
     .markdown-preview-toggle { display: inline-flex; flex: 0 0 auto; min-height: 2rem; align-items: center; gap: .32rem; padding: 0 .45rem; border: 1px solid var(--risu-theme-darkborderc); border-radius: .34rem; color: var(--risu-theme-textcolor2); font: 700 .67rem/1 ui-monospace, monospace; cursor: pointer; user-select: none; }

@@ -1,32 +1,58 @@
 'use strict';
 
-function patchCollection(operations) {
-    if (!Array.isArray(operations) || operations.length === 0) return null;
-    const insideBotPresets = value => typeof value === 'string'
-        && (value === '/botPresets' || value.startsWith('/botPresets/'));
-    for (const operation of operations) {
-        if (!operation || typeof operation !== 'object' || !insideBotPresets(operation.path)) return null;
-        if (Object.prototype.hasOwnProperty.call(operation, 'from') && !insideBotPresets(operation.from)) return null;
+const NON_ROOT_COLLECTIONS = ['/characters', '/modules', '/personas', '/loreBook'];
+
+function inspectOperations(operations) {
+    const result = { hasBotPresets: false, hasRootSettings: false, unsafe: false };
+    if (!Array.isArray(operations) || operations.length === 0) {
+        result.unsafe = true;
+        return result;
     }
-    return 'botPresets';
+    for (const operation of operations) {
+        if (!operation || typeof operation !== 'object'
+            || !['add', 'replace', 'remove'].includes(operation.op)
+            || typeof operation.path !== 'string'
+            || !operation.path.startsWith('/')
+            || Object.prototype.hasOwnProperty.call(operation, 'from')) {
+            result.unsafe = true;
+            continue;
+        }
+        if (operation.path === '/botPresets' || operation.path.startsWith('/botPresets/')) {
+            result.hasBotPresets = true;
+            continue;
+        }
+        if (NON_ROOT_COLLECTIONS.some(prefix => operation.path === prefix || operation.path.startsWith(`${prefix}/`))) {
+            result.unsafe = true;
+            continue;
+        }
+        result.hasRootSettings = true;
+    }
+    return result;
+}
+
+function patchCollection(operations) {
+    const state = inspectOperations(operations);
+    if (state.unsafe || !state.hasBotPresets) return null;
+    return state.hasRootSettings ? 'botPresetState' : 'botPresets';
 }
 
 function createDirectWriteTracker() {
     const pending = new Map();
     return {
         observe(key, operations) {
-            const next = patchCollection(operations);
-            if (!pending.has(key)) {
-                pending.set(key, next);
-                return;
-            }
-            const previous = pending.get(key);
-            pending.set(key, previous && previous === next ? previous : null);
+            const next = inspectOperations(operations);
+            const previous = pending.get(key) || { hasBotPresets: false, hasRootSettings: false, unsafe: false };
+            pending.set(key, {
+                hasBotPresets: previous.hasBotPresets || next.hasBotPresets,
+                hasRootSettings: previous.hasRootSettings || next.hasRootSettings,
+                unsafe: previous.unsafe || next.unsafe,
+            });
         },
         take(key) {
-            const value = pending.get(key) || null;
+            const state = pending.get(key);
             pending.delete(key);
-            return value;
+            if (!state || state.unsafe || !state.hasBotPresets) return null;
+            return state.hasRootSettings ? 'botPresetState' : 'botPresets';
         },
         clear(key) {
             pending.delete(key);

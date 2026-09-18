@@ -8,6 +8,7 @@ import {
     validateNarrativeGraphState,
 } from '../../../packages/risubard-core/src/narrativeGraph'
 import { invokeBrowserFetch } from './browserFetch'
+import { normalizeMemoryRetrievalMetadata, type MemoryRetrievalMetadata } from '../../../server/node/risubard-memory-metadata'
 import type {
     NarrativeGraphViewSnapshot,
 } from './memoryGraphView'
@@ -47,6 +48,7 @@ export interface NarrativeMemoryWikiMarkdown {
         supersededBy?: string
         title: string
         aliases?: string[]
+        retrievalMetadata?: MemoryRetrievalMetadata
         relativePath: string
         sourceMessageIds: string[]
         updated: string
@@ -393,7 +395,7 @@ export async function loadNarrativeMemoryWiki(input: {
                     || Object.keys(document).some((key) => ![
                         ...documentKeys, 'created', 'authoring',
                         'supersededBy', 'reviewStatus',
-                        'reviewBaseContent', 'aliases',
+                        'reviewBaseContent', 'aliases', 'retrievalMetadata',
                     ].includes(key))
                     || ![
                         'event', 'character', 'location', 'scene', 'faction',
@@ -453,6 +455,9 @@ export async function loadNarrativeMemoryWiki(input: {
                     links: document.links,
                     contextMode: document.contextMode as MarkdownWikiContextMode,
                     contentHash: document.contentHash,
+                    ...(document.retrievalMetadata === undefined ? {} : {
+                        retrievalMetadata: normalizeMemoryRetrievalMetadata(document.retrievalMetadata),
+                    }),
                     ...(document.supersededBy === undefined
                         ? {}
                         : { supersededBy: document.supersededBy as string }),

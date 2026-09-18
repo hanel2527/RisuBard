@@ -41,6 +41,53 @@ function createHarness() {
 }
 
 describe('RisuBard memory routes', () => {
+    test('authenticates wiki transfer and rejects reserved documents before service writes', async () => {
+        const { registerRisuBardMemoryRoutes } = require('./risubard-memory-routes.cjs')
+        const harness = createHarness()
+        const service = { inheritWiki: vi.fn(async () => ({ forkToken: 'token' })), importWiki: vi.fn(async () => ({ imported: 1 })) }
+        const auth = vi.fn(async () => true)
+        registerRisuBardMemoryRoutes(harness.app, { auth, service })
+        const next = vi.fn()
+        await harness.routes.get('/api/risubard/memory/wiki/inherit')!({ body: { characterId: 'char', sourceChatId: 'old', destinationChatId: 'new' } }, harness.response, next)
+        expect(service.inheritWiki).toHaveBeenCalledOnce()
+        const body = { characterId: 'char', chatId: 'chat', package: { format: 'risubard-wiki', version: 1, documents: [{ id: 'alice', type: 'character', title: '앨리스', aliases: [], content: '## 앨리스\n\n본문', contextMode: 'auto' }] } }
+        await harness.routes.get('/api/risubard/memory/wiki/import')!({ body }, harness.response, next)
+        expect(service.importWiki).toHaveBeenCalledOnce()
+        service.importWiki.mockClear()
+        body.package.documents[0].type = 'event'
+        await harness.routes.get('/api/risubard/memory/wiki/import')!({ body }, harness.response, next)
+        expect(harness.response.statusCode).toBe(400)
+        expect(service.importWiki).not.toHaveBeenCalled()
+        expect(next).not.toHaveBeenCalled()
+        auth.mockResolvedValue(false)
+        await harness.routes.get('/api/risubard/memory/wiki/inherit')!({ body: { characterId: 'char', sourceChatId: 'old', destinationChatId: 'other' } }, harness.response, next)
+        expect(service.inheritWiki).toHaveBeenCalledOnce()
+    })
+    test.each(['wiki/save', 'wiki/document/save'])('validates optional retrieval metadata through %s', async (route) => {
+        const { registerRisuBardMemoryRoutes } = require('./risubard-memory-routes.cjs')
+        const harness = createHarness()
+        const persist = vi.fn(async () => ({ ok: true }))
+        registerRisuBardMemoryRoutes(harness.app, {
+            auth: async () => true,
+            service: { saveMarkdownWikiTurn: persist, saveCanonicalWikiDocument: persist },
+        })
+        const body = {
+            characterId: 'character', chatId: 'chat', sourceMessageIds: ['turn'],
+            markdown: '## 춤\n\n길버트와 춤췄다.',
+            ...(route === 'wiki/document/save' ? { type: 'character', title: '길버트' } : {}),
+            retrievalMetadata: { keywords: ['춤'], storyTime: { day: 7, precision: 'explicit', evidence: '일주일 뒤' } },
+        }
+        const next = vi.fn()
+        await harness.routes.get(`/api/risubard/memory/${route}`)!({ body }, harness.response, next)
+        expect(persist).toHaveBeenCalledWith(body)
+        expect(next).not.toHaveBeenCalled()
+        persist.mockClear()
+        await harness.routes.get(`/api/risubard/memory/${route}`)!({
+            body: { ...body, retrievalMetadata: { keywords: Array(25).fill('춤') } },
+        }, harness.response, next)
+        expect(harness.response.statusCode).toBe(400)
+        expect(persist).not.toHaveBeenCalled()
+    })
     test('routes BARDCHAT undo lifecycle calls through the authenticated service', async () => {
         const service = {
             beginBardChatUndo: vi.fn(async () => ({ started: true })),

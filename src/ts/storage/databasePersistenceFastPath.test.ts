@@ -3,6 +3,23 @@ import { resolve } from 'node:path'
 import { describe, expect, test } from 'vitest'
 
 describe('database persistence fast path', () => {
+    test('synchronizes active prompt and theme mirrors before the debounced root save', () => {
+        const source = readFileSync(resolve(process.cwd(), 'src/ts/globalApi.svelte.ts'), 'utf8')
+
+        expect(source).toContain('syncActiveBotPresetFromMirror')
+        expect(source).toContain('syncActiveThemePresetFromMirror')
+        expect(source).toMatch(/\$effect\(\(\) => \{[^]*?syncActiveBotPresetFromMirror\(\)[^]*?syncActiveThemePresetFromMirror\(\)[^]*?changeTracker\.root = true/)
+    })
+
+    test('replaces stale save runtimes before installing persistence listeners', () => {
+        const source = readFileSync(resolve(process.cwd(), 'src/ts/globalApi.svelte.ts'), 'utf8')
+
+        expect(source).toContain('claimSaveDbRuntime(')
+        expect(source).toContain('saveRuntime.addCleanup(')
+        expect(source).toMatch(/async function triggerSave[^]*?if \(!saveRuntime\.isActive\(\)\) return/)
+        expect(source).toContain('while (saveRuntime.isActive())')
+    })
+
     test('checks the patch before full encoding and skips empty patches', () => {
         const source = readFileSync(resolve(process.cwd(), 'src/ts/globalApi.svelte.ts'), 'utf8')
         const persistStart = source.indexOf('async function persistTrackedChanges(')

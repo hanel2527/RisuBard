@@ -104,6 +104,7 @@ describe('Markdown wiki writer', () => {
                 sourceMessageIds: ['user-1', 'assistant-1'],
                 reviewStatus: 'unreviewed',
                 ...(writingLanguage ? { writingLanguage } : {}),
+                retrievalMetadata: { keywords: ['기사', '화상'] },
             })
             return new Response(JSON.stringify({
                 id: 'character.lavian',
@@ -132,6 +133,7 @@ describe('Markdown wiki writer', () => {
             markdown: '# 라비안\n\n현재 상태.',
             reviewStatus: 'unreviewed',
             writingLanguage,
+            retrievalMetadata: { keywords: ['기사', '화상'] },
             fetchImpl,
             createAuth: async () => 'jwt',
         })).resolves.toMatchObject({

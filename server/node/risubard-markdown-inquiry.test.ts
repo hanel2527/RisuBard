@@ -21,6 +21,94 @@ function document(
 }
 
 describe('progressive Markdown inquiry', () => {
+    test('includes the recorded story day inside the existing source token budget', () => {
+        const result = inquireMarkdownDocuments({
+            currentInput: '춤을 기억해.',
+            tokenBudget: { target: 512, events: 512, perSource: 256, maximum: 512 },
+            documents: [document({
+                id: 'dated', type: 'event', title: '춤', relativePath: 'events/dated.md',
+                content: '## 춤\n길버트와 왈츠를 추었다.',
+                retrievalMetadata: { keywords: ['춤'], storyTime: { day: 7, precision: 'explicit', evidence: '일주일 뒤' } },
+            })],
+        })
+        expect(result.sources.some((source) => source.content.includes('Story day relative to first recorded event: 7'))).toBe(true)
+        expect(result.sources.every((source) => source.tokens <= 256)).toBe(true)
+    })
+    test('recalls a missing dance partner using retrieval keywords without extra model calls', () => {
+        const result = inquireMarkdownDocuments({
+            currentInput: '나는 지난 주에 누구와 춤을 췄는지 기억하려 애썼다.',
+            documents: [document({
+                id: 'ball', type: 'event', title: '가을 연회',
+                relativePath: 'events/ball.md', sourceMessageIds: ['ball-source'],
+                content: '## 가을 연회\n\n길버트와 왈츠를 추었다.',
+                retrievalMetadata: { keywords: ['춤', '무도회', '파트너'] },
+            })],
+            sourceMatches: [{
+                messageId: 'ball-source', role: 'assistant', occurredAt: 4,
+                score: 0, content: '길버트가 손을 내밀었다. 우리는 왈츠를 추었다.',
+            }],
+        })
+        expect(result.evidenceRequests).toEqual([
+            { messageId: 'ball-source', eventTitle: '가을 연회' },
+        ])
+        expect(result.sources.find((source) => source.id.startsWith(
+            'narrative-memory:source:ball-source:',
+        ))?.content).toContain('길버트가 손을 내밀었다.')
+        expect(result.metrics.auxiliaryModelCalls).toBe(0)
+    })
+
+    test('routes action recall through a matching arc line beyond unrelated early links', () => {
+        const unrelated = Array.from({ length: 20 }, (_, index) => document({
+            id: `battle-${index}`, type: 'event', title: `원정 ${index}`,
+            relativePath: `events/battle-${index}.md`,
+            content: `## 원정 ${index}\n\n성벽을 지켰다.`,
+        }))
+        const result = inquireMarkdownDocuments({
+            currentInput: '누구와 춤을 췄는지 기억하려 애썼다.',
+            documents: [
+                ...unrelated,
+                document({
+                    id: 'arc', type: 'other', title: '스토리 아크 플롯',
+                    relativePath: 'notes/arc.md',
+                    content: '## 스토리 아크 플롯\n\n'
+                        + unrelated.map((item) => `- 전투: [[${item.title}]]`).join('\n')
+                        + '\n- 춤 상대와 가까워졌다: [[가을 연회]]',
+                    links: [...unrelated.map((item) => item.title), '가을 연회'],
+                }),
+                document({
+                    id: 'ball', type: 'event', title: '가을 연회',
+                    relativePath: 'events/ball.md', sourceMessageIds: ['ball-source'],
+                    content: '## 가을 연회\n\n길버트와 왈츠를 추었다.',
+                }),
+            ],
+        })
+        expect(result.evidenceRequests).toEqual([
+            { messageId: 'ball-source', eventTitle: '가을 연회' },
+        ])
+        expect(result.sources.some((item) => item.id.includes('battle-'))).toBe(false)
+        expect(result.metrics.inspectedEdgeCount).toBeLessThanOrEqual(256)
+        expect(result.metrics.selectedNodeCount).toBeLessThanOrEqual(12)
+        expect(result.metrics.selectedTokens).toBeLessThanOrEqual(6_000)
+    })
+
+    test('keyword matches preserve eligibility and do not inject metadata as story evidence', () => {
+        const make = (id: string, extra: Partial<MarkdownWikiDocument> = {}) => document({
+            id, type: 'event', title: id, relativePath: `events/${id}.md`,
+            content: `## ${id}\n\n길버트와 왈츠를 추었다.`,
+            retrievalMetadata: { keywords: ['춤', '검색전용표현'] },
+            ...extra,
+        })
+        const result = inquireMarkdownDocuments({
+            currentInput: '춤을 기억해.',
+            documents: [make('eligible'), make('hidden', { contextMode: 'never' }),
+                make('old', { status: 'superseded' })],
+        })
+        expect(result.sources.map((source) => source.id)).toEqual([
+            'narrative-memory:wiki:events/eligible.md',
+        ])
+        expect(result.sources[0].content).not.toContain('검색전용표현')
+    })
+
     test('retrieves one canonical document by an exact alias', () => {
         const result = inquireMarkdownDocuments({
             currentInput: '무한인은 지금 어디에 있지?',

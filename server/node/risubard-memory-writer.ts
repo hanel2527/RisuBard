@@ -5,6 +5,7 @@ import {
 import englishContract from '../../src/ts/risubard/skills/bardwiki-memory-writer/references/english-contract.md?raw'
 import { normalizeWikiWritingLanguage, wikiWritingHeadings, type WikiWritingLanguage } from '../../src/ts/risubard/wikiWritingLanguage'
 import { normalizeCanonicalSectionHeading } from './risubard-markdown-section-patch'
+import { normalizeMemoryRetrievalKeywords, type SemanticTemporalHint } from './risubard-memory-metadata'
 
 const itemString = { type: 'string', minLength: 1, maxLength: 500 }
 const canonicalTypes = [
@@ -29,9 +30,19 @@ export const memoryWriterDraftSchema = JSON.stringify({
         'persistentFacts',
         'openContinuity',
         'canonicalUpdateCandidates',
+        'keywords',
+        'temporalHint',
     ],
     properties: {
         title: { type: 'string', minLength: 1, maxLength: 160 },
+        keywords: { type: 'array', maxItems: 24, items: { type: 'string', minLength: 1, maxLength: 80 } },
+        temporalHint: {
+            type: 'object', additionalProperties: false, required: ['elapsedDays', 'evidence'],
+            properties: {
+                elapsedDays: { type: ['integer', 'null'], minimum: 0 },
+                evidence: { type: 'string', maxLength: 240 },
+            },
+        },
         establishedEvents: {
             type: 'array',
             maxItems: 12,
@@ -84,7 +95,7 @@ export const memoryWriterDraftSchema = JSON.stringify({
                 additionalProperties: false,
                 required: [
                     'type', 'title', 'reason', 'action',
-                    'targetDocumentId', 'confidence',
+                    'targetDocumentId', 'confidence', 'keywords',
                 ],
                 properties: {
                     type: { type: 'string', enum: canonicalTypes },
@@ -94,6 +105,7 @@ export const memoryWriterDraftSchema = JSON.stringify({
                         maxItems: 32,
                         items: { type: 'string', minLength: 1, maxLength: 160 },
                     },
+                    keywords: { type: 'array', maxItems: 24, items: { type: 'string', minLength: 1, maxLength: 80 } },
                     reason: itemString,
                     action: {
                         type: 'string', enum: ['create', 'update'],
@@ -127,11 +139,16 @@ export function buildRebootBatchDraftSchema(turnCount?: 1 | 2): string {
                 maxItems: turnCount ?? 2,
                 items: {
                     type: 'object', additionalProperties: false,
-                    required: ['title', 'establishedEvents'],
+                    required: [
+                        'title', 'establishedEvents', 'keywords',
+                        'temporalHint',
+                    ],
                     properties: {
                         title: { type: 'string', minLength: 1, maxLength: 160 },
                         establishedEvents:
                             memoryWriterProperties.establishedEvents,
+                        keywords: memoryWriterProperties.keywords,
+                        temporalHint: memoryWriterProperties.temporalHint,
                     },
                 },
             },
@@ -228,6 +245,8 @@ export function buildMemoryWriterSystemPrompt(_language: WikiWritingLanguage): s
 export interface MemoryWriterDraft {
     schemaVersion: 1
     title: string
+    keywords?: string[]
+    temporalHint?: SemanticTemporalHint
     establishedEvents: string[]
     stateChanges: Array<{
         subject: string
@@ -245,6 +264,7 @@ export interface MemoryWriterDraft {
         type: typeof canonicalTypes[number]
         title: string
         aliases: string[]
+        keywords?: string[]
         reason: string
         action: 'create' | 'update'
         targetDocumentId: string | null
@@ -274,6 +294,8 @@ export interface RebootBatchDraft extends Omit<
         assistantMessageId: string
         title: string
         establishedEvents: string[]
+        keywords?: string[]
+        temporalHint?: SemanticTemporalHint
     }>
 }
 
@@ -326,10 +348,33 @@ function boundedArray(
     return value
 }
 
+function parseTemporalHint(value: unknown): SemanticTemporalHint | undefined {
+    if (value === undefined) return undefined
+    if (!isRecord(value)) throw new Error('temporalHint must be an object')
+    exactKeys(value, ['elapsedDays', 'evidence'], 'temporalHint')
+    if (value.elapsedDays !== null
+        && (!Number.isSafeInteger(value.elapsedDays)
+            || (value.elapsedDays as number) < 0)) {
+        throw new Error('temporalHint.elapsedDays must be a non-negative integer or null')
+    }
+    if (typeof value.evidence !== 'string' || value.evidence.length > 240
+        || (value.elapsedDays !== null && !value.evidence.trim())) {
+        throw new Error('temporalHint.evidence is invalid')
+    }
+    return {
+        elapsedDays: value.elapsedDays as number | null,
+        evidence: value.evidence,
+    }
+}
+
 export function parseMemoryWriterDraft(output: string): MemoryWriterDraft {
     const raw = parseSingleJsonObject(output)
     if (!isRecord(raw)) throw new Error('Memory draft must be an object')
-    const parsed = withoutModelSchemaVersion(raw)
+    const parsed: Record<string, unknown> = {
+        keywords: undefined,
+        temporalHint: undefined,
+        ...withoutModelSchemaVersion(raw),
+    }
     exactKeys(parsed, [
         'title',
         'establishedEvents',
@@ -338,7 +383,11 @@ export function parseMemoryWriterDraft(output: string): MemoryWriterDraft {
         'persistentFacts',
         'openContinuity',
         'canonicalUpdateCandidates',
+        'keywords',
+        'temporalHint',
     ], 'memory draft')
+    const keywords = parsed.keywords === undefined ? undefined : normalizeMemoryRetrievalKeywords(parsed.keywords)
+    const temporalHint = parseTemporalHint(parsed.temporalHint)
     const strings = (value: unknown, label: string) => boundedArray(
         value,
         label,
@@ -391,9 +440,9 @@ export function parseMemoryWriterDraft(output: string): MemoryWriterDraft {
         const candidate = Object.prototype.hasOwnProperty.call(
             candidateWithAction, 'aliases'
         ) ? candidateWithAction : { ...candidateWithAction, aliases: [] }
-        exactKeys(candidate, [
+        exactKeys({ keywords: undefined, ...candidate }, [
             'type', 'title', 'aliases', 'reason', 'action',
-            'targetDocumentId', 'confidence',
+            'targetDocumentId', 'confidence', 'keywords',
         ], `canonicalUpdateCandidates[${index}]`)
         if (!canonicalTypes.includes(candidate.type as typeof canonicalTypes[number])) {
             throw new Error(`canonicalUpdateCandidates[${index}].type is invalid`)
@@ -445,6 +494,9 @@ export function parseMemoryWriterDraft(output: string): MemoryWriterDraft {
             action: candidate.action as 'create' | 'update',
             targetDocumentId,
             confidence: candidate.confidence,
+            ...(candidate.keywords === undefined ? {} : {
+                keywords: normalizeMemoryRetrievalKeywords(candidate.keywords),
+            }),
         }
     })
     return {
@@ -456,6 +508,8 @@ export function parseMemoryWriterDraft(output: string): MemoryWriterDraft {
         persistentFacts,
         openContinuity,
         canonicalUpdateCandidates,
+        ...(keywords ? { keywords } : {}),
+        ...(temporalHint ? { temporalHint } : {}),
     }
 }
 
@@ -487,10 +541,13 @@ export function parseRebootBatchDraft(
             item,
             'assistantMessageId'
         )
-        exactKeys(item, [
+        const turn: Record<string, unknown> = { keywords: undefined, temporalHint: undefined, ...item }
+        exactKeys(turn, [
             ...(hasLegacyAssistantMessageId ? ['assistantMessageId'] : []),
             'title',
             'establishedEvents',
+            'keywords',
+            'temporalHint',
         ], `reboot batch turns[${index}]`)
         legacyAssistantMessageIds[index] = undefined
         if (hasLegacyAssistantMessageId) {
@@ -500,17 +557,24 @@ export function parseRebootBatchDraft(
                 1_024
             )
         }
+        const turnTemporalHint = parseTemporalHint(turn.temporalHint)
         return {
             assistantMessageId: expectedAssistantMessageIds[index],
-            title: text(item.title, `reboot batch turns[${index}].title`, 160),
+            title: text(turn.title, `reboot batch turns[${index}].title`, 160),
             establishedEvents: boundedArray(
-                item.establishedEvents,
+                turn.establishedEvents,
                 `reboot batch turns[${index}].establishedEvents`,
-                12
+            12
             ).map((event, eventIndex) => text(
                 event,
                 `reboot batch turns[${index}].establishedEvents[${eventIndex}]`
             )),
+            ...(turn.keywords === undefined ? {} : {
+                keywords: normalizeMemoryRetrievalKeywords(turn.keywords),
+            }),
+            ...(turnTemporalHint ? {
+                temporalHint: turnTemporalHint,
+            } : {}),
         }
     })
     const expectedIdSet = new Set(expectedAssistantMessageIds)

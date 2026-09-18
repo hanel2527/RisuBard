@@ -16,6 +16,42 @@ afterEach(async () => {
 })
 
 describe('Markdown narrative wiki', () => {
+    test('round-trips bounded retrieval metadata and preserves canonical metadata when omitted', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        const wiki = createMarkdownNarrativeWiki(root)
+        const scope = { characterId: 'character', chatId: 'chat', sourceMessageIds: ['turn-1'] }
+        const event = await wiki.saveConfirmedTurn({
+            ...scope,
+            markdown: '## Dance\n\nGilbert and I danced.',
+            retrievalMetadata: {
+                keywords: ['Gilbert', 'dance'],
+                storyTime: { day: 0, evidence: 'first recorded event', precision: 'origin' },
+            },
+        })
+        expect(event.retrievalMetadata).toEqual({
+            keywords: ['Gilbert', 'dance'],
+            storyTime: { day: 0, evidence: 'first recorded event', precision: 'origin' },
+        })
+        const canonical = await wiki.saveCanonicalDocument({
+            ...scope, type: 'character', title: 'Gilbert',
+            markdown: '## Gilbert\n\nA dancer.',
+            retrievalMetadata: { keywords: ['Gilbert', 'dancer'] },
+        })
+        const updated = await wiki.saveCanonicalDocument({
+            ...scope, documentId: canonical.id, type: 'character', title: 'Gilbert',
+            markdown: '## Gilbert\n\nA careful dancer.',
+        })
+        expect(updated.retrievalMetadata).toEqual({
+            keywords: ['Gilbert', 'dancer'],
+        })
+        const workspace = resolveMarkdownWikiWorkspace(root, 'character', 'chat')
+        const contents = await fs.readFile(join(
+            workspace.directory, ...event.relativePath.split('/')
+        ), 'utf8')
+        expect(contents).toContain('retrieval_metadata: {"keywords":["Gilbert","dance"],"storyTime":{"day":0,"evidence":"first recorded event","precision":"origin"}}')
+    })
+
     test('can append the first summary to an English event with only a title', async () => {
         const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
         temporaryDirectories.push(root)

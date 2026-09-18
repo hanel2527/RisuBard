@@ -13,7 +13,7 @@ function writeCanonicalProjection(options = {}) {
         throw new Error('Canonical projection database is required');
     }
 
-    if (directCollection !== 'botPresets') {
+    if (directCollection !== 'botPresets' && directCollection !== 'botPresetState') {
         return {
             strategy: 'full-sync',
             fallbackUsed: false,
@@ -25,7 +25,9 @@ function writeCanonicalProjection(options = {}) {
         return {
             strategy: 'bot-presets-direct',
             fallbackUsed: false,
-            result: repository.syncLegacyCollection('botPresets', database.botPresets),
+            result: directCollection === 'botPresetState'
+                ? repository.syncLegacyPresetState(database)
+                : repository.syncLegacyCollection('botPresets', database.botPresets),
         };
     } catch (directError) {
         const fallbackCode = safeErrorCode(directError);

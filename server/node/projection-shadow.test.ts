@@ -108,6 +108,28 @@ describe('S1 projection shadow', () => {
         expect(rows).toEqual([expect.objectContaining({ outcome: 'success', semanticMatch: true })])
     })
 
+    it('compares the JSON-persisted meaning of explicit undefined chat metadata', async () => {
+        expect(createProjectionShadow).toBeTypeOf('function')
+        if (!createProjectionShadow) return
+
+        const repository = createUserDataRepository({ dataRoot: tempRoot() })
+        const database: any = legacyDatabase()
+        database.characters[0].chats[0].folderId = undefined
+        const imported = repository.importLegacyDatabase(database, { mode: 'sync' })
+        const tasks: Array<() => Promise<void>> = []
+        const rows: any[] = []
+        const shadow = createProjectionShadow({
+            repository,
+            observation: { record: (row: any) => rows.push(row) },
+            scheduleTask: (task: () => Promise<void>) => { tasks.push(task) },
+        })
+
+        shadow.schedule({ database, trigger: 'chat-debounce', plannedFiles: imported.files })
+        await tasks[0]()
+
+        expect(rows).toEqual([expect.objectContaining({ outcome: 'success', semanticMatch: true })])
+    })
+
     it('reports only a content-free mismatch result and never throws into saving', async () => {
         expect(createProjectionShadow).toBeTypeOf('function')
         if (!createProjectionShadow) return

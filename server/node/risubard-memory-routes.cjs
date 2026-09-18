@@ -1,4 +1,18 @@
 const wikiWritingLocales = require('../../src/ts/risubard/wikiWritingLocales.json')
+require('sucrase/register/ts')
+const { normalizeMemoryRetrievalMetadata } = require('./risubard-memory-metadata.ts')
+
+function validRetrievalMetadata(value) {
+    try {
+        if (value !== undefined && Array.isArray(value?.keywords)
+            && value.keywords.length > 24) return false
+        normalizeMemoryRetrievalMetadata(value)
+        return true
+    }
+    catch {
+        return false
+    }
+}
 
 function isRecord(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -324,6 +338,42 @@ function registerRisuBardMemoryRoutes(app, options) {
         }
     })
 
+    app.post('/api/risubard/memory/wiki/inherit', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            if (!hasExactKeys(req.body, ['characterId', 'sourceChatId', 'destinationChatId'])
+                || !hasBoundedId(req.body.characterId) || !hasBoundedId(req.body.sourceChatId)
+                || !hasBoundedId(req.body.destinationChatId)
+                || req.body.sourceChatId === req.body.destinationChatId) {
+                res.status(400).send({ error: 'Invalid wiki inheritance request' }); return
+            }
+            res.send(await options.service.inheritWiki(req.body))
+        }
+        catch (error) { next(error) }
+    })
+
+    app.post('/api/risubard/memory/wiki/import', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            if (!hasExactKeys(req.body, ['characterId', 'chatId', 'package'])
+                || !hasBoundedId(req.body.characterId) || !hasBoundedId(req.body.chatId)) {
+                res.status(400).send({ error: 'Invalid wiki import request' }); return
+            }
+            try {
+                const { validateWikiPackage } = require('../../src/ts/risubard/wikiTransferPackage.ts')
+                validateWikiPackage(req.body.package)
+            }
+            catch (error) { res.status(400).send({ error: error.message }); return }
+            res.send(await options.service.importWiki(req.body))
+        }
+        catch (error) {
+            if (error instanceof Error && error.message.includes('충돌')) {
+                res.status(409).send({ error: error.message }); return
+            }
+            next(error)
+        }
+    })
+
     app.post('/api/risubard/memory/fork', async (req, res, next) => {
         try {
             if (!await options.auth(req, res)) return
@@ -630,9 +680,10 @@ function registerRisuBardMemoryRoutes(app, options) {
                 'sourceMessageIds',
                 'markdown',
             ]
-            const optionalKeys = ['append', 'writingLanguage']
+            const optionalKeys = ['append', 'writingLanguage', 'retrievalMetadata']
                 .filter((key) => req.body?.[key] !== undefined)
             if (!hasExactKeys(req.body, [...keys, ...optionalKeys])
+                || !validRetrievalMetadata(req.body.retrievalMetadata)
                 || (req.body.writingLanguage !== undefined
                     && !validWikiWritingLanguage(req.body.writingLanguage))
                 || !hasBoundedId(req.body.characterId)
@@ -670,12 +721,13 @@ function registerRisuBardMemoryRoutes(app, options) {
                 ]
                 const optionalKeys = [
                     'documentId', 'expectedContentHash', 'reviewStatus',
-                    'writingLanguage', 'aliases',
+                    'writingLanguage', 'aliases', 'retrievalMetadata',
                 ].filter((key) => req.body?.[key] !== undefined)
                 const validShape = hasExactKeys(req.body, [
                     ...keys, ...optionalKeys,
                 ])
                 if (!validShape
+                    || !validRetrievalMetadata(req.body.retrievalMetadata)
                     || (req.body.writingLanguage !== undefined
                         && !validWikiWritingLanguage(req.body.writingLanguage))
                     || !hasBoundedId(req.body.characterId)
