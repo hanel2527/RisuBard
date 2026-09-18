@@ -1004,7 +1004,7 @@
 {/if}
 {/snippet}
 
-{#snippet translationButton(showNames = false)}
+{#snippet translationToggleButton(showNames = false)}
     {#if DBState.db.translator !== '' && !blankMessage && !isOptimizedStreamingMessage}
         <button class={"flex items-center cursor-pointer hover:text-primary transition-colors button-icon-translate " + (translated ? 'text-info':'')} class:translating={translating} onclick={async () => {
             translated = !translated
@@ -1015,6 +1015,19 @@
             {/if}
         </button>
     {/if}
+{/snippet}
+
+<!-- Translation toggle row: rendered above and below the response body. -->
+{#snippet translationToggleRow(showNames = false, wrapperClass = '')}
+    {#if !readOnly && DBState.db.translator !== '' && !blankMessage && !isOptimizedStreamingMessage}
+        <div class={"flex items-center text-textcolor2 " + wrapperClass}>
+            {@render translationToggleButton(showNames)}
+        </div>
+    {/if}
+{/snippet}
+
+{#snippet translationButton(showNames = false)}
+    {@render translationToggleButton(showNames)}
     {#if idx > -1
         && !isOptimizedStreamingMessage
         && !memoryConfirming}
@@ -1567,6 +1580,7 @@
                     {:else if !$HideIconStore}
                         <span class="text-lg sm:text-xl text-textcolor">{name}</span>
                     {/if}
+                    {@render translationToggleRow(false, 'ml-auto')}
                 </div>
                 <!-- Body: message text -->
                 <div class="mb-3 leading-relaxed">
@@ -1608,6 +1622,7 @@
                     {#if role === 'char' && turnNumber && turnNumber > 0 && !isComment}
                         <div class="mb-1">{@render turnHeader()}</div>
                     {/if}
+                    <div class="mb-1">{@render translationToggleRow(false, 'justify-end')}</div>
                     <p class="text-textcolor">{@render textBox()}</p>
                     {#if DBState.db.characters?.[selIdState.selId]?.chats?.[DBState.db.characters?.[selIdState.selId]?.chatPage]?.message?.[idx]?.time}
                         <span class="text-xs text-textcolor2 mt-1 block">
@@ -1624,6 +1639,7 @@
                     {#if role === 'char' && turnNumber && turnNumber > 0 && !isComment}
                         <div class="mt-1">{@render turnFooter()}</div>
                     {/if}
+                    <div class="mt-1">{@render translationToggleRow(false, 'justify-end')}</div>
                 </div>
                 {#if role === 'user'}
                     {@render senderIcon({rounded: true})}
@@ -1643,13 +1659,16 @@
                             </div>
 
                         </div>
-                        {#if editMode}
-                            <textarea class="grow h-138 sm:h-96 overflow-y-auto bg-transparent text-textcolor p-2 mb-2 resize-none message-edit-area" bind:value={message} onkeydown={finishMessageEdit}></textarea>
-                        {:else}
-                            <div class="grow h-138 sm:h-96 overflow-y-auto p-2 mb-2 sm:mb-0">
-                                {@render textBox()}
-                            </div>
-                        {/if}
+                        <div class="grow flex flex-col min-w-0">
+                            <div class="flex justify-end mb-1">{@render translationToggleRow()}</div>
+                            {#if editMode}
+                                <textarea class="grow h-138 sm:h-96 overflow-y-auto bg-transparent text-textcolor p-2 mb-2 resize-none message-edit-area" bind:value={message} onkeydown={finishMessageEdit}></textarea>
+                            {:else}
+                                <div class="grow h-138 sm:h-96 overflow-y-auto p-2 mb-2 sm:mb-0">
+                                    {@render textBox()}
+                                </div>
+                            {/if}
+                        </div>
                     </div>
                 </div>
                 <div class="absolute bottom-0 right-0 bg-linear-to-b from-selected to-darkbutton p-2 rounded-md border border-borderc text-textcolor2">
@@ -1661,7 +1680,9 @@
             {#if role === 'char' && turnNumber && turnNumber > 0 && !isComment}
                 <div class="chat-width mb-1">{@render turnHeader()}</div>
             {/if}
+            {@render translationToggleRow(false, 'chat-width mb-1')}
             {@render renderGuiHtmlPart(RenderGUIHtml(DBState.db.guiHTML))}
+            <div class="chat-width mt-1">{@render translationToggleRow()}</div>
             {#if role === 'char' && turnNumber && turnNumber > 0 && !isComment}
                 <div class="chat-width mt-1">{@render turnFooter()}</div>
             {/if}
@@ -1690,6 +1711,7 @@
                 </div>
                 {@render genInfo()}
                 {@render textBox()}
+                <div class="chat-width mt-1">{@render translationToggleRow()}</div>
                 <div class="chat-width mt-1">{@render turnFooter()}</div>
             </span>
         {:else}
@@ -1717,6 +1739,7 @@
                 </div>
                 {@render genInfo()}
                 {@render textBox()}
+                <div class="chat-width mt-1">{@render translationToggleRow()}</div>
                 <div class="chat-width mt-1">{@render turnFooter()}</div>
             </span>
         {/if}

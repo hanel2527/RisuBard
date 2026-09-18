@@ -39,7 +39,7 @@ Risuai has a few screens that are used to interact with the software.
         - Delete button: If pressed, it will delete the message. You can shift + click to remove without confirmation plus remove all messages after to the selected message.
         - TTS button: If pressed, it will play the TTS of the message. Only appears if TTS config in the character config has been set.
         - Generation info button: if press, it will show the generation info of the message. Only appears if generation info config in the character config has been set. you can see the generation info of the message, such as the model used, the prompt used, and other information. Note: internally, it is handled separately from icon buttons. but in most cases, its okay to refer it as one of the icon buttons.
-        - Translation button: If pressed, it will translate the message, into user's preferred language. Only appears if translation config has been set.
+        - Translation button: If pressed, it will translate the message, into user's preferred language. Only appears if translation config has been set. It appears twice per message, at the top and the bottom of the response, and both buttons share the same translation state.
     - Icon: A character/or user's icon that sent the message, at the left side of the message.
     - Content: A content of the message.
 - Input box: A input box that you can type a message to send to the character.
