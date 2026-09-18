@@ -4,6 +4,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest'
 import { mount, tick, unmount } from 'svelte'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { completeMemoryWikiFork } from 'src/ts/risubard/memoryWikiFork'
 
 const mocks = vi.hoisted(() => ({
     loadNarrativeMemoryWiki: vi.fn(),
@@ -139,6 +140,37 @@ afterEach(async () => {
 })
 
 describe('RisuBardMemoryWiki', () => {
+    test('reloads the visible canonical document after a save replaces the same chat workspace', async () => {
+        const current = {
+            id: 'same-document', title: 'Character', type: 'character' as const,
+            status: 'active' as const, contextMode: 'auto' as const, contentHash: 'current-hash',
+            relativePath: 'characters/character.md', aliases: [], tags: [],
+            sourceMessageIds: [], updated: 'now', links: [],
+            content: '# Character\n\nCurrent timeline.',
+        }
+        const saved = { ...current, content: '# Character\n\nSaved timeline.', contentHash: 'saved-hash' }
+        const view = (item: typeof current) => ({
+            mode: 'markdown' as const, wikiPath: 'C:\\wiki', documents: [item],
+            health: { danglingLinks: [], unlinkedDocumentIds: [] },
+        })
+        mocks.loadNarrativeMemoryWiki.mockResolvedValueOnce(view(current)).mockResolvedValue(view(saved))
+        mounted = mount(RisuBardMemoryWiki, {
+            target: document.body,
+            props: { open: true, characterId: 'character', chatId: 'same-chat' },
+        })
+        const content = () => document.querySelector<HTMLTextAreaElement>('[aria-label="Markdown"]')?.value
+        await vi.waitFor(() => expect(content()).toBe(current.content))
+
+        await completeMemoryWikiFork({
+            characterId: 'character', destinationChatId: 'same-chat', forkToken: 'saved-snapshot', action: 'finalize',
+            fetchImpl: vi.fn(async () => new Response(JSON.stringify({ action: 'finalize', completed: true }))),
+            createAuth: async () => 'auth',
+        })
+        await vi.waitFor(() => expect(content()).toBe(saved.content))
+        expect(mocks.loadNarrativeMemoryWiki).toHaveBeenCalledTimes(2)
+        expect(mocks.saveManualWikiDocument).not.toHaveBeenCalled()
+    })
+
     test('docks outside a constrained theme and cleans up when the chat unmounts', async () => {
         const workspace = document.createElement('div')
         workspace.dataset.chatDockWorkspace = ''

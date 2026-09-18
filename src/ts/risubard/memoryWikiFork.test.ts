@@ -1,5 +1,8 @@
-import { describe, expect, test, vi } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 import { completeMemoryWikiFork, forkMemoryWiki } from './memoryWikiFork'
+import { RISUBARD_MEMORY_UPDATED_EVENT } from './memoryEvents'
+
+afterEach(() => vi.restoreAllMocks())
 
 describe('memory wiki fork client', () => {
     test('sends an authenticated strict copy request and validates the receipt', async () => {
@@ -102,6 +105,7 @@ describe('memory wiki fork client', () => {
     })
 
     test('retries an uncertain finalize with the same token', async () => {
+        const dispatch = vi.spyOn(window, 'dispatchEvent')
         let attempt = 0
         const fetchImpl = vi.fn(async () => {
             attempt += 1
@@ -117,6 +121,27 @@ describe('memory wiki fork client', () => {
             createAuth: async () => 'auth',
         })).resolves.toEqual({ action: 'finalize', completed: true })
         expect(fetchImpl).toHaveBeenCalledTimes(2)
+        const updates = dispatch.mock.calls.map(([event]) => event)
+            .filter(event => event.type === RISUBARD_MEMORY_UPDATED_EVENT) as CustomEvent[]
+        expect(updates).toHaveLength(1)
+        expect(updates[0].detail).toEqual({ characterId: 'character', chatId: 'chat' })
+    })
+
+    test('does not announce a restored wiki on discard or failed finalization', async () => {
+        const dispatch = vi.spyOn(window, 'dispatchEvent')
+        const input = {
+            characterId: 'character', destinationChatId: 'chat', forkToken: 'token',
+            createAuth: async () => 'auth',
+        }
+        await completeMemoryWikiFork({
+            ...input, action: 'discard',
+            fetchImpl: vi.fn(async () => new Response(JSON.stringify({ action: 'discard', completed: true }))),
+        })
+        await expect(completeMemoryWikiFork({
+            ...input, action: 'finalize',
+            fetchImpl: vi.fn(async () => new Response(JSON.stringify({ error: 'failed' }), { status: 500 })),
+        })).rejects.toThrow('status 500')
+        expect(dispatch.mock.calls.some(([event]) => event.type === RISUBARD_MEMORY_UPDATED_EVENT)).toBe(false)
     })
 
     test('rejects HTTP failures and malformed success receipts', async () => {

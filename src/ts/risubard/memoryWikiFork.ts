@@ -1,4 +1,5 @@
 import { invokeBrowserFetch } from './browserFetch'
+import { announceRisuBardMemoryUpdated } from './memoryEvents'
 
 export type MemoryWikiForkMode = 'copy' | 'branch'
 
@@ -194,11 +195,19 @@ export async function completeMemoryWikiFork(input: {
         }
         return { action: input.action, completed: true }
     }
+    let receipt: MemoryWikiForkCompletionReceipt
     try {
-        return await completeOnce()
+        receipt = await completeOnce()
     }
     catch (error) {
         if (input.action !== 'finalize') throw error
-        return completeOnce()
+        receipt = await completeOnce()
     }
+    if (receipt.action === 'finalize') {
+        announceRisuBardMemoryUpdated({
+            characterId: input.characterId,
+            chatId: input.destinationChatId,
+        })
+    }
+    return receipt
 }
