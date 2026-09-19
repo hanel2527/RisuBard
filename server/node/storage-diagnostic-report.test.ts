@@ -28,6 +28,29 @@ afterEach(() => {
 })
 
 describe('privacy-safe storage diagnostic report', () => {
+    it('reports deferred writes and materialization costs and errors separately', async () => {
+        const root=tempRoot()
+        writeRows(root,'storage-observation.jsonl',[
+            {kind:'compatibility-persist',outcome:'success',projectionDeferred:true,durationMs:100},
+            {kind:'compatibility-materialize',outcome:'success',durationMs:700,databaseBytes:99999},
+            {kind:'compatibility-materialize',outcome:'failure',errorStage:'materialize',errorCode:'EIO'},
+        ])
+        const report=await generateStorageDiagnosticReport({dataRoot:root})
+        expect(report.saves.deferred).toBe(1)
+        expect(report.materialization).toEqual({attempts:2,successes:1,failures:1,durationMs:{p50:700,p90:700}})
+        expect(report.status).toBe('issues-detected')
+        expect(report.issues).toContainEqual({area:'compatibility-materialize',stage:'materialize',code:'EIO',count:1})
+        expect(JSON.stringify(report)).not.toContain('99999')
+    })
+    it('counts chat direct writes as well as preset direct writes', async () => {
+        const root = tempRoot()
+        writeRows(root, 'storage-observation.jsonl', [
+            { kind: 'canonical-sync', strategy: 'chat-direct', outcome: 'success', fallbackUsed: false },
+            { kind: 'canonical-sync', strategy: 'chat-direct', outcome: 'success', fallbackUsed: true, fallbackCode: 'EIO' },
+        ])
+        const report = await generateStorageDiagnosticReport({ dataRoot: root })
+        expect(report.directWrites).toEqual({ attempts: 2, successes: 1, fallbacks: 1, failures: 0 })
+    })
     it('is exposed through an authenticated aggregate-only route', () => {
         const server = fs.readFileSync(path.join(process.cwd(), 'server', 'node', 'server.cjs'), 'utf8')
 
@@ -104,7 +127,7 @@ describe('privacy-safe storage diagnostic report', () => {
         const report = await generateStorageDiagnosticReport({ dataRoot: tempRoot(), appVersion: '0.9.36' })
 
         expect(report.status).toBe('no-observations')
-        expect(report.saves).toEqual({ attempts: 0, successes: 0, failures: 0, durationMs: { p50: null, p90: null } })
+        expect(report.saves).toEqual({ attempts: 0, successes: 0, failures: 0, deferred: 0, durationMs: { p50: null, p90: null } })
         expect(report.issues).toEqual([])
     })
 })

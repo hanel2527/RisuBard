@@ -105,7 +105,7 @@ describe('storage observation phase', () => {
       messageCount: 10,
     })
     expect(persist.databaseBytes).toBeGreaterThan(0)
-    expect(canonical).toMatchObject({ outcome: 'success' })
+    expect(canonical).toMatchObject({ outcome: 'success', strategy: 'chat-direct', fallbackUsed: false, plannedFiles: 4 })
     expect(canonical.plannedFiles).toBeGreaterThan(0)
     expect(canonical.publishedFiles + canonical.skippedFiles).toBe(canonical.plannedFiles)
     expect(rows.some(row => row.kind === 'compatibility-persist' && row.trigger === 'full-write'

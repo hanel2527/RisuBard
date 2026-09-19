@@ -630,6 +630,76 @@ function createUserDataRepository(options = {}) {
         return { files: operations.length, transaction };
     }
 
+    function syncLegacyChatState(database, scope) {
+        // Validate the complete identity topology before planning any write. Moves,
+        // creation and deletion stay on the full-sync lane, including stale scopes.
+        const invalid = () => { throw Object.assign(new Error('Chat direct-write scope changed'), { code: 'CHAT_SCOPE_CHANGED' }); };
+        const previousIndex = loadSidebarIndex();
+        const characters = database?.characters;
+        if (!Array.isArray(characters) || characters.length !== previousIndex.characters.length
+            || !Array.isArray(scope?.chats) || scope.chats.length === 0) invalid();
+        const byId = new Map();
+        const storedCharacterIds = new Set();
+        for (let i = 0; i < characters.length; i++) {
+            const character = characters[i];
+            const rawId = character?.chaId || character?.id;
+            if (typeof rawId !== 'string' || !rawId.trim()) invalid();
+            const id = stableId(rawId, 'character');
+            const previous = previousIndex.characters[i];
+            if (previous.id !== id || storedCharacterIds.has(id) || !Array.isArray(character.chats)
+                || character.chats.length !== previous.chats.length) invalid();
+            storedCharacterIds.add(id);
+            const chats = new Map();
+            const storedIds = new Set();
+            for (let j = 0; j < character.chats.length; j++) {
+                const chat = character.chats[j];
+                if (typeof chat?.id !== 'string' || !chat.id.trim()) invalid();
+                const chatId = stableId(chat.id, 'chat');
+                if (previous.chats[j].id !== chatId || storedIds.has(chatId)) invalid();
+                storedIds.add(chatId);
+                chats.set(chat.id, { chat, id: chatId, index: j });
+            }
+            byId.set(rawId, { character, id, index: i, chats });
+        }
+        const selected = new Map();
+        const dirtyCharacters = new Set(scope.characterIds || []);
+        for (const entry of scope.chats) {
+            const character = byId.get(entry?.characterId);
+            const chat = character?.chats.get(entry?.chatId);
+            if (!chat || !Array.isArray(chat.chat.message)) invalid();
+            selected.set(JSON.stringify([entry.characterId, entry.chatId]), { character, ...chat });
+            dirtyCharacters.add(entry.characterId);
+        }
+        for (const id of dirtyCharacters) if (!byId.has(id)) invalid();
+
+        const operations = [];
+        if (scope.includeRootSettings) {
+            const incoming = splitSecrets(without(database, new Set(['characters', ...COLLECTIONS.map(([legacy]) => legacy)])));
+            operations.push(
+                { path: 'settings/app.json', data: jsonBytes({ schemaVersion: 1, ...incoming.settings }) },
+                { path: 'secrets/credentials.json', data: jsonBytes({ schemaVersion: 1, ...incoming.secrets }) },
+            );
+        }
+        const sidebar = { ...previousIndex, updatedAt: Date.now(), characters: previousIndex.characters.map(character => ({ ...character, chats: [...character.chats] })) };
+        for (const rawId of dirtyCharacters) {
+            const { character, id, index } = byId.get(rawId);
+            operations.push({ path: path.join('characters', id, 'metadata.json'),
+                data: jsonBytes({ ...without(character, new Set(['chats'])), chaId: id }) });
+            Object.assign(sidebar.characters[index], { name: character.name || '', updatedAt: characterUpdatedAt(character, Date.now()) });
+        }
+        for (const { character, chat, id, index } of selected.values()) {
+            operations.push(
+                { path: chatMetadataPath(character.id, id), data: jsonBytes(without(chat, new Set(['message']))) },
+                { path: messagesPath(character.id, id), data: Buffer.from(chat.message.map(message => JSON.stringify(message)).join('\n') + (chat.message.length ? '\n' : ''), 'utf8') },
+            );
+            sidebar.characters[character.index].chats[index] = {
+                id, name: chat.name || '', lastDate: chat.lastDate ?? 0, legacyMessagePresent: true,
+            };
+        }
+        operations.push({ path: 'index/sidebar.json', data: jsonBytes(sidebar) });
+        return { files: operations.length, transaction: commitTransaction(dataRoot, operations) };
+    }
+
     function loadCollection(directory, ids, options = {}) {
         return (ids || []).map(id => readJson(path.join(directory, `${stableId(id, directory.slice(0, -1))}.json`), options));
     }
@@ -678,8 +748,10 @@ function createUserDataRepository(options = {}) {
         loadMessages,
         loadSidebarIndex,
         reconcileCanonicalProjection,
+        recoverPendingTransactions: () => recoverTransactions(dataRoot),
         saveAssistantDraft,
         syncLegacyPresetState,
+        syncLegacyChatState,
         syncLegacyCollection,
     };
 }

@@ -30,7 +30,7 @@ const getVips = () => {
 }
 const { kvGet, kvSet, kvSetMany, kvSetManyAsync, kvReplacePrefixesAsync, kvReplacePrefixesFromFilesAsync, kvReplaceAllAsync, kvDel, kvDelMany, kvList,
         kvDelPrefix, kvListWithSizes, kvSize, kvGetUpdatedAt, kvCopyValue,
-        gcChunks, reclaimableChunkBytes, objectStoreBytes, isDbBlobChunked, snapshotFootprint, repository: userDataRepository } = require('./db.cjs');
+        gcChunks, reclaimableChunkBytes, objectStoreBytes, isDbBlobChunked, snapshotFootprint, repository: userDataRepository, compatibilityCache } = require('./db.cjs');
 const {
     addLogBatch, queryLogs, clearLogs, countLogs,
     logger, installProcessHandlers, expressErrorMiddleware,
@@ -109,6 +109,14 @@ function queueStorageOperation(operation) {
 }
 
 const DB_HEX_KEY = Buffer.from('database/database.bin', 'utf-8').toString('hex');
+const { createQueuedSaveDebounce } = require('./queued-save-debounce.cjs');
+const scheduleStoragePersist = createQueuedSaveDebounce({
+    timers: saveTimers, queue: queueStorageOperation, delay: SAVE_INTERVAL,
+    onError: error => {
+        logger.error('[Storage] Queued persist failed:', error);
+        recordPersistFailure(error, 'queued-persist');
+    },
+});
 
 // ─── Persist failure tracking (Stage 1 visibility) ───────────────────────────
 // Debounced persist runs in setTimeout, so failures cannot be returned in the
@@ -245,7 +253,12 @@ function maybeCollectUnreferencedObjects() {
     }
 }
 
-async function flushPendingDb() {
+function flushPendingDb() {
+    return queueStorageOperation(flushPendingDbWithinQueue);
+}
+
+// Call only from an operation that already owns the storage queue.
+async function flushPendingDbWithinQueue() {
     if (adoptExternallyChangedCanonicalProjection()) return;
     if (saveTimers[DB_HEX_KEY]) {
         clearTimeout(saveTimers[DB_HEX_KEY]);
@@ -256,13 +269,15 @@ async function flushPendingDb() {
             });
         } else if (fullChatStore && fullChatStore.size > 0) {
             // No stripped cache but chat store has data — merge and persist directly
-            await persistChatStoreWithoutCache('flush');
+            await persistChatStoreWithoutCache('flush', { directCollection: directWriteTracker.take(DB_HEX_KEY) });
         }
         maybeCollectUnreferencedObjects();
     }
+    compatibilityCache.materialize('flush');
 }
 
 function invalidateDbCache() {
+    compatibilityCache.setVerified(false);
     directWriteTracker.clear(DB_HEX_KEY);
     delete dbCache[DB_HEX_KEY];
     fullChatStore = null;
@@ -725,7 +740,7 @@ function elapsedMs(startedAt) {
     return Math.round((performance.now() - startedAt) * 1000) / 1000;
 }
 
-async function persistChatStoreWithoutCache(trigger) {
+async function persistChatStoreWithoutCache(trigger, observationContext = {}) {
     const raw = kvGet('database/database.bin');
     if (!raw) return;
     const operationId = nodeCrypto.randomUUID();
@@ -755,13 +770,15 @@ async function persistChatStoreWithoutCache(trigger) {
         metrics.kvWriteMs = elapsedMs(phaseStartedAt);
         errorStage = 'canonical-sync';
         phaseStartedAt = performance.now();
-        persistCanonicalProjection(fullDb, { operationId, trigger });
+        persistCanonicalProjection(fullDb, { operationId, trigger, directCollection: observationContext.directCollection });
         metrics.canonicalSyncMs = elapsedMs(phaseStartedAt);
         saveObservation.record({
             kind: 'compatibility-persist', trigger, outcome: 'success', operationId,
             durationMs: elapsedMs(startedAt), overlappingPersists, ...metrics,
         });
     } catch (error) {
+        directWriteTracker.observe(DB_HEX_KEY, []);
+        compatibilityCache.setVerified(false);
         if (data && error && typeof error === 'object') {
             try { error.attemptedSize = data.length; } catch {}
         }
@@ -820,15 +837,22 @@ async function persistDbCacheWithChats(filePath, decodedKey, trigger = 'unknown'
             }
         }
 
-        errorStage = 'encode';
-        phaseStartedAt = performance.now();
-        data = encodeRisuSaveLegacyBuffer(fullDb);
-        metrics.encodeMs = elapsedMs(phaseStartedAt);
-        metrics.databaseBytes = data.length;
-        errorStage = 'kv-write';
-        phaseStartedAt = performance.now();
-        kvSet(decodedKey, data);
-        metrics.kvWriteMs = elapsedMs(phaseStartedAt);
+        const deferCompatibility = decodedKey === 'database/database.bin'
+            && ['chat-debounce', 'patch-debounce'].includes(trigger)
+            && (observationContext.directCollection?.kind === 'chatState'
+                || ['botPresets', 'botPresetState'].includes(observationContext.directCollection))
+            && canonicalProjectionReady && compatibilityCache.canDefer();
+        if (!deferCompatibility) {
+            errorStage = 'encode';
+            phaseStartedAt = performance.now();
+            data = encodeRisuSaveLegacyBuffer(fullDb);
+            metrics.encodeMs = elapsedMs(phaseStartedAt);
+            metrics.databaseBytes = data.length;
+            errorStage = 'kv-write';
+            phaseStartedAt = performance.now();
+            kvSet(decodedKey, data);
+            metrics.kvWriteMs = elapsedMs(phaseStartedAt);
+        }
         if (decodedKey === 'database/database.bin') {
             errorStage = 'canonical-sync';
             phaseStartedAt = performance.now();
@@ -836,8 +860,10 @@ async function persistDbCacheWithChats(filePath, decodedKey, trigger = 'unknown'
                 operationId,
                 trigger,
                 directCollection: observationContext.directCollection,
+                deferCompatibility,
             });
             metrics.canonicalSyncMs = elapsedMs(phaseStartedAt);
+            metrics.projectionDeferred = deferCompatibility;
         }
         // Refresh fullChatStore from the persisted snapshot so subsequent
         // /api/chat-content GETs return the same metadata (folderId, modules)
@@ -856,6 +882,8 @@ async function persistDbCacheWithChats(filePath, decodedKey, trigger = 'unknown'
         });
     } catch (err) {
         // Tag with BLOB size so the visibility layer can surface it to the user.
+        if (decodedKey === 'database/database.bin') compatibilityCache.setVerified(false);
+        if (decodedKey === 'database/database.bin') directWriteTracker.observe(filePath, []);
         // Oversized compatibility blobs are rejected before allocating copies.
         if (data && err && typeof err === 'object') {
             try { err.attemptedSize = data.length; } catch {}
@@ -937,10 +965,14 @@ if(!existsSync(savePath)){
     mkdirSync(savePath)
 }
 const saveObservation = createSaveObservation({ dataRoot: savePath })
+compatibilityCache.setRecorder(row => saveObservation.record(row))
 saveObservation.record({ kind: 'session', trigger: 'server-start', outcome: 'started' })
 const projectionShadow = createProjectionShadow({
     repository: userDataRepository,
     observation: saveObservation,
+    onComparison: match => compatibilityCache.setVerified(match),
+    minIntervalMs: 30000,
+    canSkip: () => compatibilityCache.canDefer(),
     isPersisting: () => activeCompatibilityPersists > 0,
 })
 const CANONICAL_PROJECTION_REVISION_KEY = 'database/canonical-projection-revision'
@@ -960,7 +992,8 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
     const startedAt = performance.now()
     const operationId = observationContext.operationId || nodeCrypto.randomUUID()
     const trigger = observationContext.trigger || 'unspecified'
-    let strategy = ['botPresets', 'botPresetState'].includes(observationContext.directCollection) ? 'bot-presets-direct' : 'full-sync'
+    let strategy = observationContext.directCollection?.kind === 'chatState' ? 'chat-direct'
+        : ['botPresets', 'botPresetState'].includes(observationContext.directCollection) ? 'bot-presets-direct' : 'full-sync'
     let fallbackUsed = false
     let fallbackCode
     let errorStage = 'external-change-check'
@@ -974,6 +1007,13 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
             const error = new Error('Canonical entity files changed outside RisuBard before projection save')
             error.code = 'CANONICAL_FILES_CHANGED'
             throw error
+        }
+        // The durable reference disappears before canonical publication. A
+        // crash at either side is resolved by the existing missing-cache reader
+        // after journal recovery; stale compatibility bytes cannot win.
+        if (observationContext.deferCompatibility) {
+            errorStage = 'compatibility-invalidate'
+            compatibilityCache.invalidate()
         }
         errorStage = 'transaction'
         const write = writeCanonicalProjection({
@@ -997,6 +1037,7 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
         })
         projectionShadow.schedule({
             database: databaseObject,
+            allowSampling: strategy !== 'full-sync' && !fallbackUsed,
             trigger,
             plannedFiles: result.files,
         })
@@ -1042,7 +1083,7 @@ function adoptExternallyChangedCanonicalProjection() {
 }
 
 externalEditSession = createExternalEditSession({
-    flush: flushPendingDb,
+    flush: flushPendingDbWithinQueue,
     getRevision: () => userDataRepository.getProjectionRevision(),
     adopt: adoptExternallyChangedCanonicalProjection,
 })
@@ -3644,7 +3685,7 @@ async function readStorageItemPayload(key) {
 }
 
 async function prepareDatabaseRead(filePath, key, options = {}) {
-    if (options.flush === true) await flushPendingDb();
+    if (options.flush === true) await flushPendingDbWithinQueue();
     const stored = await readStorageItemPayload(key);
     if (stored === null) return { value: null, etag: null };
     let database;
@@ -4117,7 +4158,7 @@ app.post('/api/db/flush', sessionAuthMiddleware, async (req, res, next) => {
                 res.send({ success: true, paused: true, etag: dbEtag ?? undefined });
                 return;
             }
-            await flushPendingDb();
+            await flushPendingDbWithinQueue();
             res.send({
                 success: true,
                 etag: dbEtag ?? undefined
@@ -4251,13 +4292,10 @@ app.post('/api/patch', async (req, res, next) => {
                 throw patchErr;
             }
             dbCache[filePath] = snapshot;
-            if (decodedKey === 'database/database.bin') directWriteTracker.observe(filePath, patch);
+            if (decodedKey === 'database/database.bin') directWriteTracker.observe(filePath, patch, snapshot);
 
             // Schedule save to KV (debounced) — merge full chats back for database.bin
-            if (saveTimers[filePath]) {
-                clearTimeout(saveTimers[filePath]);
-            }
-            saveTimers[filePath] = setTimeout(async () => {
+            scheduleStoragePersist(filePath, async () => {
                 try {
                     if (decodedKey === 'database/database.bin') {
                         await persistDbCacheWithChats(filePath, decodedKey, 'patch-debounce', {
@@ -4287,10 +4325,8 @@ app.post('/api/patch', async (req, res, next) => {
                 } catch (error) {
                     logger.error(`[Patch] Error saving ${decodedKey}:`, error);
                     recordPersistFailure(error, `patch:${decodedKey}`);
-                } finally {
-                    delete saveTimers[filePath];
                 }
-            }, SAVE_INTERVAL);
+            });
 
             // Update ETag after successful patch (based on stripped version)
             if (decodedKey === 'database/database.bin') {
@@ -5346,19 +5382,21 @@ app.post('/api/chat-content/:chaId/:chatIndex', async (req, res, next) => {
                 fullChatStore.set(chaId, new Map());
             }
             fullChatStore.get(chaId).set(expectedChatId, chatData);
+            directWriteTracker.observeChat(DB_HEX_KEY, chaId, expectedChatId);
 
             // Schedule debounced persist (reuses existing timer mechanism)
-            if (saveTimers[DB_HEX_KEY]) {
-                clearTimeout(saveTimers[DB_HEX_KEY]);
-            }
-            saveTimers[DB_HEX_KEY] = setTimeout(async () => {
+            scheduleStoragePersist(DB_HEX_KEY, async () => {
                 try {
                     // If dbCache has stripped DB, persist with merged chats
                     if (dbCache[DB_HEX_KEY]) {
-                        await persistDbCacheWithChats(DB_HEX_KEY, 'database/database.bin', 'chat-debounce');
+                        await persistDbCacheWithChats(DB_HEX_KEY, 'database/database.bin', 'chat-debounce', {
+                            directCollection: directWriteTracker.take(DB_HEX_KEY),
+                        });
                     } else {
                         // No stripped cache — load, merge, save
-                        await persistChatStoreWithoutCache('chat-debounce');
+                        await persistChatStoreWithoutCache('chat-debounce', {
+                            directCollection: directWriteTracker.take(DB_HEX_KEY),
+                        });
                     }
                     // Persist succeeded — clear before backup so a backup-only
                     // failure isn't attributed to data loss.
@@ -5371,10 +5409,8 @@ app.post('/api/chat-content/:chaId/:chatIndex', async (req, res, next) => {
                 } catch (error) {
                     logger.error('[ChatContent] Error persisting chat:', error);
                     recordPersistFailure(error, 'chat-content');
-                } finally {
-                    delete saveTimers[DB_HEX_KEY];
                 }
-            }, SAVE_INTERVAL);
+            });
 
             res.json({ success: true });
         });
@@ -5989,7 +6025,7 @@ app.post('/api/db/optimize', async (req, res, next) => {
         const preStoreBytes = objectStoreBytes();
 
         const result = await queueStorageOperation(async () => {
-            await flushPendingDb();
+            await flushPendingDbWithinQueue();
             const t0 = Date.now();
             const gcResult = gcChunks();
             const elapsed = Date.now() - t0;
@@ -6012,7 +6048,7 @@ app.post('/api/db/orphans/cleanup', async (req, res, next) => {
     if (!checkActiveSession(req, res)) return;
     try {
         const result = await queueStorageOperation(async () => {
-            await flushPendingDb();
+            await flushPendingDbWithinQueue();
             await ensureChatStore();
 
             const raw = kvGet(DB_BLOB_KEY);
@@ -6169,7 +6205,7 @@ app.post('/api/db/snapshots/restore', async (req, res, next) => {
             // Drain any pending debounced persist first — same pattern as
             // /api/db/optimize. Without this, an in-flight save could land
             // after kvCopyValue and overwrite the restored snapshot.
-            await flushPendingDb();
+            await flushPendingDbWithinQueue();
             kvCopyValue(key, DB_BLOB_KEY);
             invalidateDbCache();
             // Snapshot may pre-date the remote-block migration. Clear the marker

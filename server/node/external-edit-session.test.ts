@@ -79,6 +79,12 @@ describe('external edit session server wiring', () => {
         expect(server).toContain("code: 'EXTERNAL_EDIT_MODE'")
     })
 
+    it('does not re-enter the storage queue when starting an external edit', () => {
+        const wiring = server.slice(server.indexOf('externalEditSession = createExternalEditSession({'))
+            .split('})')[0]
+        expect(wiring).toContain('flush: flushPendingDbWithinQueue')
+    })
+
     it('serializes canonical adoption before serving the compatibility database', () => {
         const readRoute = server.slice(
             server.indexOf("app.get('/api/read'"),

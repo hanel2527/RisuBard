@@ -16,9 +16,14 @@ function createProjectionShadow(options = {}) {
     const now = options.now || (() => performance.now());
     let pending = null;
     let scheduled = false;
+    let lastMatchAt = -Infinity;
 
     function record(row) {
         try { observation?.record(row); } catch {}
+    }
+    function compared(match) {
+        lastMatchAt = match ? now() : -Infinity;
+        try { options.onComparison?.(match); } catch {}
     }
 
     async function run() {
@@ -38,9 +43,16 @@ function createProjectionShadow(options = {}) {
         }
 
         const startedAt = now();
+        if (candidate.allowSampling && ['chat-debounce', 'patch-debounce'].includes(candidate.trigger)
+            && options.canSkip?.() === true && startedAt - lastMatchAt < (options.minIntervalMs || 0)) {
+            record({ kind: 'projection-shadow', trigger: candidate.trigger, outcome: 'skipped',
+                errorStage: 'sample-interval', plannedFiles: candidate.plannedFiles });
+            return;
+        }
         try {
             const projected = repository.exportLegacyDatabase();
             const semanticMatch = isDeepStrictEqual(projected, normalizeJSON(candidate.database));
+            compared(semanticMatch);
             record({
                 kind: 'projection-shadow',
                 trigger: candidate.trigger,
@@ -51,6 +63,7 @@ function createProjectionShadow(options = {}) {
                 semanticMatch,
             });
         } catch (error) {
+            compared(false);
             record({
                 kind: 'projection-shadow',
                 trigger: candidate.trigger,
@@ -67,6 +80,7 @@ function createProjectionShadow(options = {}) {
         try {
             pending = {
                 database: candidate.database,
+                allowSampling: candidate.allowSampling !== false,
                 trigger: String(candidate.trigger || 'unspecified'),
                 plannedFiles: Number.isFinite(candidate.plannedFiles) && candidate.plannedFiles >= 0
                     ? candidate.plannedFiles

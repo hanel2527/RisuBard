@@ -32,6 +32,8 @@ export interface ServerHandle {
   port: number
   password: string
   cwd: string
+  /** Stop the isolated process without deleting its data (crash/restart tests). */
+  stop: (signal?: NodeJS.Signals) => Promise<void>
   /** Kill the server and clean up the temp directory. */
   cleanup: () => Promise<void>
 }
@@ -124,9 +126,9 @@ export async function spawnServer(opts: SpawnServerOptions = {}): Promise<Server
   let exited = child.exitCode !== null
   child.on('exit', () => { exited = true })
 
-  const cleanup = async () => {
+  const stop = async (signal: NodeJS.Signals = 'SIGTERM') => {
     if (!exited) {
-      child.kill('SIGTERM')
+      child.kill(signal)
       await new Promise<void>(resolve => {
         const timeout = setTimeout(() => {
           if (!exited) child.kill('SIGKILL')
@@ -135,8 +137,11 @@ export async function spawnServer(opts: SpawnServerOptions = {}): Promise<Server
         child.on('exit', () => { clearTimeout(timeout); resolve() })
       })
     }
+  }
+  const cleanup = async () => {
+    await stop()
     await rm(tempDir, { recursive: true, force: true })
   }
 
-  return { port, password: TEST_PASSWORD, cwd: tempDir, cleanup }
+  return { port, password: TEST_PASSWORD, cwd: tempDir, stop, cleanup }
 }

@@ -69,6 +69,57 @@ function legacyDatabase() {
 }
 
 describe('canonical entity tree', () => {
+    it('writes only selected chat state and companion settings, with restart equality', () => {
+        const dataRoot = root()
+        const repository = createUserDataRepository({ dataRoot })
+        const database = legacyDatabase()
+        database.characters[0].chats.push({ ...structuredClone(database.characters[0].chats[0]), id: 'chat-2' })
+        repository.importLegacyDatabase(database, { mode: 'sync' })
+        const untouched = path.join(dataRoot, 'characters/char-1/chats/chat-2/messages.jsonl')
+        const previousStat = fs.statSync(untouched, { bigint: true })
+        database.characters[0].chats[0].message[1].data = 'edited response'
+        database.characters[0].chats[0].name = 'renamed'
+        database.characters[0].name = 'renamed character'
+        database.language = 'en'
+        const result = repository.syncLegacyChatState(database, {
+            chats: [{ characterId: 'char-1', chatId: 'chat-1' }],
+            characterIds: ['char-1'], includeRootSettings: true,
+        })
+        expect(result.files).toBe(6)
+        expect(fs.statSync(untouched, { bigint: true }).mtimeNs).toBe(previousStat.mtimeNs)
+        expect(createUserDataRepository({ dataRoot }).exportLegacyDatabase()).toEqual(database)
+    })
+
+    it.each(['reorder', 'delete', 'duplicate', 'missing', 'unknown-scope'])
+    ('rejects %s before publishing a partial chat projection', (kind) => {
+        const dataRoot = root()
+        const repository = createUserDataRepository({ dataRoot })
+        const database = legacyDatabase()
+        database.characters[0].chats.push({ ...structuredClone(database.characters[0].chats[0]), id: 'chat-2' })
+        repository.importLegacyDatabase(database, { mode: 'sync' })
+        const before = repository.exportLegacyDatabase()
+        if (kind === 'reorder') database.characters[0].chats.reverse()
+        if (kind === 'delete') database.characters[0].chats.pop()
+        if (kind === 'duplicate') database.characters[0].chats[1].id = 'chat-1'
+        if (kind === 'missing') database.characters[0].chats[0].id = ''
+        expect(() => repository.syncLegacyChatState(database, {
+            chats: [{ characterId: 'char-1', chatId: kind === 'unknown-scope' ? 'unknown' : 'chat-1' }],
+            characterIds: ['char-1'], includeRootSettings: false,
+        })).toThrow()
+        expect(repository.exportLegacyDatabase()).toEqual(before)
+    })
+
+    it('rejects character aliases that normalize to the same canonical directory', () => {
+        const dataRoot = root()
+        const repository = createUserDataRepository({ dataRoot })
+        const database = legacyDatabase()
+        database.characters.push({ ...structuredClone(database.characters[0]), chaId: ' char-1 ' })
+        repository.importLegacyDatabase(database, { mode: 'sync' })
+        expect(() => repository.syncLegacyChatState(database, {
+            chats: [{ characterId: 'char-1', chatId: 'chat-1' }],
+        })).toThrow(/scope changed/)
+    })
+
     it('imports the legacy projection into stable-ID JSON and chat JSONL files', () => {
         const dataRoot = root()
         const repository = createUserDataRepository({ dataRoot })
