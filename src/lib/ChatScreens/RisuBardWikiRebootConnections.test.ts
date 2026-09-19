@@ -64,6 +64,9 @@ describe('BardWiki reboot connections', () => {
         expect(failure).toContain('publishRisuBardMemoryActivity')
         expect(failure).toContain("operation: 'error'")
         expect(failure).toContain('위키 리부트 실패:')
+        expect(failure).toContain('boundedMemoryAnalysisError(error)')
+        expect(failure).toContain('job.lastError = reason')
+        expect(failure).toContain('throw new Error(reason, { cause: error })')
     })
 
     test('allows responses during ordinary BardWiki work while still blocking reboot', () => {

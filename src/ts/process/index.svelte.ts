@@ -28,7 +28,6 @@ import { pluginV2 } from "../plugins/plugins.svelte";
 import { dispatchCommittedChatOutput } from "../plugins/pluginChatOutput";
 import { getModelInfo, LLMFlags } from "../model/modellist";
 import { resolveChatModelBinding, resolvePresetMaxOutputTokens } from "./request/modelPresetBinding";
-import { hypaMemoryV3 } from "./memory/hypav3";
 import { getModuleAssets, getModuleLorebooksWithSources, getModuleToggles } from "./modules";
 import { forageStorage, readImage } from "../globalApi.svelte";
 import { chatGenKey, chatProcessStage, endGeneration, isChatGenerating, setGenerationStage, startGeneration } from "./generationState";
@@ -573,7 +572,10 @@ async function runWikiReboot(
     try {
         while (chat.risuBardWikiReboot) {
             const job = chat.risuBardWikiReboot
-            const turns = projectWikiRebootTurns(chat.message)
+            const settings = resolvedRisuBardSettings(chat)
+            const turns = projectWikiRebootTurns(
+                chat.message, 0, !settings.risuBardAnalysisExcludeUserMessages
+            )
             if (job.status === 'stop-requested'
                 && !job.inFlightAssistantMessageIds?.length) {
                 job.status = 'paused'
@@ -626,7 +628,6 @@ async function runWikiReboot(
                 job.updatedAt = Date.now()
                 await persistWikiReboot(character, chat, chatIndex)
             }
-            const settings = resolvedRisuBardSettings(chat)
             const wikiPromptPreset = resolveWikiPromptPreset(
                 DBState.db.risuBardWikiPromptPresets,
                 DBState.db.risuBardChatWikiPromptPresetId
@@ -661,11 +662,7 @@ async function runWikiReboot(
                 chatId: job.stagingChatId,
                 modelSessionChatId: chatId,
                 messages: projectMemoryAnalysisEvidence(
-                    settings.risuBardAnalysisExcludeUserMessages
-                        ? projected.messages.filter((message) =>
-                            message.role !== 'user'
-                        )
-                        : projected.messages,
+                    projected.messages,
                     contextMessages,
                     firstMessageEvidence
                 ),
@@ -721,9 +718,7 @@ async function runWikiReboot(
             }
             return true
         }
-        const reason = (error instanceof Error
-            ? error.message
-            : String(error)).trim().slice(0, 512) || '알 수 없는 오류'
+        const reason = boundedMemoryAnalysisError(error) || '알 수 없는 오류'
         if (job) {
             job.status = 'failed'
             job.lastError = reason
@@ -737,7 +732,7 @@ async function runWikiReboot(
             timestamp: Date.now(),
             message: `위키 리부트 실패: ${reason}`,
         })
-        throw error
+        throw new Error(reason, { cause: error })
     }
     finally {
         endWikiGeneration(operationId)
@@ -1709,7 +1704,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                 : createNarrativeSourcesPrompt(
                     sources,
                     narrativeContext.baseline ?? '',
-                    12_000,
+                    undefined,
                     responseWikiPromptGuide
                 )
             if (currentPrompt) {
@@ -2355,34 +2350,9 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         currentTokens += await tokenizer.tokenizeChat(chat)
     }
     
-    if((currentChat.supaMemory ?? nowChatroom.supaMemory) && DBState.db.hypaV3){
-        stageTimings.stage1Duration = Date.now() - stageTimings.stage1Start
-        setGenerationStage(genKey, 2)
-        stageTimings.stage2Start = Date.now()
-        console.log("Current chat's hypaV3 Data: ", currentChat.hypaV3Data)
-        const sp = await hypaMemoryV3(chats, currentTokens, maxContextTokens, currentChat, nowChatroom, tokenizer)
-        if(sp.error){
-            // Save new summary
-            if (sp.memory) {
-                currentChat.hypaV3Data = sp.memory
-                DBState.db.characters[selectedChar].chats[selectedChat].hypaV3Data = currentChat.hypaV3Data
-            }
-            console.log(sp)
-            throwError(sp.error)
-            if (realChatId) clearPendingSend(realChatId)
-            return false
-        }
-        chats = sp.chats
-        currentTokens = sp.currentTokens
-        currentChat.hypaV3Data = sp.memory ?? currentChat.hypaV3Data
-        DBState.db.characters[selectedChar].chats[selectedChat].hypaV3Data = currentChat.hypaV3Data
-
-        currentChat = DBState.db.characters[selectedChar].chats[selectedChat];
-        console.log("[Expected to be updated] chat's HypaV3Data: ", currentChat.hypaV3Data)
-        stageTimings.stage2Duration = Date.now() - stageTimings.stage2Start
-        setGenerationStage(genKey, 1)
-    }
-    else{
+    // BardWiki already selected the response history. Legacy memory flags are
+    // compatibility data and must not activate another summarizer here.
+    {
         stageTimings.stage1Duration = Date.now() - stageTimings.stage1Start
         while(currentTokens > maxContextTokens){
             if(chats.length <= 1){

@@ -335,7 +335,6 @@ export async function loadNarrativeInquiry(input: {
             || source.kind !== 'memory'
             || source.role !== 'system'
             || typeof source.content !== 'string'
-            || source.content.length > 4_096
             || (source.displayName !== undefined
                 && (typeof source.displayName !== 'string'
                     || source.displayName.trim().length === 0
@@ -347,7 +346,7 @@ export async function loadNarrativeInquiry(input: {
             kind: 'memory',
             role: 'system',
             content: source.content,
-            tokens: boundedMetric(source.tokens, 4_096),
+            tokens: boundedMetric(source.tokens),
             priority: boundedMetric(source.priority),
             ...(source.occurredAt === undefined
                 ? {}
@@ -506,10 +505,10 @@ export async function loadNarrativeInquiry(input: {
 export function createNarrativeSourcesPrompt(
     sources: readonly ContextSource[],
     baseline = '',
-    characterBudget = 12_000,
+    characterBudget = Number.POSITIVE_INFINITY,
     responseGuide = ''
 ): string | null {
-    const selectedSources = sources.slice(0, 16)
+    const selectedSources = sources
     const sections = [
         selectedSources.length > 0 ? NARRATIVE_EVIDENCE_RULES : '',
         selectedSources.length > 0 && responseGuide.trim().length > 0

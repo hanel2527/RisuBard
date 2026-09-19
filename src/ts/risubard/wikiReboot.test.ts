@@ -19,6 +19,27 @@ const messages = [
 ] as const
 
 describe('BardWiki reboot domain', () => {
+    test('excludes user evidence and source IDs together when analysis omits user messages', () => {
+        const turns = projectWikiRebootTurns(messages, 0, false)
+        expect(turns.map(turn => turn.assistantMessageId)).toEqual(['a1', 'a2', 'a3'])
+        for (const turn of turns) {
+            expect(turn.messageIds).toEqual([turn.assistantMessageId])
+            expect(turn.messages).toEqual([{
+                messageId: turn.assistantMessageId,
+                role: 'assistant',
+                content: turn.assistantMessageId,
+            }])
+        }
+        const job = createWikiRebootJob({
+            jobId: 'import-reboot', stagingChatId: 'staging', batchSize: 2,
+            targetAssistantMessageIds: turns.map(turn => turn.assistantMessageId),
+        })
+        expect(nextWikiRebootBatch(job, turns).flatMap(turn => turn.messageIds))
+            .toEqual(['a1', 'a2'])
+        expect(projectWikiRebootTurns(messages, 5, false).map(turn => turn.messageIds))
+            .toEqual([['a2'], ['a3']])
+    })
+
     test('persists the starting language across resume and keeps legacy jobs Korean', () => {
         const job = createWikiRebootJob({ jobId: 'job-en', stagingChatId: 'reboot-en',
             batchSize: 2, targetAssistantMessageIds: ['a1'], writingLanguage: 'en' })

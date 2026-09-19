@@ -64,6 +64,28 @@ function truncateToTokenBudget(value: string, maximumTokens: number): string {
     return characters.slice(0, low).join('').trimEnd()
 }
 
+function selectTokenBoundedExcerpt(
+    input: Omit<Parameters<typeof selectMarkdownExcerpt>[0], 'maximumCharacters'>,
+    maximumTokens: number,
+): string {
+    const full = input.content.trim()
+    if (countInquiryTokens(full) <= maximumTokens) return full
+    let low = 0
+    let high = input.content.length
+    let selected = ''
+    while (low < high) {
+        const middle = Math.ceil((low + high) / 2)
+        const excerpt = selectMarkdownExcerpt({ ...input, maximumCharacters: middle })
+        if (countInquiryTokens(excerpt) <= maximumTokens) {
+            low = middle
+            selected = excerpt
+        } else {
+            high = middle - 1
+        }
+    }
+    return selected
+}
+
 export interface MarkdownInquiryInput {
     documents: readonly MarkdownWikiDocument[]
     currentInput: string
@@ -622,10 +644,6 @@ export function inquireMarkdownDocuments(
         input.tokenBudget?.events,
         input.tokenBudget?.perSource,
     )
-    const excerptCharacters = Math.min(
-        MAX_SOURCE_CHARACTERS,
-        tokenBudget.perSource,
-    )
     const prepared = [
         ...requiredDocuments.map((document) => ({
             document,
@@ -634,13 +652,12 @@ export function inquireMarkdownDocuments(
         })),
         ...automatic,
     ].map((candidate) => {
-        const content = selectMarkdownExcerpt({
+        const content = selectTokenBoundedExcerpt({
             content: candidate.document.content,
             documentType: candidate.document.type,
             query: retrievalInput,
-            maximumCharacters: excerptCharacters,
             chronologyIntent,
-        })
+        }, tokenBudget.perSource)
         const boundedContent = truncateToTokenBudget(
             candidate.document.type === 'event' && candidate.document.retrievalMetadata?.storyTime
                 ? `[Story day relative to first recorded event: ${candidate.document.retrievalMetadata.storyTime.day ?? 'unknown'}; calendar date unspecified]\n${content}`
@@ -754,16 +771,12 @@ export function inquireMarkdownDocuments(
                 1,
                 tokenBudget.perSource - countInquiryTokens(`${heading}\n`),
             )
-            const excerpt = selectMarkdownExcerpt({
+            const excerpt = selectTokenBoundedExcerpt({
                 content: match.content,
                 documentType: 'other',
                 query: retrievalInput,
-                maximumCharacters: Math.min(
-                    MAX_SOURCE_CHARACTERS,
-                    bodyTokenBudget,
-                ),
                 chronologyIntent: false,
-            })
+            }, bodyTokenBudget)
             const content = `${heading}\n${truncateToTokenBudget(
                 excerpt,
                 bodyTokenBudget,

@@ -21,6 +21,41 @@ function document(
 }
 
 describe('progressive Markdown inquiry', () => {
+    test('preserves long routed historical evidence within the configured token budget', () => {
+        const content = 'archive '.repeat(2000).trim()
+        const result = inquireMarkdownDocuments({
+            currentInput: 'archive in detail',
+            tokenBudget: { target: 10000, events: 2000, perSource: 8000, maximum: 16000 },
+            documents: [document({ id: 'event', type: 'event', title: 'archive',
+                relativePath: 'events/archive.md', content: 'Archive evidence',
+                sourceMessageIds: ['original'], contextMode: 'always' })],
+            sourceMatches: [{ messageId: 'original', role: 'assistant',
+                content, score: 10, occurredAt: 1 }],
+        })
+        const source = result.sources.find(item => item.id.startsWith('narrative-memory:source:'))
+        expect(source?.content).toContain(content)
+        expect(source?.tokens).toBeLessThanOrEqual(8000)
+        expect(result.metrics.selectedTokens).toBeLessThanOrEqual(16000)
+    })
+    test('uses the configured token budget rather than a separate character cap', () => {
+        const content = 'archive '.repeat(2000).trim()
+        const input = {
+            currentInput: 'archive',
+            documents: [document({ id: 'archive', type: 'other', title: 'Archive',
+                relativePath: 'notes/archive.md', content, contextMode: 'always' })],
+        }
+        const result = inquireMarkdownDocuments({ ...input,
+            tokenBudget: { target: 8000, events: 8000, perSource: 8000, maximum: 16000 },
+        })
+        expect(result.sources[0].content).toBe(content)
+        expect(result.sources[0].tokens).toBeLessThanOrEqual(8000)
+        const small = inquireMarkdownDocuments({ ...input,
+            tokenBudget: { target: 512, events: 512, perSource: 256, maximum: 512 },
+        })
+        expect(small.sources).toHaveLength(1)
+        expect(small.sources[0].tokens).toBeLessThanOrEqual(256)
+        expect(small.sources[0].content.length).toBeLessThan(content.length)
+    })
     test('includes the recorded story day inside the existing source token budget', () => {
         const result = inquireMarkdownDocuments({
             currentInput: '춤을 기억해.',

@@ -61,7 +61,8 @@ function active(message: StoredMessageLike): boolean {
 
 export function projectWikiRebootTurns(
     storedMessages: readonly StoredMessageLike[],
-    startChatIndex = 0
+    startChatIndex = 0,
+    includeUserMessages = true,
 ): WikiRebootTurn[] {
     const turns: WikiRebootTurn[] = []
     let latestUser: StoredMessageLike | undefined
@@ -74,7 +75,7 @@ export function projectWikiRebootTurns(
         }
         if (message.role !== 'char' || index < startChatIndex) continue
         const messages: WikiRebootMessage[] = []
-        if (latestUser && stableId(latestUser.chatId)
+        if (includeUserMessages && latestUser && stableId(latestUser.chatId)
             && typeof latestUser.data === 'string') {
             messages.push({
                 messageId: latestUser.chatId,

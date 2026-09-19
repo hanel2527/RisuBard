@@ -338,6 +338,29 @@ describe('actual narrative inquiry prompt', () => {
         )
     })
 
+    it('preserves long inquiry sources and their token counts without a hidden character limit', async () => {
+        const content = '위키 근거 '.repeat(3000)
+        const source = { id: 'long-wiki', kind: 'memory', role: 'system', content, tokens: 5000, priority: 100 }
+        const inquiry = await loadNarrativeInquiry({
+            characterId: 'character', chatId: 'chat', currentInput: '위키',
+            tokenBudget: { target: 8000, events: 8000, perSource: 8000, maximum: 16000 },
+            createAuth: async () => 'auth',
+            fetchImpl: vi.fn(async () => new Response(JSON.stringify({
+                mode: 'v2-current', graphRevision: 1, indexRevision: 1, cacheStatus: 'current',
+                sources: [source],
+                metrics: { candidateCount: 1, inspectedNodeCount: 1, inspectedEdgeCount: 0,
+                    selectedNodeCount: 1, selectedTokens: 5000, hopCount: 0, auxiliaryModelCalls: 0 },
+            }))) as typeof fetch,
+        })
+        expect(inquiry.sources[0].content).toBe(content)
+        expect(inquiry.sources[0].tokens).toBe(5000)
+        expect(createNarrativeSourcesPrompt(inquiry.sources)).toContain(content)
+        const selected = Array.from({ length: 20 }, (_, index) => ({
+            ...inquiry.sources[0], id: `selected-${index}`, content: `selected evidence ${index}`,
+        }))
+        expect(createNarrativeSourcesPrompt(selected)).toContain('selected evidence 19')
+    })
+
     it('accepts Markdown inquiry metrics above the retired v1 token budget', async () => {
         const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
             mode: 'v2-current',
