@@ -63,6 +63,7 @@
       "rt_google_ai_key",
       "rt_input_tl_korean_only",
       "rt_dict_bardwiki",
+      "rt_input_tl_bardwiki",
       "rt_custom_model",
       "rt_vertex_custom_model",
       "rt_custom_api_settings",
@@ -477,6 +478,7 @@
     const GOOGLE_AI_KEY_KEY = "rt_google_ai_key";
     const INPUT_TL_KOREAN_ONLY_KEY = "rt_input_tl_korean_only";
     const DICT_BARDWIKI_KEY = "rt_dict_bardwiki";
+    const INPUT_TL_BARDWIKI_KEY = "rt_input_tl_bardwiki";
     const CUSTOM_MODEL_KEY_GOOGLE = "rt_custom_model";
     const CUSTOM_MODEL_KEY_VERTEX = "rt_vertex_custom_model";
     const CUSTOM_API_SETTINGS_KEY = "rt_custom_api_settings";
@@ -642,20 +644,49 @@
       if (doc?.status === "superseded") score -= 25;
       return Math.max(0, score);
     }
-    function _dictWikiExcerpt(content, term) {
+    function _scoreInputWikiDocument(doc, input) {
+      const t = _normalizeDictTerm(input);
+      if (!t) return 0;
+      let score = 0;
+      for (const name of _dictDocNames(doc)) {
+        const n = _normalizeDictTerm(name);
+        if (!n || n.length < 2) continue;
+        if (t.includes(n)) {
+          score = Math.max(score, 100);
+          continue;
+        }
+        for (const word of String(name).split(/[\s·・]+/)) {
+          const w = _normalizeDictTerm(word);
+          if (w.length >= 2 && t.includes(w)) {
+            score = Math.max(score, 70);
+            break;
+          }
+        }
+      }
+      if (doc.status === "superseded") score -= 25;
+      return Math.max(0, score);
+    }
+    function _dictWikiExcerpt(content, term, maxChars) {
+      const cap = maxChars || DICT_WIKI_MAX_EXCERPT_CHARS;
       const text = String(content || "").trim();
       if (!text) return "";
       const at = term ? text.toLowerCase().indexOf(String(term).toLowerCase()) : -1;
-      if (at < 0) return text.slice(0, DICT_WIKI_MAX_EXCERPT_CHARS);
-      const start = Math.max(0, at - Math.floor(DICT_WIKI_MAX_EXCERPT_CHARS / 3));
-      const slice = text.slice(start, start + DICT_WIKI_MAX_EXCERPT_CHARS);
+      if (at < 0) return text.slice(0, cap);
+      const start = Math.max(0, at - Math.floor(cap / 3));
+      const slice = text.slice(start, start + cap);
       return (start > 0 ? "…" : "") + slice;
     }
     function _neutralizeDictWikiSlots(text) {
       return String(text || "").replace(/\{\{/g, "{{ ");
     }
-    async function collectDictWikiHits(term) {
-      if (!dictBardWikiEnabled) return { enabled: false, available: true, hits: [] };
+    async function collectDictWikiHits(term, opts) {
+      const o = opts || {};
+      const enabled = o.enabled !== undefined ? o.enabled : dictBardWikiEnabled;
+      if (!enabled) return { enabled: false, available: true, hits: [] };
+      const maxDocs = o.maxDocs || DICT_WIKI_MAX_DOCS;
+      const maxRelated = o.related === false ? 0 : DICT_WIKI_RELATED_DOCS;
+      const maxExcerpt = o.maxExcerptChars || DICT_WIKI_MAX_EXCERPT_CHARS;
+      const maxContext = o.maxContextChars || DICT_WIKI_MAX_CONTEXT_CHARS;
       let loaded;
       try {
         loaded = await _loadDictWikiDocuments();
@@ -664,11 +695,12 @@
       }
       if (!loaded.available) return { enabled: true, available: false, reason: loaded.reason, hits: [] };
       const usable = loaded.docs.filter((d) => d && d.status !== "retracted");
+      const scorer = o.inputMatch ? _scoreInputWikiDocument : _scoreDictWikiDocument;
       const scored = usable
-        .map((doc) => ({ doc, score: _scoreDictWikiDocument(doc, term) }))
+        .map((doc) => ({ doc, score: scorer(doc, term) }))
         .filter((entry) => entry.score > 0)
         .sort((a, b) => b.score - a.score);
-      const primary = scored.slice(0, DICT_WIKI_MAX_DOCS);
+      const primary = scored.slice(0, maxDocs);
       const linked = [];
       if (primary.length) {
         const seen = new Set(primary.map((e) => e.doc.id));
@@ -677,7 +709,7 @@
           (Array.isArray(e.doc.links) ? e.doc.links : []).forEach((link) => wanted.add(_normalizeDictTerm(link))),
         );
         for (const doc of usable) {
-          if (linked.length >= DICT_WIKI_RELATED_DOCS) break;
+          if (linked.length >= maxRelated) break;
           if (seen.has(doc.id)) continue;
           const matchesLink =
             wanted.has(_normalizeDictTerm(doc.title)) ||
@@ -694,10 +726,10 @@
         aliases: Array.isArray(entry.doc.aliases) ? entry.doc.aliases : [],
         status: entry.doc.status,
         related: !!related,
-        excerpt: _neutralizeDictWikiSlots(_dictWikiExcerpt(entry.doc.content, term)),
+        excerpt: _neutralizeDictWikiSlots(_dictWikiExcerpt(entry.doc.content, term, maxExcerpt)),
       });
       let hits = [...primary.map((e) => toHit(e, false)), ...linked.map((e) => toHit(e, true))];
-      while (hits.length && formatDictWikiContext(hits).length > DICT_WIKI_MAX_CONTEXT_CHARS) hits = hits.slice(0, -1);
+      while (hits.length && formatDictWikiContext(hits).length > maxContext) hits = hits.slice(0, -1);
       return { enabled: true, available: true, hits };
     }
     function formatDictWikiContext(hits) {
@@ -736,6 +768,43 @@
       hint.textContent = cached
         ? `🧠 BardWiki 연동됨 (최근 조회 문서 ${cached}건) — 검색할 때마다 현재 챗 정본을 다시 조회합니다.`
         : "🧠 BardWiki 연동됨 — 검색할 때마다 현재 챗 정본 문서를 조회해 근거로 사용합니다.";
+    }
+    /* ★ RisuBard: 입력 번역/개선 프롬프트에 현재 챗의 BardWiki 정본 용어 주입 */
+    const INPUT_TL_WIKI_MAX_DOCS = 4;
+    const INPUT_TL_WIKI_EXCERPT_CHARS = 320;
+    const INPUT_TL_WIKI_MAX_CONTEXT_CHARS = 1600;
+    function formatInputTlWikiBlock(wiki) {
+      if (!wiki || !wiki.enabled || !wiki.available || !wiki.hits.length) return "";
+      const lines = wiki.hits.map((hit) => {
+        const aliases = hit.aliases.map((alias) => _neutralizeDictWikiSlots(alias));
+        const aliasText = aliases.length ? ` / aliases: ${aliases.join(", ")}` : "";
+        return `- [${hit.type}] ${_neutralizeDictWikiSlots(hit.title)}${aliasText}\n${_neutralizeDictWikiSlots(hit.excerpt)}`;
+      });
+      return `[This chat's BardWiki canon — authoritative terminology]\nThe text may mention the entries below. Keep their names, aliases, spellings and established terms exactly as the canon writes them; do not rename, retranslate or contradict them.\n\n${lines.join("\n\n")}`;
+    }
+    function formatInputTlWikiLogLine(wiki) {
+      if (!wiki || !wiki.enabled) return "";
+      if (!wiki.available) return `사용 불가 — ${wiki.reason || "알 수 없는 오류"}`;
+      if (!wiki.hits.length) return "";
+      return wiki.hits.map((hit) => `${hit.title}(${hit.type}${hit.related ? "·연결" : ""})`).join(", ");
+    }
+    async function _applyInputTlWikiContext(prompt, content) {
+      if (!inputTlBardWikiEnabled) return { prompt: prompt, wiki: null };
+      let wiki = null;
+      try {
+        wiki = await collectDictWikiHits(content, {
+          enabled: true,
+          inputMatch: true,
+          related: false,
+          maxDocs: INPUT_TL_WIKI_MAX_DOCS,
+          maxExcerptChars: INPUT_TL_WIKI_EXCERPT_CHARS,
+          maxContextChars: INPUT_TL_WIKI_MAX_CONTEXT_CHARS,
+        });
+      } catch (e) {
+        wiki = { enabled: true, available: false, reason: (e && e.message) || String(e), hits: [] };
+      }
+      const block = formatInputTlWikiBlock(wiki);
+      return { prompt: block ? `${prompt}\n\n${block}` : prompt, wiki: wiki };
     }
     function getLorebookTranslatePrompt() {
       const lang = getLoreDescTargetLanguage();
@@ -1028,6 +1097,7 @@ Use exactly the following structure:
     let customApiSettings = normalizeCustomApiSettings(store.getItem(CUSTOM_API_SETTINGS_KEY));
     let inputTlKoreanOnly = store.getItem(INPUT_TL_KOREAN_ONLY_KEY) !== "false";
     let dictBardWikiEnabled = store.getItem(DICT_BARDWIKI_KEY) !== "false";
+    let inputTlBardWikiEnabled = store.getItem(INPUT_TL_BARDWIKI_KEY) !== "false";
     let chunkModeEnabled = store.getItem(CHUNK_MODE_KEY) === "true";
     let chunkSize = parseInt(store.getItem(CHUNK_SIZE_KEY)) || DEFAULT_CHUNK_SIZE;
     let translatorNotes = store.getItem(TRANSLATOR_NOTES_KEY) || "";
@@ -2182,6 +2252,7 @@ Use exactly the following structure:
         googleAiKey: googleAiKey,
         inputTlKoreanOnly: inputTlKoreanOnly,
         dictBardWikiEnabled: dictBardWikiEnabled,
+        inputTlBardWikiEnabled: inputTlBardWikiEnabled,
       };
     }
     async function restoreSettings(
@@ -2426,6 +2497,10 @@ Use exactly the following structure:
         if (settings.dictBardWikiEnabled !== undefined) {
           dictBardWikiEnabled = !!settings.dictBardWikiEnabled;
           store.setItem(DICT_BARDWIKI_KEY, dictBardWikiEnabled ? "true" : "false");
+        }
+        if (settings.inputTlBardWikiEnabled !== undefined) {
+          inputTlBardWikiEnabled = !!settings.inputTlBardWikiEnabled;
+          store.setItem(INPUT_TL_BARDWIKI_KEY, inputTlBardWikiEnabled ? "true" : "false");
         }
         if (settings.thinkingLevel !== undefined) {
           thinkingLevel = String(settings.thinkingLevel || "");
@@ -3761,6 +3836,7 @@ Use exactly the following structure:
         content: rec.content !== undefined ? String(rec.content) : "",
         result: rec.result !== undefined ? String(rec.result) : "",
         error: rec.error !== undefined ? String(rec.error) : "",
+        wiki: rec.wiki !== undefined ? String(rec.wiki) : "",
       };
       try {
         const db = await _idbOpen();
@@ -3922,7 +3998,10 @@ Use exactly the following structure:
             (r.turns != null ? r.turns : 0) +
             " · 형식 " +
             (r.ctxMode || "-");
-          let body = sec("최종 system 프롬프트", r.prompt) + sec("최종 user 콘텐츠 (실제 전송)", r.content);
+          let body =
+            (r.wiki ? sec("BardWiki 근거", r.wiki) : "") +
+            sec("최종 system 프롬프트", r.prompt) +
+            sec("최종 user 콘텐츠 (실제 전송)", r.content);
           body += r.error ? sec("에러", r.error) : sec("결과", r.result);
           return (
             '<div style="border-bottom:1px dashed var(--rt-border);padding:6px 0">' +
@@ -3974,16 +4053,41 @@ Use exactly the following structure:
     /* 방식×형식 → 최종 전송 페이로드 */
     function buildInputPayload(method, format, original, result) {
       if (method === "improve") {
-        const fenced = _extractFenced(result);
-        const body = fenced && fenced.trim() ? fenced : null;
-        if (!body) return original; /* 펜스 추출 실패 → 원문 폴백(진단문 송출 방지) */
+        const body = _extractImprovedBody(result);
+        if (!body) return original; /* 펜스/헤딩 추출 실패 → 원문 폴백(진단문 송출 방지) */
         if (format === "gigatrans") return body; /* 이미 개선한글<GigaTrans>대상어</GigaTrans> */
         const sides = _parseGtSides(body); /* replace: 대상어쪽만 */
-        return sides.en && sides.en.trim() ? sides.en : original;
+        if (sides.en && sides.en.trim()) return sides.en;
+        /* ★ gemma 등 <GigaTrans> 미준수: 개선 본문이라도 전송(원문 송출 방지) */
+        return body.trim() ? body : original;
       }
       /* plain */
       if (format === "gigatrans") return _wrapWithGigaTrans(original, result);
       return result;
+    }
+
+    /* 인풋개선 출력에서 전송 본문 추출: 4/3백틱 펜스 → "## Revised Text" 헤딩 → 비진단 평문 */
+    function _extractImprovedBody(result) {
+      const raw = String(result || "");
+      const fenced = _extractFenced(raw);
+      if (fenced && fenced.trim()) return _stripStrayFence(fenced);
+      const heading = raw.match(/^[ \t]*(?:#{1,6}[ \t]*)?\**\s*Revised Text\s*\**\s*:?[ \t]*$/im);
+      if (heading) {
+        let rest = raw.slice(heading.index + heading[0].length);
+        const next = rest.search(/\n[ \t]*#{1,6}[ \t]+\S/);
+        if (next !== -1) rest = rest.slice(0, next);
+        const body = _stripStrayFence(rest);
+        if (body) return body;
+      }
+      /* 진단문이 섞인 출력은 원문 폴백 유지(오염 방지), 그 외에는 모델 출력을 그대로 사용 */
+      if (/pre-editing\s+diagnosis/i.test(raw)) return null;
+      return _stripStrayFence(raw) || null;
+    }
+    function _stripStrayFence(text) {
+      return String(text || "")
+        .replace(/^[ \t]*`{3,}[^\n]*\n?/, "")
+        .replace(/\n?[ \t]*`{3,}[ \t]*$/, "")
+        .replace(/^\s+|\s+$/g, "");
     }
 
     /* 방식 실행: 프롬프트 선택 + 컨텍스트 주입 + 번역 */
@@ -3998,8 +4102,9 @@ Use exactly the following structure:
             ? getPresetPromptById(inputTlPresetId)
             : getInputTranslatePrompt();
       const applied = await _applyInputContext(basePrompt, content, turnsOverride);
-      const result = await translateSingleChunkWithRetry(applied.prompt, applied.content);
-      return { prompt: applied.prompt, content: applied.content, result };
+      const withWiki = await _applyInputTlWikiContext(applied.prompt, content);
+      const result = await translateSingleChunkWithRetry(withWiki.prompt, applied.content);
+      return { prompt: withWiki.prompt, content: applied.content, result: result, wiki: withWiki.wiki };
     }
 
     /* 미리보기 대기 중 창 닫힘 → 전송 차단(취소와 동일) */
@@ -4074,7 +4179,7 @@ Use exactly the following structure:
         const ctxChk = document.getElementById("rt-input-ctx-toggle");
         const ctxOn = ctxChk ? ctxChk.checked : inputTlContextTurns > 0;
         const turnsOverride = ctxOn ? (inputTlContextTurns > 0 ? inputTlContextTurns : 4) : 0;
-        const { prompt: fp, content: fc, result } = await _runInputMethod(method, src, turnsOverride);
+        const { prompt: fp, content: fc, result, wiki } = await _runInputMethod(method, src, turnsOverride);
         await _hideInputLoadingBar();
         if (_inputTranslateCancelled) {
           _inputTranslateCancelled = false;
@@ -4088,7 +4193,13 @@ Use exactly the following structure:
           output.value = shown;
           output.readOnly = false;
         }
-        _logInputTranslate({ mode: "검수:" + method, prompt: fp, content: fc, result: shown });
+        _logInputTranslate({
+          mode: "검수:" + method,
+          prompt: fp,
+          content: fc,
+          result: shown,
+          wiki: formatInputTlWikiLogLine(r.wiki),
+        });
       } catch (e) {
         await _hideInputLoadingBar();
         if (output) {
@@ -4120,6 +4231,12 @@ Use exactly the following structure:
           const fmt =
             (document.getElementById("rt-input-format-sel") || {}).value === "gigatrans" ? "gigatrans" : "replace";
           const payload = buildInputPayload(_workbenchMethod, fmt, original, result);
+          _logInputTranslate({
+            mode: "검수전송:" + _workbenchMethod + "/" + fmt,
+            content: original,
+            result: payload,
+            error: payload === original && result.trim() ? "추출 실패 → 원문 전송" : "",
+          });
           if (payload && payload.trim()) _resolveInputPreview(payload);
           _hideInputSendCancel();
           hideWindow();
@@ -4145,7 +4262,13 @@ Use exactly the following structure:
       try {
         const r = await _runInputMethod(inputTlMethod, content);
         result = inputTlMethod === "plain" ? applyPreserveQuotes(content, r.result) : r.result;
-        _logInputTranslate({ mode: "검수:" + inputTlMethod, prompt: r.prompt, content: r.content, result: result });
+        _logInputTranslate({
+          mode: "검수:" + inputTlMethod,
+          prompt: r.prompt,
+          content: r.content,
+          result: result,
+          wiki: formatInputTlWikiLogLine(r.wiki),
+        });
       } catch (e) {
         if (e && e.message === "cancelled") errorMsg = "";
         else {
@@ -4175,7 +4298,7 @@ Use exactly the following structure:
       /* 즉시 전송 */
       await _showInputLoadingBar();
       try {
-        const { prompt: fp, content: fc, result } = await _runInputMethod(inputTlMethod, content);
+        const { prompt: fp, content: fc, result, wiki } = await _runInputMethod(inputTlMethod, content);
         await _hideInputLoadingBar();
         if (_inputTranslateCancelled) {
           _inputTranslateCancelled = false;
@@ -4190,6 +4313,7 @@ Use exactly the following structure:
           prompt: fp,
           content: fc,
           result: payload,
+          wiki: formatInputTlWikiLogLine(wiki),
         });
         return payload;
       } catch (e) {
@@ -4433,7 +4557,8 @@ Use exactly the following structure:
         )
         .join(
           "",
-        )}\n                    </select>\n                    <div id="rt-input-tl-lang-custom-wrap" style="margin-top:6px;${currentInputTlLang === "custom" ? "" : "display:none"}">\n                        <input class="rt-inp" id="rt-input-tl-lang-custom" value="${escapeHtml(customInputTlLang)}" placeholder="언어 이름 입력 (예: Spanish, French, Vietnamese...)">\n                    </div>\n                    <div id="rt-input-tl-lang-display" style="margin-top:4px;font-size:11px;color:var(--rt-text2);opacity:0.7">현재 인풋 번역 대상 언어: <b>${escapeHtml(getInputTlTargetLanguage())}</b></div>\n                </div>\n\n                <div style="display:flex;gap:10px;margin-top:10px;align-items:flex-start">\n                    <div style="flex:1">\n                        <div class="rt-label">재시도 횟수 (Max 10)</div>\n                        <input class="rt-inp" type="number" id="rt-input-tl-retry" min="0" max="10" value="${inputTlRetryCount}" style="width:100%">\n                    </div>\n                    <div style="flex:1;display:flex;flex-direction:column;gap:6px;margin-top:18px">\n                        <div style="display:flex;align-items:center;gap:6px">\n                            <input type="checkbox" id="rt-input-tl-pq" ${inputTlPreserveQuotes ? "checked" : ""}>\n                            <label for="rt-input-tl-pq" style="font-size:11.5px;color:var(--rt-text2);cursor:pointer">따옴표/백틱 보존</label>\n                        </div>\n                        <div style="display:flex;align-items:center;gap:6px">\n                            <input type="checkbox" id="rt-input-tl-ko-only" ${inputTlKoreanOnly ? "checked" : ""}>\n                            <label for="rt-input-tl-ko-only" style="font-size:11.5px;color:var(--rt-text2);cursor:pointer">한국어 감지 시에만 번역</label>\n                        </div>\n                    </div>\n                </div>\n                <div style="font-size:10.5px;color:var(--rt-text2);margin-top:4px;line-height:1.5;opacity:0.7">\n                    <b>재시도</b>: 번역 실패 시 자동으로 재시도<br>\n\t\t\t\t\t<b>따옴표 보존</b>: 번역 후 따옴표·백틱이 누락된 경우에만 자동 복원<br>\n\t\t\t\t\t<b>한국어 감지</b>: ON이면 한국어가 포함된 경우에만 번역, OFF이면 모든 입력을 번역\n                </div>\n            </div>\n        </div>\n    </div>\n\n    \x3c!-- 📚 설명 / 로어북 / 사전 섹션 (접기 가능) --\x3e\n    <div class="rt-sec" id="rt-sec-lore-desc">\n        <div class="rt-sec-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" id="rt-sec-lore-desc-header">\n            📚 설명 / 로어북 / 사전\n            <span style="font-size:11px;color:var(--rt-text2);opacity:0.5;font-weight:normal" id="rt-sec-lore-desc-arrow">▶</span>\n        </div>\n        <div id="rt-sec-lore-desc-body" style="display:none">\n            <div class="rt-label" style="font-weight:bold;margin-bottom:4px">설명 / 로어북 번역</div>\n            <div class="rt-label">번역 프롬프트</div>\n            <select class="rt-sel" id="rt-lore-desc-preset-sel" style="width:100%;margin-bottom:6px">\n                ${loreDescPresetOpts}\n            </select>\n            <div id="rt-lore-desc-lang-section" style="${loreDescPresetId === "" ? "" : "display:none"}">\n                <div class="rt-label">번역 대상 언어</div>\n                <select class="rt-sel" id="rt-lore-desc-lang-sel" style="width:100%">\n                    ${Object.entries(
+        )}\n                    </select>\n                    <div id="rt-input-tl-lang-custom-wrap" style="margin-top:6px;${currentInputTlLang === "custom" ? "" : "display:none"}">\n                        <input class="rt-inp" id="rt-input-tl-lang-custom" value="${escapeHtml(customInputTlLang)}" placeholder="언어 이름 입력 (예: Spanish, French, Vietnamese...)">\n                    </div>\n                    <div id="rt-input-tl-lang-display" style="margin-top:4px;font-size:11px;color:var(--rt-text2);opacity:0.7">현재 인풋 번역 대상 언어: <b>${escapeHtml(getInputTlTargetLanguage())}</b></div>\n                </div>\n\n                <div style="display:flex;gap:10px;margin-top:10px;align-items:flex-start">\n                    <div style="flex:1">\n                        <div class="rt-label">재시도 횟수 (Max 10)</div>\n                        <input class="rt-inp" type="number" id="rt-input-tl-retry" min="0" max="10" value="${inputTlRetryCount}" style="width:100%">\n                    </div>\n                    <div style="flex:1;display:flex;flex-direction:column;gap:6px;margin-top:18px">\n                        <div style="display:flex;align-items:center;gap:6px">\n                            <input type="checkbox" id="rt-input-tl-pq" ${inputTlPreserveQuotes ? "checked" : ""}>\n                            <label for="rt-input-tl-pq" style="font-size:11.5px;color:var(--rt-text2);cursor:pointer">따옴표/백틱 보존</label>\n                        </div>\n                        <div style="display:flex;align-items:center;gap:6px">\n                            <input type="checkbox" id="rt-input-tl-ko-only" ${inputTlKoreanOnly ? "checked" : ""}>\n                            <label for="rt-input-tl-ko-only" style="font-size:11.5px;color:var(--rt-text2);cursor:pointer">한국어 감지 시에만 번역</label>\n                        </div>\n                        <div style="display:flex;align-items:center;gap:6px">\n                            <input type="checkbox" id="rt-input-tl-bardwiki" ${inputTlBardWikiEnabled ? "checked" : ""}>\n                            <label for="rt-input-tl-bardwiki" style="font-size:11.5px;color:var(--rt-text2);cursor:pointer">BardWiki 정본 용어 주입</label>\n                        </div>\n                    </div>\n                </div>\n                <div style="font-size:10.5px;color:var(--rt-text2);margin-top:4px;line-height:1.5;opacity:0.7">\n                    <b>재시도</b>: 번역 실패 시 자동으로 재시도<br>\n\t\t\t\t\t<b>따옴표 보존</b>: 번역 후 따옴표·백틱이 누락된 경우에만 자동 복원<br>\n\t\t\t\t\t<b>한국어 감지</b>: ON이면 한국어가 포함된 경우에만 번역, OFF이면 모든 입력을 번역<br>
+                    <b>BardWiki 정본 용어</b>: ON이면 현재 챗의 BardWiki에서 입력과 일치하는 문서(제목·별칭·본문)를 찾아 번역 프롬프트에 정본 근거로 넣습니다. 일치 문서가 없으면 아무것도 넣지 않습니다\n                </div>\n            </div>\n        </div>\n    </div>\n\n    \x3c!-- 📚 설명 / 로어북 / 사전 섹션 (접기 가능) --\x3e\n    <div class="rt-sec" id="rt-sec-lore-desc">\n        <div class="rt-sec-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" id="rt-sec-lore-desc-header">\n            📚 설명 / 로어북 / 사전\n            <span style="font-size:11px;color:var(--rt-text2);opacity:0.5;font-weight:normal" id="rt-sec-lore-desc-arrow">▶</span>\n        </div>\n        <div id="rt-sec-lore-desc-body" style="display:none">\n            <div class="rt-label" style="font-weight:bold;margin-bottom:4px">설명 / 로어북 번역</div>\n            <div class="rt-label">번역 프롬프트</div>\n            <select class="rt-sel" id="rt-lore-desc-preset-sel" style="width:100%;margin-bottom:6px">\n                ${loreDescPresetOpts}\n            </select>\n            <div id="rt-lore-desc-lang-section" style="${loreDescPresetId === "" ? "" : "display:none"}">\n                <div class="rt-label">번역 대상 언어</div>\n                <select class="rt-sel" id="rt-lore-desc-lang-sel" style="width:100%">\n                    ${Object.entries(
         LORE_DESC_LANGUAGES,
       )
         .map(
@@ -4980,6 +5105,12 @@ Use exactly the following structure:
         itKoChk.onchange = () => {
           inputTlKoreanOnly = itKoChk.checked;
           store.setItem(INPUT_TL_KOREAN_ONLY_KEY, inputTlKoreanOnly ? "true" : "false");
+        };
+      const itBwChk = document.getElementById("rt-input-tl-bardwiki");
+      if (itBwChk)
+        itBwChk.onchange = () => {
+          inputTlBardWikiEnabled = itBwChk.checked;
+          store.setItem(INPUT_TL_BARDWIKI_KEY, inputTlBardWikiEnabled ? "true" : "false");
         };
       function _updateDictLangDisplay() {
         const el = document.getElementById("rt-dict-lang-display");
