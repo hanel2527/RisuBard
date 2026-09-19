@@ -2,6 +2,31 @@ import { afterEach, describe, expect, test, vi } from 'vitest'
 import { SandboxHost } from './factory'
 
 describe('API v3 plugin sandbox document', () => {
+    test('creates distinct CSP nonces over HTTP without crypto.randomUUID', () => {
+        const getRandomValues = vi.fn(crypto.getRandomValues.bind(crypto))
+        vi.stubGlobal('crypto', { getRandomValues })
+        const nonces: string[] = []
+
+        for (let i = 0; i < 2; i++) {
+            const iframe = document.createElement('iframe')
+            const host = new SandboxHost({})
+            const stop = host.run(iframe, '')
+            try {
+                const nonce = iframe.getAttribute('csp')?.match(/'nonce-([^']+)'/)?.[1]
+                expect(nonce).toMatch(/^[0-9a-f]{32}$/)
+                expect(iframe.srcdoc).toContain(`<script nonce="${nonce}">`)
+                expect(iframe.sandbox.contains('allow-same-origin')).toBe(false)
+                nonces.push(nonce!)
+            } finally {
+                stop()
+            }
+        }
+
+        expect(getRandomValues).toHaveBeenCalledTimes(2)
+        expect(getRandomValues.mock.calls[0][0]).toHaveLength(16)
+        expect(nonces[0]).not.toBe(nonces[1])
+    })
+
     afterEach(() => {
         document.body.replaceChildren()
         vi.restoreAllMocks()

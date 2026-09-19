@@ -443,7 +443,9 @@ await (async function() {
 export class SandboxHost {
     private iframe: HTMLIFrameElement;
     private apiFactory: any;
-    private nonce = crypto.randomUUID();
+    // getRandomValues is available on LAN HTTP origins, unlike randomUUID.
+    private nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)),
+        byte => byte.toString(16).padStart(2, '0')).join('');
     private csp = `connect-src 'none'; script-src 'nonce-${this.nonce}' 'wasm-unsafe-eval'; frame-src 'none'; object-src 'none'; style-src * 'unsafe-inline'; default-src 'none'; img-src * data: blob:; font-src * data: blob:; media-src * data: blob:; base-uri 'none';`;
 
     private instanceRegistry = new Map<string, any>();
