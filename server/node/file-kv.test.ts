@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -15,6 +15,23 @@ function root() {
 afterEach(() => roots.splice(0).forEach(value => fs.rmSync(value, { recursive: true, force: true })))
 
 describe('file-native KV compatibility projection', () => {
+    it('updates one key without reparsing the whole in-memory manifest, retaining checksum and reopen compatibility', () => {
+        const dataRoot = root()
+        const store = createFileKv({ dataRoot })
+        store.kvSetMany(Array.from({ length: 100 }, (_, i) => ({ key: `assets/large-index-${i}`, value: Buffer.from(`asset ${i}`) })))
+        const parse = vi.spyOn(JSON, 'parse')
+        try {
+            store.kvSet('database/canonical-projection-revision', Buffer.from('new-revision'))
+            expect(parse.mock.calls.filter(([value]) => String(value).includes('assets/large-index-99'))).toHaveLength(0)
+        } finally { parse.mockRestore() }
+        const bytes = fs.readFileSync(path.join(dataRoot, 'kv/manifest.json'))
+        expect(fs.readFileSync(path.join(dataRoot, 'kv/manifest.json.sha256'), 'utf8').trim())
+            .toBe(crypto.createHash('sha256').update(bytes).digest('hex'))
+        const reopened = createFileKv({ dataRoot })
+        expect(reopened.kvGet('database/canonical-projection-revision')?.toString()).toBe('new-revision')
+        expect(reopened.kvGet('assets/large-index-99')?.toString()).toBe('asset 99')
+        expect(reopened.kvList('assets/')).toHaveLength(100)
+    })
     it('prepares bulk asset objects concurrently before publishing one manifest', async () => {
         const dataRoot = root()
         const store = createFileKv({ dataRoot })

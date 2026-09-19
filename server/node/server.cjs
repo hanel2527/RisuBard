@@ -47,6 +47,7 @@ const { createChatContentPage } = require('./chat-content-page.cjs');
 const { stageBackupEntries } = require('./backup-entry-stream.cjs');
 const { encodeCanonicalBackupName, decodeCanonicalBackupName } = require('./canonical-backup-name.cjs');
 const { createCanonicalProjectionSync } = require('./canonical-projection-sync.cjs');
+const { createProjectionRevisionStore } = require('./projection-revision-store.cjs');
 const { createDirectWriteTracker } = require('./direct-write-tracker.cjs');
 const { writeCanonicalProjection } = require('./canonical-projection-writer.cjs');
 const { createExternalEditSession } = require('./external-edit-session.cjs');
@@ -978,13 +979,13 @@ const projectionShadow = createProjectionShadow({
 const CANONICAL_PROJECTION_REVISION_KEY = 'database/canonical-projection-revision'
 const canonicalProjectionSync = createCanonicalProjectionSync({
     repository: userDataRepository,
-    readAcceptedRevision: () => {
-        const value = kvGet(CANONICAL_PROJECTION_REVISION_KEY)
-        return value ? Buffer.from(value).toString('utf8').trim() || null : null
-    },
-    writeAcceptedRevision: revision => {
-        kvSet(CANONICAL_PROJECTION_REVISION_KEY, Buffer.from(`${revision}\n`, 'utf8'))
-    },
+    ...createProjectionRevisionStore({
+        dataRoot: savePath,
+        readLegacyRevision: () => {
+            const value = kvGet(CANONICAL_PROJECTION_REVISION_KEY)
+            return value ? Buffer.from(value).toString('utf8').trim() || null : null
+        },
+    }),
 })
 let externalEditSession
 let canonicalProjectionReady = existsSync(path.join(savePath, 'index', 'sidebar.json'))
@@ -997,6 +998,7 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
     let fallbackUsed = false
     let fallbackCode
     let errorStage = 'external-change-check'
+    const phaseMetrics = {}
     try {
         if (externalEditSession?.isActive()) {
             const error = new Error('Canonical projection is paused for external editing')
@@ -1008,6 +1010,8 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
             error.code = 'CANONICAL_FILES_CHANGED'
             throw error
         }
+        phaseMetrics.externalCheckMs = elapsedMs(startedAt)
+        let phaseStartedAt = performance.now()
         // The durable reference disappears before canonical publication. A
         // crash at either side is resolved by the existing missing-cache reader
         // after journal recovery; stale compatibility bytes cannot win.
@@ -1016,6 +1020,8 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
             compatibilityCache.invalidate()
         }
         errorStage = 'transaction'
+        phaseMetrics.compatibilityInvalidateMs = elapsedMs(phaseStartedAt)
+        phaseStartedAt = performance.now()
         const write = writeCanonicalProjection({
             repository: userDataRepository,
             database: databaseObject,
@@ -1025,11 +1031,15 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
         strategy = write.strategy
         fallbackUsed = write.fallbackUsed
         fallbackCode = write.fallbackCode
+        phaseMetrics.transactionMs = elapsedMs(phaseStartedAt)
+        phaseStartedAt = performance.now()
+        errorStage = 'revision-accept'
         canonicalProjectionSync.accept()
+        phaseMetrics.revisionAcceptMs = elapsedMs(phaseStartedAt)
         canonicalProjectionReady = true
         saveObservation.record({
             kind: 'canonical-sync', trigger, outcome: 'success', operationId,
-            durationMs: elapsedMs(startedAt), plannedFiles: result.files,
+            durationMs: elapsedMs(startedAt), plannedFiles: result.files, ...phaseMetrics,
             publishedFiles: result.transaction?.published,
             skippedFiles: result.transaction?.skipped,
             stagedBytes: result.transaction?.stagedBytes,
