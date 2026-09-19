@@ -994,11 +994,16 @@ Use exactly the following structure:
 
 \`\`\`\`markdown
 {{revised_text}}
-<GigaTrans>
-{{translated_{{slot::lang}}_text}}
-</GigaTrans>
 \`\`\`\`
-</structure>`;
+
+## Translation
+
+\`\`\`\`markdown
+{{translated_{{slot::lang}}_text}}
+\`\`\`\`
+</structure>
+
+The Translation section must contain the full {{slot::lang}} translation of the Revised Text, and nothing else.`;
 
     function getInputTranslatePrompt() {
       const lang = getInputTlTargetLanguage();
@@ -4053,41 +4058,86 @@ Use exactly the following structure:
     /* 방식×형식 → 최종 전송 페이로드 */
     function buildInputPayload(method, format, original, result) {
       if (method === "improve") {
-        const body = _extractImprovedBody(result);
-        if (!body) return original; /* 펜스/헤딩 추출 실패 → 원문 폴백(진단문 송출 방지) */
-        if (format === "gigatrans") return body; /* 이미 개선한글<GigaTrans>대상어</GigaTrans> */
-        const sides = _parseGtSides(body); /* replace: 대상어쪽만 */
-        if (sides.en && sides.en.trim()) return sides.en;
-        /* ★ gemma 등 <GigaTrans> 미준수: 개선 본문이라도 전송(원문 송출 방지) */
-        return body.trim() ? body : original;
+        /* replace: 번역문이 계약이다. 번역문이 없으면 원문을 보낸다
+           (개선된 원문 언어를 대상 언어 자리에 보내면 안 된다). */
+        if (format !== "gigatrans") {
+          const translation = _extractImprovedTranslation(result);
+          return translation && translation.trim() ? translation : original;
+        }
+        /* gigatrans: 개선 원문 + 번역문을 함께 보낸다 */
+        const improved = _extractImprovedBody(result);
+        if (!improved) return original;
+        const translation = _extractImprovedTranslation(result);
+        if (translation && translation.trim()) return _wrapWithGigaTrans(improved, translation);
+        return improved;
       }
       /* plain */
       if (format === "gigatrans") return _wrapWithGigaTrans(original, result);
       return result;
     }
 
-    /* 인풋개선 출력에서 전송 본문 추출: 4/3백틱 펜스 → "## Revised Text" 헤딩 → 비진단 평문 */
+    /* 인풋개선 출력에서 번역문 추출: "## Translation" 섹션 → <GigaTrans> → 없음 */
+    function _extractImprovedTranslation(result) {
+      const raw = String(result || "");
+      const section = _extractHeadedSection(raw, ["translation", "translated", "번역"]);
+      if (section) return _stripStrayFence(section);
+      const sides = _parseGtSides(raw);
+      return sides.en && sides.en.trim() ? sides.en : null;
+    }
+
     function _extractImprovedBody(result) {
       const raw = String(result || "");
-      const fenced = _extractFenced(raw);
-      if (fenced && fenced.trim()) return _stripStrayFence(fenced);
-      const heading = raw.match(/^[ \t]*(?:#{1,6}[ \t]*)?\**\s*Revised Text\s*\**\s*:?[ \t]*$/im);
-      if (heading) {
-        let rest = raw.slice(heading.index + heading[0].length);
-        const next = rest.search(/\n[ \t]*#{1,6}[ \t]+\S/);
-        if (next !== -1) rest = rest.slice(0, next);
-        const body = _stripStrayFence(rest);
+      const revised = _extractHeadedSection(raw, ["revised text", "revised", "개선"]);
+      if (revised) {
+        const body = _stripStrayFence(_stripTrailingHeadings(revised));
         if (body) return body;
+      }
+      const fenced = _extractFenced(raw);
+      if (fenced && fenced.trim()) {
+        /* 태그가 있으면 번역문 앞부분이 곧 개선 원문이다 */
+        const sides = _parseGtSides(fenced);
+        return _stripStrayFence(sides.ko && sides.ko.trim() ? sides.ko : fenced);
       }
       /* 진단문이 섞인 출력은 원문 폴백 유지(오염 방지), 그 외에는 모델 출력을 그대로 사용 */
       if (/pre-editing\s+diagnosis/i.test(raw)) return null;
       return _stripStrayFence(raw) || null;
     }
+
+    /* 헤딩 섹션 본문 추출: 제목 다음부터 다음 헤딩 직전까지 */
+    function _extractHeadedSection(raw, names) {
+      const re = /^[ \t]*(?:#{1,6}[ \t]*)?\**[ \t]*([^\n*]{1,40}?)[ \t]*\**\s*:?[ \t]*$/gim;
+      const wanted = names.map((n) => n.toLowerCase());
+      let match = null;
+      let found = null;
+      while ((match = re.exec(raw)) !== null) {
+        const label = match[1].trim().toLowerCase();
+        if (wanted.some((w) => label === w || label.startsWith(w + " ") || label.startsWith(w + ":"))) {
+          found = match;
+          break;
+        }
+      }
+      if (!found) return null;
+      let rest = raw.slice(found.index + found[0].length);
+      const next = rest.search(/\n[ \t]*#{1,6}[ \t]+\S|\n[ \t]*\*\*[^*\n]{1,40}\*\*[ \t]*\n/);
+      if (next !== -1) rest = rest.slice(0, next);
+      return rest.trim() ? rest : null;
+    }
+
+    /* 번역 헤딩이 개선문 뒤에 붙어 있으면 개선 본문에서 잘라낸다 */
+    function _stripTrailingHeadings(text) {
+      const cut = String(text || "").search(
+        /\n[ \t]*(?:#{1,6}[ \t]*)?\**[ \t]*(?:translation|translated|번역)[ \t]*\**\s*:?[ \t]*$/im,
+      );
+      return cut === -1 ? text : text.slice(0, cut);
+    }
     function _stripStrayFence(text) {
+      /* 섹션 본문은 개행으로 시작하므로 앞뒤 공백을 먼저 걷어낸 뒤 펜스를 벗긴다 */
       return String(text || "")
+        .replace(/^\s+/, "")
         .replace(/^[ \t]*`{3,}[^\n]*\n?/, "")
+        .replace(/\s+$/, "")
         .replace(/\n?[ \t]*`{3,}[ \t]*$/, "")
-        .replace(/^\s+|\s+$/g, "");
+        .replace(/\s+$/, "");
     }
 
     /* 방식 실행: 프롬프트 선택 + 컨텍스트 주입 + 번역 */
