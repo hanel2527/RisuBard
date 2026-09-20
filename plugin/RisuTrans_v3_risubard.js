@@ -1,7 +1,7 @@
 //@api 3.0
 //@name RisuTrans
-//@display-name 📖 RisuTrans v3.4.0 +인풋확장
-//@version 3.4.0-inputext
+//@display-name 📖 RisuTrans v3.4.1 +인풋확장
+//@version 3.4.1
 //@arg translator_notes string "" "번역가의 노트 (프롬프트 내 {{slot::tnote}}로 삽입됨)"
 //@arg disable_safety int 1 "안전 필터 비활성화 (1=OFF, 0=ON)"
 (async () => {
@@ -49,7 +49,6 @@
       "rt_input_tl_context_turns",
       "rt_input_tl_context_mode",
       "rt_input_tl_method",
-      "rt_input_tl_format",
       "rt_input_tl_review",
       "rt_input_improve_prompt",
       "rt_openai_api_key",
@@ -67,6 +66,7 @@
       "rt_custom_model",
       "rt_vertex_custom_model",
       "rt_custom_api_settings",
+      "rt_inputtl_debug_log",
     ];
     async function _initStorage() {
       const ps = Risuai?.pluginStorage;
@@ -462,9 +462,7 @@
     const INPUT_TL_RETRY_COUNT_KEY = "rt_input_tl_retry_count";
     const INPUT_TL_PRESERVE_QUOTES_KEY = "rt_input_tl_preserve_quotes";
     const INPUT_TL_CONTEXT_TURNS_KEY = "rt_input_tl_context_turns";
-    const INPUT_TL_CONTEXT_MODE_KEY = "rt_input_tl_context_mode";
     const INPUT_TL_METHOD_KEY = "rt_input_tl_method";
-    const INPUT_TL_FORMAT_KEY = "rt_input_tl_format";
     const INPUT_TL_REVIEW_KEY = "rt_input_tl_review";
     const INPUT_IMPROVE_PROMPT_KEY = "rt_input_improve_prompt";
     const OPENAI_API_KEY_KEY = "rt_openai_api_key";
@@ -1187,22 +1185,21 @@ The Translation section must contain the full {{slot::lang}} translation of the 
       const v = parseInt(store.getItem(INPUT_TL_CONTEXT_TURNS_KEY));
       return Number.isFinite(v) ? Math.min(Math.max(v, 0), 20) : 0;
     })();
-    let inputTlContextMode = (() => {
-      const v = store.getItem(INPUT_TL_CONTEXT_MODE_KEY);
-      return v === "en" || v === "ko" || v === "pair" ? v : "pair";
-    })();
     let inputTlMethod = (() => {
       const v = store.getItem(INPUT_TL_METHOD_KEY);
       return v === "improve" ? "improve" : "plain";
     })();
-    let inputTlFormat = (() => {
-      const v = store.getItem(INPUT_TL_FORMAT_KEY);
-      return v === "gigatrans" ? "gigatrans" : "replace";
-    })();
     let inputTlReview = store.getItem(INPUT_TL_REVIEW_KEY) !== "false"; /* 기본 검수 후 전송 */
     let inputImprovePrompt = (() => {
       const v = store.getItem(INPUT_IMPROVE_PROMPT_KEY);
-      return v && v.trim() ? v : INPUT_IMPROVE_PROMPT;
+      if (!v || !v.trim()) return INPUT_IMPROVE_PROMPT;
+      /* 구버전 기본 프롬프트는 <GigaTrans> 출력을 요구하지만, 파서가 더 이상 그 태그를
+         인식하지 못해 번역문 추출이 실패한다. 편집 흔적 없이 남아 있으면 현재 기본값으로 교체. */
+      if (v.includes("<GigaTrans>")) {
+        store.setItem(INPUT_IMPROVE_PROMPT_KEY, INPUT_IMPROVE_PROMPT);
+        return INPUT_IMPROVE_PROMPT;
+      }
+      return v;
     })();
     let thinkingLevel = store.getItem(THINKING_LEVEL_KEY) || "";
     function el(tag, attrs = {}, children = []) {
@@ -1634,7 +1631,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
       if (options.thinkingLevel && modelName.includes("gemini-3"))
         gc.thinkingConfig = { thinkingBudget: options.thinkingLevel };
       const payload = _buildGeminiPayload(proc, parsed, gc);
-      const resp = await Risuai.risuFetch(url, {
+      const resp = await _llmFetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: payload,
@@ -1710,7 +1707,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
       if (options.thinkingLevel && model.includes("gemini-3"))
         gc.thinkingConfig = { thinkingBudget: options.thinkingLevel };
       const payload = _buildGeminiPayload(proc, parsed, gc);
-      const resp = await Risuai.risuFetch(url, {
+      const resp = await _llmFetch(url, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: payload,
@@ -1731,7 +1728,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
       const proc = processPromptSlots(systemPrompt, userText);
       const parsed = parseChatMLPrompt(proc.systemPrompt, proc.userText);
       const messages = _buildOpenAIMessages(proc, parsed);
-      const resp = await Risuai.risuFetch(url, {
+      const resp = await _llmFetch(url, {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
         body: { model: modelName, messages: messages, temperature: apiTemperature },
@@ -1762,7 +1759,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
         system = proc.systemPrompt;
         messages = [{ role: "user", content: proc.userText }];
       }
-      const resp = await Risuai.risuFetch("https://api.anthropic.com/v1/messages", {
+      const resp = await _llmFetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
         body: { model: modelName, system: system, messages: messages, max_tokens: 4096, temperature: apiTemperature },
@@ -1794,7 +1791,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
         if (cfg.key) headers.Authorization = `Bearer ${cfg.key}`;
         let body = { model: cfg.model, messages: messages, temperature: apiTemperature };
         ({ body: body, headers: headers } = applyAdditionalParameters(body, headers, cfg.additionalParams));
-        const resp = await Risuai.risuFetch(cfg.url, { method: "POST", headers: headers, body: body });
+        const resp = await _llmFetch(cfg.url, { method: "POST", headers: headers, body: body });
         if (!resp.ok) throw new Error(`Custom API 오류 (${resp.status}): ${JSON.stringify(resp.data)}`);
         const text = extractOpenAIText(resp.data?.choices?.[0]?.message?.content);
         if (!text) throw new Error("Custom API 응답 없음");
@@ -1811,7 +1808,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
           store: false,
         };
         ({ body: body, headers: headers } = applyAdditionalParameters(body, headers, cfg.additionalParams));
-        const resp = await Risuai.risuFetch(cfg.url, { method: "POST", headers: headers, body: body });
+        const resp = await _llmFetch(cfg.url, { method: "POST", headers: headers, body: body });
         if (!resp.ok) throw new Error(`Custom API 오류 (${resp.status}): ${JSON.stringify(resp.data)}`);
         const text = extractResponseApiText(resp.data);
         if (!text) throw new Error("Custom API 응답 없음");
@@ -1838,7 +1835,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
             temperature: apiTemperature,
           };
         ({ body: body, headers: headers } = applyAdditionalParameters(body, headers, cfg.additionalParams));
-        const resp = await Risuai.risuFetch(cfg.url, { method: "POST", headers: headers, body: body });
+        const resp = await _llmFetch(cfg.url, { method: "POST", headers: headers, body: body });
         if (!resp.ok) throw new Error(`Custom API 오류 (${resp.status}): ${JSON.stringify(resp.data)}`);
         const text = extractAnthropicText(resp.data);
         if (!text) throw new Error("Custom API 응답 없음");
@@ -1849,7 +1846,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
         if (cfg.key) headers["x-goog-api-key"] = cfg.key;
         let body = _buildGeminiPayload(proc, parsed, { temperature: apiTemperature });
         ({ body: body, headers: headers } = applyAdditionalParameters(body, headers, cfg.additionalParams));
-        const resp = await Risuai.risuFetch(cfg.url, { method: "POST", headers: headers, body: body });
+        const resp = await _llmFetch(cfg.url, { method: "POST", headers: headers, body: body });
         if (!resp.ok) throw new Error(`Custom API 오류 (${resp.status}): ${JSON.stringify(resp.data)}`);
         const data = resp.data;
         const text = Array.isArray(data)
@@ -1865,7 +1862,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
         if (cfg.key) headers.Authorization = `Bearer ${cfg.key}`;
         let body = buildCohereBody(proc, parsed, cfg.model);
         ({ body: body, headers: headers } = applyAdditionalParameters(body, headers, cfg.additionalParams));
-        const resp = await Risuai.risuFetch(cfg.url, { method: "POST", headers: headers, body: body });
+        const resp = await _llmFetch(cfg.url, { method: "POST", headers: headers, body: body });
         if (!resp.ok) throw new Error(`Custom API 오류 (${resp.status}): ${JSON.stringify(resp.data)}`);
         const text = resp.data?.text || resp.data?.message?.content?.map?.((part) => part?.text || "").join("");
         if (!text) throw new Error("Custom API 응답 없음");
@@ -1953,7 +1950,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
       };
       if (options.thinkingLevel && actualModel.includes("gemini-3"))
         reqBody.thinkingConfig = { thinkingBudget: options.thinkingLevel };
-      const resp = await Risuai.risuFetch(GITHUB_COPILOT_CHAT_URL, {
+      const resp = await _llmFetch(GITHUB_COPILOT_CHAT_URL, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${cpToken}`,
@@ -2035,7 +2032,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
       };
       if (options.thinkingLevel && actualModel.includes("gemini-3"))
         reqBody.thinkingConfig = { thinkingBudget: options.thinkingLevel };
-      const resp = await Risuai.risuFetch(GITHUB_COPILOT_CHAT_URL, {
+      const resp = await _llmFetch(GITHUB_COPILOT_CHAT_URL, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${cpToken}`,
@@ -2093,6 +2090,19 @@ The Translation section must contain the full {{slot::lang}} translation of the 
     }
     function _getThinkingOpts() {
       return thinkingLevel ? { thinkingLevel: parseInt(thinkingLevel) } : {};
+    }
+    /* ── 실제 LLM 요청 캡처 ──
+       디버그 로그가 "슬롯 치환 전 템플릿"이 아니라 네트워크로 나간 진짜 본문을 보여주도록,
+       번역 API 호출 직전의 url/body를 그대로 붙잡는다. 인풋 번역 흐름에서만 무장(arm)한다. */
+    let _llmCapture = null;
+    function _captureLlmRequest(url, body) {
+      if (!_llmCapture) return;
+      _llmCapture.url = url;
+      _llmCapture.body = typeof body === "string" ? body : JSON.stringify(body);
+    }
+    function _llmFetch(url, opts) {
+      _captureLlmRequest(url, opts && opts.body);
+      return Risuai.risuFetch(url, opts);
     }
     function _getGoogleModel() {
       return currentModel === "custom" ? customGoogleModel : currentModel;
@@ -2248,9 +2258,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
         inputTlRetryCount: inputTlRetryCount,
         inputTlPreserveQuotes: inputTlPreserveQuotes,
         inputTlContextTurns: inputTlContextTurns,
-        inputTlContextMode: inputTlContextMode,
         inputTlMethod: inputTlMethod,
-        inputTlFormat: inputTlFormat,
         inputTlReview: inputTlReview,
         inputImprovePrompt: inputImprovePrompt,
         thinkingLevel: thinkingLevel,
@@ -2467,20 +2475,9 @@ The Translation section must contain the full {{slot::lang}} translation of the 
           inputTlContextTurns = Math.min(Math.max(Number(settings.inputTlContextTurns) || 0, 0), 20);
           store.setItem(INPUT_TL_CONTEXT_TURNS_KEY, String(inputTlContextTurns));
         }
-        if (settings.inputTlContextMode !== undefined) {
-          inputTlContextMode =
-            settings.inputTlContextMode === "en" || settings.inputTlContextMode === "ko"
-              ? settings.inputTlContextMode
-              : "pair";
-          store.setItem(INPUT_TL_CONTEXT_MODE_KEY, inputTlContextMode);
-        }
         if (settings.inputTlMethod !== undefined) {
           inputTlMethod = settings.inputTlMethod === "improve" ? "improve" : "plain";
           store.setItem(INPUT_TL_METHOD_KEY, inputTlMethod);
-        }
-        if (settings.inputTlFormat !== undefined) {
-          inputTlFormat = settings.inputTlFormat === "gigatrans" ? "gigatrans" : "replace";
-          store.setItem(INPUT_TL_FORMAT_KEY, inputTlFormat);
         }
         if (settings.inputTlReview !== undefined) {
           inputTlReview = !!settings.inputTlReview;
@@ -2606,7 +2603,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
       }
       applyThemeVars();
     }
-    const UI_HTML = `\n<div class="rt-backdrop" id="rt-backdrop">\n<div class="rt-container" id="rt-container">\n  <div class="rt-header" id="rt-header">\n    <span class="rt-title" id="rt-title">📖 RisuTrans</span>\n    <div class="rt-hbtns">\n      <button id="rt-btn-min" title="최소화">−</button>\n      <button id="rt-btn-close" title="닫기">✕</button>\n    </div>\n  </div>\n  <div class="rt-tabs">\n    <button class="rt-tab active" data-tab="main">📝 메인</button>\n    <button class="rt-tab" data-tab="lorebook">📚 로어북</button>\n    <button class="rt-tab" data-tab="desc">👤 설명</button>\n    <button class="rt-tab" data-tab="settings">⚙️ 설정</button>\n  </div>\n  <div class="rt-content" id="rt-content">\n    \x3c!-- Main View --\x3e\n    <div class="rt-view active" id="rt-view-main">\n      <div style="position:relative">\n        <textarea class="rt-ta" id="rt-input" placeholder="번역할 텍스트를 입력하세요..." rows="5"></textarea>\n        <button class="rt-clear-btn" id="rt-input-clear-btn" title="텍스트 지우기" style="${showClearBtn ? "" : "display:none"}">\n          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M5 6l1 14h12l1-14"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>\n        </button>\n      </div>\n      <div class="rt-vgrip" data-target="rt-input"></div>\n      <div style="margin-top:8px">\n        <button class="rt-btn rt-bp" id="rt-btn-translate" style="width:100%">🔄 번역</button>\n      </div>\n      <textarea id="rt-output" class="rt-ta rt-output-edit" style="margin-top:8px;display:none" rows="5" readonly></textarea>\n      <div class="rt-vgrip" id="rt-output-grip" data-target="rt-output" style="display:none"></div>\n      <div class="rt-row" id="rt-out-actions" style="margin-top:6px;display:none;justify-content:space-between"><div style="display:flex;gap:6px;align-items:center"><button class="rt-btn rt-bs rt-bsm" id="rt-btn-copy">📋 복사</button><button class="rt-btn rt-bs rt-bsm" id="rt-btn-input-translate-action" style="display:none">🌐 다시 번역</button><button class="rt-btn rt-bs rt-bsm" id="rt-btn-input-improve-action" style="display:none">🔧 다시 개선</button><label id="rt-input-ctx-toggle-wrap" style="display:none;align-items:center;gap:4px;font-size:11.5px;color:var(--rt-text2);cursor:pointer" title="이번 번역/개선에 직전 대화 맥락을 함께 보냄"><input type="checkbox" id="rt-input-ctx-toggle"> 📎 맥락</label></div><div style="display:flex;gap:6px;align-items:center"><select class="rt-sel" id="rt-input-format-sel" style="display:none;min-width:92px"><option value="replace">번역문 대체</option><option value="gigatrans">기트호환</option></select><button class="rt-btn rt-bdanger rt-bsm" id="rt-btn-cancel-input" style="display:none">✕ 취소</button><button class="rt-btn rt-bp rt-bsm" id="rt-btn-send" style="display:none;padding:6px 24px">📤 전송</button></div></div>\n      <div class="rt-dict-sec">\n        <div class="rt-row">\n          <input class="rt-inp" id="rt-dict-inp" placeholder="단어를 입력 후 Enter" style="flex:1">\n          <button class="rt-btn rt-bs rt-bsm" id="rt-btn-dict">📖 사전</button>\n        </div>\n        <div id="rt-dict-out" class="rt-dict-out" style="margin-top:6px;display:none"></div>\n        <div class="rt-lang" id="rt-dict-wiki-hint" style="opacity:0.75"></div>\n      </div>\n    </div>\n    \x3c!-- Lorebook View --\x3e\n    <div class="rt-view" id="rt-view-lorebook">\n      <div class="rt-row">\n        <button class="rt-btn rt-bs rt-bsm" id="rt-btn-lb-refresh">🔃 새로고침</button>\n        <button class="rt-btn rt-bs rt-bsm" id="rt-btn-lb-clear">🗑️ 캐시 초기화</button>\n        <button class="rt-btn rt-bp rt-bsm" id="rt-btn-lb-all">📚 전체 번역</button>\n      </div>\n      <div id="rt-lb-list" style="margin-top:8px"><em style="color:var(--rt-text2)">로어북 탭을 클릭하면 자동 로드됩니다.</em></div>\n      <div id="rt-lb-status" class="rt-status rt-si" style="display:none"></div>\n    </div>\n    \x3c!-- Lorebook Result View --\x3e\n    <div class="rt-view" id="rt-view-lb-result">\n      <button class="rt-back" id="rt-btn-lb-back">← 목록으로</button>\n      <div id="rt-lb-result-content"></div>\n    </div>\n    \x3c!-- Desc View --\x3e\n    <div class="rt-view" id="rt-view-desc">\n      <div class="rt-row">\n        <button class="rt-btn rt-bp rt-bsm" id="rt-btn-desc-tl">🔄 번역</button>\n        <button class="rt-btn rt-bs rt-bsm" id="rt-btn-desc-refresh">🔃 새로고침</button>\n      </div>\n      <div id="rt-desc-orig" class="rt-output" style="margin-top:8px;height:180px"><em>설명 탭을 클릭하면 자동 로드됩니다.</em></div>\n      <div class="rt-vgrip" data-target="rt-desc-orig"></div>\n      <div id="rt-desc-status" class="rt-status" style="display:none"></div>\n    </div>\n    \x3c!-- Desc Result View --\x3e\n    <div class="rt-view" id="rt-view-desc-result">\n      <button class="rt-back" id="rt-btn-desc-back">← 돌아가기</button>\n      <div id="rt-desc-result-content"></div>\n    </div>\n    \x3c!-- Settings View (dynamic) --\x3e\n    <div class="rt-view" id="rt-view-settings"></div>\n    \x3c!-- Theme Settings View (dynamic) --\x3e\n    <div class="rt-view" id="rt-view-theme"></div>\n    \x3c!-- Input Preview View (dynamic) --\x3e\n    <div class="rt-view" id="rt-view-input-preview"></div>\n  </div>\n  <div class="rt-resize-handle" id="rt-resize-handle"></div>\n</div>\n</div>`;
+    const UI_HTML = `\n<div class="rt-backdrop" id="rt-backdrop">\n<div class="rt-container" id="rt-container">\n  <div class="rt-header" id="rt-header">\n    <span class="rt-title" id="rt-title">📖 RisuTrans</span>\n    <div class="rt-hbtns">\n      <button id="rt-btn-min" title="최소화">−</button>\n      <button id="rt-btn-close" title="닫기">✕</button>\n    </div>\n  </div>\n  <div class="rt-tabs">\n    <button class="rt-tab active" data-tab="main">📝 메인</button>\n    <button class="rt-tab" data-tab="lorebook">📚 로어북</button>\n    <button class="rt-tab" data-tab="desc">👤 설명</button>\n    <button class="rt-tab" data-tab="settings">⚙️ 설정</button>\n  </div>\n  <div class="rt-content" id="rt-content">\n    \x3c!-- Main View --\x3e\n    <div class="rt-view active" id="rt-view-main">\n      <div style="position:relative">\n        <textarea class="rt-ta" id="rt-input" placeholder="번역할 텍스트를 입력하세요..." rows="5"></textarea>\n        <button class="rt-clear-btn" id="rt-input-clear-btn" title="텍스트 지우기" style="${showClearBtn ? "" : "display:none"}">\n          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M5 6l1 14h12l1-14"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>\n        </button>\n      </div>\n      <div class="rt-vgrip" data-target="rt-input"></div>\n      <div style="margin-top:8px">\n        <button class="rt-btn rt-bp" id="rt-btn-translate" style="width:100%">🔄 번역</button>\n      </div>\n      <textarea id="rt-output" class="rt-ta rt-output-edit" style="margin-top:8px;display:none" rows="5" readonly></textarea>\n      <div class="rt-vgrip" id="rt-output-grip" data-target="rt-output" style="display:none"></div>\n      <div class="rt-row" id="rt-out-actions" style="margin-top:6px;display:none;justify-content:space-between"><div style="display:flex;gap:6px;align-items:center"><button class="rt-btn rt-bs rt-bsm" id="rt-btn-copy">📋 복사</button><button class="rt-btn rt-bs rt-bsm" id="rt-btn-input-translate-action" style="display:none">🌐 다시 번역</button><button class="rt-btn rt-bs rt-bsm" id="rt-btn-input-improve-action" style="display:none">🔧 다시 개선</button><label id="rt-input-ctx-toggle-wrap" style="display:none;align-items:center;gap:4px;font-size:11.5px;color:var(--rt-text2);cursor:pointer" title="이번 번역/개선에 직전 대화 맥락을 함께 보냄"><input type="checkbox" id="rt-input-ctx-toggle"> 📎 맥락</label></div><div style="display:flex;gap:6px;align-items:center"><button class="rt-btn rt-bdanger rt-bsm" id="rt-btn-cancel-input" style="display:none">✕ 취소</button><button class="rt-btn rt-bp rt-bsm" id="rt-btn-send" style="display:none;padding:6px 24px">📤 전송</button></div></div>\n      <div class="rt-dict-sec">\n        <div class="rt-row">\n          <input class="rt-inp" id="rt-dict-inp" placeholder="단어를 입력 후 Enter" style="flex:1">\n          <button class="rt-btn rt-bs rt-bsm" id="rt-btn-dict">📖 사전</button>\n        </div>\n        <div id="rt-dict-out" class="rt-dict-out" style="margin-top:6px;display:none"></div>\n        <div class="rt-lang" id="rt-dict-wiki-hint" style="opacity:0.75"></div>\n      </div>\n    </div>\n    \x3c!-- Lorebook View --\x3e\n    <div class="rt-view" id="rt-view-lorebook">\n      <div class="rt-row">\n        <button class="rt-btn rt-bs rt-bsm" id="rt-btn-lb-refresh">🔃 새로고침</button>\n        <button class="rt-btn rt-bs rt-bsm" id="rt-btn-lb-clear">🗑️ 캐시 초기화</button>\n        <button class="rt-btn rt-bp rt-bsm" id="rt-btn-lb-all">📚 전체 번역</button>\n      </div>\n      <div id="rt-lb-list" style="margin-top:8px"><em style="color:var(--rt-text2)">로어북 탭을 클릭하면 자동 로드됩니다.</em></div>\n      <div id="rt-lb-status" class="rt-status rt-si" style="display:none"></div>\n    </div>\n    \x3c!-- Lorebook Result View --\x3e\n    <div class="rt-view" id="rt-view-lb-result">\n      <button class="rt-back" id="rt-btn-lb-back">← 목록으로</button>\n      <div id="rt-lb-result-content"></div>\n    </div>\n    \x3c!-- Desc View --\x3e\n    <div class="rt-view" id="rt-view-desc">\n      <div class="rt-row">\n        <button class="rt-btn rt-bp rt-bsm" id="rt-btn-desc-tl">🔄 번역</button>\n        <button class="rt-btn rt-bs rt-bsm" id="rt-btn-desc-refresh">🔃 새로고침</button>\n      </div>\n      <div id="rt-desc-orig" class="rt-output" style="margin-top:8px;height:180px"><em>설명 탭을 클릭하면 자동 로드됩니다.</em></div>\n      <div class="rt-vgrip" data-target="rt-desc-orig"></div>\n      <div id="rt-desc-status" class="rt-status" style="display:none"></div>\n    </div>\n    \x3c!-- Desc Result View --\x3e\n    <div class="rt-view" id="rt-view-desc-result">\n      <button class="rt-back" id="rt-btn-desc-back">← 돌아가기</button>\n      <div id="rt-desc-result-content"></div>\n    </div>\n    \x3c!-- Settings View (dynamic) --\x3e\n    <div class="rt-view" id="rt-view-settings"></div>\n    \x3c!-- Theme Settings View (dynamic) --\x3e\n    <div class="rt-view" id="rt-view-theme"></div>\n    \x3c!-- Input Preview View (dynamic) --\x3e\n    <div class="rt-view" id="rt-view-input-preview"></div>\n  </div>\n  <div class="rt-resize-handle" id="rt-resize-handle"></div>\n</div>\n</div>`;
     function switchToView(viewName) {
       currentView = viewName;
       document.querySelectorAll(".rt-view").forEach((v) => v.classList.remove("active"));
@@ -3641,92 +3638,24 @@ The Translation section must contain the full {{slot::lang}} translation of the 
         }
       } catch (e) {}
     }
-    /* ===== 이식: 인풋 개선/기트호환/컨텍스트/디버그로그 헬퍼 ===== */
-    function _wrapWithGigaTrans(originalText, translatedText) {
-      if (!originalText || !originalText.trim()) return translatedText || "";
-      if (!translatedText || !translatedText.trim()) return originalText;
-      const orig = originalText.replace(/\s+$/, "");
-      const trans = translatedText.replace(/^\s+|\s+$/g, "");
-      return orig + "\n<GigaTrans>\n" + trans + "\n</GigaTrans>";
-    }
-
-    /* ★ NEW — 인풋개선(모드4) 출력에서 펜스(```` ```` ```)코드블록 안쪽만 추출.
-   - 4백틱 펜스 우선, 없으면 3백틱 폴백
-   - 같은 길이 백틱으로 닫히는 마지막 블록을 선택(내부 3백틱 코드블록 오매칭 방지)
-   - 못 찾으면 null 반환 → 호출부에서 폴백 처리 */
-    function _extractFenced(text) {
-      if (!text) return null;
-      // 긴 펜스 우선(6→3): 내부 3백틱 코드블록을 바깥 펜스로 오인하지 않도록
-      for (const n of [6, 5, 4, 3]) {
-        // (백틱 정확히 n개){언어태그?}\n {내용} \n{백틱 n개}
-        const re = new RegExp("(`{" + n + ",})[^\\n`]*\\n([\\s\\S]*?)\\n?\\1(?!`)", "g");
-        let m,
-          last = null;
-        while ((m = re.exec(text)) !== null) {
-          if (m[1].length === n) last = m[2];
-        }
-        if (last != null) return last.replace(/^\s+|\s+$/g, "");
-      }
-      return null;
-    }
+    /* ===== 이식: 인풋 개선/컨텍스트/디버그로그 헬퍼 ===== */
 
     /* ==============================================
    ★ NEW — Input Auto-Translate (addRisuScriptHandler)
    ============================================== */
 
-    /* ── 과거 컨텍스트(직전 N메시지) 구성 — GigaTrans 모듈 buildContext 차용 ── */
+    /* ── 과거 컨텍스트(직전 N메시지) 구성 ── */
     let _chatStructLogged = false;
 
-    /* 메시지 data에서 한글(디스플레이)/번역문(<GigaTrans> 안쪽) 분리 */
-    function _parseGtSides(data) {
-      data = String(data || "");
-      const OPEN = "<GigaTrans>",
-        CLOSE = "</GigaTrans>";
-      const gs = data.indexOf(OPEN),
-        ge = data.indexOf(CLOSE);
-      let ko = "",
-        en = "";
-      if (gs !== -1 && ge !== -1 && ge > gs) {
-        en = data.slice(gs + OPEN.length, ge);
-        let before = data.slice(0, gs);
-        const sep = before.indexOf("<GT-SEP/>"); // 어시스턴트: head<GT-SEP/>번역문
-        if (sep !== -1) before = before.slice(sep + "<GT-SEP/>".length);
-        ko = before;
-      } else {
-        ko = data; // 태그 없는 평문
-      }
-      const clean = (s) =>
-        String(s)
-          .replace(/<GT-CTRL[^/]*\/>/g, "")
-          .replace(/<GT-SEP\/>/g, "")
-          .replace(/<\/?GigaTrans>/g, "")
-          .replace(/^\s+|\s+$/g, "");
-      return { ko: clean(ko), en: clean(en) };
-    }
-
-    /* 순수함수: 메시지 배열 + 형식(pair|en|ko) → 컨텍스트 문자열 */
-    function _buildInputTlContext(messages, mode) {
+    /* 순수함수: 메시지 배열 → 컨텍스트 문자열 */
+    function _buildInputTlContext(messages) {
       if (!messages || !messages.length) return "";
       const parts = [];
       for (const m of messages) {
         if (!m) continue;
-        const role = m.role === "char" ? "Assistant" : "User";
-        const { ko, en } = _parseGtSides(m.data);
-        let line = "";
-        if (mode === "en") {
-          const t = en || ko;
-          if (t) line = "[" + role + "]: " + t;
-        } else if (mode === "ko") {
-          if (ko) line = "[" + role + "]: " + ko;
-        } else {
-          /* pair */
-          if (ko && en) line = "[" + role + "]: " + ko + "\n→ " + en;
-          else {
-            const t = ko || en;
-            if (t) line = "[" + role + "]: " + t;
-          }
-        }
-        if (line) parts.push(line);
+        const text = String(m.data || "").trim();
+        if (!text) continue;
+        parts.push("[" + (m.role === "char" ? "Assistant" : "User") + "]: " + text);
       }
       return parts.join("\n\n");
     }
@@ -3777,7 +3706,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
       try {
         if (turns > 0) {
           const msgs = await _getRecentChatMessages(turns, content);
-          ctx = _buildInputTlContext(msgs, inputTlContextMode) || "";
+          ctx = _buildInputTlContext(msgs) || "";
         }
       } catch (e) {
         console.warn("RisuTrans ctx build failed:", e && e.message);
@@ -3832,11 +3761,15 @@ The Translation section must contain the full {{slot::lang}} translation of the 
 
     /* best-effort: 로깅 실패가 번역을 절대 깨지 않음 */
     async function _logInputTranslate(rec) {
+      /* rec.llm = {url, body}: 네트워크로 실제 나간 요청. rec.prompt/content는 캡처 실패 시 폴백. */
+      const llm = rec.llm || null;
       const entry = {
         ts: Date.now(),
         mode: rec.mode,
-        turns: inputTlContextTurns,
-        ctxMode: inputTlContextMode,
+        turns: rec.turns !== undefined ? rec.turns : inputTlContextTurns,
+        /* 실제 전송 본문(캡처). 폴백은 슬롯 치환 전 템플릿/passthrough로만 남긴다. */
+        url: llm ? String(llm.url || "") : "",
+        request: llm ? String(llm.body || "") : "",
         prompt: rec.prompt !== undefined ? String(rec.prompt) : "",
         content: rec.content !== undefined ? String(rec.content) : "",
         result: rec.result !== undefined ? String(rec.result) : "",
@@ -3976,7 +3909,6 @@ The Translation section must contain the full {{slot::lang}} translation of the 
         el.innerHTML = '<em style="opacity:0.7">0건 (저장된 로그 없음)</em>';
         return;
       }
-      const modeName = (m) => ({ 1: "즉시", 2: "검수", 3: "즉시·기트", 4: "인풋개선" })[m] || String(m);
       const sec = (label, val) =>
         '<div style="margin-top:4px"><b style="color:var(--rt-text2)">' +
         label +
@@ -3998,15 +3930,16 @@ The Translation section must contain the full {{slot::lang}} translation of the 
             " · " +
             when +
             " · 모드 " +
-            modeName(r.mode) +
+            r.mode +
             " · 턴 " +
-            (r.turns != null ? r.turns : 0) +
-            " · 형식 " +
-            (r.ctxMode || "-");
+            (r.turns != null ? r.turns : 0);
+          /* 실제 LLM 요청(네트워크 캡처)이 있으면 그것이 정본.
+             없는 항목(검수 전송 등 LLM 호출이 아닌 기록)만 폴백 섹션을 보여준다. */
           let body =
             (r.wiki ? sec("BardWiki 근거", r.wiki) : "") +
-            sec("최종 system 프롬프트", r.prompt) +
-            sec("최종 user 콘텐츠 (실제 전송)", r.content);
+            (r.request
+              ? sec("실제 전송 요청" + (r.url ? " → " + r.url : ""), r.request)
+              : sec("슬롯 치환 전 프롬프트 (요청 캡처 없음)", r.prompt) + sec("입력 콘텐츠", r.content));
           body += r.error ? sec("에러", r.error) : sec("결과", r.result);
           return (
             '<div style="border-bottom:1px dashed var(--rt-border);padding:6px 0">' +
@@ -4055,52 +3988,22 @@ The Translation section must contain the full {{slot::lang}} translation of the 
 
     /* ===== 인풋 재설계: 코어 / 페이로드 / 작업대 모달 ===== */
 
-    /* 방식×형식 → 최종 전송 페이로드 */
-    function buildInputPayload(method, format, original, result) {
+    /* 방식 → 최종 전송 페이로드 */
+    function buildInputPayload(method, original, result) {
       if (method === "improve") {
-        /* replace: 번역문이 계약이다. 번역문이 없으면 원문을 보낸다
+        /* 번역문이 계약이다. 번역문이 없으면 원문을 보낸다
            (개선된 원문 언어를 대상 언어 자리에 보내면 안 된다). */
-        if (format !== "gigatrans") {
-          const translation = _extractImprovedTranslation(result);
-          return translation && translation.trim() ? translation : original;
-        }
-        /* gigatrans: 개선 원문 + 번역문을 함께 보낸다 */
-        const improved = _extractImprovedBody(result);
-        if (!improved) return original;
         const translation = _extractImprovedTranslation(result);
-        if (translation && translation.trim()) return _wrapWithGigaTrans(improved, translation);
-        return improved;
+        return translation && translation.trim() ? translation : original;
       }
       /* plain */
-      if (format === "gigatrans") return _wrapWithGigaTrans(original, result);
       return result;
     }
 
-    /* 인풋개선 출력에서 번역문 추출: "## Translation" 섹션 → <GigaTrans> → 없음 */
+    /* 인풋개선 출력에서 번역문 추출: "## Translation" 섹션 → 없음 */
     function _extractImprovedTranslation(result) {
-      const raw = String(result || "");
-      const section = _extractHeadedSection(raw, ["translation", "translated", "번역"]);
-      if (section) return _stripStrayFence(section);
-      const sides = _parseGtSides(raw);
-      return sides.en && sides.en.trim() ? sides.en : null;
-    }
-
-    function _extractImprovedBody(result) {
-      const raw = String(result || "");
-      const revised = _extractHeadedSection(raw, ["revised text", "revised", "개선"]);
-      if (revised) {
-        const body = _stripStrayFence(_stripTrailingHeadings(revised));
-        if (body) return body;
-      }
-      const fenced = _extractFenced(raw);
-      if (fenced && fenced.trim()) {
-        /* 태그가 있으면 번역문 앞부분이 곧 개선 원문이다 */
-        const sides = _parseGtSides(fenced);
-        return _stripStrayFence(sides.ko && sides.ko.trim() ? sides.ko : fenced);
-      }
-      /* 진단문이 섞인 출력은 원문 폴백 유지(오염 방지), 그 외에는 모델 출력을 그대로 사용 */
-      if (/pre-editing\s+diagnosis/i.test(raw)) return null;
-      return _stripStrayFence(raw) || null;
+      const section = _extractHeadedSection(String(result || ""), ["translation", "translated", "번역"]);
+      return section ? _stripStrayFence(section) : null;
     }
 
     /* 헤딩 섹션 본문 추출: 제목 다음부터 다음 헤딩 직전까지 */
@@ -4123,13 +4026,6 @@ The Translation section must contain the full {{slot::lang}} translation of the 
       return rest.trim() ? rest : null;
     }
 
-    /* 번역 헤딩이 개선문 뒤에 붙어 있으면 개선 본문에서 잘라낸다 */
-    function _stripTrailingHeadings(text) {
-      const cut = String(text || "").search(
-        /\n[ \t]*(?:#{1,6}[ \t]*)?\**[ \t]*(?:translation|translated|번역)[ \t]*\**\s*:?[ \t]*$/im,
-      );
-      return cut === -1 ? text : text.slice(0, cut);
-    }
     function _stripStrayFence(text) {
       /* 섹션 본문은 개행으로 시작하므로 앞뒤 공백을 먼저 걷어낸 뒤 펜스를 벗긴다 */
       return String(text || "")
@@ -4153,8 +4049,15 @@ The Translation section must contain the full {{slot::lang}} translation of the 
             : getInputTranslatePrompt();
       const applied = await _applyInputContext(basePrompt, content, turnsOverride);
       const withWiki = await _applyInputTlWikiContext(applied.prompt, content);
-      const result = await translateSingleChunkWithRetry(withWiki.prompt, applied.content);
-      return { prompt: withWiki.prompt, content: applied.content, result: result, wiki: withWiki.wiki };
+      /* 이 호출에서 네트워크로 실제 나가는 본문을 붙잡는다(디버그 로그용) */
+      const capture = { url: "", body: "" };
+      _llmCapture = capture;
+      try {
+        const result = await translateSingleChunkWithRetry(withWiki.prompt, applied.content);
+        return { prompt: withWiki.prompt, content: applied.content, result: result, wiki: withWiki.wiki, llm: capture };
+      } finally {
+        _llmCapture = null;
+      }
     }
 
     /* 미리보기 대기 중 창 닫힘 → 전송 차단(취소와 동일) */
@@ -4168,13 +4071,12 @@ The Translation section must contain the full {{slot::lang}} translation of the 
       hideWindow();
     }
 
-    /* 작업대 모달: 원문/결과 박스 + [번역][개선] + 형식선택 + [전송][취소] */
+    /* 작업대 모달: 원문/결과 박스 + [번역][개선] + [전송][취소] */
     let _workbenchMethod = "plain";
     function _showInputWorkbench(originalText, method, result, errorMsg) {
       _workbenchMethod = method;
       const input = document.getElementById("rt-input");
       const output = document.getElementById("rt-output");
-      const fmtSel = document.getElementById("rt-input-format-sel");
       if (input) input.value = originalText || "";
       if (output) {
         output.value = result || (errorMsg ? "❌ " + errorMsg : "");
@@ -4183,7 +4085,6 @@ The Translation section must contain the full {{slot::lang}} translation of the 
         const og = document.getElementById("rt-output-grip");
         if (og) og.style.display = "";
       }
-      if (fmtSel) fmtSel.value = inputTlFormat;
       const actions = document.getElementById("rt-out-actions");
       if (actions) actions.style.display = "flex";
       _showWorkbenchControls();
@@ -4196,7 +4097,6 @@ The Translation section must contain the full {{slot::lang}} translation of the 
       [
         "rt-btn-input-translate-action",
         "rt-btn-input-improve-action",
-        "rt-input-format-sel",
         "rt-btn-cancel-input",
         "rt-btn-send",
       ].forEach((id) => {
@@ -4229,7 +4129,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
         const ctxChk = document.getElementById("rt-input-ctx-toggle");
         const ctxOn = ctxChk ? ctxChk.checked : inputTlContextTurns > 0;
         const turnsOverride = ctxOn ? (inputTlContextTurns > 0 ? inputTlContextTurns : 4) : 0;
-        const { prompt: fp, content: fc, result, wiki } = await _runInputMethod(method, src, turnsOverride);
+        const { prompt: fp, content: fc, result, wiki, llm } = await _runInputMethod(method, src, turnsOverride);
         await _hideInputLoadingBar();
         if (_inputTranslateCancelled) {
           _inputTranslateCancelled = false;
@@ -4245,10 +4145,11 @@ The Translation section must contain the full {{slot::lang}} translation of the 
         }
         _logInputTranslate({
           mode: "검수:" + method,
+          llm: llm,
           prompt: fp,
           content: fc,
           result: shown,
-          wiki: formatInputTlWikiLogLine(r.wiki),
+          wiki: formatInputTlWikiLogLine(wiki),
         });
       } catch (e) {
         await _hideInputLoadingBar();
@@ -4264,12 +4165,6 @@ The Translation section must contain the full {{slot::lang}} translation of the 
       if (bt) bt.onclick = () => _workbenchReRun("plain");
       const bi = document.getElementById("rt-btn-input-improve-action");
       if (bi) bi.onclick = () => _workbenchReRun("improve");
-      const fmtSel = document.getElementById("rt-input-format-sel");
-      if (fmtSel)
-        fmtSel.onchange = () => {
-          inputTlFormat = fmtSel.value === "gigatrans" ? "gigatrans" : "replace";
-          store.setItem(INPUT_TL_FORMAT_KEY, inputTlFormat);
-        };
       const send = document.getElementById("rt-btn-send");
       if (send)
         send.onclick = () => {
@@ -4278,11 +4173,9 @@ The Translation section must contain the full {{slot::lang}} translation of the 
           const original = input ? input.value : "";
           const result = output ? output.value : "";
           if (result.trim().startsWith("❌")) return;
-          const fmt =
-            (document.getElementById("rt-input-format-sel") || {}).value === "gigatrans" ? "gigatrans" : "replace";
-          const payload = buildInputPayload(_workbenchMethod, fmt, original, result);
+          const payload = buildInputPayload(_workbenchMethod, original, result);
           _logInputTranslate({
-            mode: "검수전송:" + _workbenchMethod + "/" + fmt,
+            mode: "검수전송:" + _workbenchMethod,
             content: original,
             result: payload,
             error: payload === original && result.trim() ? "추출 실패 → 원문 전송" : "",
@@ -4314,8 +4207,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
         result = inputTlMethod === "plain" ? applyPreserveQuotes(content, r.result) : r.result;
         _logInputTranslate({
           mode: "검수:" + inputTlMethod,
-          prompt: r.prompt,
-          content: r.content,
+          llm: r.llm,
           result: result,
           wiki: formatInputTlWikiLogLine(r.wiki),
         });
@@ -4348,20 +4240,19 @@ The Translation section must contain the full {{slot::lang}} translation of the 
       /* 즉시 전송 */
       await _showInputLoadingBar();
       try {
-        const { prompt: fp, content: fc, result, wiki } = await _runInputMethod(inputTlMethod, content);
+        const { result, wiki, llm } = await _runInputMethod(inputTlMethod, content);
         await _hideInputLoadingBar();
         if (_inputTranslateCancelled) {
           _inputTranslateCancelled = false;
           _showInputToast("✕ 전송 취소됨");
-          _logInputTranslate({ mode: "즉시:" + inputTlMethod, content: fc, error: "cancelled (전송 차단)" });
+          _logInputTranslate({ mode: "즉시:" + inputTlMethod, llm: llm, error: "cancelled (전송 차단)" });
           return new Promise(function () {});
         }
         const refined = inputTlMethod === "plain" ? applyPreserveQuotes(content, result) : result;
-        const payload = buildInputPayload(inputTlMethod, inputTlFormat, content, refined);
+        const payload = buildInputPayload(inputTlMethod, content, refined);
         _logInputTranslate({
-          mode: "즉시:" + inputTlMethod + "/" + inputTlFormat,
-          prompt: fp,
-          content: fc,
+          mode: "즉시:" + inputTlMethod,
+          llm: llm,
           result: payload,
           wiki: formatInputTlWikiLogLine(wiki),
         });
@@ -4504,7 +4395,6 @@ The Translation section must contain the full {{slot::lang}} translation of the 
         "rt-btn-cancel-input",
         "rt-btn-input-translate-action",
         "rt-btn-input-improve-action",
-        "rt-input-format-sel",
         "rt-input-ctx-toggle-wrap",
       ].forEach((id) => {
         const el = document.getElementById(id);
@@ -4598,7 +4488,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
       const cp = promptPresets[currentPresetId];
       const cnp = notesPresets[currentNotesPresetId];
       const customApiMeta = getCustomApiMeta(customApiSettings.format);
-      sv.innerHTML = `\n    \x3c!-- API Type --\x3e\n    <div class="rt-sec">\n        <div class="rt-sec-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" id="rt-sec-api-header">\n            🔌 API 연결 방식\n            <span style="font-size:11px;color:var(--rt-text2);opacity:0.5;font-weight:normal" id="rt-sec-api-arrow">▶</span>\n        </div>\n        <div id="rt-sec-api-body" style="display:none">\n        <select class="rt-sel" id="rt-api-type" style="width:100%;margin-bottom:4px">\n            ${apiOpts.map((o) => `<option value="${o.v}"${o.v === currentApiType ? " selected" : ""}>${o.t}</option>`).join("")}\n        </select>\n        <div id="rt-sec-google" class="rt-sec" style="margin-top:8px;${currentApiType === "google-ai" ? "" : "display:none"}">\n            <div class="rt-label">모델 선택</div>\n            <select class="rt-sel" id="rt-model-sel" style="width:100%">${modelOpts}</select>\n            <div id="rt-google-custom-wrap" style="margin-top:6px;${currentModel === "custom" ? "" : "display:none"}">\n                <input class="rt-inp" id="rt-google-custom-model" value="${escapeHtml(customGoogleModel)}" placeholder="모델 ID 직접 입력">\n            </div>\n            <div class="rt-label" style="margin-top:6px">API Key</div>\n            <input class="rt-inp" id="rt-google-ai-key" type="password" value="${escapeHtml(googleAiKey)}" placeholder="AIza...">\n            <button class="rt-btn rt-bp rt-bsm" id="rt-btn-google-ai-save" style="margin-top:6px">💾 Google AI 설정 저장</button>\n            <div id="rt-google-ai-status" class="rt-status" style="display:none;margin-top:6px"></div>\n        </div>\n        <div id="rt-sec-vertex" class="rt-sec" style="margin-top:8px;${currentApiType === "vertex-ai-direct" ? "" : "display:none"}">\n            <div class="rt-label">Vertex AI 모델</div>\n            <select class="rt-sel" id="rt-vertex-model-sel" style="width:100%">${vertexModelOpts}</select>\n            <div id="rt-vertex-custom-wrap" style="margin-top:6px;${(vertexSettings.model || DEFAULT_VERTEX_MODEL) === "custom" ? "" : "display:none"}">\n                <input class="rt-inp" id="rt-vertex-custom-model" value="${escapeHtml(customVertexModel)}" placeholder="모델 ID 직접 입력">\n            </div>\n            <div class="rt-label" style="margin-top:6px">Project ID</div>\n            <input class="rt-inp" id="rt-vertex-project" value="${escapeHtml(vertexSettings.projectId || "")}" placeholder="GCP 프로젝트 ID">\n            <div class="rt-label" style="margin-top:6px">Location</div>\n            <input class="rt-inp" id="rt-vertex-location" value="${escapeHtml(vertexSettings.location || "global")}" placeholder="us-central1 또는 global">\n            <div class="rt-label" style="margin-top:6px">서비스 계정 키 (JSON)</div>\n            <textarea class="rt-ta" id="rt-vertex-key" rows="3" placeholder='{"type":"service_account",...}'>${escapeHtml(vertexSettings.keyJson ? JSON.stringify(vertexSettings.keyJson) : "")}</textarea>\n            <button class="rt-btn rt-bp rt-bsm" id="rt-btn-vertex-save" style="margin-top:6px">💾 Vertex 설정 저장</button>\n            <div id="rt-vertex-status" class="rt-status" style="display:none;margin-top:6px"></div>\n        </div>\n        <div id="rt-sec-openai" class="rt-sec" style="margin-top:8px;${currentApiType === "openai" ? "" : "display:none"}">\n            <div class="rt-label">모델명</div>\n            <input class="rt-inp" id="rt-openai-model" value="${escapeHtml(openaiModel)}" placeholder="gpt-4.1">\n            <div class="rt-label" style="margin-top:6px">API URL</div>\n            <input class="rt-inp" id="rt-openai-url" value="${escapeHtml(openaiApiUrl)}" placeholder="https://api.openai.com/v1/chat/completions">\n            <div style="font-size:10px;color:var(--rt-text2);margin-top:2px">OpenRouter 등 호환 API도 URL만 변경하면 사용 가능</div>\n            <div class="rt-label" style="margin-top:6px">API Key</div>\n            <input class="rt-inp" id="rt-openai-key" type="password" value="${escapeHtml(openaiApiKey)}" placeholder="sk-...">\n            <button class="rt-btn rt-bp rt-bsm" id="rt-btn-openai-save" style="margin-top:6px">💾 OpenAI 설정 저장</button>\n            <div id="rt-openai-status" class="rt-status" style="display:none;margin-top:6px"></div>\n        </div>\n        <div id="rt-sec-anthropic" class="rt-sec" style="margin-top:8px;${currentApiType === "anthropic" ? "" : "display:none"}">\n            <div class="rt-label">모델명</div>\n            <input class="rt-inp" id="rt-anthropic-model" value="${escapeHtml(anthropicModel)}" placeholder="claude-sonnet-4-20250514">\n            <div class="rt-label" style="margin-top:6px">API Key</div>\n            <input class="rt-inp" id="rt-anthropic-key" type="password" value="${escapeHtml(anthropicApiKey)}" placeholder="sk-ant-...">\n            <button class="rt-btn rt-bp rt-bsm" id="rt-btn-anthropic-save" style="margin-top:6px">💾 Anthropic 설정 저장</button>\n            <div id="rt-anthropic-status" class="rt-status" style="display:none;margin-top:6px"></div>\n        </div>\n        <div id="rt-sec-custom-api" class="rt-sec" style="margin-top:8px;${currentApiType === "custom-api" ? "" : "display:none"}">\n            <div class="rt-label">모델명</div>\n            <input class="rt-inp" id="rt-custom-api-model" value="${escapeHtml(customApiSettings.model)}">\n            <div class="rt-label" style="margin-top:6px">API URL</div>\n            <input class="rt-inp" id="rt-custom-api-url" value="${escapeHtml(customApiSettings.url)}">\n            <div class="rt-label" style="margin-top:6px">API Key</div>\n            <input class="rt-inp" id="rt-custom-api-key" type="password" value="${escapeHtml(customApiSettings.key)}">\n            <div class="rt-label" style="margin-top:6px">Format</div>\n            <select class="rt-sel" id="rt-custom-api-format" style="width:100%">${customApiFormatOpts}</select>\n            <div class="rt-label" style="margin-top:6px">Additional Parameters</div>\n            <textarea class="rt-ta rt-ta-fixed" id="rt-custom-api-params" placeholder='temperature=0.7\nmax_tokens=2000\nheader::Authorization=Bearer token\nresponse_format.type=json_schema\nstop=json::["</s>"]\nfrequency_penalty={{none}}'>${escapeHtml(customApiSettings.additionalParams)}</textarea>\n            <div style="font-size:10px;color:var(--rt-text2);margin-top:3px;line-height:1.5"><code>header::</code>로 헤더 추가, <code>json::</code>로 JSON 값 전송, <code>{{none}}</code>로 기본 값 제거</div>\n            <button class="rt-btn rt-bp rt-bsm" id="rt-btn-custom-api-save" style="margin-top:6px">💾 Custom API 설정 저장</button>\n            <div id="rt-custom-api-status" class="rt-status" style="display:none;margin-top:6px"></div>\n        </div>\n        <div id="rt-sec-copilot" class="rt-sec" style="margin-top:8px;${currentApiType === "github-copilot" ? "" : "display:none"}">\n            <div class="rt-label">Copilot 모델</div>\n            <select class="rt-sel" id="rt-copilot-model-sel" style="width:100%">${copilotModelOpts}</select>\n            <div id="rt-copilot-custom-wrap" style="margin-top:6px;${currentCopilotModel === "custom" ? "" : "display:none"}">\n                <input class="rt-inp" id="rt-copilot-custom-model" value="${escapeHtml(customCopilotModel)}" placeholder="모델 ID 직접 입력">\n            </div>\n            <div class="rt-row" style="margin-top:8px">\n                <button class="rt-btn rt-bp rt-bsm" id="rt-btn-copilot-login">🔐 GitHub 로그인</button>\n                <button class="rt-btn rt-bdanger rt-bsm" id="rt-btn-copilot-logout">🚪 로그아웃</button>\n            </div>\n            <div style="font-size:11px;color:var(--rt-text2);margin-top:4px">${githubCopilotToken ? "✅ 토큰 있음" : "⚠️ 로그인 필요"}</div>\n            <div id="rt-copilot-status" class="rt-status" style="display:none;margin-top:6px"></div>\n        </div>\n        <div id="rt-sec-copilot-pat" class="rt-sec" style="margin-top:8px;${currentApiType === "github-copilot-pat" ? "" : "display:none"}">\n            <div class="rt-label">Copilot 모델</div>\n            <select class="rt-sel" id="rt-copilot-pat-model-sel" style="width:100%">${copilotModelOpts}</select>\n            <div id="rt-copilot-pat-custom-wrap" style="margin-top:6px;${currentCopilotModel === "custom" ? "" : "display:none"}">\n                <input class="rt-inp" id="rt-copilot-pat-custom-model" value="${escapeHtml(customCopilotModel)}" placeholder="모델 ID 직접 입력">\n            </div>\n            <div class="rt-label" style="margin-top:8px">GitHub PAT (Personal Access Token)</div>\n            <input class="rt-inp" id="rt-copilot-pat-input" type="password" value="${escapeHtml(copilotPat)}" placeholder="ghp_... 또는 github_pat_...">\n            <div style="font-size:10px;color:var(--rt-text2);margin-top:2px;line-height:1.5">GitHub Settings → Developer settings → Personal access tokens에서 발급<br>필요 권한: <b>copilot</b></div>\n            <div class="rt-row" style="margin-top:8px">\n                <button class="rt-btn rt-bp rt-bsm" id="rt-btn-copilot-pat-save">💾 토큰 저장</button>\n                <button class="rt-btn rt-bdanger rt-bsm" id="rt-btn-copilot-pat-clear">🗑 토큰 삭제</button>\n            </div>\n            <div style="font-size:11px;color:var(--rt-text2);margin-top:4px">${copilotPat ? "✅ 토큰 설정됨" : "⚠️ PAT 미설정"}</div>\n            <div id="rt-copilot-pat-status" class="rt-status" style="display:none;margin-top:6px"></div>\n        </div>\n        <div id="rt-sec-temperature">\n        <div class="rt-divider"></div>\n        <div class="rt-label">온도 (Temperature) <span id="rt-temp-display" style="color:var(--rt-btn1);font-weight:bold">${apiTemperature.toFixed(2)}</span></div>\n        <div style="display:flex;gap:8px;align-items:center;margin-top:4px">\n            <input type="range" class="rt-range" id="rt-temp-range" min="0" max="2" step="0.05" value="${apiTemperature}">\n            <input type="number" class="rt-inp" id="rt-temp-num" min="0" max="2" step="0.05" value="${apiTemperature}" style="width:70px;text-align:center">\n        </div>\n        <div style="font-size:11px;color:var(--rt-text2);margin-top:3px;line-height:1.5">0 = 일관성 높음 / 1 = 균형 / 2 = 창의적·다양성 높음</div>\n        </div>\n        <div id="rt-sec-thinking" style="${THINKING_SUPPORTED_APIS.includes(currentApiType) ? "" : "display:none"}">\n        <div class="rt-divider"></div>\n        <div class="rt-label">Gemini 3 사고 수준 (Thinking Level)</div>\n        <select class="rt-sel" id="rt-thinking-sel" style="width:100%">\n            <option value=""${thinkingLevel === "" ? " selected" : ""}>비활성</option>\n            <option value="1024"${thinkingLevel === "1024" ? " selected" : ""}>MINIMAL</option>\n            <option value="8192"${thinkingLevel === "8192" ? " selected" : ""}>LOW</option>\n            <option value="16384"${thinkingLevel === "16384" ? " selected" : ""}>MEDIUM</option>\n            <option value="24576"${thinkingLevel === "24576" ? " selected" : ""}>HIGH</option>\n        </select>\n        </div>\n        </div>\n    </div>\n\n    \x3c!-- Prompt Presets --\x3e\n    <div class="rt-sec" id="rt-sec-prompt-presets">\n        <div class="rt-sec-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" id="rt-sec-prompt-header">\n            📝 프롬프트 프리셋\n            <span style="font-size:11px;color:var(--rt-text2);opacity:0.5;font-weight:normal" id="rt-sec-prompt-arrow">▶</span>\n        </div>\n        <div class="rt-row">\n            <select class="rt-sel" id="rt-preset-sel" style="flex:1">${presetOpts}</select>\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-preset-add">＋</button>\n            <button class="rt-btn rt-bdanger rt-bsm" id="rt-btn-preset-del">🗑</button>\n        </div>\n        <div id="rt-sec-prompt-body" style="display:none">\n        <div class="rt-row" style="margin-top:4px">\n            <div class="rt-label" style="margin-bottom:0">프리셋 이름</div>\n            <input class="rt-inp" id="rt-preset-name" value="${escapeHtml(cp ? cp.name : "")}" style="flex:1">\n        </div>\n        <div class="rt-label" style="margin-top:6px">시스템 프롬프트 <span style="font-weight:normal;color:var(--rt-text2)">(ChatML &lt;|im_start|&gt; 지원, {{slot::tnote}} / {{slot::content}})</span></div>\n        <textarea class="rt-ta" id="rt-prompt-ta" rows="6">${escapeHtml(cp ? cp.prompt : "")}</textarea>\n        <button class="rt-btn rt-bp rt-bsm" id="rt-btn-prompt-save" style="margin-top:6px">💾 프롬프트 저장</button>\n\t\t</div>\n    </div>\n\n    \x3c!-- Notes Presets --\x3e\n    <div class="rt-sec" id="rt-sec-notes-presets">\n        <div class="rt-sec-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" id="rt-sec-notes-header">\n            📋 번역가의 노트 프리셋\n            <span style="font-size:11px;color:var(--rt-text2);opacity:0.5;font-weight:normal" id="rt-sec-notes-arrow">▶</span>\n        </div>\n        <div class="rt-row">\n            <select class="rt-sel" id="rt-notes-preset-sel" style="flex:1">${notesPresetOpts}</select>\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-notes-preset-add">＋</button>\n            <button class="rt-btn rt-bdanger rt-bsm" id="rt-btn-notes-preset-del">🗑</button>\n        </div>\n        <div id="rt-sec-notes-body" style="display:none">\t\t\n        <div class="rt-row" style="margin-top:4px">\n            <div class="rt-label" style="margin-bottom:0">프리셋 이름</div>\n            <input class="rt-inp" id="rt-notes-preset-name" value="${escapeHtml(cnp ? cnp.name : "")}" style="flex:1">\n        </div>\n        <textarea class="rt-ta" id="rt-notes-ta" rows="4" placeholder="번역 시 참고할 노트 (용어집, 스타일 가이드 등)">${escapeHtml(cnp ? cnp.notes : "")}</textarea>\n        <button class="rt-btn rt-bp rt-bsm" id="rt-btn-notes-save" style="margin-top:6px">💾 노트 저장</button>\n\t\t</div>\n    </div>\n\n    \x3c!-- 💬 인풋 자동 번역 섹션 (접기 가능) --\x3e\n    <div class="rt-sec" id="rt-sec-input-tl">\n        <div class="rt-sec-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" id="rt-sec-input-tl-header">\n            💬 인풋 자동 번역\n            <span style="font-size:11px;color:var(--rt-text2);opacity:0.5;font-weight:normal" id="rt-sec-input-tl-arrow">▶</span>\n        </div>\n        <div id="rt-sec-input-tl-body" style="display:none">\n            <div class="rt-label">인풋 자동 번역</div>\n            <select class="rt-sel" id="rt-input-tl-mode-sel" style="width:100%;margin-bottom:8px">\n                <option value="0"${inputTranslateMode === 0 ? " selected" : ""}>🚫 안함</option>\n                <option value="2"${inputTranslateMode !== 0 ? " selected" : ""}>✅ 사용</option>\n            </select>\n            <div id="rt-input-tl-options" style="${inputTranslateMode === 0 ? "display:none" : ""}"><div style="display:flex;gap:8px;margin-bottom:8px"><div style="flex:1"><div class="rt-label">번역 방식</div><select class="rt-sel" id="rt-input-tl-method-sel" style="width:100%"><option value="plain"${inputTlMethod === "plain" ? " selected" : ""}>🌐 일반 번역</option><option value="improve"${inputTlMethod === "improve" ? " selected" : ""}>🔧 인풋 개선</option></select></div><div style="flex:1"><div class="rt-label">전송 형식</div><select class="rt-sel" id="rt-input-tl-format-setting" style="width:100%"><option value="replace"${inputTlFormat === "replace" ? " selected" : ""}>번역문 대체</option><option value="gigatrans"${inputTlFormat === "gigatrans" ? " selected" : ""}>기트호환</option></select></div><div style="flex:1"><div class="rt-label">검수</div><select class="rt-sel" id="rt-input-tl-review-sel" style="width:100%"><option value="1"${inputTlReview ? " selected" : ""}>검수 후</option><option value="0"${!inputTlReview ? " selected" : ""}>즉시</option></select></div></div><div class="rt-label">인풋 개선 프롬프트 <span style="font-weight:normal;color:var(--rt-text2)">(방식=개선 시 · {{slot::content}}/{{slot::lang}}/&lt;history&gt;)</span></div><textarea class="rt-ta" id="rt-input-improve-prompt-ta" rows="5" style="font-size:11px">${escapeHtml(inputImprovePrompt)}</textarea><div class="rt-row" style="margin-top:4px"><button class="rt-btn rt-bp rt-bsm" id="rt-btn-improve-prompt-save">💾 개선 프롬프트 저장</button><button class="rt-btn rt-bs rt-bsm" id="rt-btn-improve-prompt-reset">↩ 기본값 복원</button></div><div style="display:flex;gap:8px;margin-top:8px"><div style="flex:1"><div class="rt-label">컨텍스트 턴 수 (0=끔)</div><input class="rt-inp" type="number" id="rt-input-tl-context-turns" min="0" max="20" value="${inputTlContextTurns}" style="width:100%"></div><div style="flex:1"><div class="rt-label">컨텍스트 형식</div><select class="rt-sel" id="rt-input-tl-context-mode" style="width:100%"><option value="pair"${inputTlContextMode === "pair" ? " selected" : ""}>한글+번역문</option><option value="en"${inputTlContextMode === "en" ? " selected" : ""}>번역문만</option><option value="ko"${inputTlContextMode === "ko" ? " selected" : ""}>한글만</option></select></div></div><div style="font-size:10.5px;color:var(--rt-text2);margin-top:4px;line-height:1.5;opacity:0.8">직전 N개 메시지를 <b>번역 모델 요청에 함께 포함</b>해 맥락·용어 일관성을 높입니다. (0이면 현재 입력만 전송)<br><b>번역문</b> = 메시지의 &lt;GigaTrans&gt; 안(모델에 보낸 번역문) · <b>한글</b> = 화면 표시 원문. 태그가 없는 메시지는 그대로 사용됩니다.</div><div style="margin-top:10px;border-top:1px solid var(--rt-border);padding-top:8px"><div class="rt-label">🔍 인풋 번역 디버그 로그 (직전 2건)</div><div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap"><button class="rt-btn rt-bs rt-bsm" id="rt-input-tl-log-refresh">🔄 새로고침</button><button class="rt-btn rt-bdanger rt-bsm" id="rt-input-tl-log-clear">🗑 로그 삭제</button><button class="rt-btn rt-bs rt-bsm" id="rt-input-tl-log-deldb">DB 삭제</button></div><div id="rt-input-tl-debug-list" class="rt-output" style="max-height:240px;overflow:auto;font-size:11px"><em style="opacity:0.6">새로고침을 눌러 확인</em></div></div>\n                <div style="font-size:10.5px;color:var(--rt-text2);margin-bottom:10px;line-height:1.6;opacity:0.7">\n                    채팅 전송 시 메시지를 자동으로 대상 언어로 번역<br>\n                    <span style="color:${_inputHandlerRegistered ? "#2e7d32" : "#c62828"}">${_inputHandlerRegistered ? "✅ 핸들러 등록됨 — 작동 중" : inputTranslateMode > 0 ? "⚠️ 핸들러 미등록" : "●"}</span>\n                </div>\n\n                <div class="rt-label">인풋 번역 프롬프트</div>\n                <select class="rt-sel" id="rt-input-tl-preset-sel" style="width:100%;margin-bottom:6px">\n                    ${inputTlPresetOpts}\n                </select>                \n                <div id="rt-input-tl-lang-section" style="${inputTlPresetId === "" ? "" : "display:none"}">\n                    <div class="rt-label">인풋 번역 대상 언어</div>\n                    <select class="rt-sel" id="rt-input-tl-lang-sel" style="width:100%">\n                        ${Object.entries(
+      sv.innerHTML = `\n    \x3c!-- API Type --\x3e\n    <div class="rt-sec">\n        <div class="rt-sec-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" id="rt-sec-api-header">\n            🔌 API 연결 방식\n            <span style="font-size:11px;color:var(--rt-text2);opacity:0.5;font-weight:normal" id="rt-sec-api-arrow">▶</span>\n        </div>\n        <div id="rt-sec-api-body" style="display:none">\n        <select class="rt-sel" id="rt-api-type" style="width:100%;margin-bottom:4px">\n            ${apiOpts.map((o) => `<option value="${o.v}"${o.v === currentApiType ? " selected" : ""}>${o.t}</option>`).join("")}\n        </select>\n        <div id="rt-sec-google" class="rt-sec" style="margin-top:8px;${currentApiType === "google-ai" ? "" : "display:none"}">\n            <div class="rt-label">모델 선택</div>\n            <select class="rt-sel" id="rt-model-sel" style="width:100%">${modelOpts}</select>\n            <div id="rt-google-custom-wrap" style="margin-top:6px;${currentModel === "custom" ? "" : "display:none"}">\n                <input class="rt-inp" id="rt-google-custom-model" value="${escapeHtml(customGoogleModel)}" placeholder="모델 ID 직접 입력">\n            </div>\n            <div class="rt-label" style="margin-top:6px">API Key</div>\n            <input class="rt-inp" id="rt-google-ai-key" type="password" value="${escapeHtml(googleAiKey)}" placeholder="AIza...">\n            <button class="rt-btn rt-bp rt-bsm" id="rt-btn-google-ai-save" style="margin-top:6px">💾 Google AI 설정 저장</button>\n            <div id="rt-google-ai-status" class="rt-status" style="display:none;margin-top:6px"></div>\n        </div>\n        <div id="rt-sec-vertex" class="rt-sec" style="margin-top:8px;${currentApiType === "vertex-ai-direct" ? "" : "display:none"}">\n            <div class="rt-label">Vertex AI 모델</div>\n            <select class="rt-sel" id="rt-vertex-model-sel" style="width:100%">${vertexModelOpts}</select>\n            <div id="rt-vertex-custom-wrap" style="margin-top:6px;${(vertexSettings.model || DEFAULT_VERTEX_MODEL) === "custom" ? "" : "display:none"}">\n                <input class="rt-inp" id="rt-vertex-custom-model" value="${escapeHtml(customVertexModel)}" placeholder="모델 ID 직접 입력">\n            </div>\n            <div class="rt-label" style="margin-top:6px">Project ID</div>\n            <input class="rt-inp" id="rt-vertex-project" value="${escapeHtml(vertexSettings.projectId || "")}" placeholder="GCP 프로젝트 ID">\n            <div class="rt-label" style="margin-top:6px">Location</div>\n            <input class="rt-inp" id="rt-vertex-location" value="${escapeHtml(vertexSettings.location || "global")}" placeholder="us-central1 또는 global">\n            <div class="rt-label" style="margin-top:6px">서비스 계정 키 (JSON)</div>\n            <textarea class="rt-ta" id="rt-vertex-key" rows="3" placeholder='{"type":"service_account",...}'>${escapeHtml(vertexSettings.keyJson ? JSON.stringify(vertexSettings.keyJson) : "")}</textarea>\n            <button class="rt-btn rt-bp rt-bsm" id="rt-btn-vertex-save" style="margin-top:6px">💾 Vertex 설정 저장</button>\n            <div id="rt-vertex-status" class="rt-status" style="display:none;margin-top:6px"></div>\n        </div>\n        <div id="rt-sec-openai" class="rt-sec" style="margin-top:8px;${currentApiType === "openai" ? "" : "display:none"}">\n            <div class="rt-label">모델명</div>\n            <input class="rt-inp" id="rt-openai-model" value="${escapeHtml(openaiModel)}" placeholder="gpt-4.1">\n            <div class="rt-label" style="margin-top:6px">API URL</div>\n            <input class="rt-inp" id="rt-openai-url" value="${escapeHtml(openaiApiUrl)}" placeholder="https://api.openai.com/v1/chat/completions">\n            <div style="font-size:10px;color:var(--rt-text2);margin-top:2px">OpenRouter 등 호환 API도 URL만 변경하면 사용 가능</div>\n            <div class="rt-label" style="margin-top:6px">API Key</div>\n            <input class="rt-inp" id="rt-openai-key" type="password" value="${escapeHtml(openaiApiKey)}" placeholder="sk-...">\n            <button class="rt-btn rt-bp rt-bsm" id="rt-btn-openai-save" style="margin-top:6px">💾 OpenAI 설정 저장</button>\n            <div id="rt-openai-status" class="rt-status" style="display:none;margin-top:6px"></div>\n        </div>\n        <div id="rt-sec-anthropic" class="rt-sec" style="margin-top:8px;${currentApiType === "anthropic" ? "" : "display:none"}">\n            <div class="rt-label">모델명</div>\n            <input class="rt-inp" id="rt-anthropic-model" value="${escapeHtml(anthropicModel)}" placeholder="claude-sonnet-4-20250514">\n            <div class="rt-label" style="margin-top:6px">API Key</div>\n            <input class="rt-inp" id="rt-anthropic-key" type="password" value="${escapeHtml(anthropicApiKey)}" placeholder="sk-ant-...">\n            <button class="rt-btn rt-bp rt-bsm" id="rt-btn-anthropic-save" style="margin-top:6px">💾 Anthropic 설정 저장</button>\n            <div id="rt-anthropic-status" class="rt-status" style="display:none;margin-top:6px"></div>\n        </div>\n        <div id="rt-sec-custom-api" class="rt-sec" style="margin-top:8px;${currentApiType === "custom-api" ? "" : "display:none"}">\n            <div class="rt-label">모델명</div>\n            <input class="rt-inp" id="rt-custom-api-model" value="${escapeHtml(customApiSettings.model)}">\n            <div class="rt-label" style="margin-top:6px">API URL</div>\n            <input class="rt-inp" id="rt-custom-api-url" value="${escapeHtml(customApiSettings.url)}">\n            <div class="rt-label" style="margin-top:6px">API Key</div>\n            <input class="rt-inp" id="rt-custom-api-key" type="password" value="${escapeHtml(customApiSettings.key)}">\n            <div class="rt-label" style="margin-top:6px">Format</div>\n            <select class="rt-sel" id="rt-custom-api-format" style="width:100%">${customApiFormatOpts}</select>\n            <div class="rt-label" style="margin-top:6px">Additional Parameters</div>\n            <textarea class="rt-ta rt-ta-fixed" id="rt-custom-api-params" placeholder='temperature=0.7\nmax_tokens=2000\nheader::Authorization=Bearer token\nresponse_format.type=json_schema\nstop=json::["</s>"]\nfrequency_penalty={{none}}'>${escapeHtml(customApiSettings.additionalParams)}</textarea>\n            <div style="font-size:10px;color:var(--rt-text2);margin-top:3px;line-height:1.5"><code>header::</code>로 헤더 추가, <code>json::</code>로 JSON 값 전송, <code>{{none}}</code>로 기본 값 제거</div>\n            <button class="rt-btn rt-bp rt-bsm" id="rt-btn-custom-api-save" style="margin-top:6px">💾 Custom API 설정 저장</button>\n            <div id="rt-custom-api-status" class="rt-status" style="display:none;margin-top:6px"></div>\n        </div>\n        <div id="rt-sec-copilot" class="rt-sec" style="margin-top:8px;${currentApiType === "github-copilot" ? "" : "display:none"}">\n            <div class="rt-label">Copilot 모델</div>\n            <select class="rt-sel" id="rt-copilot-model-sel" style="width:100%">${copilotModelOpts}</select>\n            <div id="rt-copilot-custom-wrap" style="margin-top:6px;${currentCopilotModel === "custom" ? "" : "display:none"}">\n                <input class="rt-inp" id="rt-copilot-custom-model" value="${escapeHtml(customCopilotModel)}" placeholder="모델 ID 직접 입력">\n            </div>\n            <div class="rt-row" style="margin-top:8px">\n                <button class="rt-btn rt-bp rt-bsm" id="rt-btn-copilot-login">🔐 GitHub 로그인</button>\n                <button class="rt-btn rt-bdanger rt-bsm" id="rt-btn-copilot-logout">🚪 로그아웃</button>\n            </div>\n            <div style="font-size:11px;color:var(--rt-text2);margin-top:4px">${githubCopilotToken ? "✅ 토큰 있음" : "⚠️ 로그인 필요"}</div>\n            <div id="rt-copilot-status" class="rt-status" style="display:none;margin-top:6px"></div>\n        </div>\n        <div id="rt-sec-copilot-pat" class="rt-sec" style="margin-top:8px;${currentApiType === "github-copilot-pat" ? "" : "display:none"}">\n            <div class="rt-label">Copilot 모델</div>\n            <select class="rt-sel" id="rt-copilot-pat-model-sel" style="width:100%">${copilotModelOpts}</select>\n            <div id="rt-copilot-pat-custom-wrap" style="margin-top:6px;${currentCopilotModel === "custom" ? "" : "display:none"}">\n                <input class="rt-inp" id="rt-copilot-pat-custom-model" value="${escapeHtml(customCopilotModel)}" placeholder="모델 ID 직접 입력">\n            </div>\n            <div class="rt-label" style="margin-top:8px">GitHub PAT (Personal Access Token)</div>\n            <input class="rt-inp" id="rt-copilot-pat-input" type="password" value="${escapeHtml(copilotPat)}" placeholder="ghp_... 또는 github_pat_...">\n            <div style="font-size:10px;color:var(--rt-text2);margin-top:2px;line-height:1.5">GitHub Settings → Developer settings → Personal access tokens에서 발급<br>필요 권한: <b>copilot</b></div>\n            <div class="rt-row" style="margin-top:8px">\n                <button class="rt-btn rt-bp rt-bsm" id="rt-btn-copilot-pat-save">💾 토큰 저장</button>\n                <button class="rt-btn rt-bdanger rt-bsm" id="rt-btn-copilot-pat-clear">🗑 토큰 삭제</button>\n            </div>\n            <div style="font-size:11px;color:var(--rt-text2);margin-top:4px">${copilotPat ? "✅ 토큰 설정됨" : "⚠️ PAT 미설정"}</div>\n            <div id="rt-copilot-pat-status" class="rt-status" style="display:none;margin-top:6px"></div>\n        </div>\n        <div id="rt-sec-temperature">\n        <div class="rt-divider"></div>\n        <div class="rt-label">온도 (Temperature) <span id="rt-temp-display" style="color:var(--rt-btn1);font-weight:bold">${apiTemperature.toFixed(2)}</span></div>\n        <div style="display:flex;gap:8px;align-items:center;margin-top:4px">\n            <input type="range" class="rt-range" id="rt-temp-range" min="0" max="2" step="0.05" value="${apiTemperature}">\n            <input type="number" class="rt-inp" id="rt-temp-num" min="0" max="2" step="0.05" value="${apiTemperature}" style="width:70px;text-align:center">\n        </div>\n        <div style="font-size:11px;color:var(--rt-text2);margin-top:3px;line-height:1.5">0 = 일관성 높음 / 1 = 균형 / 2 = 창의적·다양성 높음</div>\n        </div>\n        <div id="rt-sec-thinking" style="${THINKING_SUPPORTED_APIS.includes(currentApiType) ? "" : "display:none"}">\n        <div class="rt-divider"></div>\n        <div class="rt-label">Gemini 3 사고 수준 (Thinking Level)</div>\n        <select class="rt-sel" id="rt-thinking-sel" style="width:100%">\n            <option value=""${thinkingLevel === "" ? " selected" : ""}>비활성</option>\n            <option value="1024"${thinkingLevel === "1024" ? " selected" : ""}>MINIMAL</option>\n            <option value="8192"${thinkingLevel === "8192" ? " selected" : ""}>LOW</option>\n            <option value="16384"${thinkingLevel === "16384" ? " selected" : ""}>MEDIUM</option>\n            <option value="24576"${thinkingLevel === "24576" ? " selected" : ""}>HIGH</option>\n        </select>\n        </div>\n        </div>\n    </div>\n\n    \x3c!-- Prompt Presets --\x3e\n    <div class="rt-sec" id="rt-sec-prompt-presets">\n        <div class="rt-sec-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" id="rt-sec-prompt-header">\n            📝 프롬프트 프리셋\n            <span style="font-size:11px;color:var(--rt-text2);opacity:0.5;font-weight:normal" id="rt-sec-prompt-arrow">▶</span>\n        </div>\n        <div class="rt-row">\n            <select class="rt-sel" id="rt-preset-sel" style="flex:1">${presetOpts}</select>\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-preset-add">＋</button>\n            <button class="rt-btn rt-bdanger rt-bsm" id="rt-btn-preset-del">🗑</button>\n        </div>\n        <div id="rt-sec-prompt-body" style="display:none">\n        <div class="rt-row" style="margin-top:4px">\n            <div class="rt-label" style="margin-bottom:0">프리셋 이름</div>\n            <input class="rt-inp" id="rt-preset-name" value="${escapeHtml(cp ? cp.name : "")}" style="flex:1">\n        </div>\n        <div class="rt-label" style="margin-top:6px">시스템 프롬프트 <span style="font-weight:normal;color:var(--rt-text2)">(ChatML &lt;|im_start|&gt; 지원, {{slot::tnote}} / {{slot::content}})</span></div>\n        <textarea class="rt-ta" id="rt-prompt-ta" rows="6">${escapeHtml(cp ? cp.prompt : "")}</textarea>\n        <button class="rt-btn rt-bp rt-bsm" id="rt-btn-prompt-save" style="margin-top:6px">💾 프롬프트 저장</button>\n\t\t</div>\n    </div>\n\n    \x3c!-- Notes Presets --\x3e\n    <div class="rt-sec" id="rt-sec-notes-presets">\n        <div class="rt-sec-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" id="rt-sec-notes-header">\n            📋 번역가의 노트 프리셋\n            <span style="font-size:11px;color:var(--rt-text2);opacity:0.5;font-weight:normal" id="rt-sec-notes-arrow">▶</span>\n        </div>\n        <div class="rt-row">\n            <select class="rt-sel" id="rt-notes-preset-sel" style="flex:1">${notesPresetOpts}</select>\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-notes-preset-add">＋</button>\n            <button class="rt-btn rt-bdanger rt-bsm" id="rt-btn-notes-preset-del">🗑</button>\n        </div>\n        <div id="rt-sec-notes-body" style="display:none">\t\t\n        <div class="rt-row" style="margin-top:4px">\n            <div class="rt-label" style="margin-bottom:0">프리셋 이름</div>\n            <input class="rt-inp" id="rt-notes-preset-name" value="${escapeHtml(cnp ? cnp.name : "")}" style="flex:1">\n        </div>\n        <textarea class="rt-ta" id="rt-notes-ta" rows="4" placeholder="번역 시 참고할 노트 (용어집, 스타일 가이드 등)">${escapeHtml(cnp ? cnp.notes : "")}</textarea>\n        <button class="rt-btn rt-bp rt-bsm" id="rt-btn-notes-save" style="margin-top:6px">💾 노트 저장</button>\n\t\t</div>\n    </div>\n\n    \x3c!-- 💬 인풋 자동 번역 섹션 (접기 가능) --\x3e\n    <div class="rt-sec" id="rt-sec-input-tl">\n        <div class="rt-sec-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" id="rt-sec-input-tl-header">\n            💬 인풋 자동 번역\n            <span style="font-size:11px;color:var(--rt-text2);opacity:0.5;font-weight:normal" id="rt-sec-input-tl-arrow">▶</span>\n        </div>\n        <div id="rt-sec-input-tl-body" style="display:none">\n            <div class="rt-label">인풋 자동 번역</div>\n            <select class="rt-sel" id="rt-input-tl-mode-sel" style="width:100%;margin-bottom:8px">\n                <option value="0"${inputTranslateMode === 0 ? " selected" : ""}>🚫 안함</option>\n                <option value="2"${inputTranslateMode !== 0 ? " selected" : ""}>✅ 사용</option>\n            </select>\n            <div id="rt-input-tl-options" style="${inputTranslateMode === 0 ? "display:none" : ""}"><div style="display:flex;gap:8px;margin-bottom:8px"><div style="flex:1"><div class="rt-label">번역 방식</div><select class="rt-sel" id="rt-input-tl-method-sel" style="width:100%"><option value="plain"${inputTlMethod === "plain" ? " selected" : ""}>🌐 일반 번역</option><option value="improve"${inputTlMethod === "improve" ? " selected" : ""}>🔧 인풋 개선</option></select></div><div style="flex:1"><div class="rt-label">검수</div><select class="rt-sel" id="rt-input-tl-review-sel" style="width:100%"><option value="1"${inputTlReview ? " selected" : ""}>검수 후</option><option value="0"${!inputTlReview ? " selected" : ""}>즉시</option></select></div></div><div class="rt-label">인풋 개선 프롬프트 <span style="font-weight:normal;color:var(--rt-text2)">(방식=개선 시 · {{slot::content}}/{{slot::lang}}/&lt;history&gt;)</span></div><textarea class="rt-ta" id="rt-input-improve-prompt-ta" rows="5" style="font-size:11px">${escapeHtml(inputImprovePrompt)}</textarea><div class="rt-row" style="margin-top:4px"><button class="rt-btn rt-bp rt-bsm" id="rt-btn-improve-prompt-save">💾 개선 프롬프트 저장</button><button class="rt-btn rt-bs rt-bsm" id="rt-btn-improve-prompt-reset">↩ 기본값 복원</button></div><div style="display:flex;gap:8px;margin-top:8px"><div style="flex:1"><div class="rt-label">컨텍스트 턴 수 (0=끔)</div><input class="rt-inp" type="number" id="rt-input-tl-context-turns" min="0" max="20" value="${inputTlContextTurns}" style="width:100%"></div></div><div style="font-size:10.5px;color:var(--rt-text2);margin-top:4px;line-height:1.5;opacity:0.8">직전 N개 메시지를 <b>번역 모델 요청에 함께 포함</b>해 맥락·용어 일관성을 높입니다. (0이면 현재 입력만 전송)<br>직전 대화의 원문(화면 표시 그대로)을 발화자 라벨과 함께 넣습니다.</div><div style="margin-top:10px;border-top:1px solid var(--rt-border);padding-top:8px"><div class="rt-label">🔍 인풋 번역 디버그 로그 (직전 2건)</div><div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap"><button class="rt-btn rt-bs rt-bsm" id="rt-input-tl-log-refresh">🔄 새로고침</button><button class="rt-btn rt-bdanger rt-bsm" id="rt-input-tl-log-clear">🗑 로그 삭제</button><button class="rt-btn rt-bs rt-bsm" id="rt-input-tl-log-deldb">DB 삭제</button></div><div id="rt-input-tl-debug-list" class="rt-output" style="max-height:240px;overflow:auto;font-size:11px"><em style="opacity:0.6">새로고침을 눌러 확인</em></div></div>\n                <div style="font-size:10.5px;color:var(--rt-text2);margin-bottom:10px;line-height:1.6;opacity:0.7">\n                    채팅 전송 시 메시지를 자동으로 대상 언어로 번역<br>\n                    <span style="color:${_inputHandlerRegistered ? "#2e7d32" : "#c62828"}">${_inputHandlerRegistered ? "✅ 핸들러 등록됨 — 작동 중" : inputTranslateMode > 0 ? "⚠️ 핸들러 미등록" : "●"}</span>\n                </div>\n\n                <div class="rt-label">인풋 번역 프롬프트</div>\n                <select class="rt-sel" id="rt-input-tl-preset-sel" style="width:100%;margin-bottom:6px">\n                    ${inputTlPresetOpts}\n                </select>                \n                <div id="rt-input-tl-lang-section" style="${inputTlPresetId === "" ? "" : "display:none"}">\n                    <div class="rt-label">인풋 번역 대상 언어</div>\n                    <select class="rt-sel" id="rt-input-tl-lang-sel" style="width:100%">\n                        ${Object.entries(
         INPUT_TL_LANGUAGES,
       )
         .map(
@@ -4626,7 +4516,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
         )
         .join(
           "",
-        )}\n            </select>\n            <div id="rt-target-lang-custom-wrap" style="margin-top:6px;${currentTargetLang === "custom" ? "" : "display:none"}">\n                <input class="rt-inp" id="rt-target-lang-custom" value="${escapeHtml(customTargetLang)}" placeholder="언어 이름 입력 (예: Spanish, French, Vietnamese...)">\n            </div>\n            <div id="rt-dict-lang-display" style="margin-top:4px;font-size:10.5px;color:var(--rt-text2)">현재 검색 대상 언어: <b>${escapeHtml(getTargetLanguage())}</b></div>\n            <div style="display:flex;align-items:center;gap:6px;margin-top:8px">\n                <input type="checkbox" id="rt-dict-bardwiki-chk" ${dictBardWikiEnabled ? "checked" : ""}>\n                <label for="rt-dict-bardwiki-chk" style="font-size:11.5px;color:var(--rt-text2);cursor:pointer">BardWiki 문서를 사전 근거로 사용</label>\n            </div>\n            <div style="font-size:10.5px;color:var(--rt-text2);margin-top:4px;line-height:1.5;opacity:0.7">\n                현재 챗의 BardWiki에서 검색어와 제목·별칭·본문이 일치하는 문서를 찾아 정본 근거로 프롬프트에 넣습니다. 일치 문서가 없으면 일반 사전 정의로 답합니다. BardWiki API가 없는 환경에서는 자동으로 건너뜁니다.\n            </div>\n        </div>\n    </div>\n    \x3c!-- ⚙ 기타 섹션 --\x3e\n    <div class="rt-sec" id="rt-sec-misc">\n        <div class="rt-sec-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" id="rt-sec-misc-header">\n            ⚙ 기타\n            <span style="font-size:11px;color:var(--rt-text2);opacity:0.5;font-weight:normal" id="rt-sec-misc-arrow">▶</span>\n        </div>\n        <div id="rt-sec-misc-body" style="display:none">\n            <div class="rt-label" style="font-weight:bold;margin-bottom:4px">청크 설정</div>\n            <label class="rt-ckw"><input type="checkbox" id="rt-chunk-mode"${chunkModeEnabled ? " checked" : ""}> 긴 텍스트 자동 분할</label>\n            <div class="rt-row" style="margin-top:6px">\n                <div class="rt-label" style="margin-bottom:0">청크 크기 (자)</div>\n                <input class="rt-inp" type="number" id="rt-chunk-size" value="${chunkSize}" style="width:100px" min="500" max="30000">\n            </div>\n            <div class="rt-divider" style="margin:12px 0"></div>\n            <div class="rt-label" style="font-weight:bold;margin-bottom:4px">접근성</div>\n            <div style="font-size:10.5px;color:var(--rt-text2);margin-bottom:4px;opacity:0.8">실행 버전: <b>v3.4.0</b> · 입력 버튼 방식: mainDom 호환 모드</div>\n            <div style="font-size:10.5px;color:var(--rt-text2);margin-bottom:7px;opacity:0.8">진단 상태: <b>${escapeHtml(_inputTranslateButtonStatus)}</b></div>\n            <label class="rt-ckw"><input type="checkbox" id="rt-show-input-translate-btn"${showInputTranslateButton ? " checked" : ""}> 채팅 입력창 인풋 번역 빠른 토글 표시</label>\n            <div style="font-size:10.5px;color:var(--rt-text2);margin-top:3px;margin-bottom:8px;opacity:0.7">인풋 자동 번역이 활성화된 동안 입력창 왼쪽에 ON/OFF 버튼을 표시합니다</div>\n            <label class="rt-ckw"><input type="checkbox" id="rt-show-clear-btn"${showClearBtn ? " checked" : ""}> 텍스트 지우기 버튼 표시</label>\n            <div style="font-size:10.5px;color:var(--rt-text2);margin-top:3px;opacity:0.7">메인 탭 텍스트 입력창 우측 상단에 지우기 버튼을 표시합니다</div>\n        </div>\n    </div>\n\n    \x3c!-- Theme --\x3e\n    <div class="rt-sec">\n        <div class="rt-sec-title">🎨 테마</div>\n        <div class="rt-row">\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-theme-open">🎨 테마 설정 열기</button>\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-theme-toggle">${currentThemeMode === "dark" ? "☀️ 라이트" : "🌙 다크"}</button>\n        </div>\n    </div>\n\n    \x3c!-- Backup/Restore --\x3e\n    <div class="rt-sec">\n        <div class="rt-sec-title">💾 백업/복원</div>\n        <div class="rt-row">\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-export">📤 내보내기</button>\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-export-masked">📤 내보내기 (키 마스킹)</button>\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-import">📥 가져오기</button>\n        </div>\n        <div id="rt-backup-status" class="rt-status" style="display:none;margin-top:6px"></div>\n    </div>\n\n    <div style="text-align:center;margin-top:8px;font-size:11px;color:var(--rt-text2)">\n        RisuTrans v3.4.0 | API 3.0\n    </div>\n    `;
+        )}\n            </select>\n            <div id="rt-target-lang-custom-wrap" style="margin-top:6px;${currentTargetLang === "custom" ? "" : "display:none"}">\n                <input class="rt-inp" id="rt-target-lang-custom" value="${escapeHtml(customTargetLang)}" placeholder="언어 이름 입력 (예: Spanish, French, Vietnamese...)">\n            </div>\n            <div id="rt-dict-lang-display" style="margin-top:4px;font-size:10.5px;color:var(--rt-text2)">현재 검색 대상 언어: <b>${escapeHtml(getTargetLanguage())}</b></div>\n            <div style="display:flex;align-items:center;gap:6px;margin-top:8px">\n                <input type="checkbox" id="rt-dict-bardwiki-chk" ${dictBardWikiEnabled ? "checked" : ""}>\n                <label for="rt-dict-bardwiki-chk" style="font-size:11.5px;color:var(--rt-text2);cursor:pointer">BardWiki 문서를 사전 근거로 사용</label>\n            </div>\n            <div style="font-size:10.5px;color:var(--rt-text2);margin-top:4px;line-height:1.5;opacity:0.7">\n                현재 챗의 BardWiki에서 검색어와 제목·별칭·본문이 일치하는 문서를 찾아 정본 근거로 프롬프트에 넣습니다. 일치 문서가 없으면 일반 사전 정의로 답합니다. BardWiki API가 없는 환경에서는 자동으로 건너뜁니다.\n            </div>\n        </div>\n    </div>\n    \x3c!-- ⚙ 기타 섹션 --\x3e\n    <div class="rt-sec" id="rt-sec-misc">\n        <div class="rt-sec-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" id="rt-sec-misc-header">\n            ⚙ 기타\n            <span style="font-size:11px;color:var(--rt-text2);opacity:0.5;font-weight:normal" id="rt-sec-misc-arrow">▶</span>\n        </div>\n        <div id="rt-sec-misc-body" style="display:none">\n            <div class="rt-label" style="font-weight:bold;margin-bottom:4px">청크 설정</div>\n            <label class="rt-ckw"><input type="checkbox" id="rt-chunk-mode"${chunkModeEnabled ? " checked" : ""}> 긴 텍스트 자동 분할</label>\n            <div class="rt-row" style="margin-top:6px">\n                <div class="rt-label" style="margin-bottom:0">청크 크기 (자)</div>\n                <input class="rt-inp" type="number" id="rt-chunk-size" value="${chunkSize}" style="width:100px" min="500" max="30000">\n            </div>\n            <div class="rt-divider" style="margin:12px 0"></div>\n            <div class="rt-label" style="font-weight:bold;margin-bottom:4px">접근성</div>\n            <div style="font-size:10.5px;color:var(--rt-text2);margin-bottom:4px;opacity:0.8">실행 버전: <b>v3.4.1</b> · 입력 버튼 방식: mainDom 호환 모드</div>\n            <div style="font-size:10.5px;color:var(--rt-text2);margin-bottom:7px;opacity:0.8">진단 상태: <b>${escapeHtml(_inputTranslateButtonStatus)}</b></div>\n            <label class="rt-ckw"><input type="checkbox" id="rt-show-input-translate-btn"${showInputTranslateButton ? " checked" : ""}> 채팅 입력창 인풋 번역 빠른 토글 표시</label>\n            <div style="font-size:10.5px;color:var(--rt-text2);margin-top:3px;margin-bottom:8px;opacity:0.7">인풋 자동 번역이 활성화된 동안 입력창 왼쪽에 ON/OFF 버튼을 표시합니다</div>\n            <label class="rt-ckw"><input type="checkbox" id="rt-show-clear-btn"${showClearBtn ? " checked" : ""}> 텍스트 지우기 버튼 표시</label>\n            <div style="font-size:10.5px;color:var(--rt-text2);margin-top:3px;opacity:0.7">메인 탭 텍스트 입력창 우측 상단에 지우기 버튼을 표시합니다</div>\n        </div>\n    </div>\n\n    \x3c!-- Theme --\x3e\n    <div class="rt-sec">\n        <div class="rt-sec-title">🎨 테마</div>\n        <div class="rt-row">\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-theme-open">🎨 테마 설정 열기</button>\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-theme-toggle">${currentThemeMode === "dark" ? "☀️ 라이트" : "🌙 다크"}</button>\n        </div>\n    </div>\n\n    \x3c!-- Backup/Restore --\x3e\n    <div class="rt-sec">\n        <div class="rt-sec-title">💾 백업/복원</div>\n        <div class="rt-row">\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-export">📤 내보내기</button>\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-export-masked">📤 내보내기 (키 마스킹)</button>\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-import">📥 가져오기</button>\n        </div>\n        <div id="rt-backup-status" class="rt-status" style="display:none;margin-top:6px"></div>\n    </div>\n\n    <div style="text-align:center;margin-top:8px;font-size:11px;color:var(--rt-text2)">\n        RisuTrans v3.4.1 | API 3.0\n    </div>\n    `;
       bindSettingsEvents();
     }
     function bindSettingsEvents() {
@@ -5042,12 +4932,6 @@ The Translation section must contain the full {{slot::lang}} translation of the 
           inputTlMethod = itMethodSel.value === "improve" ? "improve" : "plain";
           store.setItem(INPUT_TL_METHOD_KEY, inputTlMethod);
         };
-      const itFormatSel = document.getElementById("rt-input-tl-format-setting");
-      if (itFormatSel)
-        itFormatSel.onchange = () => {
-          inputTlFormat = itFormatSel.value === "gigatrans" ? "gigatrans" : "replace";
-          store.setItem(INPUT_TL_FORMAT_KEY, inputTlFormat);
-        };
       const itReviewSel = document.getElementById("rt-input-tl-review-sel");
       if (itReviewSel)
         itReviewSel.onchange = () => {
@@ -5063,12 +4947,6 @@ The Translation section must contain the full {{slot::lang}} translation of the 
           itCtxTurns.value = v;
           inputTlContextTurns = v;
           store.setItem(INPUT_TL_CONTEXT_TURNS_KEY, String(v));
-        };
-      const itCtxMode = document.getElementById("rt-input-tl-context-mode");
-      if (itCtxMode)
-        itCtxMode.onchange = () => {
-          inputTlContextMode = itCtxMode.value === "en" || itCtxMode.value === "ko" ? itCtxMode.value : "pair";
-          store.setItem(INPUT_TL_CONTEXT_MODE_KEY, inputTlContextMode);
         };
       const itImpSave = document.getElementById("rt-btn-improve-prompt-save");
       if (itImpSave)
@@ -5483,7 +5361,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
       if (wasVisible === "true") {
         setTimeout(() => showWindow(), 300);
       }
-      console.log("✅ RisuTrans v3.4.0 initialized (API 3.0)");
+      console.log("✅ RisuTrans v3.4.1 initialized (API 3.0)");
     }
     init();
   } catch (e) {
