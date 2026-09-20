@@ -4,6 +4,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest'
 import { mount, tick, unmount } from 'svelte'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { completeMemoryWikiFork } from 'src/ts/risubard/memoryWikiFork'
 
 const mocks = vi.hoisted(() => ({
     loadNarrativeMemoryWiki: vi.fn(),
@@ -12,6 +13,8 @@ const mocks = vi.hoisted(() => ({
     restoreBardChatUndo: vi.fn(async () => ({ restored: true })),
     replaceWikiText: vi.fn(),
     saveChatToServer: vi.fn(),
+    importWikiPackage: vi.fn(async () => ({ imported: 1 })),
+    alertError: vi.fn(),
     db: {} as {
         risuBardMemoryDialogSize?: {
             width: number
@@ -23,6 +26,7 @@ const mocks = vi.hoisted(() => ({
         risuBardRecentMessageCount?: number
         risuBardResponseMessageCount?: number
         risuBardResponseIncludeUserMessages?: boolean
+        risuBardHideOocTurns?: boolean
         characters?: Array<{
             chaId: string
             reloadKeys?: number
@@ -48,6 +52,11 @@ vi.mock('src/ts/globalApi.svelte', () => ({
         createAuth: vi.fn(async () => 'auth-token'),
     },
     saveAsset: vi.fn(async () => ''),
+}))
+vi.mock('src/ts/alert', () => ({ alertError: mocks.alertError, alertConfirm: vi.fn(async () => true), alertNormal: vi.fn() }))
+vi.mock('src/ts/risubard/wikiTransfer', async (importOriginal) => ({
+    ...await importOriginal<typeof import('src/ts/risubard/wikiTransfer')>(),
+    importWikiPackage: mocks.importWikiPackage,
 }))
 vi.mock('src/ts/process/request/request', () => ({
     requestChatData: vi.fn(),
@@ -111,6 +120,7 @@ vi.mock('src/ts/stores.svelte', () => ({
 }))
 
 import RisuBardMemoryWiki from './RisuBardMemoryWiki.svelte'
+import RisuBardChatFindReplaceDialog from '../ChatScreens/RisuBardChatFindReplaceDialog.svelte'
 import RisuBardMemoryWikiHelp from './RisuBardMemoryWikiHelp.svelte'
 
 let mounted: ReturnType<typeof mount> | undefined
@@ -127,10 +137,153 @@ afterEach(async () => {
     delete mocks.db.risuBardRecentMessageCount
     delete mocks.db.risuBardResponseMessageCount
     delete mocks.db.risuBardResponseIncludeUserMessages
+    delete mocks.db.risuBardHideOocTurns
     delete mocks.db.characters
 })
 
 describe('RisuBardMemoryWiki', () => {
+    test('opens a live OOC mirror before the workspace tab, even without a wiki', async () => {
+        const onNavigateOocMessage = vi.fn()
+        mocks.loadNarrativeMemoryWiki.mockRejectedValue(new Error('Wiki unavailable'))
+        mocks.db.characters = [{ chaId: 'c', chats: [{ id: 'chat', message: [
+            { role: 'user', chatId: 'u1', data: 'Story request' },
+            { role: 'char', chatId: 'a1', data: 'Story response' },
+            { role: 'user', chatId: 'u2', data: 'Plan a twist' },
+            { role: 'char', chatId: 'a2', data: '<!-- OOC_turn --> **A secret door**' },
+        ] }] }]
+        mounted = mount(RisuBardMemoryWiki, {
+            target: document.body,
+            props: { open: true, characterId: 'c', chatId: 'chat', onNavigateOocMessage },
+        })
+        await tick()
+        const tabs = [...document.querySelectorAll('[data-memory-view]')]
+        expect(tabs[0]?.getAttribute('data-memory-view')).toBe('ooc')
+        ;(tabs[0] as HTMLButtonElement).click()
+        await tick()
+        const memo = document.querySelector('[data-ooc-notepad]')
+        expect(memo?.textContent).toContain('Plan a twist')
+        await vi.waitFor(() => expect(memo?.querySelector('strong')?.textContent).toBe('A secret door'))
+        expect(memo?.textContent).not.toContain('Story response')
+        expect(memo?.textContent).not.toContain('<!-- OOC_turn -->')
+        const toggle = memo?.querySelector<HTMLInputElement>('[data-ooc-hide]')
+        expect(toggle?.checked).toBe(false)
+        toggle?.click()
+        await tick()
+        expect(mocks.db.risuBardHideOocTurns).toBe(true)
+        memo?.querySelector<HTMLButtonElement>('[data-ooc-message-index="3"] [data-ooc-source]')?.click()
+        expect(mocks.db.risuBardHideOocTurns).toBe(false)
+        expect(onNavigateOocMessage).toHaveBeenCalledWith(3)
+    })
+
+    test('reloads the visible canonical document after a save replaces the same chat workspace', async () => {
+        const current = {
+            id: 'same-document', title: 'Character', type: 'character' as const,
+            status: 'active' as const, contextMode: 'auto' as const, contentHash: 'current-hash',
+            relativePath: 'characters/character.md', aliases: [], tags: [],
+            sourceMessageIds: [], updated: 'now', links: [],
+            content: '# Character\n\nCurrent timeline.',
+        }
+        const saved = { ...current, content: '# Character\n\nSaved timeline.', contentHash: 'saved-hash' }
+        const view = (item: typeof current) => ({
+            mode: 'markdown' as const, wikiPath: 'C:\\wiki', documents: [item],
+            health: { danglingLinks: [], unlinkedDocumentIds: [] },
+        })
+        mocks.loadNarrativeMemoryWiki.mockResolvedValueOnce(view(current)).mockResolvedValue(view(saved))
+        mounted = mount(RisuBardMemoryWiki, {
+            target: document.body,
+            props: { open: true, characterId: 'character', chatId: 'same-chat' },
+        })
+        const content = () => document.querySelector<HTMLTextAreaElement>('[aria-label="Markdown"]')?.value
+        await vi.waitFor(() => expect(content()).toBe(current.content))
+
+        await completeMemoryWikiFork({
+            characterId: 'character', destinationChatId: 'same-chat', forkToken: 'saved-snapshot', action: 'finalize',
+            fetchImpl: vi.fn(async () => new Response(JSON.stringify({ action: 'finalize', completed: true }))),
+            createAuth: async () => 'auth',
+        })
+        await vi.waitFor(() => expect(content()).toBe(saved.content))
+        expect(mocks.loadNarrativeMemoryWiki).toHaveBeenCalledTimes(2)
+        expect(mocks.saveManualWikiDocument).not.toHaveBeenCalled()
+    })
+
+    test('docks outside a constrained theme and cleans up when the chat unmounts', async () => {
+        const workspace = document.createElement('div')
+        workspace.dataset.chatDockWorkspace = ''
+        const theme = document.createElement('div')
+        theme.style.width = '672px'
+        workspace.append(theme)
+        document.body.append(workspace)
+        mocks.loadNarrativeMemoryWiki.mockResolvedValue({
+            documents: [], links: [], chapters: [], events: [],
+        })
+        mounted = mount(RisuBardMemoryWiki, {
+            target: theme,
+            props: { open: true, characterId: 'character-a', chatId: 'chat-a' },
+        })
+        await tick()
+        const dock = workspace.querySelector<HTMLElement>('[data-memory-wiki-dock]')!
+        expect(dock.parentElement).toBe(workspace)
+        expect(theme.querySelector('[data-memory-wiki-dock]')).toBeNull()
+
+        vi.spyOn(workspace, 'getBoundingClientRect').mockReturnValue({
+            left: 100, right: 1300, width: 1200,
+        } as DOMRect)
+        dock.querySelector('[aria-label="BardWiki 폭 조절"]')!.dispatchEvent(
+            new PointerEvent('pointerdown', { bubbles: true }),
+        )
+        window.dispatchEvent(new PointerEvent('pointermove', { clientX: 820 }))
+        window.dispatchEvent(new PointerEvent('pointerup'))
+        await tick()
+        expect(mocks.db.risuBardMemoryDockRatio).toBe(0.4)
+        expect(dock.style.flexBasis).toBe('40%')
+
+        const toggle = dock.querySelector<HTMLButtonElement>('[data-memory-layout-toggle]')!
+        const previousLayout = dock.dataset.memoryLayout
+        toggle.click()
+        await tick()
+        expect(dock.dataset.memoryLayout).not.toBe(previousLayout)
+        expect(dock.parentElement).toBe(workspace)
+
+        dock.querySelector<HTMLButtonElement>('[aria-label="BardWiki 닫기"]')!.click()
+        await tick()
+        expect(dock.dataset.open).toBe('false')
+        await unmount(mounted)
+        mounted = undefined
+        expect(workspace.querySelector('[data-memory-wiki-dock]')).toBeNull()
+        expect(theme.parentElement).toBe(workspace)
+    })
+
+    test('imports a dropped wiki package and rejects oversized files before reading', async () => {
+        mocks.loadNarrativeMemoryWiki.mockResolvedValue({
+            mode: 'markdown', wikiPath: 'wiki', documents: [],
+            health: { danglingLinks: [], unlinkedDocumentIds: [] },
+        })
+        mounted = mount(RisuBardMemoryWiki, {
+            target: document.body, props: { open: true, characterId: 'character', chatId: 'chat' },
+        })
+        await vi.waitFor(() => expect(document.querySelector('[data-wiki-tools]')).not.toBeNull())
+        const pack = { format: 'risubard-wiki', version: 1, documents: [
+            { id: 'character.alice', type: 'character', title: '앨리스', aliases: [], content: '## 앨리스', contextMode: 'auto' },
+        ] }
+        const file = new File([JSON.stringify(pack)], 'wiki.bardwiki.json', { type: 'application/json' })
+        const drop = new Event('drop', { bubbles: true, cancelable: true })
+        Object.defineProperty(drop, 'dataTransfer', { value: { files: [file] } })
+        document.querySelector('[data-memory-wiki-dock]')!.dispatchEvent(drop)
+        await vi.waitFor(() => expect(mocks.importWikiPackage).toHaveBeenCalledWith(expect.objectContaining({
+            characterId: 'character', chatId: 'chat', package: pack,
+        })))
+        await vi.waitFor(() => expect(document.body.textContent).toContain('1개 위키 항목을 들여왔습니다.'))
+        const oversized = new File([], 'large.bardwiki.json')
+        Object.defineProperty(oversized, 'size', { value: 16 * 1024 * 1024 + 1 })
+        const read = vi.spyOn(oversized, 'text')
+        const largeDrop = new Event('drop', { bubbles: true, cancelable: true })
+        Object.defineProperty(largeDrop, 'dataTransfer', { value: { files: [oversized] } })
+        document.querySelector('[data-memory-wiki-dock]')!.dispatchEvent(largeDrop)
+        await vi.waitFor(() => expect(mocks.alertError).toHaveBeenCalledWith('위키 파일은 16MB까지 들여올 수 있습니다.'))
+        expect(read).not.toHaveBeenCalled()
+        expect(mocks.importWikiPackage).toHaveBeenCalledTimes(1)
+    })
+
     test('loads only the new character after a closed dock survives deletion and switching', async () => {
         const onExecuteWikiCommand = vi.fn(async () => ({
             applied: [],
@@ -394,6 +547,7 @@ describe('RisuBardMemoryWiki', () => {
         mocks.loadNarrativeMemoryWiki
             .mockResolvedValueOnce(view(original))
             .mockResolvedValueOnce(view(updated))
+            .mockResolvedValue(view(updated))
         mocks.replaceWikiText.mockResolvedValue({ matches: 2, documents: 1 })
         mocks.saveChatToServer.mockResolvedValue(undefined)
         mocks.db.characters = [{
@@ -406,34 +560,11 @@ describe('RisuBardMemoryWiki', () => {
                 }],
             }],
         }]
-        mounted = mount(RisuBardMemoryWiki, {
+        mounted = mount(RisuBardChatFindReplaceDialog, {
             target: document.body,
             props: { open: true, characterId: 'character', chatId: 'chat' },
         })
-
-        await vi.waitFor(() => expect(document.querySelector(
-            '[data-wiki-open-find-replace]'
-        )).not.toBeNull())
-        const openFindReplace = document.querySelector<HTMLButtonElement>(
-            '[data-wiki-open-find-replace]'
-        )!
-        openFindReplace.click()
-        await vi.waitFor(() => expect(document.querySelector(
-            '[data-find-replace-dialog]'
-        )).not.toBeNull())
-        expect(document.querySelector(
-            '[data-find-replace-dialog] [data-solar-icon="magnifier"]'
-        )).toBeNull()
-        document.querySelector<HTMLElement>('[data-find-replace-dialog]')?.click()
-        expect(document.querySelector('[data-find-replace-dialog]')).not.toBeNull()
-        document.querySelector<HTMLElement>('[data-find-replace-overlay]')?.click()
-        await vi.waitFor(() => expect(document.querySelector(
-            '[data-find-replace-dialog]'
-        )).toBeNull())
-        openFindReplace.click()
-        await vi.waitFor(() => expect(document.querySelector(
-            '[data-find-replace-dialog]'
-        )).not.toBeNull())
+        await vi.waitFor(() => expect(document.querySelector('[data-find-replace-find]')).not.toBeNull())
         const find = document.querySelector<HTMLInputElement>(
             '[data-find-replace-find]'
         )!
@@ -460,6 +591,20 @@ describe('RisuBardMemoryWiki', () => {
             data: '길버트가 왔다.', swipes: ['길버트가 왔다.'],
         })
         expect(mocks.db.characters[0].reloadKeys).toBe(1)
+        expect(document.querySelector<HTMLInputElement>('[data-find-replace-find]')?.value).toBe('길버드')
+        expect(document.querySelector<HTMLInputElement>('[data-find-replace-replacement]')?.value).toBe('길버트')
+        expect(document.querySelector('[data-find-replace]')).toBe(find.closest('[data-find-replace]'))
+        await vi.waitFor(() => expect(document.querySelector('[data-find-replace]')?.textContent).toContain('4곳을 바꿨습니다'))
+        mocks.saveChatToServer.mockRejectedValueOnce(new Error('챗 저장 실패'))
+        find.value = '길버트'
+        find.dispatchEvent(new Event('input', { bubbles: true }))
+        replacement.value = '길버드'
+        replacement.dispatchEvent(new Event('input', { bubbles: true }))
+        await tick()
+        document.querySelector<HTMLButtonElement>('[data-find-replace-run]')!.click()
+        await vi.waitFor(() => expect(document.querySelector('[data-find-replace] [role="alert"]')?.textContent).toContain('챗 저장 실패'))
+        expect(mocks.db.characters[0].chats[0].message[0].data).toBe('길버트가 왔다.')
+        expect(document.querySelector<HTMLInputElement>('[data-find-replace-find]')?.value).toBe('길버트')
     })
 
     test('shows a command-updated document without creating a false local edit', async () => {
@@ -869,15 +1014,19 @@ describe('RisuBardMemoryWiki', () => {
         expect(settings.querySelector('[data-solar-icon="settings"]')).not.toBeNull()
         expect(forceUpdate.querySelector('span')?.textContent?.trim())
             .toBe(forceUpdate.getAttribute('aria-label'))
-        const findReplace = document.body.querySelector<HTMLButtonElement>(
-            '[data-wiki-open-find-replace]'
-        )!
-        expect(findReplace.textContent?.trim()).toBe('찾기/바꾸기')
-        expect(findReplace.previousElementSibling).toBe(forceUpdate)
-        expect(findReplace.querySelector('[data-solar-icon="magnifier"]')).not.toBeNull()
-        expect(document.body.querySelector(
-            '[data-wiki-action-toolbar] [data-wiki-open-find-replace]'
-        )).toBeNull()
+        const wikiTools = document.body.querySelector<HTMLButtonElement>('[data-wiki-tools]')!
+        expect(wikiTools.textContent?.trim()).toBe('위키 도구')
+        expect(wikiTools.previousElementSibling).toBe(forceUpdate)
+        expect(document.body.querySelector('[data-wiki-open-find-replace]')).toBeNull()
+        wikiTools.click()
+        await vi.waitFor(() => expect(document.querySelector('[data-wiki-export]')).not.toBeNull())
+        const toolLabels = [...document.querySelectorAll('[data-slot="dropdown-menu-item"]')].map(item => item.textContent?.trim())
+        expect(document.querySelector('[data-slot="dropdown-menu-item"]')?.hasAttribute('data-risubard-wiki-reboot')).toBe(true)
+        expect(toolLabels.slice(1, 4)).toEqual(['이 위키로 새 챗 시작', '위키 내보내기', '위키 들여오기'])
+        const exportItem = document.querySelector<HTMLElement>('[data-wiki-export]')!
+        exportItem.focus()
+        exportItem.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+        await vi.waitFor(() => expect(document.querySelector('[data-export-document]')).not.toBeNull())
         expect(source).toMatch(/\.dock-views \.force-update-button,\s*\.dock-views \.find-replace-button,\s*\.dock-views \.reboot-button,\s*\.dock-views \.reboot-cancel-button\s*\{[^}]*height:\s*2\.25rem/s)
         expect(source).toMatch(/\.force-update-button img\s*\{[^}]*width:\s*24px[^}]*height:\s*24px/s)
         expect(source).toMatch(/\.dock-views \.force-update-button span,\s*\.dock-views \.find-replace-button span,\s*\.dock-views \.reboot-button span/)

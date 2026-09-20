@@ -14,6 +14,7 @@ import { pluginCodeTranspiler } from "./apiV3/transpiler";
 import { runPluginUpdate } from "./pluginUpdate";
 import { PluginChatOutputListeners, V2_CHAT_OUTPUT_OWNER, createV2ChatOutputApi } from "./pluginChatOutput";
 import type { PluginProviderStructuredOutput } from './providerStructuredOutput';
+import { createPluginFetchLogging } from './pluginFetchLogging';
 
 export const customProviderStore = writable([] as string[])
 export const pluginProviderOwners = new Map<string, string>()
@@ -527,8 +528,7 @@ export const allowedDbKeys = [
 export const getV2PluginAPIs = (pluginName = '') => {
     const chatOutputApi = createV2ChatOutputApi(pluginV2.chatOutput)
     return {
-        risuFetch: globalFetch,
-        nativeFetch: fetchNative,
+        ...createPluginFetchLogging(pluginName, { risuFetch: globalFetch, nativeFetch: fetchNative }),
         getArg: (arg: string) => {
             const db = getDatabase()
             const [name, realArg] = arg.split('::')

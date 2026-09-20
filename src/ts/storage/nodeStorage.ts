@@ -857,6 +857,15 @@ export class NodeStorage{
             },
             body: encoded,
         })
+        if (da.status === 409) {
+            const data = await da.json()
+            throw new ConflictError(
+                data.error,
+                data.currentEtag ?? null,
+                isCanonicalFilesChangedResponse(data),
+                data.code === 'EXTERNAL_EDIT_MODE' || data.externalEditMode === true,
+            )
+        }
         if (da.status < 200 || da.status >= 300) throw new Error(`saveChatContent error: ${da.status}`)
     }
 

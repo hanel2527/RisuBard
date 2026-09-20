@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 
 const LOG_NAMES = ['storage-observation.previous.jsonl', 'storage-observation.jsonl'];
-const ISSUE_KINDS = new Set(['compatibility-persist', 'canonical-sync', 'projection-shadow']);
+const ISSUE_KINDS = new Set(['compatibility-persist', 'compatibility-materialize', 'canonical-sync', 'projection-shadow']);
 
 function percentile(values, ratio) {
     if (!values.length) return null;
@@ -85,10 +85,11 @@ async function generateStorageDiagnosticReport(options = {}) {
     const rows = await readRows(dataRoot);
     const saveRows = rows.filter(row => row.kind === 'compatibility-persist');
     const canonicalRows = rows.filter(row => row.kind === 'canonical-sync');
-    const directRows = canonicalRows.filter(row => row.strategy === 'bot-presets-direct');
+    const directRows = canonicalRows.filter(row => ['bot-presets-direct', 'chat-direct'].includes(row.strategy));
     const shadowRows = rows.filter(row => row.kind === 'projection-shadow');
+    const materializationRows = rows.filter(row => row.kind === 'compatibility-materialize');
     const issues = collectIssues(rows);
-    const observed = saveRows.length + canonicalRows.length + shadowRows.length;
+    const observed = rows.length;
 
     return {
         reportType: 'risubard-storage-diagnostics',
@@ -96,10 +97,17 @@ async function generateStorageDiagnosticReport(options = {}) {
         appVersion: String(options.appVersion || 'unknown').slice(0, 32),
         status: observed === 0 ? 'no-observations' : issues.length ? 'issues-detected' : 'no-issues-observed',
         saves: {
+            deferred: saveRows.filter(row => row.outcome === 'success' && row.projectionDeferred === true).length,
             attempts: saveRows.length,
             successes: saveRows.filter(row => row.outcome === 'success').length,
             failures: saveRows.filter(row => row.outcome === 'failure').length,
             durationMs: durationSummary(durations(rows, 'compatibility-persist')),
+        },
+        materialization: {
+            attempts: materializationRows.length,
+            successes: materializationRows.filter(row => row.outcome === 'success').length,
+            failures: materializationRows.filter(row => row.outcome === 'failure').length,
+            durationMs: durationSummary(durations(rows, 'compatibility-materialize')),
         },
         canonicalProjection: {
             attempts: canonicalRows.length,

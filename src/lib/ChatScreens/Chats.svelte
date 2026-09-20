@@ -7,6 +7,7 @@
     import { get } from 'svelte/store';
     import { scrollWithinContainer } from './scrollWithin';
     import { buildChatTurnNavigation } from 'src/ts/chatTurnNavigation';
+    import { oocTurnIndices } from 'src/ts/risubard/oocTurns';
     
     const getCurrentChatRoomId = () => {
         const charId = get(selectedCharID);
@@ -49,6 +50,9 @@
     } = $props();
 
     let chatBody: HTMLDivElement;
+    let hiddenOocIndices = $derived(oocTurnIndices(messages, DBState.db.risuBardHideOocTurns === true, true));
+    let pageOnlyHasOoc = $derived(pageEnd > pageStart
+        && messages.slice(pageStart, pageEnd).every((_, index) => hiddenOocIndices.has(pageStart + index)));
     let hashes: Set<number> = new Set();
     type ChatInstance = {
         updateStreamingDisplay?: (state: {
@@ -113,6 +117,7 @@
 
         for(let i=loadStart ; i >= loadEnd; i--){
             if(i < 0) break; // Prevent out of bounds
+            if(hiddenOocIndices.has(i)) continue;
             const message = messages[i];
             const messageLargePortrait = message.role === 'user' ? (userIconPortrait ?? false) : ((currentCharacter as character).largePortrait ?? false);
             const reloadPointer = reloadPointerMap[i] ?? 0;
@@ -266,3 +271,6 @@
 </script>
 
 <div class="flex flex-col-reverse" bind:this={chatBody}></div>
+{#if pageOnlyHasOoc}
+    <p class="p-4 text-center text-textcolor2" data-ooc-page-hidden>이 페이지의 OOC 턴을 숨겼습니다. 바드위키의 OOC 메모장에서 확인하거나 숨김 옵션을 꺼 주세요.</p>
+{/if}

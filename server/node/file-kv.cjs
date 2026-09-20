@@ -5,7 +5,7 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const os = require('os');
 const path = require('path');
-const { atomicWriteJson, readVerifiedJson, recoverTransactions } = require('./file-store.cjs');
+const { atomicWriteFile, atomicWriteJson, readVerifiedJson, recoverTransactions } = require('./file-store.cjs');
 
 const MANIFEST_PATH = 'kv/manifest.json';
 const HEX_MIGRATION_MARKER = 'migration/legacy-hex-save-folder.json';
@@ -145,9 +145,13 @@ function createFileKv(options = {}) {
 
     function saveManifest() {
         manifest.updatedAt = Date.now();
-        atomicWriteJson(dataRoot, MANIFEST_PATH, manifest, {
-            validate: value => value?.schemaVersion === 1 && typeof value?.entries === 'object',
-        });
+        // This internally constructed manifest was validated on load. JSON.stringify
+        // already guarantees JSON syntax; reparsing a large asset index here only
+        // duplicates allocation. Keep the same bytes and atomic/checksum/fsync path.
+        if (manifest.schemaVersion !== 1 || !manifest.entries || typeof manifest.entries !== 'object') {
+            throw new Error('Unsupported or corrupt file KV manifest');
+        }
+        atomicWriteFile(dataRoot, MANIFEST_PATH, Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8'));
     }
 
     function kvGet(key) {

@@ -18,7 +18,13 @@
     import ShButton from 'src/lib/UI/GUI/ShButton.svelte'
     import ShDialog from 'src/lib/UI/GUI/ShDialog.svelte'
     import { language } from 'src/lang'
-    import { forageStorage } from 'src/ts/globalApi.svelte'
+    import { forageStorage, downloadFile } from 'src/ts/globalApi.svelte'
+    import ShDropdownMenu from 'src/lib/UI/GUI/ShDropdownMenu.svelte'
+    import ShDropdownMenuTrigger from 'src/lib/UI/GUI/ShDropdownMenuTrigger.svelte'
+    import ShDropdownMenuContent from 'src/lib/UI/GUI/ShDropdownMenuContent.svelte'
+    import ShDropdownMenuItem from 'src/lib/UI/GUI/ShDropdownMenuItem.svelte'
+    import RisuBardWikiExportDialog from './RisuBardWikiExportDialog.svelte'
+    import { createWikiPackage, serializeWikiPackage, parseWikiPackage, importWikiPackage, startChatWithWiki, WIKI_PACKAGE_MAX_BYTES } from 'src/ts/risubard/wikiTransfer'
     import {
         normalizeMemoryWikiDockRatio,
         normalizeMemoryWikiWorkspaceHeight,
@@ -34,11 +40,6 @@
         type RisuBardMemoryUpdatedDetail,
     } from 'src/ts/risubard/memoryEvents'
     import { DBState } from 'src/ts/stores.svelte'
-    import { saveChatToServer } from 'src/ts/storage/chatStorage'
-    import {
-        applyChatFindReplace,
-        replaceWikiText,
-    } from 'src/ts/risubard/findReplace'
     import RisuBardNarrativeGraph from './RisuBardNarrativeGraph.svelte'
     import RisuBardWriterWorkbench from './RisuBardWriterWorkbench.svelte'
     import RisuBardWikiEditor from './RisuBardWikiEditor.svelte'
@@ -46,9 +47,10 @@
     import RisuBardStorySoFar from './RisuBardStorySoFar.svelte'
     import RisuBardStoryArcPlot from './RisuBardStoryArcPlot.svelte'
     import RisuBardWikiCommandTerminal from './RisuBardWikiCommandTerminal.svelte'
-    import RisuBardFindReplace from './RisuBardFindReplace.svelte'
     import RisuBardMemoryWikiHelp from './RisuBardMemoryWikiHelp.svelte'
     import RisuBardCurrentChatSettings from './RisuBardCurrentChatSettings.svelte'
+    import RisuBardOocNotepad from './RisuBardOocNotepad.svelte'
+    import SolarChatRoundQuestionMarkBold from 'src/lib/UI/Icons/SolarChatRoundQuestionMarkBold.svelte'
     import ManagerResizeHandles from 'src/lib/UI/GUI/ManagerResizeHandles.svelte'
     import SolarBoldIcon from 'src/lib/UI/Icons/SolarBoldIcon.svelte'
     import forceUpdateIdle from 'src/assets/risubard-memory/additional-analysis-idle.png'
@@ -68,6 +70,8 @@
         resolveRisuBardChatSettings,
     } from 'src/ts/risubard/risuBardSettings'
     import { normalizeArcPlotterRuntimeSettings } from 'src/ts/risubard/arcPlotterSettings'
+    import { isWikiGenerating, beginWikiGeneration, endWikiGeneration } from 'src/ts/risubard/wikiGenerationState'
+    import { isAnyGenerating } from 'src/ts/process/generationState'
 
     interface Props {
         open?: boolean
@@ -87,6 +91,7 @@
             contextSelection: DirectWikiContextSelection
         ) => Promise<DirectWikiCommandResult>
         onNavigateStorySource?: (source: StorySourceRef) => void
+        onNavigateOocMessage?: (index: number) => void
     }
 
     type MemoryWikiLayout = 'desktop' | 'mobile'
@@ -103,9 +108,56 @@
         onCancelWikiReboot,
         onExecuteWikiCommand,
         onNavigateStorySource,
+        onNavigateOocMessage,
     }: Props = $props()
     let wiki = $state<NarrativeMemoryWiki | null>(null)
     let loading = $state(false)
+    let transferBusy = $state(false)
+    let exportOpen = $state(false)
+    let exportScope = ''
+    let importInput: HTMLInputElement
+    let importScope: { characterId: string; chatId: string } | undefined
+    let transferStatus = $state('')
+
+    async function startWithWiki() {
+        if (transferBlocked) return
+        const scope = { characterId, chatId }
+        transferBusy = true
+        try { await startChatWithWiki(scope) }
+        catch (cause) { alertError(cause) }
+        finally { transferBusy = false }
+    }
+
+    async function exportWiki(selectedIds: string[]) {
+        if (transferBlocked || exportScope !== `${characterId}\u0000${chatId}`) throw new Error('위키가 변경되었습니다. 내보내기 창을 다시 열어 주세요.')
+        await downloadFile('wiki.bardwiki.json', serializeWikiPackage(createWikiPackage(markdownDocuments, selectedIds)))
+        exportOpen = false
+    }
+
+    async function importFile(file: File | undefined, scope = { characterId, chatId }) {
+        if (!file || transferBlocked) return
+        if (file.size > WIKI_PACKAGE_MAX_BYTES) { alertError('위키 파일은 16MB까지 들여올 수 있습니다.'); return }
+        if (scope.characterId !== characterId || scope.chatId !== chatId) { alertError('채팅이 변경되었습니다. 파일을 다시 선택해 주세요.'); return }
+        transferBusy = true
+        transferStatus = ''
+        const operationId = `wiki-import:${crypto.randomUUID()}`
+        let locked = false
+        try {
+            const pack = parseWikiPackage(await file.text())
+            if (scope.characterId !== characterId || scope.chatId !== chatId || $isWikiGenerating || $isAnyGenerating || forceUpdating || rebootJob || currentChat?.isStreaming) throw new Error('채팅이나 진행 중인 작업이 변경되었습니다. 파일을 다시 선택해 주세요.')
+            beginWikiGeneration(operationId)
+            locked = true
+            const result = await importWikiPackage({ ...scope, package: pack, fetchImpl: fetch, createAuth: () => forageStorage.createAuth() })
+            if (scope.characterId === characterId && scope.chatId === chatId) {
+                transferStatus = `${result.imported}개 위키 항목을 들여왔습니다.`
+                await loadWiki()
+            }
+        } catch (cause) { alertError(cause) }
+        finally {
+            if (locked) endWikiGeneration(operationId)
+            transferBusy = false
+        }
+    }
     let error = $state('')
     let forceUpdating = $state(false)
     let forceUpdateStatus = $state<'success' | 'empty' | 'failed' | ''>('')
@@ -118,8 +170,7 @@
     let loadedScope = ''
     let dockElement = $state<HTMLElement | null>(null)
     let workspaceSplitElement = $state<HTMLElement | null>(null)
-    let activeView = $state<'workspace' | 'story' | 'arc-plot' | 'log'>('workspace')
-    let findReplaceOpen = $state(false)
+    let activeView = $state<'ooc' | 'workspace' | 'story' | 'arc-plot' | 'log'>('workspace')
     let settingsOpen = $state(false)
     let settingsPopoverElement = $state<HTMLElement | null>(null)
     let layoutMode = $state<MemoryWikiLayout>('desktop')
@@ -169,6 +220,7 @@
         DBState.db,
         currentChat?.risuBardSettings
     ))
+    let transferBlocked = $derived(loading || forceUpdating || transferBusy || $isWikiGenerating || $isAnyGenerating || !!rebootJob || !!currentChat?.isStreaming || wiki?.mode !== 'markdown')
     let arcPlotterSettings = $derived(normalizeArcPlotterRuntimeSettings({
         enabled: DBState.db.risuBardArcPlotterEnabled,
         checkpointSize: DBState.db.risuBardArcPlotterCheckpointSize,
@@ -313,6 +365,8 @@
         if (!refreshingCurrentScope) {
             wiki = null
             selectedMarkdownId = ''
+            transferStatus = ''
+            exportOpen = false
         }
         loading = true
         error = ''
@@ -359,7 +413,7 @@
     }
 
     async function forceWikiUpdate() {
-        if (forceUpdating || rebootJob) return
+        if (transferBlocked) return
         const targetTurn = currentChat?.message.filter((message) =>
             message.role === 'char'
             && !message.isComment
@@ -470,84 +524,13 @@
         })
     }
 
-    async function replaceText(input: {
-        find: string
-        replacement: string
-        wiki: boolean
-        chat: boolean
-    }) {
-        let wikiResult = { matches: 0, documents: 0 }
-        let chatResult = { matches: 0, messages: 0 }
-        const chatTarget = (() => {
-            if (!input.chat) return null
-            const character = DBState.db.characters?.find((item) =>
-                item.chaId === characterId
-            )
-            const chatIndex = character?.chats.findIndex((item) =>
-                item.id === chatId
-            ) ?? -1
-            const currentChat = chatIndex >= 0
-                ? character?.chats[chatIndex]
-                : undefined
-            if (!character || !currentChat) {
-                throw new Error('현재 챗 내역을 찾을 수 없습니다.')
-            }
-            if (currentChat.isStreaming) {
-                throw new Error('답변 생성이 끝난 뒤 챗 내역을 바꿔 주세요.')
-            }
-            return { character, chatIndex, currentChat }
-        })()
-        if (input.wiki) {
-            wikiResult = await replaceWikiText({
-                characterId,
-                chatId: wikiChatId,
-                find: input.find,
-                replacement: input.replacement,
-                fetchImpl: fetch,
-                createAuth: () => forageStorage.createAuth(),
-            })
-            await loadWiki()
-        }
-        if (chatTarget) {
-            const { character, chatIndex, currentChat } = chatTarget
-            const originals = currentChat.message.map((message) => ({
-                data: message.data,
-                saying: message.saying,
-                name: message.name,
-                swipes: message.swipes ? [...message.swipes] : undefined,
-            }))
-            chatResult = applyChatFindReplace(
-                currentChat.message,
-                input.find,
-                input.replacement
-            )
-            if (chatResult.matches > 0) {
-                try {
-                    await saveChatToServer(
-                        characterId,
-                        chatIndex,
-                        chatId,
-                        currentChat
-                    )
-                    character.reloadKeys = (character.reloadKeys ?? 0) + 1
-                }
-                catch (cause) {
-                    currentChat.message.forEach((message, index) => {
-                        message.data = originals[index].data
-                        message.saying = originals[index].saying
-                        message.name = originals[index].name
-                        message.swipes = originals[index].swipes
-                    })
-                    throw cause
-                }
-            }
-        }
-        return {
-            wikiMatches: wikiResult.matches,
-            wikiDocuments: wikiResult.documents,
-            chatMatches: chatResult.matches,
-            chatMessages: chatResult.messages,
-        }
+
+    // Keep chat callbacks/state in their owner, but dock outside theme width limits.
+    function dockOutsideTheme(node: HTMLElement) {
+        const workspace = node.closest<HTMLElement>('[data-chat-dock-workspace]')
+        if (!workspace) return
+        workspace.appendChild(node)
+        return { destroy: () => node.remove() }
     }
 
     function setDockRatio(value: number) {
@@ -660,6 +643,7 @@
 </script>
 
 <aside
+    use:dockOutsideTheme
     class="memory-wiki-dock"
     class:closed={!open}
     class:editor-focus={editorFocus}
@@ -675,6 +659,8 @@
     aria-label={language.risuBardMemoryWiki}
     aria-hidden={!open}
     inert={!open}
+    ondragover={(event) => { if (event.dataTransfer?.types.includes('Files')) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = transferBlocked ? 'none' : 'copy' } }}
+    ondrop={(event) => { if (!event.dataTransfer?.files.length) return; event.preventDefault(); event.stopPropagation(); if (event.dataTransfer.files.length !== 1) { alertError('위키 파일을 하나씩 들여와 주세요.'); return }; void importFile(event.dataTransfer.files[0]) }}
 >
     <button
         type="button"
@@ -730,7 +716,7 @@
                     aria-label={language.risuBardMemoryForceUpdate}
                     aria-busy={forceUpdating}
                     onclick={forceWikiUpdate}
-                    disabled={forceUpdating || Boolean(rebootJob)
+                    disabled={transferBlocked
                         || !onForceWikiUpdate}
                 >
                     <img class="force-update-idle" src={forceUpdateIdle} alt="" />
@@ -739,47 +725,38 @@
                         ? language.risuBardMemoryForceUpdating
                         : language.risuBardMemoryForceUpdate}</span>
                 </button>
-                <button
-                    type="button"
-                    class="find-replace-button"
-                    data-wiki-open-find-replace
-                    title="찾기/바꾸기"
-                    aria-label="찾기/바꾸기"
-                    onclick={() => findReplaceOpen = true}
-                    disabled={Boolean(rebootJob)}
-                >
-                    <SolarBoldIcon name="magnifier" size={16} />
-                    <span>찾기/바꾸기</span>
-                </button>
-                <button
-                    type="button"
-                    class="reboot-button"
-                    class:active={Boolean(rebootJob)}
-                    data-risubard-wiki-reboot
-                    title={rebootJob
-                        ? `${rebootButtonLabel} · ${rebootJob.completedAssistantMessageIds.length}/${rebootJob.targetAssistantMessageIds.length}`
-                        : language.risuBardWikiRebootDescription}
-                    aria-busy={rebootActionBusy
-                        || rebootJob?.status === 'running'
-                        || rebootJob?.status === 'finalizing'}
-                    onclick={handleRebootAction}
-                    disabled={rebootActionBusy
-                        || rebootJob?.status === 'stop-requested'
-                        || rebootJob?.status === 'finalizing'
-                        || (!rebootJob && !onStartWikiReboot)}
-                ><span>{rebootButtonLabel}</span></button>
-                {#if rebootJob && (rebootJob.status === 'paused'
-                    || rebootJob.status === 'failed')}
-                    <button
-                        type="button"
-                        class="reboot-cancel-button"
-                        title={language.risuBardWikiRebootCancelDescription}
-                        onclick={cancelReboot}
-                        disabled={rebootActionBusy}
-                    ><span>{language.risuBardWikiRebootCancel}</span></button>
-                {/if}
+                <ShDropdownMenu>
+                    <ShDropdownMenuTrigger>
+                        {#snippet child({ props })}
+                            <button {...props} type="button" class="wiki-tools-button" data-wiki-tools aria-label="위키 도구">
+                                <span>위키 도구</span><ChevronDownIcon size={14} />
+                            </button>
+                        {/snippet}
+                    </ShDropdownMenuTrigger>
+                    <ShDropdownMenuContent side="bottom" align="start">
+                        <ShDropdownMenuItem data-risubard-wiki-reboot onclick={handleRebootAction}
+                            disabled={rebootActionBusy || transferBusy || forceUpdating || loading || (!rebootJob && ($isWikiGenerating || $isAnyGenerating || !!currentChat?.isStreaming)) || rebootJob?.status === 'stop-requested' || rebootJob?.status === 'finalizing' || (!rebootJob && !onStartWikiReboot)}>
+                            {rebootButtonLabel}
+                        </ShDropdownMenuItem>
+                        <ShDropdownMenuItem data-wiki-new-chat disabled={transferBlocked} onclick={startWithWiki}>이 위키로 새 챗 시작</ShDropdownMenuItem>
+                        <ShDropdownMenuItem data-wiki-export disabled={transferBlocked} onclick={() => { exportScope = `${characterId}\u0000${chatId}`; exportOpen = true }}>위키 내보내기</ShDropdownMenuItem>
+                        <ShDropdownMenuItem data-wiki-import disabled={transferBlocked} onclick={() => { importScope = { characterId, chatId }; importInput?.click() }}>위키 들여오기</ShDropdownMenuItem>
+                        {#if rebootJob && (rebootJob.status === 'paused' || rebootJob.status === 'failed')}
+                            <ShDropdownMenuItem onclick={cancelReboot} disabled={rebootActionBusy}>{language.risuBardWikiRebootCancel}</ShDropdownMenuItem>
+                        {/if}
+                    </ShDropdownMenuContent>
+                </ShDropdownMenu>
             {/if}
             <div class="dock-view-actions">
+                <button
+                    type="button"
+                    class:active={activeView === 'ooc'}
+                    data-memory-view="ooc"
+                    title="OOC 메모장"
+                    aria-label="OOC 메모장"
+                    aria-pressed={activeView === 'ooc'}
+                    onclick={() => activeView = 'ooc'}
+                ><SolarChatRoundQuestionMarkBold size={22} /><span>OOC 메모장</span></button>
                 <button
                     type="button"
                     class:active={activeView === 'workspace'}
@@ -883,6 +860,7 @@
         {/if}
     </header>
 
+    {#if transferStatus}<div class="force-update-status" role="status">{transferStatus}</div>{/if}
     <div class="memory-ledger min-h-0">
         {#if wiki && wiki.mode !== 'markdown'}
             <div class="ledger-toolbar">
@@ -975,7 +953,16 @@
             </div>
         {/if}
 
-        {#if loading && !wiki}
+        {#if activeView === 'ooc'}
+            {#key `${characterId}:${chatId}`}
+                <RisuBardOocNotepad
+                    messages={activityMessages}
+                    hideOoc={DBState.db.risuBardHideOocTurns === true}
+                    onHideChange={(value) => DBState.db.risuBardHideOocTurns = value}
+                    onNavigate={onNavigateOocMessage}
+                />
+            {/key}
+        {:else if loading && !wiki}
             <div class="ledger-state">
                 <LoaderCircleIcon size={24} class="animate-spin" />
                 <span>{language.loading}</span>
@@ -1163,31 +1150,11 @@
             </div>
         {/if}
     </div>
-    {#if findReplaceOpen && wiki?.mode === 'markdown'}
-        <div
-            class="risu-modal-overlay find-replace-overlay"
-            data-find-replace-overlay
-            role="presentation"
-            onclick={(event) => {
-                if (event.target === event.currentTarget) findReplaceOpen = false
-            }}
-        >
-            <div
-                class="risu-modal-surface find-replace-dialog"
-                data-find-replace-dialog
-                role="dialog"
-                aria-modal="true"
-                aria-label="찾기/바꾸기"
-            >
-                <RisuBardFindReplace
-                    documents={wiki.documents}
-                    messages={activityMessages}
-                    onReplace={replaceText}
-                />
-            </div>
-        </div>
-    {/if}
 </aside>
+<input bind:this={importInput} type="file" accept=".bardwiki.json,application/json" hidden onchange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; void importFile(file, importScope) }} />
+{#if exportOpen}
+    <RisuBardWikiExportDialog bind:open={exportOpen} documents={markdownDocuments} onExport={exportWiki} disabled={transferBlocked} />
+{/if}
 
 {#if rebootChooserOpen}
     <ShDialog
@@ -1266,6 +1233,8 @@
 <RisuBardMemoryWikiHelp bind:open={helpOpen} />
 
 <style>
+    .dock-views .wiki-tools-button { width: auto; min-width: max-content; gap: .35rem; padding-inline: .65rem; }
+    .dock-views .wiki-tools-button span { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
     .memory-wiki-dock {
         position: relative;
         z-index: 30;

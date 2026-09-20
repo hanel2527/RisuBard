@@ -428,12 +428,14 @@ describe('upgradeLegacyLorebook', () => {
                 targetIds: ['entry'],
                 estimatedInputTokens: 40,
                 status: 'running',
+                diagnostic: { reason: 'outputLimit', details: '{"finishReason":"MAX_TOKENS"}' },
             }],
         }
 
         const normalized = normalizeBardLoreState(state)
 
         expect(normalized?.analysisRun?.status).toBe('paused')
+        expect(normalized?.analysisRun?.batches[0].diagnostic).toEqual(state.analysisRun.batches[0].diagnostic)
         expect(normalized?.analysisRun?.languageSnapshot).toBeUndefined()
         expect(normalized?.analysisRun?.instructionPresetSnapshot?.content).toBe('Stable instruction snapshot.')
         expect(normalized?.analysisRun?.batches[0].status).toBe('pending')

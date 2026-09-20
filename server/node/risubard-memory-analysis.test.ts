@@ -1021,7 +1021,8 @@ describe('memory analysis runner', () => {
         expect(systems[0]).toContain('항목마다 짧은 명사형으로 끝낸다.')
         expect(systems[1]).toContain('항목마다 짧은 명사형으로 끝낸다.')
         expect(systems[0]).toContain('경험치 변화를 반드시 분석 후보에 포함한다.')
-        expect(systems[0]).not.toContain('정본의 RPG 능력치 표 형식을 유지한다.')
+        // The first request can now produce canonical patches as well as the event.
+        expect(systems[0]).toContain('정본의 RPG 능력치 표 형식을 유지한다.')
         expect(systems[1]).toContain('정본의 RPG 능력치 표 형식을 유지한다.')
         expect(systems[1]).not.toContain('경험치 변화를 반드시 분석 후보에 포함한다.')
         expect(systems[1].lastIndexOf('Do not return frontmatter')).toBeGreaterThan(

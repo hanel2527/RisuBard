@@ -13,7 +13,9 @@ function writeCanonicalProjection(options = {}) {
         throw new Error('Canonical projection database is required');
     }
 
-    if (directCollection !== 'botPresets') {
+    const chatState = directCollection?.kind === 'chatState';
+    const strategy = chatState ? 'chat-direct' : 'bot-presets-direct';
+    if (!chatState && directCollection !== 'botPresets' && directCollection !== 'botPresetState') {
         return {
             strategy: 'full-sync',
             fallbackUsed: false,
@@ -23,15 +25,21 @@ function writeCanonicalProjection(options = {}) {
 
     try {
         return {
-            strategy: 'bot-presets-direct',
+            strategy,
             fallbackUsed: false,
-            result: repository.syncLegacyCollection('botPresets', database.botPresets),
+            result: chatState ? repository.syncLegacyChatState(database, directCollection)
+                : directCollection === 'botPresetState'
+                ? repository.syncLegacyPresetState(database)
+                : repository.syncLegacyCollection('botPresets', database.botPresets),
         };
     } catch (directError) {
         const fallbackCode = safeErrorCode(directError);
         try {
+            // A failed publish may leave a prepared journal. Finish it before
+            // superseding its files, so restart cannot replay an older snapshot.
+            repository.recoverPendingTransactions?.();
             return {
-                strategy: 'bot-presets-direct',
+                strategy,
                 fallbackUsed: true,
                 fallbackCode,
                 result: repository.importLegacyDatabase(database, { mode: 'sync' }),
@@ -39,7 +47,7 @@ function writeCanonicalProjection(options = {}) {
         } catch (fallbackError) {
             if (fallbackError && typeof fallbackError === 'object') {
                 fallbackError.canonicalWriteMeta = {
-                    strategy: 'bot-presets-direct',
+                    strategy,
                     fallbackUsed: true,
                     fallbackCode,
                 };

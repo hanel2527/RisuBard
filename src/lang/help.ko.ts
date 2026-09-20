@@ -285,6 +285,8 @@ export const helpKo = {
         "risuBardArcPlotterMaxOpenThreads": "아직 해결되지 않은 약속·위험·단서·목표 글머리표 상한입니다. 0이면 이 목록을 비워 둘 수 있습니다.",
         "risuBardArcPlotterMaxCharacters": "예약 플롯 Markdown 전체의 글자 수 상한입니다. 높일수록 더 많은 줄기를 보존하지만 정본 writer 입력과 이후 검색 후보가 커질 수 있습니다.",
         "risuBardResponseExcludeUsers": "켜면 과거 사용자 메시지를 답변 생성용 최근 원문에서 제외합니다. 현재 사용자 요청은 항상 포함합니다.",
+        risuBardIgnoreOocTurns: "기본 켜짐. <!-- OOC_turn --> 마커가 있는 AI 응답과 대응 사용자 입력을 위키 분석, 재분석, 리부트, 과거 원문 검색과 답변용 최근 대화에서 제외합니다. 현재 작성한 새 사용자 요청과 원본 기록은 유지하며 기존 위키는 소급 변경하지 않습니다. 리부트에는 새로 시작할 때 적용하며 진행 중인 리부트의 설정은 유지합니다.",
+        risuBardHideOocTurns: "기본 꺼짐. OOC 응답과 대응 사용자 입력을 본문 챗 목록에서 숨깁니다. 바드위키의 OOC 메모장에서 원본과 연결된 내용을 볼 수 있습니다. 모든 챗에 적용하며 원본 기록, AI 대화 컨텍스트와 위키 분석 설정은 바꾸지 않습니다.",
         "risuBardAnalysisExcludeUsers": "켜면 사용자 메시지를 BardWiki 갱신 분석의 확정 턴과 최근 원문에서 제외하고 AI 응답만 분석합니다.",
         "customBackground": "채팅 배경에 사용할 커스텀 이미지입니다.",
         "playMessageOnTranslateEnd": "번역이 끝났을 때 별도 알림음을 재생합니다. 자동 번역이 켜진 상태에서 본문이 다 번역되었는지 소리로 알 수 있습니다.",

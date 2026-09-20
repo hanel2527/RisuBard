@@ -78,6 +78,24 @@ afterEach(async () => {
 })
 
 describe('RisuBardWikiEditor', () => {
+    it('shows read-only retrieval keywords and story time including day zero', async () => {
+        mounted = mount(RisuBardWikiEditor, {
+            target: document.body,
+            props: {
+                characterId: 'character', chatId: 'chat', documents: [{
+                    ...documents[1],
+                    retrievalMetadata: { keywords: ['춤', '왈츠'], storyTime: { day: 0, precision: 'origin', evidence: '이야기 시작' } },
+                }],
+            },
+        })
+        await tick()
+        document.querySelector<HTMLButtonElement>('.file-select')!.click()
+        await tick()
+        const metadata = document.querySelector('[data-wiki-retrieval-metadata]')!
+        expect(metadata.textContent).toContain('춤, 왈츠')
+        expect(metadata.textContent).toContain('시작 기준 0일')
+        expect(metadata.querySelector('input, textarea')).toBeNull()
+    })
     it('filters the file tree on submit and selects the first matching text in the editor', async () => {
         mounted = mount(RisuBardWikiEditor, {
             target: document.body,
@@ -636,6 +654,24 @@ describe('RisuBardWikiEditor', () => {
             kind: 'chat',
             messageIds: ['assistant-1'],
         })
+    })
+
+    it('does not navigate inherited evidence as a current chat message', async () => {
+        const onNavigateSource = vi.fn()
+        mounted = mount(RisuBardWikiEditor, {
+            target: document.body,
+            props: {
+                characterId: 'character', chatId: 'chat',
+                documents: [{ ...documents[0], sourceMessageIds: ['inherited:old:assistant-1'] }],
+                onNavigateSource,
+            },
+        })
+        await tick()
+        const button = document.querySelector<HTMLButtonElement>('[data-wiki-source]')!
+        expect(button.disabled).toBe(true)
+        expect(button.textContent).toContain('이전 챗 원문 없음')
+        button.click()
+        expect(onNavigateSource).not.toHaveBeenCalled()
     })
 
     it('permanently deletes an active event after explicit confirmation', async () => {

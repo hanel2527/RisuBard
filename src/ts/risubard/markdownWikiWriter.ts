@@ -1,6 +1,7 @@
 import { invokeBrowserFetch } from './browserFetch'
 import { modelOutputRepairInstruction, runValidatedModelRequest, type ModelResponse } from '../../../packages/risubard-core/src/modelResponse'
 import type { WikiWritingLanguage } from './wikiWritingLanguage'
+import { normalizeMemoryRetrievalMetadata, type MemoryRetrievalMetadata } from '../../../server/node/risubard-memory-metadata'
 
 export type CanonicalWikiDocumentType = 'character' | 'location' | 'scene'
     | 'faction' | 'creature' | 'item' | 'concept' | 'other'
@@ -33,6 +34,7 @@ export interface MarkdownWikiWriterModelCall {
 interface WriterModelResponse extends ModelResponse {}
 
 export interface SavedCanonicalWikiDocument {
+    retrievalMetadata?: MemoryRetrievalMetadata
     id: string
     type: CanonicalWikiDocumentType
     status: 'active'
@@ -197,6 +199,7 @@ export async function requestIsolatedMarkdownWikiBatchDrafts(input: {
 }
 
 export async function saveCanonicalWikiDocument(input: {
+    retrievalMetadata?: MemoryRetrievalMetadata
     characterId: string
     chatId: string
     documentId?: string
@@ -235,6 +238,9 @@ export async function saveCanonicalWikiDocument(input: {
         }),
         sourceMessageIds: input.sourceMessageIds,
         markdown: normalizeDraft(input.markdown),
+        ...(input.retrievalMetadata === undefined ? {} : {
+            retrievalMetadata: normalizeMemoryRetrievalMetadata(input.retrievalMetadata),
+        }),
         ...(input.writingLanguage ? { writingLanguage: input.writingLanguage } : {}),
     }
     const response = await invokeBrowserFetch(
@@ -281,6 +287,9 @@ export async function saveCanonicalWikiDocument(input: {
     }
     return {
         ...(value as unknown as Omit<SavedCanonicalWikiDocument, 'aliases'>),
+        ...(value.retrievalMetadata === undefined ? {} : {
+            retrievalMetadata: normalizeMemoryRetrievalMetadata(value.retrievalMetadata),
+        }),
         aliases: value.aliases === undefined ? [] : value.aliases as string[],
     }
 }

@@ -16,6 +16,7 @@
     let { close = () => {}, alertMode = false }: Props = $props()
     let open = $state(true)
     const copy = $derived(language.chatModuleActivation)
+    const presetModuleIds = $derived(new Set((DBState.db.moduleIntergration ?? '').split(',').map((id) => id.trim()).filter(Boolean)))
     const character = $derived(DBState.db.characters[$selectedCharID])
     const persona = $derived((character ? checkPersonaBinded() : null)
         ?? DBState.db.personas?.[DBState.db.selectedPersona ?? 0])
@@ -58,6 +59,7 @@
             {@const module = DBState.db.modules.find((item) => item.id === moduleId)}
             {#if module}
                 {@const globalEnabled = DBState.db.enabledModules?.includes(moduleId) ?? false}
+                {@const presetEnabled = presetModuleIds.has(moduleId) || Boolean(module.namespace && presetModuleIds.has(module.namespace))}
                 {@const characterEnabled = character?.modules?.includes(moduleId) ?? false}
                 {@const personaEnabled = (persona?.id && DBState.db.personaEnabledModules?.[persona.id]?.includes(moduleId)) || persona?.embeddedModule?.id === moduleId}
                 <div class="chat-module-row">
@@ -76,9 +78,9 @@
                     {:else}
                         <div class="chat-module-scopes">
                             <div class="chat-module-scope">
-                                <button type="button" class="chat-module-toggle" class:active={globalEnabled}
-                                    aria-label={module.name + ': ' + copy.global} aria-pressed={globalEnabled}
-                                    title={copy.globalHint} onclick={() => toggleModule(moduleId, 'global')}>
+                                <button type="button" class="chat-module-toggle" class:active={globalEnabled} class:preset-enabled={presetEnabled}
+                                    aria-label={module.name + ': ' + copy.global + (presetEnabled ? '. ' + copy.presetEnabled : '')} aria-pressed={globalEnabled}
+                                    title={presetEnabled ? copy.presetEnabled : copy.globalHint} onclick={() => toggleModule(moduleId, 'global')}>
                                     <GlobeIcon size={19.2}/>
                                 </button>
                             </div>
@@ -108,6 +110,7 @@
     .chat-module-toggle { display: flex; align-items: center; justify-content: center; width: 1.5rem; height: 1.5rem; flex: 0 0 auto; padding: 0; border: 1px solid var(--color-darkborderc); border-radius: .4rem; color: var(--color-textcolor2); background: var(--color-darkbg); cursor: pointer; }
     .chat-module-toggle.active { color: var(--color-accenttext); background: var(--color-primary); border-color: var(--color-primary); }
     .chat-module-toggle:hover { border-color: var(--color-info); }
+    .chat-module-toggle.preset-enabled { color: var(--color-warning); background: var(--color-warning-bg); border-color: var(--color-warning); box-shadow: 0 0 .45rem color-mix(in srgb, var(--color-warning) 45%, transparent); }
     .chat-module-toggle:focus-visible { outline: 2px solid var(--color-info); outline-offset: 2px; }
     .chat-module-toggle:disabled { opacity: .45; cursor: not-allowed; }
 </style>

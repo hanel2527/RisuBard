@@ -109,8 +109,9 @@ describe('chat file save slot connections', () => {
     })
 
     test('can hide and restore the shortcut block from RisuBard common settings', () => {
-        expect(shortcutsSource).toContain('alertConfirm(language.risuBardSaveLoadShortcutHideConfirm)')
-        expect(shortcutsSource).toContain('DBState.db.showRisuBardSaveLoadShortcuts = false')
+        expect(shortcutsSource).not.toContain('DBState.db.showRisuBardSaveLoadShortcuts = false')
+        expect(shortcutsSource).toContain('data-chat-find-replace')
+        expect(shortcutsSource).toContain('onclick={onFindReplace}')
         expect(koreanSource).toContain('세이브/로드 버튼을 끌까요? Bardwiki / 공통 옵션에서 다시 켤 수 있습니다')
         expect(commonSettingsSource).toContain("id: 'risubard.common.showSaveLoadShortcuts'")
         expect(commonSettingsSource).toContain("type: 'check'")

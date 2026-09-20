@@ -30,7 +30,7 @@ const getVips = () => {
 }
 const { kvGet, kvSet, kvSetMany, kvSetManyAsync, kvReplacePrefixesAsync, kvReplacePrefixesFromFilesAsync, kvReplaceAllAsync, kvDel, kvDelMany, kvList,
         kvDelPrefix, kvListWithSizes, kvSize, kvGetUpdatedAt, kvCopyValue,
-        gcChunks, reclaimableChunkBytes, objectStoreBytes, isDbBlobChunked, snapshotFootprint, repository: userDataRepository } = require('./db.cjs');
+        gcChunks, reclaimableChunkBytes, objectStoreBytes, isDbBlobChunked, snapshotFootprint, repository: userDataRepository, compatibilityCache } = require('./db.cjs');
 const {
     addLogBatch, queryLogs, clearLogs, countLogs,
     logger, installProcessHandlers, expressErrorMiddleware,
@@ -47,6 +47,7 @@ const { createChatContentPage } = require('./chat-content-page.cjs');
 const { stageBackupEntries } = require('./backup-entry-stream.cjs');
 const { encodeCanonicalBackupName, decodeCanonicalBackupName } = require('./canonical-backup-name.cjs');
 const { createCanonicalProjectionSync } = require('./canonical-projection-sync.cjs');
+const { createProjectionRevisionStore } = require('./projection-revision-store.cjs');
 const { createDirectWriteTracker } = require('./direct-write-tracker.cjs');
 const { writeCanonicalProjection } = require('./canonical-projection-writer.cjs');
 const { createExternalEditSession } = require('./external-edit-session.cjs');
@@ -109,6 +110,14 @@ function queueStorageOperation(operation) {
 }
 
 const DB_HEX_KEY = Buffer.from('database/database.bin', 'utf-8').toString('hex');
+const { createQueuedSaveDebounce } = require('./queued-save-debounce.cjs');
+const scheduleStoragePersist = createQueuedSaveDebounce({
+    timers: saveTimers, queue: queueStorageOperation, delay: SAVE_INTERVAL,
+    onError: error => {
+        logger.error('[Storage] Queued persist failed:', error);
+        recordPersistFailure(error, 'queued-persist');
+    },
+});
 
 // ─── Persist failure tracking (Stage 1 visibility) ───────────────────────────
 // Debounced persist runs in setTimeout, so failures cannot be returned in the
@@ -245,7 +254,12 @@ function maybeCollectUnreferencedObjects() {
     }
 }
 
-async function flushPendingDb() {
+function flushPendingDb() {
+    return queueStorageOperation(flushPendingDbWithinQueue);
+}
+
+// Call only from an operation that already owns the storage queue.
+async function flushPendingDbWithinQueue() {
     if (adoptExternallyChangedCanonicalProjection()) return;
     if (saveTimers[DB_HEX_KEY]) {
         clearTimeout(saveTimers[DB_HEX_KEY]);
@@ -256,13 +270,15 @@ async function flushPendingDb() {
             });
         } else if (fullChatStore && fullChatStore.size > 0) {
             // No stripped cache but chat store has data — merge and persist directly
-            await persistChatStoreWithoutCache('flush');
+            await persistChatStoreWithoutCache('flush', { directCollection: directWriteTracker.take(DB_HEX_KEY) });
         }
         maybeCollectUnreferencedObjects();
     }
+    compatibilityCache.materialize('flush');
 }
 
 function invalidateDbCache() {
+    compatibilityCache.setVerified(false);
     directWriteTracker.clear(DB_HEX_KEY);
     delete dbCache[DB_HEX_KEY];
     fullChatStore = null;
@@ -725,7 +741,7 @@ function elapsedMs(startedAt) {
     return Math.round((performance.now() - startedAt) * 1000) / 1000;
 }
 
-async function persistChatStoreWithoutCache(trigger) {
+async function persistChatStoreWithoutCache(trigger, observationContext = {}) {
     const raw = kvGet('database/database.bin');
     if (!raw) return;
     const operationId = nodeCrypto.randomUUID();
@@ -755,13 +771,15 @@ async function persistChatStoreWithoutCache(trigger) {
         metrics.kvWriteMs = elapsedMs(phaseStartedAt);
         errorStage = 'canonical-sync';
         phaseStartedAt = performance.now();
-        persistCanonicalProjection(fullDb, { operationId, trigger });
+        persistCanonicalProjection(fullDb, { operationId, trigger, directCollection: observationContext.directCollection });
         metrics.canonicalSyncMs = elapsedMs(phaseStartedAt);
         saveObservation.record({
             kind: 'compatibility-persist', trigger, outcome: 'success', operationId,
             durationMs: elapsedMs(startedAt), overlappingPersists, ...metrics,
         });
     } catch (error) {
+        directWriteTracker.observe(DB_HEX_KEY, []);
+        compatibilityCache.setVerified(false);
         if (data && error && typeof error === 'object') {
             try { error.attemptedSize = data.length; } catch {}
         }
@@ -820,15 +838,22 @@ async function persistDbCacheWithChats(filePath, decodedKey, trigger = 'unknown'
             }
         }
 
-        errorStage = 'encode';
-        phaseStartedAt = performance.now();
-        data = encodeRisuSaveLegacyBuffer(fullDb);
-        metrics.encodeMs = elapsedMs(phaseStartedAt);
-        metrics.databaseBytes = data.length;
-        errorStage = 'kv-write';
-        phaseStartedAt = performance.now();
-        kvSet(decodedKey, data);
-        metrics.kvWriteMs = elapsedMs(phaseStartedAt);
+        const deferCompatibility = decodedKey === 'database/database.bin'
+            && ['chat-debounce', 'patch-debounce'].includes(trigger)
+            && (observationContext.directCollection?.kind === 'chatState'
+                || ['botPresets', 'botPresetState'].includes(observationContext.directCollection))
+            && canonicalProjectionReady && compatibilityCache.canDefer();
+        if (!deferCompatibility) {
+            errorStage = 'encode';
+            phaseStartedAt = performance.now();
+            data = encodeRisuSaveLegacyBuffer(fullDb);
+            metrics.encodeMs = elapsedMs(phaseStartedAt);
+            metrics.databaseBytes = data.length;
+            errorStage = 'kv-write';
+            phaseStartedAt = performance.now();
+            kvSet(decodedKey, data);
+            metrics.kvWriteMs = elapsedMs(phaseStartedAt);
+        }
         if (decodedKey === 'database/database.bin') {
             errorStage = 'canonical-sync';
             phaseStartedAt = performance.now();
@@ -836,8 +861,10 @@ async function persistDbCacheWithChats(filePath, decodedKey, trigger = 'unknown'
                 operationId,
                 trigger,
                 directCollection: observationContext.directCollection,
+                deferCompatibility,
             });
             metrics.canonicalSyncMs = elapsedMs(phaseStartedAt);
+            metrics.projectionDeferred = deferCompatibility;
         }
         // Refresh fullChatStore from the persisted snapshot so subsequent
         // /api/chat-content GETs return the same metadata (folderId, modules)
@@ -856,6 +883,8 @@ async function persistDbCacheWithChats(filePath, decodedKey, trigger = 'unknown'
         });
     } catch (err) {
         // Tag with BLOB size so the visibility layer can surface it to the user.
+        if (decodedKey === 'database/database.bin') compatibilityCache.setVerified(false);
+        if (decodedKey === 'database/database.bin') directWriteTracker.observe(filePath, []);
         // Oversized compatibility blobs are rejected before allocating copies.
         if (data && err && typeof err === 'object') {
             try { err.attemptedSize = data.length; } catch {}
@@ -937,22 +966,26 @@ if(!existsSync(savePath)){
     mkdirSync(savePath)
 }
 const saveObservation = createSaveObservation({ dataRoot: savePath })
+compatibilityCache.setRecorder(row => saveObservation.record(row))
 saveObservation.record({ kind: 'session', trigger: 'server-start', outcome: 'started' })
 const projectionShadow = createProjectionShadow({
     repository: userDataRepository,
     observation: saveObservation,
+    onComparison: match => compatibilityCache.setVerified(match),
+    minIntervalMs: 30000,
+    canSkip: () => compatibilityCache.canDefer(),
     isPersisting: () => activeCompatibilityPersists > 0,
 })
 const CANONICAL_PROJECTION_REVISION_KEY = 'database/canonical-projection-revision'
 const canonicalProjectionSync = createCanonicalProjectionSync({
     repository: userDataRepository,
-    readAcceptedRevision: () => {
-        const value = kvGet(CANONICAL_PROJECTION_REVISION_KEY)
-        return value ? Buffer.from(value).toString('utf8').trim() || null : null
-    },
-    writeAcceptedRevision: revision => {
-        kvSet(CANONICAL_PROJECTION_REVISION_KEY, Buffer.from(`${revision}\n`, 'utf8'))
-    },
+    ...createProjectionRevisionStore({
+        dataRoot: savePath,
+        readLegacyRevision: () => {
+            const value = kvGet(CANONICAL_PROJECTION_REVISION_KEY)
+            return value ? Buffer.from(value).toString('utf8').trim() || null : null
+        },
+    }),
 })
 let externalEditSession
 let canonicalProjectionReady = existsSync(path.join(savePath, 'index', 'sidebar.json'))
@@ -960,10 +993,12 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
     const startedAt = performance.now()
     const operationId = observationContext.operationId || nodeCrypto.randomUUID()
     const trigger = observationContext.trigger || 'unspecified'
-    let strategy = observationContext.directCollection === 'botPresets' ? 'bot-presets-direct' : 'full-sync'
+    let strategy = observationContext.directCollection?.kind === 'chatState' ? 'chat-direct'
+        : ['botPresets', 'botPresetState'].includes(observationContext.directCollection) ? 'bot-presets-direct' : 'full-sync'
     let fallbackUsed = false
     let fallbackCode
     let errorStage = 'external-change-check'
+    const phaseMetrics = {}
     try {
         if (externalEditSession?.isActive()) {
             const error = new Error('Canonical projection is paused for external editing')
@@ -975,7 +1010,18 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
             error.code = 'CANONICAL_FILES_CHANGED'
             throw error
         }
+        phaseMetrics.externalCheckMs = elapsedMs(startedAt)
+        let phaseStartedAt = performance.now()
+        // The durable reference disappears before canonical publication. A
+        // crash at either side is resolved by the existing missing-cache reader
+        // after journal recovery; stale compatibility bytes cannot win.
+        if (observationContext.deferCompatibility) {
+            errorStage = 'compatibility-invalidate'
+            compatibilityCache.invalidate()
+        }
         errorStage = 'transaction'
+        phaseMetrics.compatibilityInvalidateMs = elapsedMs(phaseStartedAt)
+        phaseStartedAt = performance.now()
         const write = writeCanonicalProjection({
             repository: userDataRepository,
             database: databaseObject,
@@ -985,11 +1031,15 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
         strategy = write.strategy
         fallbackUsed = write.fallbackUsed
         fallbackCode = write.fallbackCode
+        phaseMetrics.transactionMs = elapsedMs(phaseStartedAt)
+        phaseStartedAt = performance.now()
+        errorStage = 'revision-accept'
         canonicalProjectionSync.accept()
+        phaseMetrics.revisionAcceptMs = elapsedMs(phaseStartedAt)
         canonicalProjectionReady = true
         saveObservation.record({
             kind: 'canonical-sync', trigger, outcome: 'success', operationId,
-            durationMs: elapsedMs(startedAt), plannedFiles: result.files,
+            durationMs: elapsedMs(startedAt), plannedFiles: result.files, ...phaseMetrics,
             publishedFiles: result.transaction?.published,
             skippedFiles: result.transaction?.skipped,
             stagedBytes: result.transaction?.stagedBytes,
@@ -997,6 +1047,7 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
         })
         projectionShadow.schedule({
             database: databaseObject,
+            allowSampling: strategy !== 'full-sync' && !fallbackUsed,
             trigger,
             plannedFiles: result.files,
         })
@@ -1042,7 +1093,7 @@ function adoptExternallyChangedCanonicalProjection() {
 }
 
 externalEditSession = createExternalEditSession({
-    flush: flushPendingDb,
+    flush: flushPendingDbWithinQueue,
     getRevision: () => userDataRepository.getProjectionRevision(),
     adopt: adoptExternallyChangedCanonicalProjection,
 })
@@ -3643,6 +3694,27 @@ async function readStorageItemPayload(key) {
     return value === null ? kvGet(key) : value;
 }
 
+async function prepareDatabaseRead(filePath, key, options = {}) {
+    if (options.flush === true) await flushPendingDbWithinQueue();
+    const stored = await readStorageItemPayload(key);
+    if (stored === null) return { value: null, etag: null };
+    let database;
+    try {
+        database = await decodeDatabaseWithPersistentChatIds(stored, {
+            runMaintenance: true,
+        });
+    } catch (error) {
+        logger.error('[Read] Failed to strip chats from database.bin', error);
+        throw error;
+    }
+    initChatStore(database);
+    const stripped = normalizeJSON(stripChatsFromDb(database));
+    dbCache[filePath] = stripped;
+    const value = encodeRisuSaveLegacyBuffer(stripped);
+    dbEtag = computeBufferEtag(value);
+    return { value, etag: dbEtag };
+}
+
 function sendStorageEtagConflict(res, currentEtag) {
     if (currentEtag && currentEtag === externallyAdoptedDbEtag) {
         sendCanonicalProjectionConflict(res, { etag: currentEtag });
@@ -3687,36 +3759,28 @@ app.get('/api/read', async (req, res, next) => {
     }
     try {
         const key = Buffer.from(filePath, 'hex').toString('utf-8');
-        // Flush pending patches before reading database.bin
-        if (key === 'database/database.bin' && !externalEditSession.isActive()) {
-            await flushPendingDb();
+        let value;
+        let prepared;
+        // Adopt canonical edits and capture the matching compatibility bytes
+        // and cache state under one writer queue operation.
+        if (key === 'database/database.bin') {
+            const shouldFlush = !externalEditSession.isActive();
+            prepared = await queueStorageOperation(async () => {
+                return await prepareDatabaseRead(filePath, key, { flush: shouldFlush });
+            });
+            value = prepared.value;
+        } else {
+            value = await readStorageItemPayload(key);
         }
-        let value = await readStorageItemPayload(key);
         if(value === null){
             res.send();
         } else {
             // Strip chat payloads from database.bin — client gets stubs only
             if (key === 'database/database.bin') {
-                try {
-                    const dbObj = await decodeDatabaseWithPersistentChatIds(value, {
-                        runMaintenance: true,
-                    });
-                    initChatStore(dbObj);
-                    const stripped = normalizeJSON(stripChatsFromDb(dbObj));
-                    // Populate dbCache so patch endpoint uses the same data
-                    dbCache[filePath] = stripped;
-                    value = encodeRisuSaveLegacyBuffer(stripped);
-                } catch (e) {
-                    // Log the Error itself (not just e.message) so logger.*
-                    // tags it and the Express middleware won't re-log after next().
-                    logger.error('[Read] Failed to strip chats from database.bin', e);
-                    return next(e);
-                }
-                dbEtag = computeBufferEtag(value);
-                if (req.headers['if-none-match'] === dbEtag) {
+                if (req.headers['if-none-match'] === prepared.etag) {
                     return res.status(304).end();
                 }
-                res.setHeader('x-db-etag', dbEtag);
+                res.setHeader('x-db-etag', prepared.etag);
             }
             if (value.length > 0) {
                 res.setHeader('x-item-etag', computeBufferEtag(Buffer.from(value)));
@@ -4104,7 +4168,7 @@ app.post('/api/db/flush', sessionAuthMiddleware, async (req, res, next) => {
                 res.send({ success: true, paused: true, etag: dbEtag ?? undefined });
                 return;
             }
-            await flushPendingDb();
+            await flushPendingDbWithinQueue();
             res.send({
                 success: true,
                 etag: dbEtag ?? undefined
@@ -4238,13 +4302,10 @@ app.post('/api/patch', async (req, res, next) => {
                 throw patchErr;
             }
             dbCache[filePath] = snapshot;
-            if (decodedKey === 'database/database.bin') directWriteTracker.observe(filePath, patch);
+            if (decodedKey === 'database/database.bin') directWriteTracker.observe(filePath, patch, snapshot);
 
             // Schedule save to KV (debounced) — merge full chats back for database.bin
-            if (saveTimers[filePath]) {
-                clearTimeout(saveTimers[filePath]);
-            }
-            saveTimers[filePath] = setTimeout(async () => {
+            scheduleStoragePersist(filePath, async () => {
                 try {
                     if (decodedKey === 'database/database.bin') {
                         await persistDbCacheWithChats(filePath, decodedKey, 'patch-debounce', {
@@ -4274,10 +4335,8 @@ app.post('/api/patch', async (req, res, next) => {
                 } catch (error) {
                     logger.error(`[Patch] Error saving ${decodedKey}:`, error);
                     recordPersistFailure(error, `patch:${decodedKey}`);
-                } finally {
-                    delete saveTimers[filePath];
                 }
-            }, SAVE_INTERVAL);
+            });
 
             // Update ETag after successful patch (based on stripped version)
             if (decodedKey === 'database/database.bin') {
@@ -5301,6 +5360,11 @@ app.post('/api/chat-content/:chaId/:chatIndex', async (req, res, next) => {
                 sendExternalEditModeLocked(res);
                 return;
             }
+            const adopted = adoptExternallyChangedCanonicalProjection();
+            if (adopted) {
+                sendCanonicalProjectionConflict(res, adopted);
+                return;
+            }
             const chaId = req.params.chaId;
             const chatIndex = parseInt(req.params.chatIndex, 10);
             const expectedChatId = req.headers['x-chat-id'];
@@ -5328,19 +5392,21 @@ app.post('/api/chat-content/:chaId/:chatIndex', async (req, res, next) => {
                 fullChatStore.set(chaId, new Map());
             }
             fullChatStore.get(chaId).set(expectedChatId, chatData);
+            directWriteTracker.observeChat(DB_HEX_KEY, chaId, expectedChatId);
 
             // Schedule debounced persist (reuses existing timer mechanism)
-            if (saveTimers[DB_HEX_KEY]) {
-                clearTimeout(saveTimers[DB_HEX_KEY]);
-            }
-            saveTimers[DB_HEX_KEY] = setTimeout(async () => {
+            scheduleStoragePersist(DB_HEX_KEY, async () => {
                 try {
                     // If dbCache has stripped DB, persist with merged chats
                     if (dbCache[DB_HEX_KEY]) {
-                        await persistDbCacheWithChats(DB_HEX_KEY, 'database/database.bin', 'chat-debounce');
+                        await persistDbCacheWithChats(DB_HEX_KEY, 'database/database.bin', 'chat-debounce', {
+                            directCollection: directWriteTracker.take(DB_HEX_KEY),
+                        });
                     } else {
                         // No stripped cache — load, merge, save
-                        await persistChatStoreWithoutCache('chat-debounce');
+                        await persistChatStoreWithoutCache('chat-debounce', {
+                            directCollection: directWriteTracker.take(DB_HEX_KEY),
+                        });
                     }
                     // Persist succeeded — clear before backup so a backup-only
                     // failure isn't attributed to data loss.
@@ -5353,10 +5419,8 @@ app.post('/api/chat-content/:chaId/:chatIndex', async (req, res, next) => {
                 } catch (error) {
                     logger.error('[ChatContent] Error persisting chat:', error);
                     recordPersistFailure(error, 'chat-content');
-                } finally {
-                    delete saveTimers[DB_HEX_KEY];
                 }
-            }, SAVE_INTERVAL);
+            });
 
             res.json({ success: true });
         });
@@ -5971,7 +6035,7 @@ app.post('/api/db/optimize', async (req, res, next) => {
         const preStoreBytes = objectStoreBytes();
 
         const result = await queueStorageOperation(async () => {
-            await flushPendingDb();
+            await flushPendingDbWithinQueue();
             const t0 = Date.now();
             const gcResult = gcChunks();
             const elapsed = Date.now() - t0;
@@ -5994,7 +6058,7 @@ app.post('/api/db/orphans/cleanup', async (req, res, next) => {
     if (!checkActiveSession(req, res)) return;
     try {
         const result = await queueStorageOperation(async () => {
-            await flushPendingDb();
+            await flushPendingDbWithinQueue();
             await ensureChatStore();
 
             const raw = kvGet(DB_BLOB_KEY);
@@ -6151,7 +6215,7 @@ app.post('/api/db/snapshots/restore', async (req, res, next) => {
             // Drain any pending debounced persist first — same pattern as
             // /api/db/optimize. Without this, an in-flight save could land
             // after kvCopyValue and overwrite the restored snapshot.
-            await flushPendingDb();
+            await flushPendingDbWithinQueue();
             kvCopyValue(key, DB_BLOB_KEY);
             invalidateDbCache();
             // Snapshot may pre-date the remote-block migration. Clear the marker

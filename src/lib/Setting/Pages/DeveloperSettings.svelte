@@ -19,6 +19,7 @@
         saves: { attempts: number; successes: number; failures: number; durationMs: DurationSummary }
         canonicalProjection: { attempts: number; successes: number; failures: number; durationMs: DurationSummary }
         directWrites: { attempts: number; successes: number; fallbacks: number; failures: number }
+        materialization?: { attempts: number; successes: number; failures: number; durationMs: DurationSummary }
         shadow: { checks: number; matches: number; mismatches: number; failures: number; skipped: number }
         issues: Array<{ area: string; stage: string; code: string; count: number }>
         privacy: { includesPersonalContent: false; includesRawLogs: false; omitted: string[] }
@@ -136,6 +137,16 @@
                         <span>{language.storageDiagnosticsDirectWriteFallback}</span>
                         <strong>{report.directWrites.fallbacks.toLocaleString()}</strong>
                     </div>
+                    {#if report.materialization}
+                        <div class="metric">
+                            <span>{language.storageDiagnosticsMaterialization}</span>
+                            <strong>{report.materialization.successes.toLocaleString()} / {report.materialization.attempts.toLocaleString()}</strong>
+                        </div>
+                        <div class="metric">
+                            <span>{language.storageDiagnosticsMaterializationP90}</span>
+                            <strong>{formatDuration(report.materialization.durationMs.p90)}</strong>
+                        </div>
+                    {/if}
                 </div>
             </section>
 

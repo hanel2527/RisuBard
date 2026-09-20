@@ -206,8 +206,8 @@ describe('chat gallery connections', () => {
         expect(gallery).toContain('data-gallery-list-toolbar')
         expect(gallery).toContain('data-gallery-reader')
         expect(gallery).toContain('data-gallery-back')
-        expect(gallery).toContain('<button\n                    type="button"\n                    class="memory-card__preview"')
-        expect(gallery).not.toContain('class="memory-card__preview"\n                    role="button"')
+        expect(gallery).toMatch(/<button\s+type="button"\s+class="memory-card__preview"/)
+        expect(gallery).not.toMatch(/class="memory-card__preview"\s+role="button"/)
     })
 
     test('exports gallery memories only through an explicit package option', () => {

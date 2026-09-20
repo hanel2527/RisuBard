@@ -477,6 +477,8 @@ export const helpEn = {
             "Maximum characters in the complete reserved plot Markdown. Higher values preserve more threads but can enlarge canonical-writer input and later search candidates.",
         risuBardResponseExcludeUsers:
             "Exclude earlier user messages from response context. The current user request is always retained.",
+        risuBardIgnoreOocTurns: "Skip marked OOC replies and their paired user inputs in wiki analysis, reanalysis, reboot, historical recall and recent response context. Enabled by default. The current pending user request and original messages are preserved; existing wiki is unchanged. Reboot jobs retain the setting selected when they started.",
+        risuBardHideOocTurns: "Hide OOC replies and their user inputs from the main chat list. Off by default. Read the live transcript in BardWiki's OOC notepad. Applies to all chats without changing saved messages, AI context or wiki analysis settings.",
         risuBardAnalysisExcludeUsers:
             "Exclude user messages from the confirmed turn and recent raw context used for BardWiki analysis, leaving assistant responses only.",
         customBackground: "A custom image used as the chat background.",

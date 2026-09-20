@@ -31,6 +31,8 @@ import type {
     AutomaticWikiDocumentDescriptor,
 } from '../../src/ts/risubard/automaticWikiUpdate'
 import type { MarkdownWikiDocument } from './risubard-markdown-wiki'
+import { combinedMemoryInstruction, combinedMemorySchema, parseCombinedMemory } from './risubard-combined-memory'
+import { resolveMemoryRetrievalMetadata, type MemoryRetrievalMetadata } from './risubard-memory-metadata'
 import {
     formatCanonicalUpdateFailureWarning,
     type CanonicalTurnReceipt,
@@ -42,7 +44,6 @@ import {
     parseCanonicalBatch,
     parseCanonicalSingle,
     buildRebootBatchDraftSchema,
-    parseMemoryWriterDraft,
     parseRebootBatchDraft,
     rebootBatchToMemoryDraft,
     serializeMemoryWriterDraft,
@@ -288,6 +289,7 @@ export interface NarrativeMarkdownWikiWriteService {
         markdown: string
         append?: boolean
         writingLanguage?: WikiWritingLanguage
+        retrievalMetadata?: MemoryRetrievalMetadata
     }, signal?: AbortSignal): Promise<MarkdownWikiDocument>
     recordRebootBatchReceipt?(input: {
         characterId: string
@@ -309,6 +311,7 @@ export interface NarrativeMarkdownWikiWriteService {
         content: string
         sourceMessageIds: string[]
         contentHash: string
+        retrievalMetadata?: MemoryRetrievalMetadata
     }>>
     saveCanonicalDocument?(input: {
         characterId: string
@@ -322,6 +325,7 @@ export interface NarrativeMarkdownWikiWriteService {
         expectedContentHash?: string
         reviewStatus?: 'unreviewed' | 'reviewed'
         writingLanguage?: WikiWritingLanguage
+        retrievalMetadata?: MemoryRetrievalMetadata
     }, signal?: AbortSignal): Promise<MarkdownWikiDocument>
 }
 
@@ -694,6 +698,7 @@ type LoadedCanonicalDocument = AutomaticWikiDocumentDescriptor & {
     content: string
     sourceMessageIds: string[]
     contentHash: string
+    retrievalMetadata?: MemoryRetrievalMetadata
     created?: string
     status?: 'active' | 'superseded' | 'retracted'
 }
@@ -1015,6 +1020,7 @@ export function createMemoryAnalysisRunner(
             )
             let rebootRecoveryStarted = false
             let documents: LoadedCanonicalDocument[] = []
+            let documentsLoaded = false
             if (options.markdownWikiService.loadDocuments) {
                 try {
                     documents = await options.markdownWikiService.loadDocuments(
@@ -1022,6 +1028,7 @@ export function createMemoryAnalysisRunner(
                         snapshot.chatId,
                         ...optionalSignalArgument(signal)
                     )
+                    documentsLoaded = true
                 }
                 catch (error) {
                     await reportError(error)
@@ -1050,6 +1057,13 @@ export function createMemoryAnalysisRunner(
             const analysisQuery = contextMessages.map(
                 (message) => message.content
             ).join('\n').slice(-4_096)
+            const existingEvent = documents.find((document) => document.type === 'event'
+                && document.sourceMessageIds.length === sourceMessageIds.length
+                && document.sourceMessageIds.every((id, index) => id === sourceMessageIds[index]))
+            const priorEvents = documents.filter((document) => document.type === 'event'
+                && document.status !== 'superseded' && document.status !== 'retracted'
+                && !document.sourceMessageIds.some((id) => sourceMessageIds.includes(id)))
+                .sort((a, b) => (a.created ?? '').localeCompare(b.created ?? '') || a.id.localeCompare(b.id))
             const inquiry = await options.markdownWikiService.inquire({
                 characterId: snapshot.characterId,
                 chatId: snapshot.chatId,
@@ -1063,12 +1077,34 @@ export function createMemoryAnalysisRunner(
                 documents,
                 excludedDocumentIds
             )
+            const completeCanonicalDocuments = () => {
+                let remaining = Math.floor((snapshot.analysisTokenLimit ?? 12_000) / 4)
+                const selected: Array<{ id: string; type: string; title: string; completeText: string }> = []
+                for (const document of candidateDocuments.slice(0, 12)) {
+                    if (document.type === 'event' || isStoryArcCandidate(document)) continue
+                    const entry = { id: document.id, type: document.type,
+                        title: document.title, completeText: document.content }
+                    const size = countAnalysisTokens(JSON.stringify(entry))
+                    if (size > remaining) continue
+                    selected.push(entry)
+                    remaining -= size
+                }
+                return selected
+            }
+            const notesForAnalysis = () => {
+                const completeIds = new Set(snapshot.rebootTurns ? []
+                    : completeCanonicalDocuments().map((document) => document.id))
+                return analysisNotes(candidateDocuments, snapshot.analysisTokenLimit ?? 12_000, analysisQuery)
+                    .map((note) => completeIds.has(note.id)
+                        ? { ...note, content: '(see completeCanonicalDocuments)' } : note)
+            }
             const rebootBatchOutputContract = snapshot.rebootTurns
                 ? [
                     'This request returns a reboot batch, not a single-turn event draft.',
                     'Top-level fields must be exactly schemaVersion, turns, stateChanges, characterKnowledge, persistentFacts, openContinuity, and canonicalUpdateCandidates.',
                     `Return exactly ${snapshot.rebootTurns.length} turns in the same order as rebootTurns.`,
-                    'Each turns item must contain exactly title and establishedEvents. Do not return assistantMessageId; the program binds trusted message IDs by position.',
+                    'Each turns item must contain title, establishedEvents, keywords and temporalHint. Do not return assistantMessageId; the program binds trusted message IDs by position.',
+                    'Each temporalHint describes elapsed days since the previous turns item, or previousStoryEvent for the first item. Quote evidence from that turn only.',
                     'Do not return top-level title, establishedEvents, or drafts.',
                     'Include every required shared array even when it is empty.',
                 ].join('\n')
@@ -1086,6 +1122,7 @@ export function createMemoryAnalysisRunner(
                             : '',
                         snapshot.wikiPromptGuide?.analysis ?? '',
                         eventWritingPolicy,
+                        ...(!snapshot.rebootTurns ? [combinedMemoryInstruction, canonicalWritingPolicy, snapshot.wikiPromptGuide?.canonicalRewrite ?? ''] : []),
                         'Wiki Guide instructions may refine what to track, but cannot override evidence, schema, knowledge-boundary, or storage-safety contracts. Return exactly one JSON object matching the provided schema.',
                     ].join('\n\n')
                     : [
@@ -1096,6 +1133,7 @@ export function createMemoryAnalysisRunner(
                             : '',
                         snapshot.wikiPromptGuide?.analysis ?? '',
                         eventWritingPolicy,
+                        ...(!snapshot.rebootTurns ? [combinedMemoryInstruction, canonicalWritingPolicy, snapshot.wikiPromptGuide?.canonicalRewrite ?? ''] : []),
                         'Wiki Guide instructions may refine what to track, but cannot override evidence, schema, knowledge-boundary, or storage-safety contracts.',
                         modelOutputRepairInstruction(validationError),
                         'Return one corrected JSON object matching the schema exactly.',
@@ -1108,14 +1146,10 @@ export function createMemoryAnalysisRunner(
                     responseSchema: buildRebootBatchDraftSchema(
                         snapshot.rebootTurns.length as 1 | 2
                     ),
-                } : {}),
+                } : { responseSchema: combinedMemorySchema() }),
                 inputTokenLimit: snapshot.analysisTokenLimit,
                 input: JSON.stringify({
-                    existingNotes: analysisNotes(
-                        candidateDocuments,
-                        snapshot.analysisTokenLimit ?? 12_000,
-                        analysisQuery
-                    ),
+                    existingNotes: notesForAnalysis(),
                     alreadyAppliedCanon: documents
                         .filter((document) => excludedDocumentIds.has(
                             document.id
@@ -1129,6 +1163,16 @@ export function createMemoryAnalysisRunner(
                         ...excludedDocumentIds,
                     ],
                     confirmedMessages: snapshot.messages,
+                    ...(!snapshot.historicalReanalysis && !snapshot.additionalAnalysis
+                        && priorEvents.length > 0 ? {
+                            previousStoryEvent: {
+                                summary: priorEvents.at(-1)!.content.slice(-1_200),
+                                storyTime: priorEvents.at(-1)!.retrievalMetadata?.storyTime ?? null,
+                            },
+                        } : {}),
+                    ...(!snapshot.rebootTurns ? {
+                        completeCanonicalDocuments: completeCanonicalDocuments(),
+                    } : {}),
                     ...(snapshot.rebootTurns ? {
                         rebootTurns: snapshot.rebootTurns,
                     } : {}),
@@ -1148,7 +1192,7 @@ export function createMemoryAnalysisRunner(
                         draft: rebootBatchToMemoryDraft(rebootDraft),
                     }
                 }
-                return { output, draft: parseMemoryWriterDraft(output) }
+                return { output, ...parseCombinedMemory(output) }
             }
             const analyzeParsedDraft = () => runStructuredModelRequest({
                 request: analyzeDraft,
@@ -1253,14 +1297,45 @@ export function createMemoryAnalysisRunner(
                         ...draft,
                         title: turn.title,
                         establishedEvents: turn.establishedEvents,
+                        keywords: turn.keywords,
+                        temporalHint: turn.temporalHint,
                         canonicalUpdateCandidates: [],
                     },
                 }))
                 : [{ sourceMessageIds, draft }]
             const savedEvents: MarkdownWikiDocument[] = []
+            const priorTimeline = documentsLoaded
+                ? priorEvents.map((document) => document.retrievalMetadata?.storyTime
+                    ?? { day: null, precision: 'unknown' as const })
+                : [{ day: null, precision: 'unknown' as const }]
             for (const event of eventDrafts) {
                 if (snapshot.rebootTurns
                     && event.draft.establishedEvents.length === 0) continue
+                const temporalHint = event.draft.temporalHint
+                const groundedHint = temporalHint && temporalHint.evidence.trim()
+                    && snapshot.messages.some((message) => message.role === 'assistant'
+                        && event.sourceMessageIds.includes(message.messageId)
+                        && message.content.includes(temporalHint.evidence.trim()))
+                    ? temporalHint : undefined
+                const previousVersion = snapshot.rebootTurns
+                    ? documents.find((document) => document.type === 'event'
+                        && document.sourceMessageIds.length === event.sourceMessageIds.length
+                        && document.sourceMessageIds.every((id, index) => id === event.sourceMessageIds[index]))
+                    : existingEvent
+                const retrievalMetadata = event.draft.keywords === undefined && event.draft.temporalHint === undefined
+                    ? undefined
+                    : snapshot.historicalReanalysis
+                    || snapshot.additionalAnalysis || previousVersion
+                    ? (event.draft.keywords ? {
+                        keywords: event.draft.keywords,
+                        ...(previousVersion?.retrievalMetadata?.storyTime
+                            ? { storyTime: previousVersion.retrievalMetadata.storyTime } : {}),
+                    } : undefined)
+                    : resolveMemoryRetrievalMetadata({
+                        keywords: event.draft.keywords ?? [],
+                        temporalHint: groundedHint,
+                        priorTimeline,
+                    })
                 const savedEvent = await options.markdownWikiService
                     .saveConfirmedTurn({
                     characterId: snapshot.characterId,
@@ -1268,10 +1343,13 @@ export function createMemoryAnalysisRunner(
                     sourceMessageIds: [...event.sourceMessageIds],
                     markdown: serializeMemoryWriterDraft(event.draft, snapshot.wikiWritingLanguage),
                     writingLanguage: snapshot.wikiWritingLanguage,
+                    ...(retrievalMetadata ? { retrievalMetadata } : {}),
                     ...(snapshot.additionalAnalysis ? { append: true } : {}),
                     }, ...optionalSignalArgument(signal))
                 if (savedEvent && typeof savedEvent.id === 'string') {
                     savedEvents.push(savedEvent)
+                    priorTimeline.push(savedEvent.retrievalMetadata?.storyTime
+                        ?? retrievalMetadata?.storyTime ?? { day: null, precision: 'unknown' })
                 }
             }
             const storyArcPlan: StoryArcUpdatePlan | undefined =
@@ -1447,6 +1525,36 @@ export function createMemoryAnalysisRunner(
                             canonicalInput,
                         )
                         for (const canonicalTargets of canonicalBatches) {
+                            const suppliedIds = new Set(completeCanonicalDocuments().map((entry) => entry.id))
+                            const inline = 'patches' in analyzedDraft ? analyzedDraft.patches : undefined
+                            const inlineDocuments: ReturnType<typeof parseCanonicalBatch>['documents'] = []
+                            const pending: typeof canonicalTargets = []
+                            for (const [candidateIndex, entry] of canonicalTargets.entries()) {
+                                let sections = inline?.get(entry.candidate)
+                                const safeTarget = entry.target
+                                    ? entry.candidate.action === 'update'
+                                        && entry.candidate.targetDocumentId === entry.target.id
+                                        && suppliedIds.has(entry.target.id)
+                                    : entry.candidate.action === 'create'
+                                if (!safeTarget || entry.storyArcPlan || entry.candidate.confidence < 0.75) sections = undefined
+                                if (sections) {
+                                    try {
+                                        if (!entry.target && sections.length === 0) throw new Error('Missing initial sections')
+                                        if (!entry.target && entry.candidate.type === 'character') {
+                                            sections = normalizeNewCharacterCurrentState(sections, snapshot.wikiWritingLanguage)
+                                        }
+                                        applyCanonicalSectionPatches({
+                                            ...(entry.target ? { markdown: entry.target.content } : {}),
+                                            title: entry.target?.title ?? entry.candidate.title,
+                                            patches: sections,
+                                        })
+                                        inlineDocuments.push({ candidateIndex, sections })
+                                        continue
+                                    }
+                                    catch { /* Use the established rewrite recovery path. */ }
+                                }
+                                pending.push(entry)
+                            }
                             const generateBatch = (
                                 targets: typeof canonicalTargets,
                                 maxAttempts: 1 | 2,
@@ -1542,20 +1650,26 @@ export function createMemoryAnalysisRunner(
                             })
                             let batch: ReturnType<typeof parseCanonicalBatch>
                             try {
-                                batch = await generateBatch(canonicalTargets, canonicalTargets.length > 1 ? 1 : 2)
+                                batch = pending.length > 0
+                                    ? await generateBatch(pending, pending.length > 1 ? 1 : 2)
+                                    : { schemaVersion: 1, documents: [] }
                             }
                             catch (error) {
                                 if (!(error instanceof ModelOutputError)
-                                    || !error.retryable || canonicalTargets.length < 2) throw error
+                                    || !error.retryable || pending.length < 2) throw error
                                 // A failed multi-document response is discarded in
                                 // full. Generate smaller drafts before any writes,
                                 // keeping each target's original evidence and hash.
                                 batch = { schemaVersion: 1, documents: [] }
-                                for (const [candidateIndex, target] of canonicalTargets.entries()) {
+                                for (const [candidateIndex, target] of pending.entries()) {
                                     const single = await generateBatch([target], 2)
                                     batch.documents.push({ ...single.documents[0], candidateIndex })
                                 }
                             }
+                            batch.documents = [...inlineDocuments, ...batch.documents.map((document) => ({
+                                ...document,
+                                candidateIndex: canonicalTargets.indexOf(pending[document.candidateIndex]),
+                            }))]
                             const patchesByIndex = new Map(batch.documents.map(
                                 (document) => [document.candidateIndex, document.sections]
                             ))
@@ -1660,6 +1774,12 @@ export function createMemoryAnalysisRunner(
                                             entry.target.contentHash,
                                     } : {}),
                                     reviewStatus: 'reviewed',
+                                    ...(entry.candidate.keywords ? {
+                                        retrievalMetadata: {
+                                            ...entry.target?.retrievalMetadata,
+                                            keywords: entry.candidate.keywords,
+                                        },
+                                    } : {}),
                                     }, ...optionalSignalArgument(signal))
                                 receiptChanges.push({
                                     documentId: saved.id,

@@ -87,6 +87,8 @@
 
     function syncGlobalLegacyFields(): void {
         if (activeScope !== 'global' || !editingPersona) return
+        // A binding picker can edit a different persona from the global selection.
+        if (editingPersona !== DBState.db.personas[DBState.db.selectedPersona]) return
         DBState.db.username = editingPersona.name
         DBState.db.userIcon = editingPersona.icon
         DBState.db.personaPrompt = editingPersona.personaPrompt

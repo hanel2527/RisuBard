@@ -204,6 +204,13 @@ function matchesStoredChecksum(target, digest) {
     }
 }
 
+function refreshChecksum(root, relativePath) {
+    const target = resolveInside(root, relativePath);
+    const digest = checksumFile(target);
+    replaceAtomic(`${target}.sha256`, Buffer.from(`${digest}\n`, 'utf8'));
+    return digest;
+}
+
 function assertUnchangedPreconditions(root, entries) {
     for (const entry of entries) {
         const target = resolveInside(root, entry.path);
@@ -324,6 +331,7 @@ module.exports = {
     commitTransaction,
     moveToTrash,
     readVerifiedJson,
+    refreshChecksum,
     recoverTransactions,
     resolveInside,
 };

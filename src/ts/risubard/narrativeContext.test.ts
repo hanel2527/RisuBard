@@ -338,6 +338,29 @@ describe('actual narrative inquiry prompt', () => {
         )
     })
 
+    it('preserves long inquiry sources and their token counts without a hidden character limit', async () => {
+        const content = '위키 근거 '.repeat(3000)
+        const source = { id: 'long-wiki', kind: 'memory', role: 'system', content, tokens: 5000, priority: 100 }
+        const inquiry = await loadNarrativeInquiry({
+            characterId: 'character', chatId: 'chat', currentInput: '위키',
+            tokenBudget: { target: 8000, events: 8000, perSource: 8000, maximum: 16000 },
+            createAuth: async () => 'auth',
+            fetchImpl: vi.fn(async () => new Response(JSON.stringify({
+                mode: 'v2-current', graphRevision: 1, indexRevision: 1, cacheStatus: 'current',
+                sources: [source],
+                metrics: { candidateCount: 1, inspectedNodeCount: 1, inspectedEdgeCount: 0,
+                    selectedNodeCount: 1, selectedTokens: 5000, hopCount: 0, auxiliaryModelCalls: 0 },
+            }))) as typeof fetch,
+        })
+        expect(inquiry.sources[0].content).toBe(content)
+        expect(inquiry.sources[0].tokens).toBe(5000)
+        expect(createNarrativeSourcesPrompt(inquiry.sources)).toContain(content)
+        const selected = Array.from({ length: 20 }, (_, index) => ({
+            ...inquiry.sources[0], id: `selected-${index}`, content: `selected evidence ${index}`,
+        }))
+        expect(createNarrativeSourcesPrompt(selected)).toContain('selected evidence 19')
+    })
+
     it('accepts Markdown inquiry metrics above the retired v1 token budget', async () => {
         const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
             mode: 'v2-current',
@@ -680,6 +703,37 @@ describe('selectNarrativeWorkingMessages', () => {
             .toEqual([{ id: 'user-current', role: 'user' }])
         expect(withoutHistoricalUsers.filter((message) => message.role === 'char'))
             .toHaveLength(2)
+    })
+
+    it('excludes an OOC exchange before applying the response window but retains the pending request', () => {
+        const messages = [
+            { id: 'user-story', role: 'user', data: 'Continue the story.' },
+            { id: 'assistant-story', role: 'char', data: 'The story continues.' },
+            { id: 'user-ooc', role: 'user', data: 'Plan the next scene.' },
+            { id: 'assistant-ooc', role: 'char', data: '<!-- OOC_turn -->\nPlan: continue.' },
+            { id: 'user-current', role: 'user', data: 'Write the next scene.' },
+        ]
+
+        expect(selectNarrativeWorkingMessages(messages, 1, true, true)
+            .map((message) => message.id)).toEqual([
+            'user-story', 'assistant-story', 'user-current',
+        ])
+        expect(selectNarrativeWorkingMessages(messages, 2, true, false)
+            .map((message) => message.id)).toContain('assistant-ooc')
+        expect(selectNarrativeWorkingMessages(messages, 2, true, false)
+            .map((message) => message.id)).toContain('user-ooc')
+
+        const completedOoc = messages.slice(0, 4)
+        expect(selectNarrativeWorkingMessages(completedOoc, 1, true, true)
+            .map((message) => message.id)).toEqual([
+            'user-story', 'assistant-story',
+        ])
+
+        const assistantRoleOoc = messages.map((message) =>
+            message.id === 'assistant-ooc' ? { ...message, role: 'assistant' } : message
+        )
+        expect(selectNarrativeWorkingMessages(assistantRoleOoc, 1, true, true)
+            .map((message) => message.id)).not.toContain('assistant-ooc')
     })
 
     it('keeps the first greeting inside the message budget', () => {

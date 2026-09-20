@@ -33,7 +33,7 @@ describe('bounded chat-page UI connections', () => {
             source.indexOf('{#if showNewMessageButton}'),
         )
         const toolbar = shortcuts()
-        const close = toolbar.indexOf('class="toolbar-close"')
+        const close = toolbar.indexOf('data-chat-find-replace')
         const pageJump = toolbar.indexOf('data-chat-page-jump')
         const turnJump = toolbar.indexOf('data-chat-turn-jump', pageJump)
         const jumpButton = toolbar.indexOf('data-chat-page-turn-jump-button', turnJump)

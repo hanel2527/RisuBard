@@ -3,6 +3,7 @@ import { get_encoding, type Tiktoken } from '@dqbd/tiktoken'
 import type { MarkdownWikiDocument } from './risubard-markdown-wiki'
 import { normalizeRisuBardInquiryTokenBudget } from '../../src/ts/risubard/risuBardSettings'
 import { selectMarkdownExcerpt } from './risubard-markdown-excerpt'
+import { isStoryArcTitle } from '../../src/ts/risubard/wikiWritingLanguage'
 
 const MAX_SELECTED_DOCUMENTS = 12
 const MAX_SOURCE_CHARACTERS = 12_000
@@ -21,6 +22,7 @@ const ROUTED_SOURCE_SCORE_BONUS = 12
 const SEMANTIC_RRF_K = 60
 const SEMANTIC_RRF_SCALE = 480
 const ENTITY_HINT_SCORE = 10_000
+const SINGLE_CHARACTER_QUERY_TERMS = new Set(['춤', '꿈', '술', '밥', '잠', '검', '꽃'])
 
 const QUERY_STOPWORDS = new Set([
     '그는', '그녀는', '그들은', '나는', '우리는', '이것', '그것', '저것',
@@ -60,6 +62,28 @@ function truncateToTokenBudget(value: string, maximumTokens: number): string {
         else high = middle - 1
     }
     return characters.slice(0, low).join('').trimEnd()
+}
+
+function selectTokenBoundedExcerpt(
+    input: Omit<Parameters<typeof selectMarkdownExcerpt>[0], 'maximumCharacters'>,
+    maximumTokens: number,
+): string {
+    const full = input.content.trim()
+    if (countInquiryTokens(full) <= maximumTokens) return full
+    let low = 0
+    let high = input.content.length
+    let selected = ''
+    while (low < high) {
+        const middle = Math.ceil((low + high) / 2)
+        const excerpt = selectMarkdownExcerpt({ ...input, maximumCharacters: middle })
+        if (countInquiryTokens(excerpt) <= maximumTokens) {
+            low = middle
+            selected = excerpt
+        } else {
+            high = middle - 1
+        }
+    }
+    return selected
 }
 
 export interface MarkdownInquiryInput {
@@ -136,6 +160,7 @@ interface NormalizedDocument {
     content: string
     links: string
     keys: string[]
+    keywords: string[]
 }
 
 interface InquiryCatalogBase {
@@ -159,7 +184,8 @@ function normalizedQueryTerm(value: string): string {
     while (true) {
         const suffix = KOREAN_QUERY_SUFFIXES.find((candidate) =>
             term.endsWith(candidate)
-            && term.length - candidate.length >= 2)
+            && (term.length - candidate.length >= 2
+                || SINGLE_CHARACTER_QUERY_TERMS.has(term.slice(0, -candidate.length))))
         if (!suffix) return term
         term = term.slice(0, -suffix.length)
     }
@@ -167,9 +193,11 @@ function normalizedQueryTerm(value: string): string {
 
 function queryTerms(value: string): string[] {
     return [...new Set(normalized(value).split(/[^\p{L}\p{N}_]+/u)
-        .filter((term) => term.length > 1 && !QUERY_STOPWORDS.has(term))
+        .filter((term) => (term.length > 1 || SINGLE_CHARACTER_QUERY_TERMS.has(term))
+            && !QUERY_STOPWORDS.has(term))
         .map(normalizedQueryTerm)
-        .filter((term) => term.length > 1 && !QUERY_STOPWORDS.has(term)))]
+        .filter((term) => (term.length > 1 || SINGLE_CHARACTER_QUERY_TERMS.has(term))
+            && !QUERY_STOPWORDS.has(term)))]
         .slice(0, 32)
 }
 
@@ -215,6 +243,8 @@ function normalizedDocument(
         content: normalized(document.content),
         links: normalized(document.links.join(' ')),
         keys: documentKeys(document),
+        keywords: (document.retrievalMetadata?.keywords ?? []).slice(0, 24)
+            .map((keyword) => normalized(keyword.slice(0, 80))),
     }
     normalizedDocumentCache.set(document, value)
     return value
@@ -277,7 +307,7 @@ function lexicalScore(
     characterAnchorTerms: ReadonlySet<string>,
     termWeights: ReadonlyMap<string, number>
 ): number {
-    const { title, aliases, content, links } = normalizedDocument(document)
+    const { title, aliases, content, links, keywords } = normalizedDocument(document)
     const identityKeys = [title, ...aliases]
     let score = identityKeys.includes(normalizedQuery) ? 12 : 0
     if (normalizedQuery.length > 1 && title !== normalizedQuery
@@ -297,6 +327,7 @@ function lexicalScore(
         }
         if (links.includes(term)) score += 3 * weight
         if (content.includes(term)) score += 2 * weight
+        if (keywords.some((keyword) => keyword.includes(term))) score += 3 * weight
     }
     return score
 }
@@ -308,10 +339,11 @@ function queryTermWeights(
     const weights = new Map<string, number>()
     for (const term of terms) {
         const documentFrequency = documents.reduce((count, document) => {
-            const { title, aliases, content, links } = normalizedDocument(document)
+            const { title, aliases, content, links, keywords } = normalizedDocument(document)
             return count + Number([title, ...aliases].some((key) =>
                 key.includes(term))
                 || links.includes(term)
+                || keywords.some((keyword) => keyword.includes(term))
                 || content.includes(term))
         }, 0)
         const inverseDocumentFrequency = Math.log(1 + (
@@ -331,6 +363,25 @@ function candidateScore(
     if (candidate.document.type === 'event') score += pastIntent ? 3 : 0
     else score += currentIntent ? 3 : 1
     return score
+}
+
+function arcRouteTargets(
+    document: MarkdownWikiDocument,
+    terms: readonly string[],
+    byTarget: ReadonlyMap<string, MarkdownWikiDocument>,
+): Set<string> {
+    const targets = new Set<string>()
+    if (document.type !== 'other' || !isStoryArcTitle(document.title)) return targets
+    // Keep an action and its event link together; unrelated arcs must not win
+    // merely because their links appear first in the document.
+    for (const line of document.content.slice(0, MAX_SOURCE_CHARACTERS).split('\n')) {
+        if (!terms.some((term) => normalized(line).includes(term))) continue
+        for (const match of line.matchAll(/\[\[([^\]]+)\]\]/gu)) {
+            const target = byTarget.get(normalizedLinkTarget(match[1]))
+            if (target) targets.add(target.id)
+        }
+    }
+    return targets
 }
 
 export function inquireMarkdownDocuments(
@@ -498,6 +549,8 @@ export function inquireMarkdownDocuments(
     }
 
     let inspectedEdgeCount = 0
+    const chronologyIntent = /(?:작중\s*행적|행적|모험|여정|연대기|시간\s*순|순서대로|지금까지|journey|adventures?|chronolog|timeline|story\s+history)/i
+        .test(input.currentInput)
     for (let hop = 0; hop < MAX_HOPS; hop += 1) {
         const expandable = [...candidates.values()]
             .filter((candidate) => candidate.hop === hop)
@@ -507,9 +560,12 @@ export function inquireMarkdownDocuments(
                 || left.document.id.localeCompare(right.document.id))
             .slice(0, MAX_EXPANDED_DOCUMENTS_PER_HOP)
         for (const candidate of expandable) {
+            const arcTargets = chronologyIntent ? new Set<string>()
+                : arcRouteTargets(candidate.document, terms, base.byTarget)
             const neighbors = [...(base.adjacency.get(
                 candidate.document.id
             ) ?? [])]
+                .filter((id) => arcTargets.size === 0 || arcTargets.has(id))
                 .slice(0, MAX_EDGES_PER_DOCUMENT)
             for (const neighborId of neighbors) {
                 if (inspectedEdgeCount >= MAX_INSPECTED_EDGES) break
@@ -561,8 +617,6 @@ export function inquireMarkdownDocuments(
     const currentStateIntent = stateTopicIntent
         && !stateHistoryIntent
         && !explicitEventIntent
-    const chronologyIntent = /(?:작중\s*행적|행적|모험|여정|연대기|시간\s*순|순서대로|지금까지|journey|adventures?|chronolog|timeline|story\s+history)/i
-        .test(input.currentInput)
     const historicalEvidenceIntent = hasHistoricalEvidenceIntent(
         input.currentInput
     )
@@ -590,10 +644,6 @@ export function inquireMarkdownDocuments(
         input.tokenBudget?.events,
         input.tokenBudget?.perSource,
     )
-    const excerptCharacters = Math.min(
-        MAX_SOURCE_CHARACTERS,
-        tokenBudget.perSource,
-    )
     const prepared = [
         ...requiredDocuments.map((document) => ({
             document,
@@ -602,15 +652,16 @@ export function inquireMarkdownDocuments(
         })),
         ...automatic,
     ].map((candidate) => {
-        const content = selectMarkdownExcerpt({
+        const content = selectTokenBoundedExcerpt({
             content: candidate.document.content,
             documentType: candidate.document.type,
             query: retrievalInput,
-            maximumCharacters: excerptCharacters,
             chronologyIntent,
-        })
+        }, tokenBudget.perSource)
         const boundedContent = truncateToTokenBudget(
-            content,
+            candidate.document.type === 'event' && candidate.document.retrievalMetadata?.storyTime
+                ? `[Story day relative to first recorded event: ${candidate.document.retrievalMetadata.storyTime.day ?? 'unknown'}; calendar date unspecified]\n${content}`
+                : content,
             tokenBudget.perSource,
         )
         return {
@@ -720,16 +771,12 @@ export function inquireMarkdownDocuments(
                 1,
                 tokenBudget.perSource - countInquiryTokens(`${heading}\n`),
             )
-            const excerpt = selectMarkdownExcerpt({
+            const excerpt = selectTokenBoundedExcerpt({
                 content: match.content,
                 documentType: 'other',
                 query: retrievalInput,
-                maximumCharacters: Math.min(
-                    MAX_SOURCE_CHARACTERS,
-                    bodyTokenBudget,
-                ),
                 chronologyIntent: false,
-            })
+            }, bodyTokenBudget)
             const content = `${heading}\n${truncateToTokenBudget(
                 excerpt,
                 bodyTokenBudget,

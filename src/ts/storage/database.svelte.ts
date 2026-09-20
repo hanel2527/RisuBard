@@ -1,4 +1,5 @@
 import { get } from 'svelte/store';
+import type { ChatScriptstateCheckpoint } from '../chatScriptstateCheckpoint';
 import { checkNullish, decryptBuffer, encryptBuffer, selectSingleFile } from '../util';
 import { changeLanguage, language } from '../../lang';
 import { DEFAULT_CHAT_LOAD_ADDITIONAL_PAGES, DEFAULT_CHAT_LOAD_INITIAL_PAGES, normalizeChatLoadPages } from '../chatLoadPages';
@@ -941,6 +942,11 @@ export function setDatabase(data:Database){
         typeof data.risuBardResponseExcludeUserMessages === 'boolean'
             ? data.risuBardResponseExcludeUserMessages
             : data.risuBardResponseIncludeUserMessages === false
+    data.risuBardIgnoreOocTurns = data.risuBardIgnoreOocTurns !== false
+    data.risuBardHideOocTurns = data.risuBardHideOocTurns === true
+    data.risuBardOocMarkdown = data.risuBardOocMarkdown !== false
+    data.risuBardOocFontSize = typeof data.risuBardOocFontSize === 'number' && Number.isFinite(data.risuBardOocFontSize)
+        ? Math.min(48, Math.max(8, data.risuBardOocFontSize)) : 14
     data.risuBardAnalysisExcludeUserMessages =
         data.risuBardAnalysisExcludeUserMessages === true
     data.risuBardBardChanEnabled = data.risuBardBardChanEnabled === true
@@ -1777,6 +1783,10 @@ export interface Database{
     risuBardResponseMessageCount?: number
     risuBardResponseIncludeUserMessages?: boolean
     risuBardResponseExcludeUserMessages?: boolean
+    risuBardIgnoreOocTurns?: boolean
+    risuBardHideOocTurns?: boolean
+    risuBardOocMarkdown?: boolean
+    risuBardOocFontSize?: number
     risuBardAnalysisExcludeUserMessages?: boolean
     risuBardAnalysisTokenLimit?: number
     risuBardAdditionalSearchLimit?: number
@@ -2782,6 +2792,10 @@ export interface Message{
     isComment?:boolean
     swipes?: string[]
     swipeId?: number
+    /** Script state before and after this assistant response was applied. */
+    scriptstateCheckpoint?: ChatScriptstateCheckpoint
+    /** State checkpoints aligned with `swipes`; null marks a legacy candidate. */
+    scriptstateSwipeCheckpoints?: Array<ChatScriptstateCheckpoint | null>
     risubardMemoryConfirmed?: boolean
     risubardCanonicalReceipt?: CanonicalTurnReceipt
 }
@@ -3090,17 +3104,16 @@ export function withStableActivePreset(fn: () => void): void {
     }
 }
 
-export function saveCurrentPreset(){
-    let db = getDatabase()
-    let pres = db.botPresets
+function samePersistedValue(left: unknown, right: unknown): boolean {
+    return JSON.stringify(left) === JSON.stringify(right)
+}
 
-    if(db.botPresetsId === -1){
-        return
-    }
+function currentBotPresetFromMirror(db: Database, current?: botPreset): botPreset {
     const savedPreset:botPreset =  {
-        id: pres[db.botPresetsId]?.id || uuidv4(),
-        name: pres[db.botPresetsId].name,
-        description: pres[db.botPresetsId]?.description ?? '',
+        ...safeStructuredClone(current ?? {}) as botPreset,
+        id: current?.id || uuidv4(),
+        name: current?.name,
+        description: current?.description ?? '',
         apiType: db.apiType,
         openAIKey: db.openAIKey,
         localNetworkMode: db.localNetworkMode,
@@ -3135,6 +3148,8 @@ export function saveCurrentPreset(){
         NAIappendName: db.NAIappendName ?? false,
         localStopStrings: db.localStopStrings,
         autoSuggestPrompt: db.autoSuggestPrompt,
+        autoSuggestPrefix: db.autoSuggestPrefix,
+        autoSuggestClean: db.autoSuggestClean,
         customProxyRequestModel: db.customProxyRequestModel,
         reverseProxyOobaArgs: safeStructuredClone(db.reverseProxyOobaArgs) ?? null,
         top_p: db.top_p ?? 1,
@@ -3164,7 +3179,7 @@ export function saveCurrentPreset(){
         customFlags: safeStructuredClone(db.customFlags),
         enableCustomFlags: db.enableCustomFlags,
         regex: db.presetRegex,
-        image: pres?.[db.botPresetsId]?.image ?? '',
+        image: current?.image ?? '',
         reasonEffort: db.reasoningEffort ?? 0,
         thinkingTokens: db.thinkingTokens ?? null,
         thinkingType: db.thinkingType ?? 'budget',
@@ -3178,18 +3193,25 @@ export function saveCurrentPreset(){
         verbosity: db.verbosity ?? 1,
         dynamicOutput: db.dynamicOutput ?? null
     }
-    
-    if(!Array.isArray(pres)){
-        pres = []
-    }
-    //if out of bounds, create a new preset
-    if(db.botPresetsId >= pres.length){
-        pres.push(savedPreset)
-    }
-    else{
-        pres[db.botPresetsId] = savedPreset
-    }
-    db.botPresets = pres
+    return savedPreset
+}
+
+export function syncActiveBotPresetFromMirror(db: Database = getDatabase()): boolean {
+    if(db.botPresetsId === -1) return false
+    const presets = Array.isArray(db.botPresets) ? db.botPresets : []
+    const current = presets[db.botPresetsId]
+    const savedPreset = currentBotPresetFromMirror(db, current)
+    if(current && samePersistedValue(current, savedPreset)) return false
+
+    const next = [...presets]
+    if(db.botPresetsId >= next.length) next.push(savedPreset)
+    else next[db.botPresetsId] = savedPreset
+    db.botPresets = next
+    return true
+}
+
+export function saveCurrentPreset(){
+    syncActiveBotPresetFromMirror()
 }
 
 export function copyPreset(id:number){
@@ -3335,11 +3357,10 @@ export function setPreset(db:Database, newPres: botPreset){
 
 // Theme preset functions
 
-export function saveCurrentThemePreset(){
-    let db = getDatabase()
-    let pres = db.themePresets
+function currentThemePresetFromMirror(db: Database, current?: themePreset): themePreset {
     const saved: themePreset = {
-        name: pres[db.themePresetsId]?.name ?? "Default",
+        ...safeStructuredClone(current ?? {}) as themePreset,
+        name: current?.name ?? "Default",
         theme: normalizeTheme(db.theme),
         nodeOnlyStandardChatWidth: db.nodeOnlyStandardChatWidth,
         guiHTML: db.guiHTML,
@@ -3389,15 +3410,24 @@ export function saveCurrentThemePreset(){
         menuSideBar: db.menuSideBar,
         useChatSticker: db.useChatSticker,
     }
-    if(!Array.isArray(pres)){
-        pres = []
-    }
-    if(db.themePresetsId >= pres.length){
-        pres.push(saved)
-    } else {
-        pres[db.themePresetsId] = saved
-    }
-    db.themePresets = pres
+    return saved
+}
+
+export function syncActiveThemePresetFromMirror(db: Database = getDatabase()): boolean {
+    const presets = Array.isArray(db.themePresets) ? db.themePresets : []
+    const current = presets[db.themePresetsId]
+    const saved = currentThemePresetFromMirror(db, current)
+    if(current && samePersistedValue(current, saved)) return false
+
+    const next = [...presets]
+    if(db.themePresetsId >= next.length) next.push(saved)
+    else next[db.themePresetsId] = saved
+    db.themePresets = next
+    return true
+}
+
+export function saveCurrentThemePreset(){
+    syncActiveThemePresetFromMirror()
 }
 
 export function changeToThemePreset(id = 0, savecurrent = true){

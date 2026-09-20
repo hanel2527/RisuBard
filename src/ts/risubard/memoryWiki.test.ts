@@ -298,6 +298,7 @@ describe('loadNarrativeMemoryWiki', () => {
                     links: ['리나'],
                     contextMode: 'auto',
                     contentHash: 'hash-event',
+                    retrievalMetadata: { keywords: ['약속', '귀환'], storyTime: { day: 0, precision: 'origin', evidence: '이야기 시작' } },
                 }, {
                     id: 'character.lavian',
                     type: 'character',
@@ -331,6 +332,7 @@ describe('loadNarrativeMemoryWiki', () => {
                     links: ['리나'],
                     status: 'superseded',
                     supersededBy: 'event.two',
+                    retrievalMetadata: { keywords: ['약속', '귀환'], storyTime: { day: 0, precision: 'origin', evidence: '이야기 시작' } },
                 }),
                 expect.objectContaining({
                     type: 'character',

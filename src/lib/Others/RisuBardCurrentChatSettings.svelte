@@ -203,6 +203,14 @@
                     <span>{settings.risuBardResponseExcludeUserMessages ? '제외' : '포함'}</span>
                 </label>
             </div>
+            <div class="setting-field" data-chat-setting-field="risuBardIgnoreOocTurns">
+                {@render settingTitle('risuBardIgnoreOocTurns', '<!-- OOC_turn --> 무시하기', 'bardwiki-ignore-ooc')}
+                <label class="toggle-control" for="bardwiki-ignore-ooc">
+                    <input id="bardwiki-ignore-ooc" type="checkbox" checked={settings.risuBardIgnoreOocTurns}
+                        onchange={(event) => setValue('risuBardIgnoreOocTurns', (event.currentTarget as HTMLInputElement).checked)} />
+                    <span>{settings.risuBardIgnoreOocTurns ? '켜짐' : '꺼짐'}</span>
+                </label>
+            </div>
             <div class="setting-field" data-chat-setting-field="risuBardAnalysisExcludeUserMessages">
                 {@render settingTitle('risuBardAnalysisExcludeUserMessages', '분석 사용자 메시지', 'bardwiki-analysis-exclude-user')}
                 <label class="toggle-control" for="bardwiki-analysis-exclude-user">

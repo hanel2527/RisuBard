@@ -787,7 +787,7 @@ const authorizationHeaders = [
 
 const makeRisuaiAPIV3 = (iframe:HTMLIFrameElement,plugin:RisuPlugin) => {
 
-    const oldApis = getV2PluginAPIs();
+    const oldApis = getV2PluginAPIs(plugin.name);
     const createBardWikiAuth = () => forageStorage.createAuth()
     const warnBardWikiCompatibilityFailure = (error: unknown) => {
         console.warn('[RisuBard] BardWiki plugin compatibility unavailable:', error)

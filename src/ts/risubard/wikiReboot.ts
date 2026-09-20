@@ -1,3 +1,4 @@
+import { oocTurnIndices } from './oocTurns'
 import type { CanonicalTurnReceipt } from './memoryWiki'
 import { normalizeWikiWritingLanguage, type WikiWritingLanguage } from './wikiWritingLanguage'
 
@@ -15,6 +16,8 @@ export interface WikiRebootJob {
     stagingChatId: string
     batchSize: WikiRebootBatchSize
     writingLanguage?: WikiWritingLanguage
+    /** Fixed at job creation so a settings change cannot alter an in-flight batch. */
+    ignoreOocTurns?: boolean
     status: WikiRebootStatus
     targetAssistantMessageIds: string[]
     completedAssistantMessageIds: string[]
@@ -61,20 +64,23 @@ function active(message: StoredMessageLike): boolean {
 
 export function projectWikiRebootTurns(
     storedMessages: readonly StoredMessageLike[],
-    startChatIndex = 0
+    startChatIndex = 0,
+    includeUserMessages = true,
+    ignoreOocTurns = true,
 ): WikiRebootTurn[] {
+    const excluded = oocTurnIndices(storedMessages, ignoreOocTurns)
     const turns: WikiRebootTurn[] = []
     let latestUser: StoredMessageLike | undefined
     for (const [index, message] of storedMessages.entries()) {
         if (!active(message) || typeof message.data !== 'string'
             || !stableId(message.chatId)) continue
         if (message.role === 'user') {
-            latestUser = message
+            latestUser = excluded.has(index) ? undefined : message
             continue
         }
-        if (message.role !== 'char' || index < startChatIndex) continue
+        if (message.role !== 'char' || index < startChatIndex || excluded.has(index)) continue
         const messages: WikiRebootMessage[] = []
-        if (latestUser && stableId(latestUser.chatId)
+        if (includeUserMessages && latestUser && stableId(latestUser.chatId)
             && typeof latestUser.data === 'string') {
             messages.push({
                 messageId: latestUser.chatId,
@@ -103,6 +109,7 @@ export function createWikiRebootJob(input: {
     targetAssistantMessageIds: string[]
     now?: number
     writingLanguage?: WikiWritingLanguage
+    ignoreOocTurns?: boolean
 }): WikiRebootJob {
     const now = input.now ?? Date.now()
     return {
@@ -111,6 +118,7 @@ export function createWikiRebootJob(input: {
         stagingChatId: input.stagingChatId,
         batchSize: input.batchSize,
         writingLanguage: normalizeWikiWritingLanguage(input.writingLanguage),
+        ignoreOocTurns: input.ignoreOocTurns !== false,
         status: 'running',
         targetAssistantMessageIds: [...input.targetAssistantMessageIds],
         completedAssistantMessageIds: [],

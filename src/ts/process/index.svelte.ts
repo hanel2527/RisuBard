@@ -1,3 +1,4 @@
+import { isOocAssistantTurn } from '../risubard/oocTurns'
 import { get } from "svelte/store";
 import { type character, type MessageGenerationInfo, type Chat, type MessagePresetInfo, changeToPreset, getActivePromptOverlayToggleTemplate, setCurrentChat, type Message, normalizeChat, type StreamingDisplayOptimizationMode } from "../storage/database.svelte";
 import { DBState } from '../stores.svelte';
@@ -28,7 +29,6 @@ import { pluginV2 } from "../plugins/plugins.svelte";
 import { dispatchCommittedChatOutput } from "../plugins/pluginChatOutput";
 import { getModelInfo, LLMFlags } from "../model/modellist";
 import { resolveChatModelBinding, resolvePresetMaxOutputTokens } from "./request/modelPresetBinding";
-import { hypaMemoryV3 } from "./memory/hypav3";
 import { getModuleAssets, getModuleLorebooksWithSources, getModuleToggles } from "./modules";
 import { forageStorage, readImage } from "../globalApi.svelte";
 import { chatGenKey, chatProcessStage, endGeneration, isChatGenerating, setGenerationStage, startGeneration } from "./generationState";
@@ -119,6 +119,11 @@ import {
     endWikiGeneration,
 } from '../risubard/wikiGenerationState';
 import { composePromptBlockOverlay } from '../promptBlockOverlay';
+import {
+    attachScriptstateCheckpoint,
+    selectResponseScriptstateBefore,
+    snapshotChatScriptstate,
+} from '../chatScriptstateCheckpoint';
 
 function resolvedRisuBardSettings(chat?: Chat) {
     return resolveRisuBardChatSettings(DBState.db, chat?.risuBardSettings)
@@ -227,6 +232,9 @@ async function confirmProjectedNarrativeTurn(input: {
             (item) => item.id === input.chatId
         )
         const settings = resolvedRisuBardSettings(chat)
+        if (settings.risuBardIgnoreOocTurns && input.messages.some((message) =>
+            message.role === 'assistant' && isOocAssistantTurn({ role: 'char', data: message.content })
+        )) return false
         const wikiPromptPreset = resolveWikiPromptPreset(
             DBState.db.risuBardWikiPromptPresets,
             DBState.db.risuBardChatWikiPromptPresetId
@@ -262,7 +270,8 @@ async function confirmProjectedNarrativeTurn(input: {
                 ),
                 input.targetMessageId,
                 firstMessageEvidence,
-                !settings.risuBardAnalysisExcludeUserMessages
+                !settings.risuBardAnalysisExcludeUserMessages,
+                settings.risuBardIgnoreOocTurns
             )
             : confirmedMessages
         const receipt = await storedResponseMemoryAnalysis.confirm({
@@ -356,7 +365,9 @@ export async function confirmCurrentNarrativeMessage(
     const chat = character?.chats[character.chatPage]
     if (!character || !chat) return false
     const chatId = ensureNarrativeSessionChatId(chat, v4)
-    const projected = projectConfirmedMemoryTurn(chat.message, messageId)
+    const projected = projectConfirmedMemoryTurn(chat.message, messageId, {
+        ignoreOocTurns: resolvedRisuBardSettings(chat).risuBardIgnoreOocTurns,
+    })
     if (!projected) return false
     return confirmProjectedNarrativeTurn({
         characterId: character.chaId,
@@ -389,7 +400,7 @@ export async function reanalyzeNarrativeMessage(
     const projected = projectConfirmedMemoryTurn(
         chat.message,
         messageId,
-        { includeConfirmed: true }
+        { includeConfirmed: true, ignoreOocTurns: resolvedRisuBardSettings(chat).risuBardIgnoreOocTurns }
     )
     if (!projected) return false
     return confirmProjectedNarrativeTurn({
@@ -415,7 +426,7 @@ export async function forceCurrentNarrativeWikiUpdate(): Promise<boolean> {
     const projected = projectConfirmedMemoryTurn(
         chat.message,
         target.chatId,
-        { includeConfirmed: true }
+        { includeConfirmed: true, ignoreOocTurns: resolvedRisuBardSettings(chat).risuBardIgnoreOocTurns }
     )
     if (!projected) return false
     return confirmProjectedNarrativeTurn({
@@ -568,7 +579,13 @@ async function runWikiReboot(
     try {
         while (chat.risuBardWikiReboot) {
             const job = chat.risuBardWikiReboot
-            const turns = projectWikiRebootTurns(chat.message)
+            const settings = resolvedRisuBardSettings(chat)
+            // Legacy jobs predate OOC exclusion; retain their original evidence for recovery.
+            const ignoreOocTurns = job.ignoreOocTurns === true
+            const turns = projectWikiRebootTurns(
+                chat.message, 0, !settings.risuBardAnalysisExcludeUserMessages,
+                ignoreOocTurns
+            )
             if (job.status === 'stop-requested'
                 && !job.inFlightAssistantMessageIds?.length) {
                 job.status = 'paused'
@@ -621,7 +638,6 @@ async function runWikiReboot(
                 job.updatedAt = Date.now()
                 await persistWikiReboot(character, chat, chatIndex)
             }
-            const settings = resolvedRisuBardSettings(chat)
             const wikiPromptPreset = resolveWikiPromptPreset(
                 DBState.db.risuBardWikiPromptPresets,
                 DBState.db.risuBardChatWikiPromptPresetId
@@ -649,18 +665,15 @@ async function runWikiReboot(
                 ),
                 batch.at(-1)?.assistantMessageId,
                 firstMessageEvidence,
-                !settings.risuBardAnalysisExcludeUserMessages
+                !settings.risuBardAnalysisExcludeUserMessages,
+                ignoreOocTurns
             )
             const receipt = await storedResponseMemoryAnalysis.confirm({
                 characterId: character.chaId,
                 chatId: job.stagingChatId,
                 modelSessionChatId: chatId,
                 messages: projectMemoryAnalysisEvidence(
-                    settings.risuBardAnalysisExcludeUserMessages
-                        ? projected.messages.filter((message) =>
-                            message.role !== 'user'
-                        )
-                        : projected.messages,
+                    projected.messages,
                     contextMessages,
                     firstMessageEvidence
                 ),
@@ -716,9 +729,7 @@ async function runWikiReboot(
             }
             return true
         }
-        const reason = (error instanceof Error
-            ? error.message
-            : String(error)).trim().slice(0, 512) || '알 수 없는 오류'
+        const reason = boundedMemoryAnalysisError(error) || '알 수 없는 오류'
         if (job) {
             job.status = 'failed'
             job.lastError = reason
@@ -732,7 +743,7 @@ async function runWikiReboot(
             timestamp: Date.now(),
             message: `위키 리부트 실패: ${reason}`,
         })
-        throw error
+        throw new Error(reason, { cause: error })
     }
     finally {
         endWikiGeneration(operationId)
@@ -749,13 +760,15 @@ export async function startCurrentWikiReboot(
     if (!Number.isInteger(startChatIndex) || startChatIndex < 0
         || startChatIndex >= current.chat.message.length) return false
     const chatId = ensureNarrativeSessionChatId(current.chat, v4)
-    const turns = projectWikiRebootTurns(current.chat.message, startChatIndex)
+    const turns = projectWikiRebootTurns(current.chat.message, startChatIndex, true,
+        resolvedRisuBardSettings(current.chat).risuBardIgnoreOocTurns)
     if (turns.length === 0) return false
     const jobId = v4()
     current.chat.risuBardWikiReboot = createWikiRebootJob({
         jobId,
         stagingChatId: `reboot-${jobId}`,
         writingLanguage: resolvedRisuBardSettings(current.chat).risuBardWikiWritingLanguage,
+        ignoreOocTurns: resolvedRisuBardSettings(current.chat).risuBardIgnoreOocTurns,
         batchSize,
         targetAssistantMessageIds: turns.map((turn) =>
             turn.assistantMessageId
@@ -864,6 +877,7 @@ export async function executeCurrentNarrativeWikiCommand(
                 chatId
             ),
             !settings.risuBardAnalysisExcludeUserMessages,
+            settings.risuBardIgnoreOocTurns,
         )
         if (currentMessages.length === 0) {
             throw new Error('현재 메시지를 위키 명령 자료로 준비할 수 없습니다.')
@@ -1319,12 +1333,21 @@ export async function sendChat(chatProcessIndex = -1,arg:{
 
     let chatAdditonalTokens = arg.chatAdditonalTokens ?? caculatedChatTokens
     const tokenizer = new ChatTokenizer(chatAdditonalTokens, DBState.db.aiModel.startsWith('gpt') ? 'noName' : 'name')
+    const scriptstateBeforeSend = snapshotChatScriptstate(nowChatroom.chats[selectedChat].scriptstate)
     let currentChat = runCurrentChatFunction(nowChatroom.chats[selectedChat])
+    const continuedResponseCheckpoint = arg.continue
+        ? currentChat.message[currentChat.message.length - 1]?.scriptstateCheckpoint
+        : undefined
+    const scriptstateBeforeResponse = selectResponseScriptstateBefore(
+        scriptstateBeforeSend,
+        continuedResponseCheckpoint,
+    )
     const narrativeSessionChatId = realChatId
         ?? ensureNarrativeSessionChatId(currentChat, v4)
     nowChatroom.chats[selectedChat] = currentChat
     const narrativeTurnToConfirm = projectConfirmedMemoryTurn(
-        currentChat.message
+        currentChat.message, undefined,
+        { ignoreOocTurns: resolvedRisuBardSettings(currentChat).risuBardIgnoreOocTurns }
     )
     let maxContextTokens = DBState.db.maxContext
     // Output-token reservation for the context budget. Defaults to the legacy
@@ -1588,7 +1611,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                                 currentChat.message,
                                 normalizeNarrativeWorkingMessageLimit(
                                     inquirySettings.risuBardResponseMessageCount
-                                )
+                                ), undefined, undefined, true, inquirySettings.risuBardIgnoreOocTurns
                             )
                         ),
                         entityHints: lorepmt.bardWikiEntityHints,
@@ -1599,6 +1622,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                             maximum: inquirySettings.risuBardInquiryMaximumTokenBudget,
                         },
                         sourceMatches: findHistoricalSourceMatches({
+                            ignoreOocTurns: inquirySettings.risuBardIgnoreOocTurns,
                             currentInput,
                             messages: currentChat.message,
                             excludeRecentMessages: normalizeNarrativeWorkingMessageLimit(
@@ -1611,6 +1635,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                             inquirySettings.risuBardHistoricalSourceMatchLimit,
                         resolveSourceMatches: (messageIds) =>
                             resolveHistoricalSourceMatchesById({
+                                ignoreOocTurns: inquirySettings.risuBardIgnoreOocTurns,
                                 messageIds,
                                 messages: currentChat.message,
                                 currentInput,
@@ -1696,7 +1721,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                 : createNarrativeSourcesPrompt(
                     sources,
                     narrativeContext.baseline ?? '',
-                    12_000,
+                    undefined,
                     responseWikiPromptGuide
                 )
             if (currentPrompt) {
@@ -2177,7 +2202,8 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     ms = selectNarrativeWorkingMessages(
         ms,
         narrativeWorkingMessageLimit,
-        !resolvedRisuBardSettings(currentChat).risuBardResponseExcludeUserMessages
+        !resolvedRisuBardSettings(currentChat).risuBardResponseExcludeUserMessages,
+        resolvedRisuBardSettings(currentChat).risuBardIgnoreOocTurns,
     )
     narrativeContextObservation.selectedHistoryMessages = ms.length
 
@@ -2342,34 +2368,9 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         currentTokens += await tokenizer.tokenizeChat(chat)
     }
     
-    if((currentChat.supaMemory ?? nowChatroom.supaMemory) && DBState.db.hypaV3){
-        stageTimings.stage1Duration = Date.now() - stageTimings.stage1Start
-        setGenerationStage(genKey, 2)
-        stageTimings.stage2Start = Date.now()
-        console.log("Current chat's hypaV3 Data: ", currentChat.hypaV3Data)
-        const sp = await hypaMemoryV3(chats, currentTokens, maxContextTokens, currentChat, nowChatroom, tokenizer)
-        if(sp.error){
-            // Save new summary
-            if (sp.memory) {
-                currentChat.hypaV3Data = sp.memory
-                DBState.db.characters[selectedChar].chats[selectedChat].hypaV3Data = currentChat.hypaV3Data
-            }
-            console.log(sp)
-            throwError(sp.error)
-            if (realChatId) clearPendingSend(realChatId)
-            return false
-        }
-        chats = sp.chats
-        currentTokens = sp.currentTokens
-        currentChat.hypaV3Data = sp.memory ?? currentChat.hypaV3Data
-        DBState.db.characters[selectedChar].chats[selectedChat].hypaV3Data = currentChat.hypaV3Data
-
-        currentChat = DBState.db.characters[selectedChar].chats[selectedChat];
-        console.log("[Expected to be updated] chat's HypaV3Data: ", currentChat.hypaV3Data)
-        stageTimings.stage2Duration = Date.now() - stageTimings.stage2Start
-        setGenerationStage(genKey, 1)
-    }
-    else{
+    // BardWiki already selected the response history. Legacy memory flags are
+    // compatibility data and must not activate another summarizer here.
+    {
         stageTimings.stage1Duration = Date.now() - stageTimings.stage1Start
         while(currentTokens > maxContextTokens){
             if(chats.length <= 1){
@@ -3121,6 +3122,14 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             chatIndex: selectedChat,
             messageIndex: findMessageIndexByChatId(currentChat, outputMessageId),
         })
+        const outputMessageIndex = findMessageIndexByChatId(currentChat, outputMessageId)
+        if(outputMessageIndex >= 0){
+            attachScriptstateCheckpoint(
+                currentChat.message[outputMessageIndex],
+                scriptstateBeforeResponse,
+                snapshotChatScriptstate(currentChat.scriptstate),
+            )
+        }
         if(DBState.db.ttsAutoSpeech){
             await sayTTS(currentChar, result)
         }
@@ -3211,6 +3220,14 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             chatIndex: selectedChat,
             messageIndex: findMessageIndexByChatId(currentChat, outputMessageId),
         })
+        const outputMessageIndex = findMessageIndexByChatId(currentChat, outputMessageId)
+        if(outputMessageIndex >= 0){
+            attachScriptstateCheckpoint(
+                currentChat.message[outputMessageIndex],
+                scriptstateBeforeResponse,
+                snapshotChatScriptstate(currentChat.scriptstate),
+            )
+        }
     }
 
     let needsAutoContinue = false

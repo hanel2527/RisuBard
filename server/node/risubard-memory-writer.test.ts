@@ -147,6 +147,8 @@ describe('BardWiki memory writer skill', () => {
                 'persistentFacts',
                 'openContinuity',
                 'canonicalUpdateCandidates',
+                'keywords',
+                'temporalHint',
             ],
         })
         expect(schema.properties.establishedEvents.maxItems).toBe(12)
@@ -373,7 +375,7 @@ describe('BardWiki memory writer skill', () => {
         const schema = JSON.parse(buildRebootBatchDraftSchema(2))
         expect(schema.properties.turns).toMatchObject({ minItems: 2, maxItems: 2 })
         expect(schema.properties.turns.items.required)
-            .toEqual(['title', 'establishedEvents'])
+            .toEqual(['title', 'establishedEvents', 'keywords', 'temporalHint'])
         expect(schema.properties.turns.items.properties)
             .not.toHaveProperty('assistantMessageId')
         const draft = parseRebootBatchDraft(JSON.stringify({
@@ -381,9 +383,13 @@ describe('BardWiki memory writer skill', () => {
             turns: [{
                 assistantMessageId: 'a1', title: '검을 잃음',
                 establishedEvents: ['라비안이 검을 잃었다.'],
+                keywords: ['라비안', '검', '분실'],
+                temporalHint: { elapsedDays: 0, evidence: '그날 저녁' },
             }, {
                 assistantMessageId: 'a2', title: '검을 되찾음',
                 establishedEvents: ['라비안이 검을 되찾았다.'],
+                keywords: ['라비안', '검', '회수'],
+                temporalHint: { elapsedDays: 1, evidence: '다음 날' },
             }],
             stateChanges: [{ subject: '라비안의 검', before: '분실', after: '소유' }],
             characterKnowledge: [], persistentFacts: [], openContinuity: [],
@@ -396,11 +402,44 @@ describe('BardWiki memory writer skill', () => {
         expect(draft.turns.map((turn) => turn.title)).toEqual([
             '검을 잃음', '검을 되찾음',
         ])
+        expect(draft.turns.map((turn) => ({
+            keywords: turn.keywords,
+            temporalHint: turn.temporalHint,
+        }))).toEqual([
+            {
+                keywords: ['라비안', '검', '분실'],
+                temporalHint: { elapsedDays: 0, evidence: '그날 저녁' },
+            },
+            {
+                keywords: ['라비안', '검', '회수'],
+                temporalHint: { elapsedDays: 1, evidence: '다음 날' },
+            },
+        ])
         expect(draft.canonicalUpdateCandidates).toHaveLength(1)
         expect(() => parseRebootBatchDraft(JSON.stringify({
             ...draft,
             turns: [...draft.turns].reverse(),
         }), ['a1', 'a2'])).toThrow(/order|assistant/i)
+    })
+
+    test('keeps legacy reboot turns without retrieval fields and rejects invalid new time hints', () => {
+        const base = {
+            turns: [{ title: '도착', establishedEvents: ['라비안이 도착했다.'] }],
+            stateChanges: [], characterKnowledge: [], persistentFacts: [],
+            openContinuity: [], canonicalUpdateCandidates: [],
+        }
+        expect(parseRebootBatchDraft(JSON.stringify(base), ['a1']).turns[0])
+            .toMatchObject({
+                assistantMessageId: 'a1', title: '도착',
+                establishedEvents: ['라비안이 도착했다.'],
+            })
+        expect(() => parseRebootBatchDraft(JSON.stringify({
+            ...base,
+            turns: [{
+                ...base.turns[0], keywords: ['도착'],
+                temporalHint: { elapsedDays: 1, evidence: '' },
+            }],
+        }), ['a1'])).toThrow(/temporalHint\.evidence/)
     })
 
     test('binds trusted reboot assistant IDs instead of model-generated IDs', () => {

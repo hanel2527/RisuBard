@@ -1772,33 +1772,39 @@ async function requestPlugin(arg:RequestDataArgumentExtended):Promise<requestDat
                 Math.max(1, providerDeadlineAt - Date.now()),
                 arg.abortSignal,
             )
+        const invokeV2Provider = (args: PluginV2ProviderArgument) => {
+            if (requestLogEnabled()) evidenceRecorder.setRequestBody(args)
+            return runProvider(signal => v2Function(args, signal))
+        }
+        const legacyArguments = {
+            bias: bias,
+            prompt_chat: formated,
+            max_tokens: maxTokens,
+            ...(legacyPluginTemperature === undefined ? {} : { temperature: legacyPluginTemperature }),
+            ...(legacyPluginPresencePenalty === undefined ? {} : { presence_penalty: legacyPluginPresencePenalty }),
+            ...(legacyPluginFrequencyPenalty === undefined ? {} : { frequency_penalty: legacyPluginFrequencyPenalty }),
+        }
+        if (!v2Function && requestLogEnabled()) evidenceRecorder.setRequestBody(legacyArguments)
         let d = v2Function
-            ? await runProvider(signal => v2Function(pluginArguments, signal))
-            : await runProvider(() => pluginProcess({
-                bias: bias,
-                prompt_chat: formated,
-                max_tokens: maxTokens,
-                ...(legacyPluginTemperature === undefined ? {} : { temperature: legacyPluginTemperature }),
-                ...(legacyPluginPresencePenalty === undefined ? {} : { presence_penalty: legacyPluginPresencePenalty }),
-                ...(legacyPluginFrequencyPenalty === undefined ? {} : { frequency_penalty: legacyPluginFrequencyPenalty }),
-            }))
+            ? await invokeV2Provider(pluginArguments)
+            : await runProvider(() => pluginProcess(legacyArguments))
         if(v2Function && nativeStructuredOutput){
             d = await runProvider(() => normalizePluginStructuredOutputFailure(d))
             if(isPluginStructuredOutputValidationFailure(d)){
-                d = await runProvider(signal => v2Function({
+                d = await invokeV2Provider({
                     ...pluginArguments,
                     prompt_chat: [
                         ...pluginArguments.prompt_chat,
                         { role: 'user', content: pluginStructuredOutputRepairMessage },
                     ],
-                }, signal))
+                })
                 d = await runProvider(() => normalizePluginStructuredOutputFailure(d))
             }
             if(shouldFallbackFromNativeStructuredOutput(d)){
-                d = await runProvider(signal => v2Function({
+                d = await invokeV2Provider({
                     ...pluginArguments,
                     response_schema: undefined,
-                }, signal))
+                })
             }
         }
     

@@ -45,7 +45,7 @@ describe('plugin request evidence recorder', () => {
         )
     })
 
-    it('records body-free per-chat evidence with locally counted output tokens', async () => {
+    it('records plugin input and output with locally counted output tokens', async () => {
         const record = vi.fn()
         const recorder = createPluginRequestEvidenceRecorder({
             startedAt: 1_000,
@@ -66,6 +66,7 @@ describe('plugin request evidence recorder', () => {
             record,
         })
 
+        recorder.setRequestBody({ prompt_chat: [{ role: 'user', content: 'hello' }], max_tokens: 100 })
         recorder.markFirstToken(1_100)
         await recorder.finish({ success: true, streaming: true, output: 'done' })
 
@@ -83,6 +84,26 @@ describe('plugin request evidence recorder', () => {
             success: true,
             streaming: true,
         }))
-        expect(JSON.stringify(record.mock.calls[0][0])).not.toContain('done')
+        expect(record.mock.calls[0][0].responseBody).toBe('done')
+        expect(JSON.parse(record.mock.calls[0][0].requestBody)).toEqual({ prompt_chat: [{ role: 'user', content: 'hello' }], max_tokens: 100 })
+        await recorder.finish({ success: true, streaming: false, output: 'duplicate' })
+        expect(record).toHaveBeenCalledTimes(1)
+    })
+    it('records the final retry input and error response without interrupting on unserializable input', async () => {
+        const record = vi.fn()
+        const recorder = createPluginRequestEvidenceRecorder({ startedAt: 0, source: 'main', generationId: 'g', model: 'm', provider: 'p' }, { record, countTokens: async () => 0 })
+        recorder.setRequestBody({ prompt_chat: ['first'] })
+        recorder.setRequestBody({ prompt_chat: ['repair'] })
+        await recorder.finish({ success: false, streaming: false, errorMessage: 'provider refused' })
+        expect(JSON.parse(record.mock.calls[0][0].requestBody).prompt_chat).toEqual(['repair'])
+        expect(record.mock.calls[0][0].responseBody).toBe('provider refused')
+        const other = createPluginRequestEvidenceRecorder({ startedAt: 0, source: 'main', generationId: 'g', model: 'm', provider: 'p' }, { record, countTokens: async () => 0 })
+        expect(() => other.setRequestBody({ toJSON() { throw new Error('cannot serialize') } })).not.toThrow()
+    })
+    it('preserves streamed partial output alongside interruption errors', async () => {
+        const record = vi.fn()
+        const recorder = createPluginRequestEvidenceRecorder({ startedAt: 0, source: 'main', generationId: 'g', model: 'm', provider: 'p' }, { record, countTokens: async () => 2 })
+        await recorder.finish({ success: false, streaming: true, aborted: true, output: 'partial answer', errorMessage: 'interrupted' })
+        expect(record).toHaveBeenCalledWith(expect.objectContaining({ responseBody: 'partial answer', errorMessage: 'interrupted', aborted: true }))
     })
 })

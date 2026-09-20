@@ -8,6 +8,10 @@ import {
     parseCanonicalTurnReceipt,
     type CanonicalTurnReceipt,
 } from '../../src/ts/risubard/canonicalTurnReceipt'
+import {
+    normalizeMemoryRetrievalMetadata,
+    type MemoryRetrievalMetadata,
+} from './risubard-memory-metadata'
 
 export interface MarkdownWikiDocument {
     id: string
@@ -27,6 +31,7 @@ export interface MarkdownWikiDocument {
     contentHash: string
     reviewStatus?: 'unreviewed' | 'reviewed'
     reviewBaseContent?: string
+    retrievalMetadata?: MemoryRetrievalMetadata
 }
 
 export type MarkdownWikiContextMode = 'always' | 'auto' | 'never'
@@ -390,6 +395,9 @@ function serializeDocument(
         ...document.sourceMessageIds.map((id) => `  - ${yamlString(id)}`),
         'links:',
         ...document.links.map((link) => `  - ${yamlString(link)}`),
+        ...(document.retrievalMetadata
+            ? [`retrieval_metadata: ${JSON.stringify(document.retrievalMetadata)}`]
+            : []),
         '---',
         '',
         document.content,
@@ -447,6 +455,9 @@ function parseDocument(
     const authoring = optionalScalar('authoring')
     const context = optionalScalar('context')
     const reviewStatus = optionalScalar('review_status')
+    const retrievalMetadata = normalizeMemoryRetrievalMetadata(
+        optionalScalar('retrieval_metadata')
+    )
     if (reviewStatus !== undefined
         && reviewStatus !== 'unreviewed'
         && reviewStatus !== 'reviewed') {
@@ -490,6 +501,7 @@ function parseDocument(
         ...(reviewStatus ? {
             reviewStatus: reviewStatus as 'unreviewed' | 'reviewed',
         } : {}),
+        ...(retrievalMetadata ? { retrievalMetadata } : {}),
     }
 }
 
@@ -1314,6 +1326,7 @@ export function createMarkdownNarrativeWiki(
             markdown: string
             append?: boolean
             writingLanguage?: WikiWritingLanguage
+            retrievalMetadata?: MemoryRetrievalMetadata
         }): Promise<MarkdownWikiDocument> {
             const sourceMessageIds = input.sourceMessageIds.map((id) =>
                 required(id, 'sourceMessageId')
@@ -1337,6 +1350,9 @@ export function createMarkdownNarrativeWiki(
                 ? knownDocuments
                     .find((document) => document.id === `event.${suffix}`)
                 : undefined
+            const retrievalMetadata = input.retrievalMetadata === undefined
+                ? existingEvent?.retrievalMetadata
+                : normalizeMemoryRetrievalMetadata(input.retrievalMetadata)
             const previousLanguage = existingEvent ? detectWikiWritingLanguage(existingEvent.content) : undefined
             const writingLanguage = normalizeWikiWritingLanguage(input.writingLanguage
                 ?? previousLanguage ?? detectWikiWritingLanguage(normalized.content))
@@ -1375,6 +1391,7 @@ export function createMarkdownNarrativeWiki(
                 created: existingEvent?.created ?? operationTime,
                 authoring: 'automatic',
                 contextMode: 'auto',
+                retrievalMetadata,
             })
             await writeAtomically(
                 fileSystem,
@@ -1397,6 +1414,7 @@ export function createMarkdownNarrativeWiki(
             expectedContentHash?: string
             reviewStatus?: 'unreviewed' | 'reviewed'
             writingLanguage?: WikiWritingLanguage
+            retrievalMetadata?: MemoryRetrievalMetadata
         }): Promise<MarkdownWikiDocument> {
             const title = required(input.title, 'Title').trim().slice(0, 160)
             const incomingSources = input.sourceMessageIds.map((id) =>
@@ -1426,6 +1444,9 @@ export function createMarkdownNarrativeWiki(
                     'Wiki document changed since the draft was created'
                 )
             }
+            const retrievalMetadata = input.retrievalMetadata === undefined
+                ? existing?.retrievalMetadata
+                : normalizeMemoryRetrievalMetadata(input.retrievalMetadata)
             const suffix = existing?.id.split('.').at(-1)
                 ?? stableId([input.type, title.normalize('NFKC').toLocaleLowerCase()])
             const id = existing?.id ?? `${input.type}.${suffix}`
@@ -1518,6 +1539,7 @@ export function createMarkdownNarrativeWiki(
                 contextMode: input.type === 'scene'
                     ? 'always'
                     : existing?.contextMode ?? 'auto',
+                retrievalMetadata,
             })
             await writeAtomically(fileSystem, file, prepared.contents)
             await rebuildIndex(input.characterId, input.chatId, writingLanguage)
@@ -1623,6 +1645,7 @@ export function createMarkdownNarrativeWiki(
             aliases?: string[]
             markdown: string
             expectedContentHash?: string
+            retrievalMetadata?: MemoryRetrievalMetadata
         }): Promise<MarkdownWikiDocument> {
             const title = required(input.title, 'Title').trim().slice(0, 160)
             const allowed: MarkdownWikiDocumentType[] = [
@@ -1652,6 +1675,9 @@ export function createMarkdownNarrativeWiki(
                     'Wiki document changed since the draft was created'
                 )
             }
+            const retrievalMetadata = input.retrievalMetadata === undefined
+                ? existing?.retrievalMetadata
+                : normalizeMemoryRetrievalMetadata(input.retrievalMetadata)
             const operationTime = now().toISOString()
             const suffix = existing?.id.split('.').at(-1)
                 ?? stableId([input.type, title, randomUUID()])
@@ -1719,6 +1745,7 @@ export function createMarkdownNarrativeWiki(
                     : input.type === 'scene'
                     ? 'always'
                     : existing?.contextMode ?? 'auto',
+                retrievalMetadata,
             })
             await writeAtomically(fileSystem, file, prepared.contents)
             if (oldFile && oldFile !== file) {
@@ -1924,6 +1951,22 @@ export function createMarkdownNarrativeWiki(
                 await rebuildIndex(input.characterId, input.chatId)
             }
             return { retractedIds: matches.map((document) => document.id) }
+        },
+
+        async detachInheritedSources(characterId: string, chatId: string, sourceChatId: string): Promise<void> {
+            const workspace = workspaceFor(characterId, chatId)
+            const documents = await loadDocuments(characterId, chatId)
+            const origin = stableId([sourceChatId])
+            for (const document of documents) {
+                if (document.sourceMessageIds.length === 0) continue
+                const prepared = prepareDocument({
+                    ...document,
+                    sourceMessageIds: document.sourceMessageIds.map(id =>
+                        id.startsWith('inherited:') ? id : `inherited:${origin}:${id}`),
+                })
+                await writeAtomically(fileSystem, join(workspace.directory, ...document.relativePath.split('/')), prepared.contents)
+            }
+            await rebuildIndex(characterId, chatId)
         },
 
         async loadView(

@@ -4,6 +4,7 @@ import {
     addLorebookEntry,
     addKeysToEntries,
     applyBatchPatch,
+    createLorebookDuplicate,
     deleteLorebookEntries,
     ensureLorebookIds,
     filterLorebookEntries,
@@ -43,6 +44,84 @@ describe('workspaceOperations', () => {
         expect(result[1]).toBe(added)
         expect(entries).toEqual([existing])
         expect(addLorebookEntry(entries, lore({ id: 'existing' }))).toBe(entries)
+    })
+
+    it('adds a new entry directly after the anchor at the same hierarchy level', () => {
+        const folderKey = '\uf000folder:places'
+        const entries = [
+            lore({ id: 'root-before', insertorder: 10 }),
+            lore({ id: 'folder', mode: 'folder', key: folderKey, insertorder: 20 }),
+            lore({ id: 'child-before', folder: folderKey, insertorder: 30 }),
+            lore({ id: 'child-after', folder: folderKey, insertorder: 40 }),
+            lore({ id: 'root-after', insertorder: 50 }),
+        ]
+
+        const childResult = addLorebookEntry(entries, lore({ id: 'new-child' }), 'child-before')
+        expect(childResult.map((entry) => entry.id)).toEqual([
+            'root-before', 'folder', 'child-before', 'new-child', 'child-after', 'root-after',
+        ])
+        expect(childResult.find((entry) => entry.id === 'new-child')?.folder).toBe(folderKey)
+
+        const rootResult = addLorebookEntry(entries, lore({ id: 'new-root' }), 'root-before')
+        expect(rootResult.map((entry) => entry.id)).toEqual([
+            'root-before', 'new-root', 'folder', 'child-before', 'child-after', 'root-after',
+        ])
+        expect(rootResult.find((entry) => entry.id === 'new-root')?.folder).toBeUndefined()
+    })
+
+    it('duplicates every entry field with a new identity and the next numbered name', () => {
+        const source = lore({
+            id: 'source',
+            comment: 'Dragon',
+            content: 'full text',
+            activationPercent: 35,
+        })
+        const entries = [
+            source,
+            lore({ id: 'copy-2', comment: 'Dragon (2)' }),
+            lore({ id: 'copy-4', comment: 'Dragon (4)' }),
+        ]
+
+        const duplicate = createLorebookDuplicate(entries, source, 'duplicate-id', 'Untitled lore')
+
+        expect(duplicate).toMatchObject({
+            id: 'duplicate-id',
+            comment: 'Dragon (5)',
+            content: 'full text',
+            activationPercent: 35,
+        })
+        expect(duplicate).not.toBe(source)
+        expect(source).toMatchObject({ id: 'source', comment: 'Dragon' })
+    })
+
+    it('rebinds duplicated Grimoire metadata to the new independent lore entry', () => {
+        const source = {
+            ...lore({ id: 'source', comment: 'Dragon', content: 'full text' }),
+            bard: {
+                sourceLegacyId: 'source',
+                sourceHash: 'old-hash',
+                derivedFromId: 'parent',
+                kind: 'character',
+                activation: 'retrieve',
+                aliases: ['wyrm'],
+                tags: ['creature'],
+                summary: 'A dragon.',
+                facets: [],
+                injection: 'full',
+                links: [],
+            },
+        } as any
+
+        const duplicate = createLorebookDuplicate([source], source, 'duplicate-id', 'Untitled lore') as any
+
+        expect(duplicate.bard).toMatchObject({
+            sourceLegacyId: 'duplicate-id',
+            kind: 'character',
+            aliases: ['wyrm'],
+            tags: ['creature'],
+        })
+        expect(duplicate.bard.sourceHash).not.toBe('old-hash')
+        expect(duplicate.bard.derivedFromId).toBeUndefined()
     })
 
     it('deletes selected entries and folder children immutably', () => {

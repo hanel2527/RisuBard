@@ -3,16 +3,16 @@ import { v4 as uuidv4, v4 } from 'uuid';
 import { tick } from "svelte";
 import { get } from "svelte/store";
 import streamSaver from 'streamsaver';
-import { setDatabase, type Database, defaultSdDataFunc, getDatabase, appVer, nodeOnlyVer, getCurrentCharacter, loadTogglesFromChat } from "./storage/database.svelte";
+import { setDatabase, type Database, defaultSdDataFunc, getDatabase, appVer, nodeOnlyVer, getCurrentCharacter, loadTogglesFromChat, syncActiveBotPresetFromMirror, syncActiveThemePresetFromMirror } from "./storage/database.svelte";
 import { checkRisuUpdate } from "./update";
 import { MobileGUI, botMakerMode, selectedCharID, loadedStore, DBState, LoadingStatusState, selIdState, ReloadGUIPointer, bodyIntercepterStore, loadingOverlayStore, chatDeselected } from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
-import { alertConfirm, alertError, alertMd, alertNormalWait, alertSelect, alertTOS, waitAlert, notifySuccess, notifyError, notifyInfo } from "./alert";
+import { alertConfirm, alertConfirmMulti, alertError, alertMd, alertNormalWait, alertSelect, alertTOS, waitAlert, notifySuccess, notifyError, notifyInfo } from "./alert";
 import { hasher } from "./parser/parser.svelte";
 import { characterURLImport, hubURL } from "./characterCards";
 import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
 import { decodeRisuSave, encodeRisuSaveLegacy, findDangerousChatOps, RisuSaveEncoder, RisuSavePatcher, type toSaveType } from "./storage/risuSave";
-import { isHydrating, saveChatToServer, ensureChatHydrated, chatToStub, classifyChat } from "./storage/chatStorage";
+import { isHydrating, saveChatToServer, ensureChatHydrated, chatToStub, classifyChat, convertStubsToPlaceholders } from "./storage/chatStorage";
 import { AutoStorage } from "./storage/autoStorage";
 import { ConflictError, type PersistWarning } from "./storage/nodeStorage";
 import { supportsPatchSync } from "./platform";
@@ -33,6 +33,8 @@ import {
 } from "./requestLog";
 import { defaultRequestPurpose, type RequestPurpose } from './requestPurpose'
 import { collectDatabaseAssetReferences } from './storage/assetRefs'
+import { claimSaveDbRuntime } from './storage/saveDbRuntime'
+import { createCanonicalSaveConflict } from './storage/canonicalSaveConflict'
 
 export const forageStorage = new AutoStorage()
 
@@ -405,8 +407,14 @@ export async function toggleExternalEditMode() {
 export async function saveDb() {
     let changed = false
     let gotChannel = false
+    const canonicalSaveConflict = createCanonicalSaveConflict()
     const sessionID = v4()
     let saveInFlight: Promise<void> | null = null
+    const saveRuntime = await claimSaveDbRuntime(
+        globalThis,
+        () => saveInFlight ?? Promise.resolve()
+    )
+    if (!saveRuntime.isActive()) return
     try {
         externalEditMode.active = (await forageStorage.getExternalEditModeStatus()).active
     } catch {
@@ -420,9 +428,10 @@ export async function saveDb() {
                 new Set((character.chats ?? []).map(chat => chat?.id).filter(Boolean)),
             ])
     )
-    let channel: BroadcastChannel
+    let channel: BroadcastChannel | undefined
     if (window.BroadcastChannel) {
         channel = new BroadcastChannel('risu-db')
+        saveRuntime.addCleanup(() => channel?.close())
     }
     if (channel) {
         channel.onmessage = (ev) => {
@@ -443,13 +452,17 @@ export async function saveDb() {
     // simultaneous use of two devices — rare, and the attempted change cannot
     // be saved — so it stays an explicit blocking modal, never an automatic
     // reload that would eat the user's action without a word.
-    window.addEventListener('risu-session-deactivated', () => {
+    const handleSessionDeactivated = () => {
         if (!gotChannel) {
             gotChannel = true
             alertNormalWait(language.activeTabChange).then(() => {
                 location.reload()
             })
         }
+    }
+    window.addEventListener('risu-session-deactivated', handleSessionDeactivated)
+    saveRuntime.addCleanup(() => {
+        window.removeEventListener('risu-session-deactivated', handleSessionDeactivated)
     })
 
     // Reload-on-return: while this tab was hidden, another device may have
@@ -476,8 +489,13 @@ export async function saveDb() {
         })().catch(() => { /* status check failed — do nothing, write path 423 still guards */ })
     }
     window.addEventListener('focus', checkWriterLockOnReturn)
-    document.addEventListener('visibilitychange', () => {
+    const handleVisibilityReturn = () => {
         if (document.visibilityState === 'visible') checkWriterLockOnReturn()
+    }
+    document.addEventListener('visibilitychange', handleVisibilityReturn)
+    saveRuntime.addCleanup(() => {
+        window.removeEventListener('focus', checkWriterLockOnReturn)
+        document.removeEventListener('visibilitychange', handleVisibilityReturn)
     })
 
     // Post-handoff notice from a reload-on-return in the previous page life.
@@ -513,6 +531,10 @@ export async function saveDb() {
     })
 
     let patcher = new RisuSavePatcher()
+    // set() advances the patch baseline before transport acknowledges it.
+    // After an unsuccessful attempt, rebuild a full snapshot instead of
+    // treating an empty retry diff as proof that the server has the changes.
+    let forceFullWriteOnRetry = false
     if (supportsPatchSync) {
         await patcher.init(patchSyncBaseline ?? getDatabase())
         patchSyncBaseline = null
@@ -561,7 +583,7 @@ export async function saveDb() {
         }
     }
 
-    $effect.root(() => {
+    const disposeSaveEffects = $effect.root(() => {
 
         let selIdState = $state(0)
         let knownCharacterIds = new Set<string>((getDatabase()?.characters ?? []).map((character) => character?.chaId).filter(Boolean))
@@ -576,7 +598,7 @@ export async function saveDb() {
         const debounceTime = 500; // 500 milliseconds
         let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 
-        selectedCharID.subscribe((v) => {
+        const unsubscribeSelectedCharacter = selectedCharID.subscribe((v) => {
             selIdState = v
         })
 
@@ -601,9 +623,10 @@ export async function saveDb() {
             })
             if (!externalEditMode.active) void flushServerDbKeepalive()
         }
-        document.addEventListener('visibilitychange', () => {
+        const handleVisibilityFlush = () => {
             if (document.visibilityState === 'hidden') flushImmediate();
-        });
+        }
+        document.addEventListener('visibilitychange', handleVisibilityFlush);
         window.addEventListener('pagehide', flushImmediate);
 
         $effect(() => {
@@ -615,9 +638,12 @@ export async function saveDb() {
                     deepTouch(DBState.db[key])
                 }
             }
+            const botPresetMirrored = syncActiveBotPresetFromMirror()
+            const themePresetMirrored = syncActiveThemePresetFromMirror()
+            if (botPresetMirrored) changeTracker.botPreset = true
             if (!didInitRootEffect) {
                 didInitRootEffect = true
-                return
+                if (!botPresetMirrored && !themePresetMirrored) return
             }
             changeTracker.root = true
             saveTimeoutExecute()
@@ -737,7 +763,14 @@ export async function saveDb() {
             }
             saveTimeoutExecute()
         })
+        return () => {
+            if (saveTimeout) clearTimeout(saveTimeout)
+            unsubscribeSelectedCharacter()
+            document.removeEventListener('visibilitychange', handleVisibilityFlush)
+            window.removeEventListener('pagehide', flushImmediate)
+        }
     })
+    saveRuntime.addCleanup(disposeSaveEffects)
 
     function requeueTrackedChanges(toSave: toSaveType) {
         changeTracker.character = [...new Set([...toSave.character, ...changeTracker.character])]
@@ -811,10 +844,15 @@ export async function saveDb() {
     async function rebaseTrackedLocalChangesOnLatestServerDb(conflictEtag: string | null, db: Database, toSave: toSaveType) {
         forageStorage.setDbEtag(conflictEtag ?? null)
         const latestData = await forageStorage.getItem('database/database.bin') as unknown as Uint8Array
+        if (!latestData?.length) throw new Error('Cannot resolve save conflict: latest database is unavailable')
         if (latestData && latestData.length > 0) {
             const latestDb = await decodeRisuSave(latestData) as Database
+            // Changes may arrive while fetching the latest database or showing
+            // the conflict dialog. Include them before replacing runtime state.
+            requeueTrackedChanges(toSave)
+            toSave = safeStructuredClone(changeTracker)
             const mergedDb = safeStructuredClone(latestDb) as Database
-            const localDb = safeStructuredClone(db) as Database
+            const localDb = safeStructuredClone(getDatabase()) as Database
 
             for (const key in localDb) {
                 if (
@@ -832,6 +870,8 @@ export async function saveDb() {
             if (toSave.modules) {
                 mergedDb.modules = safeStructuredClone(localDb.modules)
             }
+            if (toSave.plugins) mergedDb.plugins = safeStructuredClone(localDb.plugins)
+            if (toSave.pluginCustomStorage) mergedDb.pluginCustomStorage = safeStructuredClone(localDb.pluginCustomStorage)
 
             const trackedCharIds = new Set<string>(toSave.character.filter(Boolean))
             for (const trackedChat of toSave.chat) {
@@ -860,6 +900,9 @@ export async function saveDb() {
             }
             mergedDb.characters = mergedCharacters
             const mergedBaseline = safeStructuredClone(mergedDb) as Database
+            for (const character of mergedDb.characters) {
+                character.chats = convertStubsToPlaceholders(character.chats ?? [])
+            }
             setDatabase(mergedDb)
 
             encoder = new RisuSaveEncoder()
@@ -875,11 +918,29 @@ export async function saveDb() {
         changed = true
     }
 
-    function reloadAfterExternalCanonicalChange(currentEtag: string | null) {
-        forageStorage.setDbEtag(currentEtag)
-        gotChannel = true
-        try { sessionStorage.setItem('risu-canonical-files-reload', '1') } catch {}
-        location.reload()
+    async function resolveCanonicalSaveConflict(toSave: toSaveType): Promise<'retry' | 'noop'> {
+        const result = await canonicalSaveConflict.resolve(
+            async () => {
+                const choice = await alertConfirmMulti(language.canonicalSaveConflictTitle, [
+                    language.canonicalSaveConflictKeep,
+                    language.canonicalSaveConflictDownload,
+                ], language.canonicalSaveConflictDetail)
+                return choice === 0 ? 'keep' : choice === 1 ? 'download' : 'cancel'
+            },
+            async () => {
+                // Include edits made while the dialog or network read was open.
+                await rebaseTrackedLocalChangesOnLatestServerDb(forageStorage.getDbEtag(), getDatabase(), toSave)
+            },
+            async () => {
+                await downloadFile(`risubard-unsaved-edits-${Date.now()}.json`,
+                    JSON.stringify(getDatabase({ snapshot: true }), null, 2))
+            },
+        )
+        if (result === 'noop') {
+            notifyError(language.canonicalSaveConflictPaused)
+            await sleep(3000)
+        }
+        return result
     }
 
     async function persistTrackedChanges(
@@ -889,6 +950,8 @@ export async function saveDb() {
             skipBroadcast?: boolean
         }
     ): Promise<'saved' | 'retry' | 'noop'> {
+        // Never bypass an unresolved conflict via the full-write retry lane.
+        if (canonicalSaveConflict.pending()) return resolveCanonicalSaveConflict(toSave)
         if (gotChannel) {
             // Data is saved in another tab.
             await sleep(1000)
@@ -917,6 +980,16 @@ export async function saveDb() {
             try {
                 await saveChatToServer(chaId, chatIndex, chatId, chat)
             } catch (e) {
+                if (e instanceof ConflictError) {
+                    if (e.externalEditMode) {
+                        externalEditMode.active = true
+                        return 'noop'
+                    }
+                    if (e.canonicalFilesChanged) {
+                        canonicalSaveConflict.mark()
+                        return resolveCanonicalSaveConflict(toSave)
+                    }
+                }
                 console.error(`[Save] Failed to save chat ${chaId}/${chatId}:`, e)
                 failedChats.push([chaId, chatId])
             }
@@ -1100,9 +1173,8 @@ export async function saveDb() {
                     return 'noop'
                 }
                 if (patchResult.canonicalFilesChanged) {
-                    console.warn('[Save] Canonical entity files changed externally; discarding stale in-memory save and reloading')
-                    reloadAfterExternalCanonicalChange(patchResult.etag ?? null)
-                    return 'noop'
+                    canonicalSaveConflict.mark()
+                    return resolveCanonicalSaveConflict(toSave)
                 }
                 saved = patchResult.success
                 if (patchResult.etag) {
@@ -1156,9 +1228,8 @@ export async function saveDb() {
                         return 'noop'
                     }
                     if (conflictErr.canonicalFilesChanged) {
-                        console.warn('[Save] Canonical entity files changed externally; discarding stale in-memory save and reloading')
-                        reloadAfterExternalCanonicalChange(conflictErr.currentEtag)
-                        return 'noop'
+                        canonicalSaveConflict.mark()
+                        return resolveCanonicalSaveConflict(toSave)
                     }
                     console.warn('[Save] Full-write conflict detected, rebasing tracked local changes on latest server DB...')
                     await rebaseTrackedLocalChangesOnLatestServerDb(conflictErr.currentEtag ?? null, db, toSave)
@@ -1191,25 +1262,33 @@ export async function saveDb() {
         skipBroadcast?: boolean
         rejectOnFailure?: boolean
     }) {
+        if (!saveRuntime.isActive()) return
         if (externalEditMode.active) return
         if (saveInFlight) {
             return saveInFlight
         }
 
         const toSave = takeTrackedChanges()
-        if (!hasTrackedChanges(toSave) && !options?.forceFullWrite) {
+        if (!hasTrackedChanges(toSave) && !options?.forceFullWrite && !forceFullWriteOnRetry) {
             return
         }
 
         saveInFlight = (async () => {
             saving.state = true
             try {
-                const result = await persistTrackedChanges(toSave, options)
+                const result = await persistTrackedChanges(toSave, {
+                    ...options,
+                    forceFullWrite: options?.forceFullWrite || forceFullWriteOnRetry,
+                })
                 if (result === 'saved') {
+                    forceFullWriteOnRetry = false
                     savetrys = 0
-                } else if (result === 'noop' && hasTrackedChanges(toSave)) {
-                    requeueTrackedChanges(toSave)
-                    changed = true
+                } else {
+                    forceFullWriteOnRetry ||= supportsPatchSync
+                    if (result === 'noop' && hasTrackedChanges(toSave)) {
+                        requeueTrackedChanges(toSave)
+                        changed = true
+                    }
                 }
                 if (result !== 'saved' && options?.rejectOnFailure) {
                     savetrys += 1
@@ -1219,6 +1298,7 @@ export async function saveDb() {
                     ))
                 }
             } catch (error) {
+                forceFullWriteOnRetry ||= supportsPatchSync
                 requeueTrackedChanges(toSave)
                 savetrys += 1
                 if (options?.rejectOnFailure) {
@@ -1257,7 +1337,7 @@ export async function saveDb() {
     }
 
     let savetrys = 0
-    while (true) {
+    while (saveRuntime.isActive()) {
         if (!changed) {
             await sleep(200)
             continue

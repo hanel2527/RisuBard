@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onDestroy, onMount, tick } from 'svelte'
     import Sortable from 'sortablejs'
+    import { CopyIcon } from '@lucide/svelte'
     import { v4 as createUuid } from 'uuid'
     import { language } from 'src/lang'
     import type { loreBook } from 'src/ts/storage/database.svelte'
@@ -18,6 +19,7 @@
         addLorebookEntry,
         addKeysToEntries,
         applyBatchPatch,
+        createLorebookDuplicate,
         deleteLorebookEntries,
         ensureLorebookIds,
         filterLorebookEntries,
@@ -54,7 +56,6 @@
     import altArrowUpIcon from 'src/assets/solar-bold/alt-arrow-up-bold.svg'
     import altArrowDownIcon from 'src/assets/solar-bold/alt-arrow-down-bold.svg'
     import altArrowLeftIcon from 'src/assets/solar-bold/alt-arrow-left-bold.svg'
-    import moveToFolderIcon from 'src/assets/solar-bold/move-to-folder-bold.svg'
     import trashIcon from 'src/assets/solar-bold/trash-bin-2-bold.svg'
     import inlineTrashIcon from 'src/assets/solar-bold/trash-bin-trash-bold.svg'
     import clearIcon from 'src/assets/solar-bold/close-circle-bold.svg'
@@ -118,7 +119,6 @@
     const variableContext = $derived(conditionView ? lorebookVariableContext(DBState.db, scopeKey) : undefined)
     let batchKeys = $state('')
     let batchBardValues = $state('')
-    let targetFolderId = $state('')
     let draftEntryId = $state<string | null>(null)
     type DraftField = 'comment' | 'key' | 'secondkey' | 'content' | 'insertorder'
     let drafts = $state<Record<DraftField, string>>({ comment: '', key: '', secondkey: '', content: '', insertorder: '100' })
@@ -290,7 +290,6 @@
             activeId = session?.activeId ?? null
             selectionAnchorId = session?.selectionAnchorId ?? null
             expandedFolderIds = new Set(session?.expandedFolderIds ?? [])
-            targetFolderId = ''
             mobileView = activeId ? 'editor' : 'list'
             if (session) {
                 lastFocus = session
@@ -314,7 +313,6 @@
         }
         const nextExpanded = new Set([...expandedFolderIds].filter((id) => entriesById.get(id)?.mode === 'folder'))
         if (!sameIds(expandedFolderIds, nextExpanded)) expandedFolderIds = nextExpanded
-        if (targetFolderId && entriesById.get(targetFolderId)?.mode !== 'folder') targetFolderId = ''
 
         if (!persistedIdSources.has(source)) {
             persistedIdSources.add(source)
@@ -668,6 +666,11 @@
 
     function addEntry(mode: loreBook['mode'] = 'normal') {
         const base = commitAllDirty()
+        const afterId = mode === 'normal' && selectedIds.size === 1
+            ? [...selectedIds][0]
+            : mode === 'normal' && activeEntry && isBatchEditable(activeEntry)
+                ? activeEntry.id
+                : undefined
         const id = createUuid()
         const folderKey = `\uf000folder:${id}`
         const legacyEntry: loreBook = {
@@ -684,8 +687,29 @@
             selective: false,
         }
         const next = bardMode ? createBardLoreEntry(legacyEntry) : legacyEntry
-        emit(addLorebookEntry(base, next))
+        emit(addLorebookEntry(base, next, afterId))
         activeId = id
+        selectedIds = mode === 'normal' ? new Set([id]) : new Set()
+        selectionAnchorId = mode === 'normal' ? id : null
+        mobileView = 'editor'
+    }
+
+    function duplicateActiveEntry() {
+        if (!activeEntry?.id || !isBatchEditable(activeEntry)) return
+        const sourceId = activeEntry.id
+        const base = commitAllDirty()
+        const source = base.find((entry) => entry.id === sourceId)
+        if (!source) return
+        const duplicate = createLorebookDuplicate(
+            base,
+            source,
+            createUuid(),
+            language.lorebookWorkspace.untitledLore,
+        )
+        emit(addLorebookEntry(base, duplicate, sourceId))
+        activeId = duplicate.id ?? null
+        selectedIds = duplicate.id ? new Set([duplicate.id]) : new Set()
+        selectionAnchorId = duplicate.id ?? null
         mobileView = 'editor'
     }
 
@@ -756,38 +780,6 @@
         emit(deleteLorebookEntries(normalizedEntries, new Set([target.id])))
         activeId = null
         mobileView = 'list'
-    }
-
-    function moveActive(direction: 'up' | 'down') {
-        if (!activeEntry?.id) return
-        const base = commitAllDirty()
-        const candidates = activeEntry.mode === 'folder'
-            ? base.filter((item) => item.mode === 'folder' || !item.folder)
-            : base
-        const index = candidates.findIndex((item) => item.id === activeEntry.id)
-        const target = candidates[index + (direction === 'up' ? -1 : 1)]
-        if (!target?.id) return
-        emit(moveLorebookEntries(
-            base,
-            [activeEntry.id],
-            target.id,
-            direction === 'up' ? 'before' : 'after',
-        ))
-    }
-
-    function moveActiveToFolder() {
-        if (!activeEntry?.id || !targetFolderId || targetFolderId === activeEntry.id) return
-        const base = commitAllDirty()
-        emit(moveLorebookEntries(base, [activeEntry.id], targetFolderId, 'inside'))
-    }
-
-    function moveActiveToRoot() {
-        if (!activeEntry?.id || !activeEntry.folder) return
-        const base = commitAllDirty()
-        const target = base.find((item) => item.mode === 'folder' && item.id !== activeEntry.id)
-            ?? base.find((item) => !item.folder && item.id !== activeEntry.id)
-        if (!target?.id) return
-        emit(moveLorebookEntries(base, [activeEntry.id], target.id, 'after'))
     }
 
     function restoreLoremaster() {
@@ -1020,22 +1012,6 @@
                 <option value="enabled">{language.lorebookWorkspace.showEnabled}</option>
                 <option value="disabled">{language.lorebookWorkspace.showDisabled}</option>
             </select>
-            <button type="button" class="toolbar-action primary" data-lorebook-add onclick={() => addEntry()}>
-                <SolarIcon src={documentAddIcon} name="document-add-bold" size="1.15rem" />
-                <span>{language.lorebookWorkspace.addLore}</span>
-            </button>
-            <button type="button" class="toolbar-action" data-lorebook-add-folder onclick={() => addEntry('folder')}>
-                <SolarIcon src={addFolderIcon} name="add-folder-bold" size="1.15rem" />
-                <span>{language.lorebookWorkspace.addFolder}</span>
-            </button>
-            <button type="button" class="toolbar-action" data-lorebook-import onclick={() => void onImport?.()}>
-                <SolarIcon src={fileDownloadIcon} name="file-download-bold" size="1.15rem" />
-                <span>{language.lorebookWorkspace.import}</span>
-            </button>
-            <button type="button" class="toolbar-action" data-lorebook-export onclick={() => void onExport?.()}>
-                <SolarIcon src={fileSendIcon} name="file-send-bold" size="1.15rem" />
-                <span>{language.lorebookWorkspace.export}</span>
-            </button>
             {#if restorableCount > 0}
                 <button type="button" class="restore" data-lorebook-import-loremaster onclick={restoreLoremaster}>
                     <SolarIcon src={folderOpenIcon} name="folder-open-bold" size="1.15rem" />
@@ -1050,6 +1026,26 @@
         data-mobile-hidden={mobileView === 'editor'}
     >
 
+        <div class="lore-action-toolbar" role="toolbar" aria-orientation="vertical" aria-label={language.lorebookWorkspace.loreState} data-lorebook-action-toolbar>
+            <button type="button" class="toolbar-action" data-lorebook-add aria-label={language.lorebookWorkspace.addLore} use:tooltip={language.lorebookWorkspace.addLore}  onclick={() => addEntry()}>
+                <SolarIcon src={documentAddIcon} name="document-add-bold" size="1.15rem" />
+            </button>
+            <button type="button" class="toolbar-action" data-lorebook-add-folder aria-label={language.lorebookWorkspace.addFolder} use:tooltip={language.lorebookWorkspace.addFolder}  onclick={() => addEntry('folder')}>
+                <SolarIcon src={addFolderIcon} name="add-folder-bold" size="1.15rem" />
+            </button>
+            <button type="button" class="toolbar-action" data-lorebook-duplicate aria-label={language.lorebookWorkspace.duplicateLore} use:tooltip={language.lorebookWorkspace.duplicateLore} disabled={!activeEntry || !isBatchEditable(activeEntry) || selectedIds.size > 1} onclick={duplicateActiveEntry}>
+                <CopyIcon size={18} />
+            </button>
+            <button type="button" class="toolbar-action danger" data-lorebook-delete aria-label={language.lorebookWorkspace.deleteEntry} use:tooltip={language.lorebookWorkspace.deleteEntry} disabled={!activeEntry || activeEntry.mode === 'child' || selectedIds.size > 1} onclick={removeActive}>
+                <SolarIcon src={trashIcon} name="trash-bin-2-bold" size="1.15rem" />
+            </button>
+            <button type="button" class="toolbar-action" data-lorebook-import aria-label={language.lorebookWorkspace.import} use:tooltip={language.lorebookWorkspace.import} disabled={!onImport} onclick={() => void onImport?.()}>
+                <SolarIcon src={fileDownloadIcon} name="file-download-bold" size="1.15rem" />
+            </button>
+            <button type="button" class="toolbar-action" data-lorebook-export aria-label={language.lorebookWorkspace.export} use:tooltip={language.lorebookWorkspace.export} disabled={!onExport} onclick={() => void onExport?.()}>
+                <SolarIcon src={fileSendIcon} name="file-send-bold" size="1.15rem" />
+            </button>
+        </div>
         <div class="lore-rows" bind:this={listElement}>
             {#each visibleEntries as item (item.id)}
                 {#if rowIsVisible(item)}
@@ -1258,8 +1254,38 @@
                 </button>
             </section>
         {:else if activeEntry && activeEntry.mode !== 'folder'}
-            <div class="lore-editor-grid" bind:this={editorGrid}>
+            <div class="lore-editor-grid" class:has-bard-rail={Boolean(activeBardEntry)} bind:this={editorGrid}>
                 <div class="editor-fields">
+                    {#if !activeBardEntry}
+                    <div class="entry-settings-toolbar" role="group" aria-label={language.lorebookWorkspace.loreState} data-lorebook-settings-toolbar>
+                    {#if localActivation?.visible}
+                        <label><input
+                            type="checkbox"
+                            data-lorebook-local-activation
+                            checked={localActivation.isActive(activeEntry)}
+                            onchange={(event) => localActivation?.onToggle(activeEntry, event.currentTarget.checked)}
+                        /> {language.lorebookWorkspace.activeInCurrentChat}</label>
+                    {/if}
+                    <label><input type="checkbox" data-lorebook-hidden checked={activeEntry.enabled === false} onchange={(event) => patchEntry(activeEntry.id!, { enabled: !event.currentTarget.checked })} /> {language.lorebookWorkspace.hidden}</label>
+                        {#if !activeBardEntry}
+                        <label><input type="checkbox" checked={activeEntry.alwaysActive} onchange={(event) => patchEntry(activeEntry.id!, { alwaysActive: event.currentTarget.checked })} /> {language.lorebookWorkspace.alwaysActive}</label>
+                        <label><input type="checkbox" checked={activeEntry.selective} onchange={(event) => patchEntry(activeEntry.id!, { selective: event.currentTarget.checked })} /> {language.lorebookWorkspace.selective}</label>
+                        <label><input type="checkbox" checked={activeEntry.useRegex ?? false} onchange={(event) => patchEntry(activeEntry.id!, { useRegex: event.currentTarget.checked })} /> {language.lorebookWorkspace.regexKeys}</label>
+                        <label class="activation-control">{language.lorebookWorkspace.activationPercent}
+                            <input
+                                type="number"
+                                min="0"
+                                max="100"
+                                data-lorebook-activation-percent
+                                value={activeEntry.activationPercent ?? 100}
+                                onchange={(event) => patchEntry(activeEntry.id!, {
+                                    activationPercent: Math.min(100, Math.max(0, Number(event.currentTarget.value) || 0)),
+                                })}
+                            />
+                        </label>
+                        {/if}
+                    </div>
+                    {/if}
                     <div class="editor-heading">
                         <label>{language.lorebookWorkspace.name}
                             <input
@@ -1349,20 +1375,19 @@
                         {/if}
                     </div>
                 </div>
+                {#if activeBardEntry}
                 <button type="button" class="state-splitter" data-lorebook-state-splitter aria-label={language.lorebookWorkspace.resizeSettings}
                     use:tooltip={language.lorebookWorkspace.resizeHint}
                     use:resizeHandle={{ start: startStateResize, reset: () => editorGrid?.style.removeProperty('--lore-state-width') }}></button>
                 <aside class="lore-state-rail" aria-label={language.lorebookWorkspace.loreState}>
-                    {#if localActivation?.visible}
-                        <label><input
-                            type="checkbox"
-                            data-lorebook-local-activation
-                            checked={localActivation.isActive(activeEntry)}
-                            onchange={(event) => localActivation?.onToggle(activeEntry, event.currentTarget.checked)}
-                        /> {language.lorebookWorkspace.activeInCurrentChat}</label>
-                    {/if}
-                    <label><input type="checkbox" data-lorebook-hidden checked={activeEntry.enabled === false} onchange={(event) => patchEntry(activeEntry.id!, { enabled: !event.currentTarget.checked })} /> {language.lorebookWorkspace.hidden}</label>
                     {#if activeBardEntry}
+                        {#if localActivation?.visible}
+                            <label><input type="checkbox" data-lorebook-local-activation checked={localActivation.isActive(activeEntry)} onchange={(event) => localActivation?.onToggle(activeEntry, event.currentTarget.checked)} /> {language.lorebookWorkspace.activeInCurrentChat}</label>
+                        {/if}
+                        <div class="bard-activation-toggles" data-bard-lore-activation-toggles>
+                            <label><input type="checkbox" data-lorebook-hidden checked={activeEntry.enabled === false} onchange={(event) => patchEntry(activeEntry.id!, { enabled: !event.currentTarget.checked })} /> {language.lorebookWorkspace.hidden}</label>
+                            <label><input type="checkbox" data-bard-lore-always-active checked={activeBardEntry.bard.activation === 'required'} onchange={(event) => patchBardMetadata({ activation: event.currentTarget.checked ? 'required' : 'retrieve' })} /> {language.lorebookWorkspace.bardRequired}</label>
+                        </div>
                         <div class="bard-field"><span class="bard-field-heading"><span>{language.lorebookWorkspace.bardActivation}</span><button type="button" data-bard-lore-help="activation" aria-label={language.lorebookWorkspace.bardActivationHelp} use:tooltip={language.lorebookWorkspace.bardActivationHelp} onclick={() => alertNormal(language.lorebookWorkspace.bardActivationHelp)}>?</button></span>
                             <BardLoreActivationSelect
                                 value={activeBardEntry.bard.activation}
@@ -1442,55 +1467,9 @@
                                 onAnalysisRunChange={onBardAnalysisRunChange}
                             />
                         {/if}
-                    {:else}
-                        <label><input type="checkbox" checked={activeEntry.alwaysActive} onchange={(event) => patchEntry(activeEntry.id!, { alwaysActive: event.currentTarget.checked })} /> {language.lorebookWorkspace.alwaysActive}</label>
-                        <label><input type="checkbox" checked={activeEntry.selective} onchange={(event) => patchEntry(activeEntry.id!, { selective: event.currentTarget.checked })} /> {language.lorebookWorkspace.selective}</label>
-                        <label><input type="checkbox" checked={activeEntry.useRegex ?? false} onchange={(event) => patchEntry(activeEntry.id!, { useRegex: event.currentTarget.checked })} /> {language.lorebookWorkspace.regexKeys}</label>
-                        <label class="activation-control">{language.lorebookWorkspace.activationPercent}
-                            <input
-                                type="number"
-                                min="0"
-                                max="100"
-                                data-lorebook-activation-percent
-                                value={activeEntry.activationPercent ?? 100}
-                                onchange={(event) => patchEntry(activeEntry.id!, {
-                                    activationPercent: Math.min(100, Math.max(0, Number(event.currentTarget.value) || 0)),
-                                })}
-                            />
-                        </label>
                     {/if}
-                    <details class="entry-actions">
-                        <summary>{language.lorebookWorkspace.entryActions}</summary>
-                        <div class="entry-action-list">
-                            <button type="button" class="action-with-icon" data-lorebook-move="up" onclick={() => moveActive('up')}>
-                                <SolarIcon src={altArrowUpIcon} name="alt-arrow-up-bold" size="1.05rem" />
-                                <span>{language.lorebookWorkspace.moveUp}</span>
-                            </button>
-                            <button type="button" class="action-with-icon" data-lorebook-move="down" onclick={() => moveActive('down')}>
-                                <SolarIcon src={altArrowDownIcon} name="alt-arrow-down-bold" size="1.05rem" />
-                                <span>{language.lorebookWorkspace.moveDown}</span>
-                            </button>
-                            <select bind:value={targetFolderId} aria-label={language.lorebookWorkspace.moveTargetFolder}>
-                                <option value="">{language.lorebookWorkspace.chooseFolder}</option>
-                                {#each folders as folder}
-                                    <option value={folder.id}>{folder.comment || language.lorebookWorkspace.untitledFolder}</option>
-                                {/each}
-                            </select>
-                            <button type="button" class="action-with-icon" data-lorebook-move="folder" onclick={moveActiveToFolder}>
-                                <SolarIcon src={moveToFolderIcon} name="move-to-folder-bold" size="1.05rem" />
-                                <span>{language.lorebookWorkspace.moveToFolder}</span>
-                            </button>
-                            <button type="button" class="action-with-icon" data-lorebook-move="root" onclick={moveActiveToRoot}>
-                                <SolarIcon src={folderOpenIcon} name="folder-open-bold" size="1.05rem" />
-                                <span>{language.lorebookWorkspace.moveToRoot}</span>
-                            </button>
-                            <button type="button" class="danger action-with-icon" data-lorebook-delete onclick={removeActive}>
-                                <SolarIcon src={trashIcon} name="trash-bin-2-bold" size="1.05rem" />
-                                <span>{language.lorebookWorkspace.deleteEntry}</span>
-                            </button>
-                        </div>
-                    </details>
                 </aside>
+                {/if}
             </div>
         {:else if activeEntry?.mode === 'folder'}
             <div class="folder-editor" data-lorebook-folder-editor>
@@ -1514,20 +1493,6 @@
                             onkeydown={(event) => commitOnShortcut(event, 'insertorder')}
                         />
                     </label>
-                    <div class="folder-actions">
-                        <button type="button" class="action-with-icon" data-lorebook-move="up" onclick={() => moveActive('up')}>
-                            <SolarIcon src={altArrowUpIcon} name="alt-arrow-up-bold" size="1.05rem" />
-                            <span>{language.lorebookWorkspace.moveUp}</span>
-                        </button>
-                        <button type="button" class="action-with-icon" data-lorebook-move="down" onclick={() => moveActive('down')}>
-                            <SolarIcon src={altArrowDownIcon} name="alt-arrow-down-bold" size="1.05rem" />
-                            <span>{language.lorebookWorkspace.moveDown}</span>
-                        </button>
-                        <button type="button" class="danger action-with-icon" data-lorebook-delete onclick={removeActive}>
-                            <SolarIcon src={trashIcon} name="trash-bin-2-bold" size="1.05rem" />
-                            <span>{language.lorebookWorkspace.deleteFolderAndEntries}</span>
-                        </button>
-                    </div>
                 </div>
             </div>
         {:else}
@@ -1626,7 +1591,7 @@
         font-size: 100%;
     }
     .lore-pane { min-width: 0; min-height: 0; }
-    .lore-list-pane { position: relative; display: flex; grid-row: 2; grid-column: 1; flex-direction: column; border-right: 1px solid var(--color-darkborderc); background: var(--lore-surface-root); }
+    .lore-list-pane { position: relative; display: flex; grid-row: 2; grid-column: 1; flex-direction: row; border-right: 1px solid var(--color-darkborderc); background: var(--lore-surface-root); }
     .lore-toolbar { position: relative; z-index: 6; display: flex; grid-row: 1; grid-column: 1 / -1; flex-wrap: wrap; align-items: center; gap: .45rem; padding: .68rem; border-bottom: 1px solid var(--color-darkborderc); background: var(--color-darkbg); }
     .scope-mark { display: grid; min-width: 8.5rem; margin-right: .35rem; padding-left: .55rem; border-left: .25rem solid var(--color-borderc); }
     .scope-mark strong { overflow: hidden; font-size: .9rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
@@ -1641,9 +1606,8 @@
     button { cursor: pointer; }
     button:hover { background: color-mix(in srgb, var(--color-selected) 72%, var(--color-darkbg)); }
     .toolbar-action, .restore, .action-with-icon, .batch-heading button { display: inline-flex; align-items: center; justify-content: center; gap: .38rem; }
-    .toolbar-action.primary { background: var(--color-selected); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-borderc) 55%, transparent); }
     .restore { background: color-mix(in srgb, var(--color-borderc) 28%, var(--color-darkbg)); }
-    .lore-rows { min-height: 0; flex: 1; overflow-y: auto; padding: .6rem; }
+    .lore-rows { min-width: 0; min-height: 0; flex: 1; overflow-y: auto; padding: .6rem; }
     [data-lorebook-row] { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; content-visibility: auto; contain-intrinsic-size: auto 3.05rem; gap: .48rem; min-height: 3.05rem; margin-bottom: .32rem; padding: .42rem .55rem; border: 1px solid transparent; border-radius: .62rem; background: var(--lore-surface-root); cursor: default; transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease, opacity 160ms ease; }
     .lore-workspace[data-drag-enabled='true'] [data-lorebook-row] { cursor: grab; }
     .lore-workspace[data-drag-enabled='true'] [data-lorebook-row]:active { cursor: grabbing; }
@@ -1705,10 +1669,20 @@
         --lore-effective-state-width: clamp(15rem, var(--lore-state-width, 20rem), calc(100% - 20rem));
         position: relative;
         display: grid;
-        grid-template-columns: minmax(0, 1fr) var(--lore-effective-state-width);
+        grid-template-columns: minmax(0, 1fr);
         min-height: 0;
         height: 100%;
     }
+    .lore-editor-grid.has-bard-rail { grid-template-columns: minmax(0, 1fr) var(--lore-effective-state-width); }
+    .lore-action-toolbar { display: flex; flex: 0 0 auto; flex-direction: column; gap: .3rem; padding: .55rem .45rem; overflow-y: auto; border-right: 1px solid var(--color-darkborderc); background: color-mix(in srgb, var(--color-darkbutton) 20%, transparent); }
+    .lore-action-toolbar button { display: grid; width: 2.75rem; min-height: 2.75rem; flex: 0 0 2.75rem; padding: 0; place-items: center; border: 1px solid var(--color-darkborderc); background: transparent; }
+    .lore-action-toolbar button:disabled { opacity: .4; cursor: not-allowed; }
+    .lore-action-toolbar button:not(:disabled):hover { background: var(--color-selected); border-color: var(--color-borderc); }
+    .lore-action-toolbar button.danger { color: var(--color-danger); border-color: color-mix(in srgb, var(--color-danger) 45%, var(--color-darkborderc)); }
+    .entry-settings-toolbar { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; gap: .5rem .9rem; padding: .45rem .55rem; border: 1px solid var(--color-darkborderc); border-radius: .5rem; background: color-mix(in srgb, var(--color-selected) 15%, transparent); }
+    .entry-settings-toolbar label { display: inline-flex; align-items: center; gap: .35rem; font-size: .77rem; white-space: nowrap; }
+    .entry-settings-toolbar .activation-control { display: inline-flex !important; align-items: center !important; }
+    .entry-settings-toolbar .activation-control input { width: 4.5rem; }
     .state-splitter { position: absolute; top: 0; bottom: 0; right: calc(var(--lore-effective-state-width) - .25rem); z-index: 5; width: .5rem; padding: 0; border: 0; border-radius: 0; background: transparent; cursor: col-resize; touch-action: none; }
     .editor-fields { display: flex; min-width: 0; min-height: 0; overflow: auto; flex-direction: column; gap: .5rem; padding: .65rem; }
     .editor-heading { display: grid; flex-shrink: 0; grid-template-columns: minmax(3rem, 1fr) repeat(2, minmax(4rem, 1fr)) minmax(4rem, .35fr); gap: .5rem; align-items: end; overflow-x: auto; }
@@ -1738,18 +1712,16 @@
     .lore-state-rail { display: flex; min-width: 0; min-height: 0; overflow: auto; flex-direction: column; gap: .5rem; padding: .65rem; border-left: 1px solid var(--color-darkborderc); background: color-mix(in srgb, var(--color-selected) 15%, transparent); }
     .lore-state-rail input, .lore-state-rail select { min-width: 0; }
     .lore-state-rail textarea { width: 100%; min-height: 3rem; padding: .42rem; resize: vertical; }
-    .lore-state-rail input[type='checkbox'] { flex-shrink: 0; }
     .lore-state-rail label { display: flex; align-items: center; gap: .48rem; font-size: .77rem; }
+    .bard-activation-toggles { display: flex; flex-wrap: nowrap; align-items: center; gap: 1rem; }
+    .bard-activation-toggles label { white-space: nowrap; }
+    .bard-activation-toggles input { flex-shrink: 0; }
     .lore-state-rail .bard-field { display: grid; align-items: stretch; gap: .3rem; color: var(--color-textcolor2); font-weight: 650; }
     .bard-field-heading { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: .45rem; color: var(--color-textcolor2); }
     .bard-field-heading button { display: grid; width: 1.25rem; min-width: 1.25rem !important; height: 1.25rem; min-height: 1.25rem !important; padding: 0; place-items: center; border: 1px solid var(--color-darkborderc); border-radius: 50%; color: var(--color-textcolor2); font-size: .68rem; }
     .bard-field-heading button:hover { border-color: var(--color-borderc); color: var(--color-textcolor); }
     .lore-state-rail button, .lore-state-rail select { width: 100%; min-height: 2.15rem; padding: .42rem; }
     .lore-state-rail .bard-field-heading button { width: 1.25rem; min-width: 1.25rem; height: 1.25rem; min-height: 1.25rem; flex: 0 0 1.25rem; padding: 0; cursor: help; }
-    .entry-actions { margin-top: .3rem; padding-top: .7rem; border-top: 1px solid var(--color-darkborderc); }
-    .entry-actions summary { padding: .42rem; border-radius: .45rem; color: var(--color-textcolor2); cursor: pointer; font-size: .76rem; font-weight: 600; }
-    .entry-actions summary:hover { background: var(--lore-surface-child); color: var(--color-textcolor); }
-    .entry-action-list { display: grid; gap: .45rem; padding-top: .55rem; }
     .activation-control { display: grid !important; align-items: stretch !important; gap: .24rem !important; }
     .activation-control input { width: 100%; padding: .35rem; }
     .bard-facets, .bard-facet { display: grid; gap: .4rem; }
@@ -1776,8 +1748,6 @@
     .folder-editor-card label, .child-link-editor label { display: grid; gap: .32rem; font-size: .75rem; font-weight: 650; }
     .folder-editor-card input, .child-link-editor input { padding: .5rem; }
     .folder-kicker { color: var(--color-textcolor2); font-size: .69rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
-    .folder-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
-    .folder-actions button { padding: .42rem .55rem; }
     .child-link-editor { width: min(34rem, 90%); margin: auto; place-content: center stretch; }
     .child-link-editor p { margin: 0 0 .8rem; font-size: .8rem; }
     .child-link-mark { color: var(--color-borderc); font-size: 2rem; }
@@ -1795,7 +1765,7 @@
         .lore-toolbar .search-box { flex-basis: 100%; }
         .lore-splitter, .state-splitter { display: none; }
         .mobile-back { display: inline-flex; margin: .65rem .75rem 0; padding: .5rem .68rem; align-items: center; align-self: flex-start; gap: .4rem; }
-        .lore-editor-grid { grid-template-columns: 1fr; height: calc(100% - 3rem); overflow-y: auto; }
+        .lore-editor-grid, .lore-editor-grid.has-bard-rail { grid-template-columns: 1fr; height: calc(100% - 3rem); overflow-y: auto; }
         .editor-fields { min-height: 42rem; }
         .lore-state-rail {
             display: grid;

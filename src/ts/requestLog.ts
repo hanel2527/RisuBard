@@ -205,7 +205,12 @@ async function send(entries: PendingEntry[]): Promise<void> {
 /** Fire-and-forget single entry, for call sites that are not scope-shaped. */
 export function recordRequestLog(entry: Omit<PendingEntry, 'clientId'>): void {
     if (!requestLogEnabled()) return
-    void send([{ ...entry, clientId: getClientId() }])
+    void send([{
+        ...entry,
+        requestBody: entry.requestBody == null ? undefined : stripInlineMedia(entry.requestBody),
+        responseBody: entry.responseBody == null ? undefined : stripInlineMedia(entry.responseBody),
+        clientId: getClientId(),
+    }])
 }
 
 // ─── Reading back ────────────────────────────────────────────────────────────

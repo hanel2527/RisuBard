@@ -1,4 +1,6 @@
 import type { loreBook } from '../storage/database.svelte'
+import { safeStructuredClone } from '../polyfill'
+import { fingerprintLegacyLore, type BardLoreEntry } from './bardLore'
 
 export type LorebookFilter = {
     query: string
@@ -148,9 +150,40 @@ export function ensureLorebookIds(entries: loreBook[], createId: () => string): 
     })
 }
 
-export function addLorebookEntry(entries: loreBook[], entry: loreBook): loreBook[] {
+export function addLorebookEntry(entries: loreBook[], entry: loreBook, afterId?: string): loreBook[] {
     if (!hasId(entry) || entries.some((current) => current.id === entry.id)) return entries
-    return [...entries, entry]
+    const appended = [...entries, entry]
+    if (!afterId || !entries.some((current) => current.id === afterId)) return appended
+    return moveLorebookEntries(appended, [entry.id], afterId, 'after')
+}
+
+export function createLorebookDuplicate(
+    entries: loreBook[],
+    source: loreBook,
+    id: string,
+    fallbackName: string,
+): loreBook {
+    const duplicate = safeStructuredClone(source)
+    const originalName = source.comment.trim() || fallbackName
+    const baseName = originalName.replace(/\s+\(\d+\)$/u, '').trimEnd()
+    const escapedBase = baseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const numberedName = new RegExp(`^${escapedBase}\\s+\\((\\d+)\\)$`, 'u')
+    let highest = 1
+    for (const entry of entries) {
+        if (entry.comment.trim() === baseName) highest = Math.max(highest, 1)
+        const match = numberedName.exec(entry.comment.trim())
+        if (match) highest = Math.max(highest, Number(match[1]))
+    }
+
+    duplicate.id = id
+    duplicate.comment = `${baseName} (${highest + 1})`
+    if ('bard' in duplicate) {
+        const bardDuplicate = duplicate as BardLoreEntry
+        bardDuplicate.bard.sourceLegacyId = id
+        bardDuplicate.bard.sourceHash = fingerprintLegacyLore(duplicate)
+        delete bardDuplicate.bard.derivedFromId
+    }
+    return duplicate
 }
 
 export function deleteLorebookEntries(entries: loreBook[], selected: Set<string>): loreBook[] {

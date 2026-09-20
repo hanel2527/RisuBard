@@ -45,6 +45,44 @@ afterEach(() => {
 })
 
 describe('S1 projection shadow', () => {
+    it('samples only verified debounce saves and checks immediately after mismatch or loss of eligibility', async () => {
+        let time = 0, reads = 0, eligible = true
+        const tasks: Array<() => Promise<void>> = [], rows: any[] = []
+        const shadow = createProjectionShadow({
+            repository: { exportLegacyDatabase: () => { reads++; return { language: 'ko' } } },
+            now: () => time, minIntervalMs: 30000, canSkip: () => eligible,
+            observation: { record: (row: any) => rows.push(row) },
+            scheduleTask: (task: () => Promise<void>) => tasks.push(task),
+        })
+        const save = async (trigger = 'patch-debounce', language = 'ko') => {
+            shadow.schedule({ database: { language }, trigger }); await tasks.shift()!()
+        }
+        await save(); time = 1000; await save()
+        expect(reads).toBe(1)
+        expect(rows.at(-1)).toMatchObject({ outcome: 'skipped', errorStage: 'sample-interval' })
+        time = 30000; await save(); expect(reads).toBe(2)
+        await save('flush', 'en'); expect(reads).toBe(3)
+        await save(); expect(reads).toBe(4)
+        eligible = false; await save(); expect(reads).toBe(5)
+    })
+    it('reports match, mismatch and read failure to the P1 eligibility gate', async () => {
+        let read: () => any = () => ({ language: 'ko' })
+        const tasks: Array<() => Promise<void>> = []
+        const comparisons: boolean[] = []
+        const shadow = createProjectionShadow({
+            repository: { exportLegacyDatabase: () => read() },
+            scheduleTask: (task: () => Promise<void>) => tasks.push(task),
+            onComparison: (match: boolean) => comparisons.push(match),
+        })
+        for (const value of ['ko', 'en']) {
+            shadow.schedule({ database: { language: value } })
+            await tasks.shift()!()
+        }
+        read = () => { throw new Error('read failed') }
+        shadow.schedule({ database: { language: 'ko' } })
+        await tasks.shift()!()
+        expect(comparisons).toEqual([true, false, false])
+    })
     it('runs from the successful canonical projection boundary', () => {
         const server = readFileSync(path.join(process.cwd(), 'server', 'node', 'server.cjs'), 'utf8')
 
@@ -93,6 +131,28 @@ describe('S1 projection shadow', () => {
         database.seperateParameters = { first: {}, second: {} }
         database.characters[0].chats[0].id = ''
         delete database.characters[0].chats[0].message
+        const imported = repository.importLegacyDatabase(database, { mode: 'sync' })
+        const tasks: Array<() => Promise<void>> = []
+        const rows: any[] = []
+        const shadow = createProjectionShadow({
+            repository,
+            observation: { record: (row: any) => rows.push(row) },
+            scheduleTask: (task: () => Promise<void>) => { tasks.push(task) },
+        })
+
+        shadow.schedule({ database, trigger: 'chat-debounce', plannedFiles: imported.files })
+        await tasks[0]()
+
+        expect(rows).toEqual([expect.objectContaining({ outcome: 'success', semanticMatch: true })])
+    })
+
+    it('compares the JSON-persisted meaning of explicit undefined chat metadata', async () => {
+        expect(createProjectionShadow).toBeTypeOf('function')
+        if (!createProjectionShadow) return
+
+        const repository = createUserDataRepository({ dataRoot: tempRoot() })
+        const database: any = legacyDatabase()
+        database.characters[0].chats[0].folderId = undefined
         const imported = repository.importLegacyDatabase(database, { mode: 'sync' })
         const tasks: Array<() => Promise<void>> = []
         const rows: any[] = []

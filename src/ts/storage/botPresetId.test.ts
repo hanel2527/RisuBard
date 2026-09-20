@@ -42,7 +42,10 @@ const {
     changeToPreset,
     setActiveBotPresetById,
     saveCurrentPreset,
+    syncActiveBotPresetFromMirror,
+    syncActiveThemePresetFromMirror,
     setPreset,
+    themePresetTemplate,
     withStableActivePreset,
 } = databaseModule
 const { DBState } = storesModule as any
@@ -126,6 +129,44 @@ describe('createBotPresetTemplate', () => {
 
         expect(DBState.db.botPresets[0].promptBlockOverlay).toEqual(promptBlockOverlay)
         expect(DBState.db.botPresets[0].promptBlockOverlay).not.toBe(promptBlockOverlay)
+    })
+
+    test('synchronizes prompt edits and ordering into the active preset without switching presets', () => {
+        const preset = createBotPresetTemplate()
+        preset.promptTemplate = [
+            { type: 'plain', type2: 'normal', role: 'system', text: 'First' },
+            { type: 'plain', type2: 'normal', role: 'user', text: 'Second' },
+        ]
+        ;(preset as any).futureField = { keep: true }
+        DBState.db = {
+            ...structuredClone(preset),
+            promptTemplate: [
+                { type: 'plain', type2: 'normal', role: 'user', text: 'Second!' },
+                { type: 'plain', type2: 'normal', role: 'system', text: 'First' },
+            ],
+            botPresets: [structuredClone(preset)],
+            botPresetsId: 0,
+        }
+
+        expect(syncActiveBotPresetFromMirror()).toBe(true)
+        expect(DBState.db.botPresets[0].promptTemplate).toEqual(DBState.db.promptTemplate)
+        expect(DBState.db.botPresets[0].futureField).toEqual({ keep: true })
+        expect(syncActiveBotPresetFromMirror()).toBe(false)
+    })
+
+    test('synchronizes current theme edits into the active theme preset without switching presets', () => {
+        const preset = structuredClone(themePresetTemplate)
+        DBState.db = {
+            ...structuredClone(preset),
+            customCSS: '.before {}',
+            themePresets: [preset],
+            themePresetsId: 0,
+        }
+        DBState.db.customCSS = '.after {}'
+
+        expect(syncActiveThemePresetFromMirror()).toBe(true)
+        expect(DBState.db.themePresets[0].customCSS).toBe('.after {}')
+        expect(syncActiveThemePresetFromMirror()).toBe(false)
     })
 
     test('loads an isolated prompt block overlay into the active preset mirror', () => {

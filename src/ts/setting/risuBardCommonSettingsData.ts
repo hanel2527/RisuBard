@@ -34,6 +34,14 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
         keywords: ['request', 'context', 'injection', 'status', 'toast', 'token', '요청', '컨텍스트', '주입', '토큰'],
     },
     {
+        id: 'risubard.chat.hideOocTurns',
+        type: 'check',
+        labelKey: 'risuBardHideOocTurns',
+        helpKey: 'risuBardHideOocTurns',
+        bindKey: 'risuBardHideOocTurns',
+        keywords: ['OOC', '메모장', '숨김', 'notepad', 'hide'],
+    },
+    {
         id: 'risubard.chat.responseRecentMessages',
         type: 'number',
         labelKey: 'risuBardResponseRecentMessages',
@@ -65,6 +73,14 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
         bindKey: 'risuBardRecentMessageCount',
         options: { min: 1, step: 1 },
         keywords: ['analysis turns', 'wiki', '분석할 턴', '위키'],
+    },
+    {
+        id: 'risubard.chat.ignoreOocTurns',
+        type: 'check',
+        labelKey: 'risuBardIgnoreOocTurns',
+        helpKey: 'risuBardIgnoreOocTurns',
+        bindKey: 'risuBardIgnoreOocTurns',
+        keywords: ['OOC', '위키', '집필'],
     },
     {
         id: 'risubard.chat.analysisExcludeUserMessages',
