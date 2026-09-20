@@ -2,6 +2,7 @@
     import { onDestroy, untrack } from 'svelte'
     import { v4 as createUuid } from 'uuid'
     import { language } from 'src/lang'
+    import { diagnoseBardLoreAnalysisFailure, type BardLoreFailureContext } from 'src/ts/lorebook/bardLoreAnalysisDiagnostics'
     import { DBState } from 'src/ts/stores.svelte'
     import { alertNormal, notifySuccess } from 'src/ts/alert'
     import { tooltip } from 'src/ts/gui/tooltip'
@@ -602,9 +603,19 @@
                 next = startBardLoreAnalysisBatch(next, batchState.id)
                 saveRun(next)
                 let responseText = ''
+                let diagnosticContext: BardLoreFailureContext = { error: '' }
+                let attempt = 0
                 try {
                     if (batch.length !== batchState.targetIds.length) throw new Error(language.lorebookWorkspace.bardAnalysisMissingEntry)
                     const requestBatch = async (prompt: string, schema = bardLoreAnalysisSchema) => {
+                        // A failed retry must never reuse the previous attempt's text or metadata.
+                        responseText = ''
+                        diagnosticContext = {
+                            error: '', attempt: ++attempt, entryCount: batch.length,
+                            estimatedInputTokens: batchState.estimatedInputTokens,
+                            inputTokenLimit: next.settingsSnapshot.analysisInputTokens,
+                            outputTokenLimit: next.settingsSnapshot.analysisOutputTokens,
+                        }
                         const response = await requestChatData({
                             formated: [{ role: 'user', content: prompt }],
                             bias: {},
@@ -619,12 +630,19 @@
                             logSource: 'other',
                             logPurpose: 'bard-lore-analysis',
                         }, 'model', nextController.signal)
+                        diagnosticContext.responseType = response.type
+                        if (response.type === 'success' || response.type === 'fail') {
+                            diagnosticContext.finishReason = response.finishReason
+                            diagnosticContext.usage = response.usage
+                            diagnosticContext.model = response.model
+                        }
                         if (response.type !== 'success') {
                             throw new Error(response.type === 'fail' && response.result.trim()
                                 ? response.result
                                 : language.lorebookWorkspace.bardAnalysisRequestFailed)
                         }
                         responseText = response.result
+                        diagnosticContext.responseText = responseText
                         return responseText
                     }
                     const prompt = buildBardLoreAnalysisPrompt(
@@ -677,6 +695,8 @@
                 catch (cause) {
                     if (nextController.signal.aborted) break
                     const message = cause instanceof Error ? cause.message : String(cause)
+                    const diagnostic = diagnoseBardLoreAnalysisFailure({ ...diagnosticContext, error: message })
+                    next = { ...next, batches: next.batches.map((item) => item.id === batchState.id ? { ...item, diagnostic } : item) }
                     if (BARD_LORE_PARTIAL_RECOVERY_ENABLED && isJsonProtocolFailure(message) && responseText) {
                         const recovered = recoverBardLoreAnalysisResponse(responseText, batch, entries, sourceHashes)
                         const qualityFailedIds = new Set(auditBardLoreAnalysisDraft(
@@ -1045,6 +1065,14 @@
                     {#each currentRun.batches.filter((batch) => batch.status === 'failed') as batch}
                         <article class="failure-card" data-bard-lore-analysis-failure>
                             <div><strong>{language.lorebookWorkspace.bardAnalysisBatchLabel(batch.index + 1)}</strong><span>{validationErrorLabel(batch.error)}</span></div>
+                            {#if batch.diagnostic}
+                                <p>{language.lorebookWorkspace.bardAnalysisDiagnostics[batch.diagnostic.reason]}</p>
+                                <details>
+                                    <summary>{language.lorebookWorkspace.bardAnalysisDiagnostics.details}</summary>
+                                    <p>{language.lorebookWorkspace.bardAnalysisDiagnostics.evidenceHelp}</p>
+                                    <pre class="analysis-diagnostics">{batch.diagnostic.details}</pre>
+                                </details>
+                            {/if}
                             <small>{language.lorebookWorkspace.bardAnalysisFailureTargets}: {batch.targetIds.map((id) => entries.find((entry) => entry.id === id)?.comment || id).join(', ')}</small>
                             {#each batch.candidates ?? [] as candidate}
                                 <div class="recovered-preview" data-bard-lore-analysis-recovered={candidate.id}>
@@ -1311,6 +1339,7 @@
     article p { margin: 0; line-height: 1.45; }
     article small { color: var(--color-textcolor2); }
     .error { margin: 0; color: var(--color-red); }
+    .analysis-diagnostics { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow: auto; font-size: 0.75rem; user-select: text; }
     @media (max-width: 900px) {
         :global(.bard-analysis-dialog) { overflow-y: auto; }
         :global(.bard-analysis-dialog .risu-modal-header) { padding-right: 2.5rem; }

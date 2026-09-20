@@ -2,6 +2,7 @@ import type { loreBook } from '../storage/database.svelte'
 import { safeStructuredClone } from '../polyfill'
 import type { ResolvedBardLoreAnalysisLanguage } from './bardLoreLanguage'
 import type { BardLoreInstructionPreset } from './bardLoreInstructionPreset'
+import { normalizeBardLoreAnalysisDiagnostic } from './bardLoreAnalysisDiagnostics'
 
 export type BardLoreActivation = 'required' | 'keyed' | 'retrieve' | 'never'
 export type BardLoreKind = 'system' | 'character' | 'location' | 'faction' | 'item' | 'event' | 'concept' | 'other'
@@ -87,6 +88,7 @@ export interface BardLoreAnalysisBatch {
     candidates?: BardLoreAnalysisCandidate[]
     recoveredFields?: Record<string, string[]>
     error?: string
+    diagnostic?: import('./bardLoreAnalysisDiagnostics').BardLoreAnalysisDiagnostic
 }
 
 export interface BardLoreAnalysisRun {
@@ -609,6 +611,7 @@ function normalizeBardLoreAnalysisRun(
                 })
             }
         }
+        const diagnostic = normalizeBardLoreAnalysisDiagnostic(batch.diagnostic)
         batches.push({
             id: batch.id,
             index: Math.max(0, Math.floor(batch.index)),
@@ -618,6 +621,7 @@ function normalizeBardLoreAnalysisRun(
             ...(candidates ? { candidates } : {}),
             ...(recoveredFields ? { recoveredFields } : {}),
             ...(batch.error ? { error: batch.error as string } : {}),
+            ...(diagnostic ? { diagnostic } : {}),
         })
     }
     const instructionPreset = raw.instructionPresetSnapshot as Partial<BardLoreInstructionPreset> | undefined

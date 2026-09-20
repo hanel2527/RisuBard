@@ -512,7 +512,7 @@ function updateRunBatch(
 }
 
 export function startBardLoreAnalysisBatch(run: BardLoreAnalysisRun, batchId: string): BardLoreAnalysisRun {
-    return updateRunBatch(run, batchId, (batch) => ({ ...batch, status: 'running', error: undefined }))
+    return updateRunBatch(run, batchId, (batch) => ({ ...batch, status: 'running', error: undefined, diagnostic: undefined }))
 }
 
 export function completeBardLoreAnalysisBatch(
@@ -526,6 +526,7 @@ export function completeBardLoreAnalysisBatch(
         candidates: safeStructuredClone(candidates),
         recoveredFields: undefined,
         error: undefined,
+        diagnostic: undefined,
     }))
 }
 
@@ -563,7 +564,7 @@ export function retryFailedBardLoreAnalysisBatches(run: BardLoreAnalysisRun): Ba
         status: 'running',
         updatedAt: new Date().toISOString(),
         batches: run.batches.map((batch) => batch.status === 'failed'
-            ? { ...safeStructuredClone(batch), status: 'pending', candidates: undefined, recoveredFields: undefined, error: undefined }
+            ? { ...safeStructuredClone(batch), status: 'pending', candidates: undefined, recoveredFields: undefined, error: undefined, diagnostic: undefined }
             : safeStructuredClone(batch)),
     }
 }
@@ -1015,6 +1016,7 @@ export function partitionRecoveredBardLoreAnalysisBatch(
             candidates: safeStructuredClone(recovery.completeEntries),
             recoveredFields: undefined,
             error: undefined,
+            diagnostic: undefined,
         })
     }
     if (unresolvedIds.length > 0) {

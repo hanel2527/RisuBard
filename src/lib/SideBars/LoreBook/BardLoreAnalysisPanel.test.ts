@@ -531,7 +531,7 @@ describe('BardLoreAnalysisPanel', () => {
     })
 
     it('shows persisted drafts and failed-batch reasons after reopening', async () => {
-        requestChatData.mockResolvedValue({ type: 'success', result: '{invalid' })
+        requestChatData.mockResolvedValue({ type: 'success', result: '{invalid', finishReason: 'MAX_TOKENS', usage: { promptTokens: 1234, completionTokens: 4096 } })
         const onAnalysisRunChange = vi.fn()
         mounted = mount(BardLoreAnalysisPanel, {
             target: document.body.appendChild(document.createElement('div')),
@@ -551,11 +551,36 @@ describe('BardLoreAnalysisPanel', () => {
 
         const failure = document.body.querySelector('[data-bard-lore-analysis-failure]')!
         expect(failure.textContent).toContain('JSON')
+        expect(failure.textContent).toContain('output token limit')
+        expect(failure.textContent).toContain('MAX_TOKENS')
+        expect(failure.textContent).toContain('1234')
+        expect(failure.textContent).toContain('{invalid')
+        expect(onAnalysisRunChange.mock.calls.at(-1)?.[0]?.batches[0].diagnostic.reason).toBe('outputLimit')
         document.body.querySelector<HTMLButtonElement>('.risu-modal-close')!.click()
         await tick()
         document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-open]')!.click()
         await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-failure]')).not.toBeNull())
         expect(document.body.querySelector('[data-bard-lore-analysis-target="source"]')).not.toBeNull()
+    })
+
+    it('does not attach an earlier response to a failed retry', async () => {
+        requestChatData
+            .mockResolvedValueOnce({ type: 'success', result: '{previous-attempt', finishReason: 'MAX_TOKENS' })
+            .mockResolvedValueOnce({ type: 'fail', result: 'HTTP 429 rate limit' })
+        const onAnalysisRunChange = vi.fn()
+        mounted = mount(BardLoreAnalysisPanel, {
+            target: document.body.appendChild(document.createElement('div')),
+            props: { entries: [source], settings: createBardLoreSettings(), onChange: vi.fn(), onAnalysisRunChange },
+        })
+        await tick()
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-open]')!.click()
+        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-plan]')).not.toBeNull())
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analyze]')!.click()
+        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-failure]')).not.toBeNull())
+        const diagnostic = onAnalysisRunChange.mock.calls.at(-1)?.[0]?.batches[0].diagnostic
+        expect(diagnostic.reason).toBe('requestFailed')
+        expect(JSON.parse(diagnostic.details)).toMatchObject({ attempt: 2, finishReason: null, responseExcerpt: null, error: 'HTTP 429 rate limit' })
+        expect(diagnostic.details).not.toContain('previous-attempt')
     })
 
     it('automatically splits an invalid multi-entry JSON batch and completes the smaller batches', async () => {
