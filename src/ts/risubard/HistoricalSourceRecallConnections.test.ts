@@ -9,15 +9,16 @@ describe('historical source recall connections', () => {
             'src/ts/process/index.svelte.ts'
         ), 'utf8')
         const recallCall = source.match(
-            /sourceMatches: findHistoricalSourceMatches\(\{[\s\S]{0,500}?\}\),/
+            /sourceMatches: findHistoricalSourceMatches\(\{[\s\S]{0,900}?\}\),/
         )?.[0] ?? ''
         const exactRecallCall = source.match(
-            /resolveSourceMatches: \(messageIds\) =>[\s\S]{0,700}?\}\),/
+            /resolveSourceMatches: \(messageIds\) =>[\s\S]{0,900}?\}\),/
         )?.[0] ?? ''
 
         expect(source).toContain('findHistoricalSourceMatches,')
         expect(source).toContain('resolveHistoricalSourceMatchesById,')
         expect(recallCall).toContain('messages: currentChat.message')
+        expect(recallCall).toContain('ignoreOocTurns: inquirySettings.risuBardIgnoreOocTurns')
         expect(recallCall).toContain(
             'inquirySettings.risuBardResponseMessageCount'
         )
@@ -26,6 +27,7 @@ describe('historical source recall connections', () => {
         )
         expect(exactRecallCall).toContain('messages: currentChat.message')
         expect(exactRecallCall).toContain('messageIds')
+        expect(exactRecallCall).toContain('ignoreOocTurns: inquirySettings.risuBardIgnoreOocTurns')
         expect(source).toContain('entityHints: lorepmt.bardWikiEntityHints')
         expect(source).toContain(
             'timeoutMs: inquirySettings.risuBardInquiryTimeoutMs'

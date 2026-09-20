@@ -101,8 +101,8 @@ describe('BardWiki reboot connections', () => {
         expect(wikiSource).toContain('risuBardWikiRebootStartChatIndex')
         expect(wikiSource).toContain('onStartWikiReboot?.(batchSize, rebootStartChatIndex)')
         expect(processSource).toContain('startChatIndex: number = 0')
-        expect(processSource).toContain(
-            'projectWikiRebootTurns(current.chat.message, startChatIndex)'
+        expect(processSource).toMatch(
+            /projectWikiRebootTurns\(current\.chat\.message, startChatIndex, true,\s*resolvedRisuBardSettings\(current\.chat\)\.risuBardIgnoreOocTurns\)/
         )
         expect(koSource).toContain('시작 챗 인덱스')
         expect(enSource).toContain('Starting chat index')

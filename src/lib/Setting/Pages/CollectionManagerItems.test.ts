@@ -61,7 +61,7 @@ describe('collection manager item layout', () => {
         expect(plugins).toContain('customV3ProviderMetaStore.splice')
         expect(plugins).toMatch(/plugins:\s*normalizeCollectionOrganizerState\(/)
         expect(plugins).toContain('await loadPlugins()')
-        const removePlugins = plugins.match(/async function removePlugins[\s\S]*?\n    }\n\n    async function deletePlugins/)?.[0] ?? ''
+        const removePlugins = plugins.match(/async function removePlugins[\s\S]*?\r?\n    }\r?\n\r?\n    async function deletePlugins/)?.[0] ?? ''
         expect(removePlugins.indexOf('await requestImmediateSave()')).toBeLessThan(removePlugins.indexOf('await loadPlugins()'))
         expect(removePlugins).not.toContain('!pluginV2.providers.has(DBState.db.currentPluginProvider)')
     })
