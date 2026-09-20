@@ -20,7 +20,7 @@ vi.mock('./storage/database.svelte', () => ({
     getDatabase: () => ({ requestLogEnabled: loggingEnabled }),
 }))
 
-const { createRequestLogScope, REQUEST_LOG_RECORDED_EVENT } = await import('./requestLog')
+const { createRequestLogScope, recordRequestLog, REQUEST_LOG_RECORDED_EVENT } = await import('./requestLog')
 
 // Captures what the collector POSTs to /api/request-logs.
 let posted: any[][]
@@ -52,6 +52,23 @@ function jsonResponse(body: string, status = 200): Response {
 }
 
 describe('createRequestLogScope', () => {
+    it('persists direct plugin bodies, strips inline media and honors disabled logging', async () => {
+        const entry = {
+            timestamp: 1, category: 'llm' as const, source: 'main' as const,
+            url: 'plugin://test', method: 'PLUGIN', success: true, streaming: false, durationMs: 1,
+            requestBody: '{"prompt":"hello","image":"data:image/png;base64,AAAA"}',
+            responseBody: 'answer',
+        }
+        recordRequestLog(entry)
+        await vi.waitFor(() => expect(posted).toHaveLength(1))
+        expect(posted[0][0].requestBody).toContain('hello')
+        expect(posted[0][0].requestBody).not.toContain('base64')
+        expect(posted[0][0].responseBody).toBe('answer')
+        loggingEnabled = false
+        recordRequestLog(entry)
+        await Promise.resolve()
+        expect(posted).toHaveLength(1)
+    })
     it('announces the owning chats only after rows are persisted', async () => {
         const recorded = vi.fn()
         window.addEventListener(REQUEST_LOG_RECORDED_EVENT, recorded, { once: true })

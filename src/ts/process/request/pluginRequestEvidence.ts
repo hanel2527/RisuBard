@@ -81,7 +81,15 @@ export function createPluginRequestEvidenceRecorder(
     const record = dependencies.record
     let firstTokenAt: number | undefined
     let finished = false
+    let requestBody: string | undefined
     return {
+        setRequestBody(body: unknown) {
+            try {
+                requestBody = JSON.stringify(body)
+            } catch {
+                requestBody = '[Plugin request could not be serialized]'
+            }
+        },
         markFirstToken(timestamp = now()) {
             firstTokenAt ??= timestamp
         },
@@ -118,6 +126,8 @@ export function createPluginRequestEvidenceRecorder(
                 inputTokens: input.injectionManifest?.totalTokens,
                 outputTokens,
                 injectionManifest: input.injectionManifest,
+                requestBody,
+                responseBody: result.output || result.errorMessage || '',
                 errorMessage: result.errorMessage,
             })
         },
