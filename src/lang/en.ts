@@ -3410,6 +3410,8 @@ export const languageEnglish = {
     risuBardRecentMessages: "Analysis turns",
     risuBardResponseRecentMessages: "Response turns",
     risuBardResponseExcludeUsers: "Response user messages",
+    risuBardIgnoreOocTurns: "Ignore <!-- OOC_turn -->",
+    risuBardHideOocTurns: "Hide OOC turns in chat",
     risuBardAnalysisExcludeUsers: "Analysis user messages",
     risuBardTurnCanon: "This turn's canon",
     risuBardTurnCanonNoChanges: "No canonical documents changed this turn.",

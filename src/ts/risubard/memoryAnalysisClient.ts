@@ -1,3 +1,4 @@
+import { oocTurnIndices, isOocAssistantTurn } from './oocTurns'
 import {
     createMemoryAnalysisRunner,
     type MemoryAnalysisInput,
@@ -548,6 +549,7 @@ export function projectRecentMemoryMessages(
     throughMessageId?: string,
     firstMessage?: MemoryAnalysisMessage,
     includeUserMessages = true,
+    ignoreOocTurns = true,
 ): MemoryAnalysisMessage[] {
     const boundedLimit = Number.isSafeInteger(limit)
         ? Math.max(1, limit)
@@ -560,7 +562,9 @@ export function projectRecentMemoryMessages(
     const source = throughIndex < 0
         ? storedMessages
         : storedMessages.slice(0, throughIndex + 1)
-    const eligible = source.filter((message) =>
+    const excluded = oocTurnIndices(storedMessages, ignoreOocTurns)
+    const eligible = source.filter((message, index) =>
+            !excluded.has(index) &&
             (message.role === 'user' || message.role === 'char')
             && typeof message.data === 'string'
             && typeof message.chatId === 'string'
@@ -580,7 +584,7 @@ export function projectRecentMemoryMessages(
         }))
         .filter((message) => includeUserMessages || message.role !== 'user')
     const turnCount = eligible.filter((message) => message.role === 'char').length
-    return firstMessage && turnCount <= boundedLimit
+    return firstMessage && (!ignoreOocTurns || !isOocAssistantTurn({ role: 'char', data: firstMessage.content })) && turnCount <= boundedLimit
         ? [firstMessage, ...projected]
         : projected
 }
@@ -629,7 +633,7 @@ export function projectMemoryAnalysisEvidence(
 export function projectConfirmedMemoryTurn(
     storedMessages: readonly StoredMessage[],
     targetMessageId?: string,
-    options: { includeConfirmed?: boolean } = {}
+    options: { includeConfirmed?: boolean; ignoreOocTurns?: boolean } = {}
 ): {
     targetMessageId: string
     messages: MemoryAnalysisMessage[]
@@ -660,6 +664,8 @@ export function projectConfirmedMemoryTurn(
         }
     }
     if (assistantIndex < 0) return null
+    const excluded = oocTurnIndices(storedMessages, options.ignoreOocTurns !== false)
+    if (excluded.has(assistantIndex)) return null
     const assistant = storedMessages[assistantIndex]
     if ((!options.includeConfirmed
             && assistant.risubardMemoryConfirmed === true)
@@ -673,6 +679,7 @@ export function projectConfirmedMemoryTurn(
         const message = storedMessages[index]
         if (!isActive(message)) continue
         if (message.role === 'user') {
+            if (excluded.has(index)) break
             user = message
             break
         }

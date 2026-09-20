@@ -10,6 +10,7 @@ import {
     RISUBARD_INQUIRY_TIMEOUT_MS_DEFAULT,
 } from './risuBardSettings'
 import type { HistoricalSourceMatch } from './historicalSourceRecall'
+import { oocTurnIndices } from './oocTurns'
 
 export const NARRATIVE_CONTEXT_OPT_IN_KEY =
     'risubard.experimentalNarrativeContext'
@@ -618,7 +619,8 @@ export function createNarrativeContextPrompt(
 export function selectNarrativeWorkingMessages<T>(
     messages: readonly T[],
     limit = 12,
-    includeHistoricalUserMessages = true
+    includeHistoricalUserMessages = true,
+    ignoreOocTurns = false,
 ): T[] {
     if (!Number.isSafeInteger(limit) || limit < 1) {
         throw new Error('Narrative working-message limit must be positive')
@@ -633,29 +635,58 @@ export function selectNarrativeWorkingMessages<T>(
         const role = roleOf(message)
         return role === 'char' || role === 'assistant'
     }
-    const assistantIndices = messages.flatMap((message, index) =>
+    let latestPendingUserIndex = -1
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        if (roleOf(messages[index]) === 'user') {
+            latestPendingUserIndex = index
+            break
+        }
+    }
+    let lastAssistantIndex = -1
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        if (isAssistant(messages[index])) {
+            lastAssistantIndex = index
+            break
+        }
+    }
+    if (latestPendingUserIndex <= lastAssistantIndex) latestPendingUserIndex = -1
+    const excludedOocIndices = oocTurnIndices(messages.map((message) => {
+        const record = typeof message === 'object' && message !== null
+            ? message as { data?: unknown, disabled?: unknown, isComment?: unknown }
+            : {}
+        return {
+            role: roleOf(message) === 'assistant' ? 'char' : roleOf(message),
+            data: record.data,
+            disabled: record.disabled,
+            isComment: record.isComment,
+        }
+    }), ignoreOocTurns)
+    const eligible = messages.filter((_, index) =>
+        !excludedOocIndices.has(index) || index === latestPendingUserIndex
+    )
+    const assistantIndices = eligible.flatMap((message, index) =>
         isAssistant(message) ? [index] : []
     )
-    if (assistantIndices.length === 0) return messages.slice(-limit)
+    if (assistantIndices.length === 0) return eligible.slice(-limit)
     const firstAssistantIndex = assistantIndices[
         Math.max(0, assistantIndices.length - limit)
     ]
     let startIndex = firstAssistantIndex
     for (let index = firstAssistantIndex - 1; index >= 0; index -= 1) {
-        if (isAssistant(messages[index])) break
+        if (isAssistant(eligible[index])) break
         startIndex = index
     }
-    const selected = messages.slice(startIndex)
+    const selected = eligible.slice(startIndex)
     if (includeHistoricalUserMessages) return selected
-    let latestUserIndex = -1
+    let selectedLatestUserIndex = -1
     for (let index = selected.length - 1; index >= 0; index -= 1) {
         if (roleOf(selected[index]) === 'user') {
-            latestUserIndex = index
+            selectedLatestUserIndex = index
             break
         }
     }
     return selected.filter((message, index) =>
-        roleOf(message) !== 'user' || index === latestUserIndex
+        roleOf(message) !== 'user' || index === selectedLatestUserIndex
     )
 }
 

@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
         risuBardRecentMessageCount?: number
         risuBardResponseMessageCount?: number
         risuBardResponseIncludeUserMessages?: boolean
+        risuBardHideOocTurns?: boolean
         characters?: Array<{
             chaId: string
             reloadKeys?: number
@@ -136,10 +137,44 @@ afterEach(async () => {
     delete mocks.db.risuBardRecentMessageCount
     delete mocks.db.risuBardResponseMessageCount
     delete mocks.db.risuBardResponseIncludeUserMessages
+    delete mocks.db.risuBardHideOocTurns
     delete mocks.db.characters
 })
 
 describe('RisuBardMemoryWiki', () => {
+    test('opens a live OOC mirror before the workspace tab, even without a wiki', async () => {
+        const onNavigateOocMessage = vi.fn()
+        mocks.loadNarrativeMemoryWiki.mockRejectedValue(new Error('Wiki unavailable'))
+        mocks.db.characters = [{ chaId: 'c', chats: [{ id: 'chat', message: [
+            { role: 'user', chatId: 'u1', data: 'Story request' },
+            { role: 'char', chatId: 'a1', data: 'Story response' },
+            { role: 'user', chatId: 'u2', data: 'Plan a twist' },
+            { role: 'char', chatId: 'a2', data: '<!-- OOC_turn --> **A secret door**' },
+        ] }] }]
+        mounted = mount(RisuBardMemoryWiki, {
+            target: document.body,
+            props: { open: true, characterId: 'c', chatId: 'chat', onNavigateOocMessage },
+        })
+        await tick()
+        const tabs = [...document.querySelectorAll('[data-memory-view]')]
+        expect(tabs[0]?.getAttribute('data-memory-view')).toBe('ooc')
+        ;(tabs[0] as HTMLButtonElement).click()
+        await tick()
+        const memo = document.querySelector('[data-ooc-notepad]')
+        expect(memo?.textContent).toContain('Plan a twist')
+        await vi.waitFor(() => expect(memo?.querySelector('strong')?.textContent).toBe('A secret door'))
+        expect(memo?.textContent).not.toContain('Story response')
+        expect(memo?.textContent).not.toContain('<!-- OOC_turn -->')
+        const toggle = memo?.querySelector<HTMLInputElement>('[data-ooc-hide]')
+        expect(toggle?.checked).toBe(false)
+        toggle?.click()
+        await tick()
+        expect(mocks.db.risuBardHideOocTurns).toBe(true)
+        memo?.querySelector<HTMLButtonElement>('[data-ooc-message-index="3"] [data-ooc-source]')?.click()
+        expect(mocks.db.risuBardHideOocTurns).toBe(false)
+        expect(onNavigateOocMessage).toHaveBeenCalledWith(3)
+    })
+
     test('reloads the visible canonical document after a save replaces the same chat workspace', async () => {
         const current = {
             id: 'same-document', title: 'Character', type: 'character' as const,

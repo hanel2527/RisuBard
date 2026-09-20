@@ -33,6 +33,7 @@ export const risuBardCurrentChatSettingKeys = [
     'risuBardRecentMessageCount',
     'risuBardResponseMessageCount',
     'risuBardResponseExcludeUserMessages',
+    'risuBardIgnoreOocTurns',
     'risuBardAnalysisExcludeUserMessages',
     'risuBardCanonicalWritingStyle',
     'risuBardCanonicalCustomStyle',
@@ -125,6 +126,8 @@ function recommendation(
             return longMessage
                 ? '긴 사용자 메시지가 이미 분석·위키에 반영된다면 켜서 토큰을 줄일 수 있습니다. 지시나 대사를 그대로 이어야 하면 끄세요.'
                 : '보통은 끄기를 권장합니다. 사용자 발화를 빼도 맥락이 유지되는 장기 챗에서만 켜세요.'
+        case 'risuBardIgnoreOocTurns':
+            return '기본 켜짐. 기존 위키는 소급 변경하지 않습니다. 리부트에는 새로 시작할 때 적용하며 진행 중인 리부트의 설정은 유지합니다.'
         case 'risuBardAnalysisExcludeUserMessages':
             return longMessage
                 ? '사용자 입력이 지시문 위주이고 AI 응답만 사실로 남기려면 켜기를 권장합니다. 사용자 대사·행동도 서사의 일부라면 끄세요.'
@@ -155,6 +158,7 @@ const roles: Record<RisuBardChatSettingHelpKey, string> = {
     risuBardRecentMessageCount: '위키 갱신 분석에 원문 그대로 넣는 최근 메시지 수입니다.',
     risuBardResponseMessageCount: '최종 답변 모델에 원문 그대로 넣는 최근 메시지 수입니다.',
     risuBardResponseExcludeUserMessages: '최종 답변 생성에 넣는 과거 최근 원문에서 사용자 메시지를 제외합니다. 현재 요청은 유지됩니다.',
+    risuBardIgnoreOocTurns: 'OOC 마커가 있는 AI 응답과 대응 사용자 입력을 위키 분석, 재분석, 리부트, 과거 원문 검색과 답변용 최근 대화에서 제외합니다. 현재 새 사용자 요청과 원본 기록은 유지합니다.',
     risuBardAnalysisExcludeUserMessages: 'BardWiki 갱신 분석의 확정 턴과 최근 원문에서 사용자 메시지를 제외합니다.',
     risuBardCanonicalWritingStyle: '정본 위키 문서를 얼마나 압축해서 작성할지 정합니다.',
     risuBardCanonicalCustomStyle: '사용자 지정 정본 문체일 때 반복 적용할 짧은 작성 규칙입니다.',

@@ -7,7 +7,7 @@
     import ShDropdownMenuContent from 'src/lib/UI/GUI/ShDropdownMenuContent.svelte';
     import ShDropdownMenuItem from 'src/lib/UI/GUI/ShDropdownMenuItem.svelte';
     import { selectedCharID, PlaygroundStore, createSimpleCharacter, hypaV3ModalOpen, ScrollToMessageStore, additionalChatMenu, additionalFloatingActionButtons, chatDeselected, chatPanelStore } from "../../ts/stores.svelte";
-    import { tick, untrack } from 'svelte';
+    import { onDestroy, tick, untrack } from 'svelte';
     import Chat from "./Chat.svelte";
     import {
         DEFAULT_CHAT_PAGE_SIZE,
@@ -22,6 +22,7 @@
         normalizeChatNavigationTarget,
     } from 'src/ts/chatTurnNavigation';
     import { loadChatViewSession, saveChatViewSession, type ChatViewSession } from 'src/ts/chatViewSession'
+    import { oocTurnIndices } from 'src/ts/risubard/oocTurns'
     import { type Chat as ChatData, type Message } from "../../ts/storage/database.svelte";
     import { DBState } from 'src/ts/stores.svelte';
     import { getCharImage } from "../../ts/characters";
@@ -153,6 +154,8 @@ import { isMobile } from 'src/ts/platform'
     let chatsInstance: any = $state()
     let chatScrollContainer: HTMLElement | undefined = $state()
     let isScrollingToMessage = $state(false)
+    let scrollJumpRequest = 0
+    onDestroy(() => { scrollJumpRequest += 1 })
     let currentScrollAnchor: ChatScrollAnchor | null = null
     let scrollAnchorCaptureTimer: ReturnType<typeof setTimeout> | null = null
     let scrollAnchorRestoreTimers: ReturnType<typeof setTimeout>[] = []
@@ -557,7 +560,7 @@ import { isMobile } from 'src/ts/platform'
                 scrollWithinContainer(current.el, container, { block: 'start', behavior: 'smooth' })
             } else {
                 // Already at top → go to previous message start
-                const prev = messages.find(m => m.idx === current.idx - 1)
+                const prev = messages[messages.indexOf(current) - 1]
                 if (prev) {
                     scrollWithinContainer(prev.el, container, { block: 'start', behavior: 'smooth' })
                 }
@@ -569,7 +572,7 @@ import { isMobile } from 'src/ts/platform'
                 scrollWithinContainer(current.el, container, { block: 'end', behavior: 'smooth' })
             } else {
                 // Already see the end → go to next message start
-                const next = messages.find(m => m.idx === current.idx + 1)
+                const next = messages[messages.indexOf(current) + 1]
                 if (next) {
                     scrollWithinContainer(next.el, container, { block: 'start', behavior: 'smooth' })
                 }
@@ -585,63 +588,53 @@ import { isMobile } from 'src/ts/platform'
     })
 
     async function scrollToMessage(index: number){
-        isScrollingToMessage = true
+        const request = ++scrollJumpRequest
+        const contextKey = paginationKey
+        const isCurrent = () => request === scrollJumpRequest && contextKey === paginationKey
+        isScrollingToMessage = false
+        scrollAnchorMutationToken += 1
+        clearScrollAnchorTimers()
+        currentScrollAnchor = null
+        scrollAnchorFreezeUntil = 0
+        // Explicit source/turn navigation must reveal its target before mounting the page.
+        if (oocTurnIndices(currentChat, DBState.db.risuBardHideOocTurns === true, true).has(index)) {
+            DBState.db.risuBardHideOocTurns = false
+        }
         try {
             chatPage = getChatPageForMessage(index, currentChat.length, chatPageSize)
+            chatFoldedState.data = null
             await tick()
-
-            let element: Element | null = null;
-            // Poll for element existence (max 5 seconds)
-            for(let i = 0; i < 50; i++){
-                element = document.querySelector(`[data-chat-index="${index}"]`)
-                if(element) break;
+            if (!isCurrent()) return
+            const chatContainer = chatScrollContainer
+            if (!chatContainer) return
+            let element = chatContainer.querySelector<HTMLElement>(`[data-chat-index="${index}"]`)
+            // Only a page that has not mounted yet needs a loading indicator.
+            for(let i = 0; !element && i < 10; i++){
+                isScrollingToMessage = true
                 await sleep(100)
+                if (!isCurrent()) return
+                element = chatContainer.querySelector<HTMLElement>(`[data-chat-index="${index}"]`)
             }
-
-            const chatContainer = document.querySelector('.default-chat-screen') as HTMLElement | null;
-            const preIndex = Math.max(0, index - 3)
-            const preElement = document.querySelector(`[data-chat-index="${preIndex}"]`)
-            // Scroll within the chat container only — raw scrollIntoView climbs to
-            // documentElement and, if the root is inflated, shoves the whole page up.
-            if(chatContainer && preElement){
-                scrollWithinContainer(preElement as HTMLElement, chatContainer, { block: 'start', behavior: 'instant' })
-            } else if(chatContainer && element){
-                scrollWithinContainer(element as HTMLElement, chatContainer, { block: 'start', behavior: 'instant' })
-            }
-            await sleep(50)
-
             if(element){
-                // Wait for images to load to prevent layout shift
-                if(chatContainer) {
-                    const images = Array.from(chatContainer.querySelectorAll('img'));
-                    const promises = images.map(img => {
-                        if (img.complete) return Promise.resolve();
-                        return new Promise(resolve => {
-                            img.onload = () => resolve(null);
-                            img.onerror = () => resolve(null);
-                        });
-                    });
-                    // Wait for all images or timeout after 4 seconds
-                    await Promise.race([
-                        Promise.all(promises),
-                        sleep(4000)
-                    ]);
-                }
-
-                if(chatContainer){
-                    scrollWithinContainer(element as HTMLElement, chatContainer, { block: 'start', behavior: 'instant' })
-                    // Small delay and scroll again to ensure position is correct after any final layout adjustments
-                    await sleep(50)
-                    scrollWithinContainer(element as HTMLElement, chatContainer, { block: 'start', behavior: 'instant' })
-                }
-
+                scrollAnchorMutationToken += 1
+                clearScrollAnchorTimers()
+                scrollAnchorFreezeUntil = 0
+                scrollWithinContainer(element, chatContainer, { block: 'start', behavior: 'instant' })
+                // Existing media-load/DOM observers correct later layout shifts without blocking the jump.
+                currentScrollAnchor = DBState.db.preserveChatScrollPosition ? {
+                    contextKey,
+                    messageIndex: index,
+                    messageCount: currentChat.length,
+                    offsetTop: element.getBoundingClientRect().top - chatContainer.getBoundingClientRect().top,
+                    atLatest: false,
+                } : null
                 element.classList.add('ring-2', 'ring-info')
                 setTimeout(() => {
                     element.classList.remove('ring-2', 'ring-info')
                 }, 2000)
             }
         } finally {
-            isScrollingToMessage = false
+            if (request === scrollJumpRequest) isScrollingToMessage = false
         }
     }
 
@@ -1950,6 +1943,7 @@ import { isMobile } from 'src/ts/platform'
             onCancelWikiReboot={cancelCurrentWikiReboot}
             onExecuteWikiCommand={executeCurrentNarrativeWikiCommand}
             onNavigateStorySource={navigateStorySource}
+            onNavigateOocMessage={scrollToMessage}
         />
         {#if currentChatReady}
             <ArcaChatLogDialog

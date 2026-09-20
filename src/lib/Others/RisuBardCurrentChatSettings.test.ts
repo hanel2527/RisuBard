@@ -66,7 +66,12 @@ describe('RisuBardCurrentChatSettings', () => {
 
         const fields = [...document.querySelectorAll('[data-chat-setting-field]')]
         const helpButtons = [...document.querySelectorAll('[data-chat-setting-help]')]
-        expect(fields).toHaveLength(19)
+        expect(fields).toHaveLength(20)
+        const ignoreOoc = document.querySelector<HTMLInputElement>('#bardwiki-ignore-ooc')
+        expect(ignoreOoc?.checked).toBe(true)
+        ignoreOoc!.checked = false
+        ignoreOoc!.dispatchEvent(new Event('change', { bubbles: true }))
+        expect(chat.risuBardSettings?.risuBardIgnoreOocTurns).toBe(false)
         expect(helpButtons).toHaveLength(fields.length)
         expect(document.querySelector(
             '[data-chat-setting-field="risuBardAnalysisExcludeUserMessages"]'

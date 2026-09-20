@@ -1,3 +1,5 @@
+import { oocTurnIndices } from './oocTurns'
+
 const MAX_SOURCE_MATCHES = 32
 const DEFAULT_SOURCE_MATCHES = 8
 const MAX_SOURCE_EXCERPT_CHARACTERS = 1_200
@@ -60,6 +62,7 @@ function beforeRecentAssistantTurns<T>(
 export function resolveHistoricalSourceMatchesById(input: {
     messageIds: readonly string[]
     messages: readonly HistoricalSourceMessage[]
+    ignoreOocTurns?: boolean
     currentInput?: string
     excludeRecentMessages?: number
 }): HistoricalSourceMatch[] {
@@ -67,8 +70,9 @@ export function resolveHistoricalSourceMatchesById(input: {
     if (requested.length === 0) return []
     const allBeforeBoundary = input.messages.findLastIndex((message) =>
         message.disabled === 'allBefore')
+    const excluded = oocTurnIndices(input.messages, input.ignoreOocTurns !== false)
     const active = input.messages.flatMap((message, occurredAt) => {
-        if (occurredAt <= allBeforeBoundary
+        if (excluded.has(occurredAt) || occurredAt <= allBeforeBoundary
             || (message.role !== 'user' && message.role !== 'char')
             || typeof message.data !== 'string'
             || typeof message.chatId !== 'string'
@@ -155,6 +159,7 @@ function centeredExcerpt(
 }
 
 export function findHistoricalSourceMatches(input: {
+    ignoreOocTurns?: boolean
     currentInput: string
     messages: readonly HistoricalSourceMessage[]
     excludeRecentMessages?: number
@@ -168,8 +173,9 @@ export function findHistoricalSourceMatches(input: {
     if (terms.length === 0) return []
     const allBeforeBoundary = input.messages.findLastIndex((message) =>
         message.disabled === 'allBefore')
+    const excluded = oocTurnIndices(input.messages, input.ignoreOocTurns !== false)
     const active = input.messages.flatMap((message, occurredAt) => {
-        if (occurredAt <= allBeforeBoundary
+        if (excluded.has(occurredAt) || occurredAt <= allBeforeBoundary
             || (message.role !== 'user' && message.role !== 'char')
             || typeof message.data !== 'string'
             || typeof message.chatId !== 'string'

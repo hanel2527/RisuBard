@@ -49,6 +49,8 @@
     import RisuBardWikiCommandTerminal from './RisuBardWikiCommandTerminal.svelte'
     import RisuBardMemoryWikiHelp from './RisuBardMemoryWikiHelp.svelte'
     import RisuBardCurrentChatSettings from './RisuBardCurrentChatSettings.svelte'
+    import RisuBardOocNotepad from './RisuBardOocNotepad.svelte'
+    import SolarChatRoundQuestionMarkBold from 'src/lib/UI/Icons/SolarChatRoundQuestionMarkBold.svelte'
     import ManagerResizeHandles from 'src/lib/UI/GUI/ManagerResizeHandles.svelte'
     import SolarBoldIcon from 'src/lib/UI/Icons/SolarBoldIcon.svelte'
     import forceUpdateIdle from 'src/assets/risubard-memory/additional-analysis-idle.png'
@@ -89,6 +91,7 @@
             contextSelection: DirectWikiContextSelection
         ) => Promise<DirectWikiCommandResult>
         onNavigateStorySource?: (source: StorySourceRef) => void
+        onNavigateOocMessage?: (index: number) => void
     }
 
     type MemoryWikiLayout = 'desktop' | 'mobile'
@@ -105,6 +108,7 @@
         onCancelWikiReboot,
         onExecuteWikiCommand,
         onNavigateStorySource,
+        onNavigateOocMessage,
     }: Props = $props()
     let wiki = $state<NarrativeMemoryWiki | null>(null)
     let loading = $state(false)
@@ -166,7 +170,7 @@
     let loadedScope = ''
     let dockElement = $state<HTMLElement | null>(null)
     let workspaceSplitElement = $state<HTMLElement | null>(null)
-    let activeView = $state<'workspace' | 'story' | 'arc-plot' | 'log'>('workspace')
+    let activeView = $state<'ooc' | 'workspace' | 'story' | 'arc-plot' | 'log'>('workspace')
     let settingsOpen = $state(false)
     let settingsPopoverElement = $state<HTMLElement | null>(null)
     let layoutMode = $state<MemoryWikiLayout>('desktop')
@@ -746,6 +750,15 @@
             <div class="dock-view-actions">
                 <button
                     type="button"
+                    class:active={activeView === 'ooc'}
+                    data-memory-view="ooc"
+                    title="OOC 메모장"
+                    aria-label="OOC 메모장"
+                    aria-pressed={activeView === 'ooc'}
+                    onclick={() => activeView = 'ooc'}
+                ><SolarChatRoundQuestionMarkBold size={22} /><span>OOC 메모장</span></button>
+                <button
+                    type="button"
                     class:active={activeView === 'workspace'}
                     data-memory-view="workspace"
                     title="작업 공간"
@@ -940,7 +953,16 @@
             </div>
         {/if}
 
-        {#if loading && !wiki}
+        {#if activeView === 'ooc'}
+            {#key `${characterId}:${chatId}`}
+                <RisuBardOocNotepad
+                    messages={activityMessages}
+                    hideOoc={DBState.db.risuBardHideOocTurns === true}
+                    onHideChange={(value) => DBState.db.risuBardHideOocTurns = value}
+                    onNavigate={onNavigateOocMessage}
+                />
+            {/key}
+        {:else if loading && !wiki}
             <div class="ledger-state">
                 <LoaderCircleIcon size={24} class="animate-spin" />
                 <span>{language.loading}</span>

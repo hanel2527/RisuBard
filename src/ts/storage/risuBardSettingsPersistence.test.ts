@@ -17,6 +17,30 @@ const { getDatabase, newChatModelDefaults, normalizeChat, setDatabase } = await 
 
 describe('RisuBard settings persistence', () => {
     test.each([
+        { font: undefined, md: undefined, expected: 14, preview: true },
+        { font: 22, md: false, expected: 22, preview: false },
+        { font: 200, md: true, expected: 48, preview: true },
+        { font: NaN, md: undefined, expected: 14, preview: true },
+    ])('persists OOC typography preferences: $font / $md', ({ font, md, expected, preview }) => {
+        setDatabase({
+            characters: [], formatingOrder: ['main'], loreBook: [],
+            personas: [], username: 'User', userIcon: '', userNote: '',
+            risuBardOocFontSize: font, risuBardOocMarkdown: md,
+        } as any)
+        setDatabase(JSON.parse(JSON.stringify(getDatabase())))
+        expect(getDatabase().risuBardOocFontSize).toBe(expected)
+        expect(getDatabase().risuBardOocMarkdown).toBe(preview)
+    })
+    test.each([true, false, undefined, 'true'])('normalizes OOC display preference: %s', (stored) => {
+        setDatabase({
+            characters: [], formatingOrder: ['main'], loreBook: [],
+            personas: [], username: 'User', userIcon: '', userNote: '',
+            risuBardHideOocTurns: stored,
+        } as any)
+        expect((getDatabase() as any).risuBardHideOocTurns).toBe(stored === true)
+    })
+
+    test.each([
         { stored: true, expected: true },
         { stored: false, expected: false },
         { stored: 'true', expected: false },

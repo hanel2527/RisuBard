@@ -3625,6 +3625,8 @@ export const languageKorean = {
   risuBardRecentMessages: "분석할 턴 수",
   risuBardResponseRecentMessages: "응답용 턴 수",
   risuBardResponseExcludeUsers: "응답 사용자 메시지",
+  risuBardIgnoreOocTurns: "<!-- OOC_turn --> 무시하기",
+  risuBardHideOocTurns: "챗에서 OOC 턴 숨김",
   risuBardAnalysisExcludeUsers: "분석 사용자 메시지",
   risuBardTurnCanon: "이번 턴 정본",
   risuBardTurnCanonNoChanges: "이번 턴에 변경된 정본 문서가 없습니다.",

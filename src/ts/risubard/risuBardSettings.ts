@@ -40,6 +40,7 @@ export interface RisuBardChatSettings {
     risuBardRecentMessageCount?: number
     risuBardResponseMessageCount?: number
     risuBardResponseExcludeUserMessages?: boolean
+    risuBardIgnoreOocTurns?: boolean
     risuBardAnalysisExcludeUserMessages?: boolean
     risuBardCanonicalWritingStyle?: RisuBardCanonicalWritingStyle
     risuBardCanonicalCustomStyle?: string
@@ -70,6 +71,7 @@ export interface ResolvedRisuBardChatSettings {
     risuBardRecentMessageCount: number
     risuBardResponseMessageCount: number
     risuBardResponseExcludeUserMessages: boolean
+    risuBardIgnoreOocTurns: boolean
     risuBardAnalysisExcludeUserMessages: boolean
     risuBardCanonicalWritingStyle: RisuBardCanonicalWritingStyle
     risuBardCanonicalCustomStyle: string
@@ -141,6 +143,7 @@ export function resolveRisuBardChatSettings(
         ),
         risuBardResponseExcludeUserMessages:
             value('risuBardResponseExcludeUserMessages') === true,
+        risuBardIgnoreOocTurns: value('risuBardIgnoreOocTurns') !== false,
         risuBardAnalysisExcludeUserMessages:
             value('risuBardAnalysisExcludeUserMessages') === true,
         risuBardCanonicalWritingStyle: normalizeRisuBardCanonicalWritingStyle(

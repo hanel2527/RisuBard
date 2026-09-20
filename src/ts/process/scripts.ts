@@ -1,4 +1,5 @@
 import { get } from "svelte/store";
+import { preserveOocTurnMarker } from '../risubard/oocTurns';
 import { CharEmotion, selectedCharID } from "../stores.svelte";
 import { type character, type customscript, getDatabase, getCurrentCharacter, getCurrentChat } from "../storage/database.svelte";
 import { downloadFile } from "../globalApi.svelte";
@@ -106,6 +107,12 @@ export function resetScriptCache(){
 }
 
 export async function processScriptFull(char:character|simpleCharacterArgument, data:string, mode:ScriptMode, chatID = -1, cbsConditions:CbsConditions = {}){
+    const result = await processScriptFullInternal(char, data, mode, chatID, cbsConditions)
+    if (mode === 'editoutput') result.data = preserveOocTurnMarker(data, result.data)
+    return result
+}
+
+async function processScriptFullInternal(char:character|simpleCharacterArgument, data:string, mode:ScriptMode, chatID = -1, cbsConditions:CbsConditions = {}){
     let db = getDatabase()
     let emoChanged = false
     const parserCharacter = char.type === 'character' ? char : undefined

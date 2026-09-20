@@ -1,0 +1,78 @@
+import { readFileSync } from 'node:fs'
+import { runInNewContext } from 'node:vm'
+import ts from 'typescript'
+import { afterEach, describe, expect, test, vi } from 'vitest'
+
+// Exercise the actual screen handler without mounting the entire application.
+const source = readFileSync('src/lib/ChatScreens/DefaultChatScreen.svelte', 'utf8')
+const start = source.indexOf('    async function scrollToMessage(index: number)')
+const code = ts.transpileModule(source.slice(start, source.indexOf('\n    async function send()', start)), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText
+
+afterEach(() => { vi.clearAllTimers(); vi.useRealTimers() })
+
+function screen(present = true) {
+    vi.useFakeTimers()
+    const image = { complete: false, onload: vi.fn(), onerror: vi.fn() }
+    const element = { classList: { add: vi.fn(), remove: vi.fn() }, getBoundingClientRect: () => ({ top: 0 }) }
+    const query = vi.fn(() => present ? element : null)
+    const container = { querySelector: query, querySelectorAll: () => [image], getBoundingClientRect: () => ({ top: 0 }) }
+    const context: any = {
+        paginationKey: 'chat-a', scrollJumpRequest: 0,
+        oocTurnIndices: () => new Set(), currentChat: Array(60),
+        DBState: { db: { risuBardHideOocTurns: false, preserveChatScrollPosition: true } },
+        chatFoldedState: { data: null },
+        isScrollingToMessage: false, chatPage: 1, chatPageSize: 30,
+        getChatPageForMessage: () => 1, tick: async () => {},
+        chatScrollContainer: container,
+        document: { querySelector: (selector: string) => selector === '.default-chat-screen' ? container : query() },
+        scrollWithinContainer: vi.fn(),
+        sleep: (ms: number) => new Promise(resolve => setTimeout(resolve, ms)),
+        setTimeout, clearTimeout,
+        scrollAnchorMutationToken: 0, scrollAnchorFreezeUntil: 0,
+        currentScrollAnchor: null, clearScrollAnchorTimers: vi.fn(),
+        captureCurrentScrollAnchor: vi.fn(),
+    }
+    runInNewContext(code, context)
+    return { context, container, element, image, query }
+}
+
+describe('message jump latency', () => {
+    test('jumps immediately to an existing target despite unrelated unloaded images', async () => {
+        const { context, element, container, image } = screen()
+        const onload = image.onload
+        const jump = context.scrollToMessage(43)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(context.scrollWithinContainer).toHaveBeenCalledExactlyOnceWith(element, container, { block: 'start', behavior: 'instant' })
+        expect(context.isScrollingToMessage).toBe(false)
+        expect(image.onload).toBe(onload)
+        expect(context.currentScrollAnchor).toMatchObject({ messageIndex: 43, offsetTop: 0 })
+        await jump
+    })
+
+    test('waits only for a missing target and clears loading when it mounts', async () => {
+        const { context, query, element } = screen(false)
+        const jump = context.scrollToMessage(43)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(context.isScrollingToMessage).toBe(true)
+        query.mockReturnValue(element)
+        await vi.advanceTimersByTimeAsync(100)
+        await jump
+        expect(context.scrollWithinContainer).toHaveBeenCalledTimes(1)
+        expect(context.isScrollingToMessage).toBe(false)
+    })
+
+    test('abandons a pending jump when the chat changes', async () => {
+        const { context, query, element } = screen(false)
+        const jump = context.scrollToMessage(43)
+        await vi.advanceTimersByTimeAsync(0)
+        context.paginationKey = 'chat-b'
+        query.mockReturnValue(element)
+        await vi.advanceTimersByTimeAsync(100)
+        expect(context.scrollWithinContainer).not.toHaveBeenCalled()
+        await vi.advanceTimersByTimeAsync(6000)
+        await jump
+        expect(context.isScrollingToMessage).toBe(false)
+    })
+})

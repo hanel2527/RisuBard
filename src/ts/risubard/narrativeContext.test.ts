@@ -705,6 +705,37 @@ describe('selectNarrativeWorkingMessages', () => {
             .toHaveLength(2)
     })
 
+    it('excludes an OOC exchange before applying the response window but retains the pending request', () => {
+        const messages = [
+            { id: 'user-story', role: 'user', data: 'Continue the story.' },
+            { id: 'assistant-story', role: 'char', data: 'The story continues.' },
+            { id: 'user-ooc', role: 'user', data: 'Plan the next scene.' },
+            { id: 'assistant-ooc', role: 'char', data: '<!-- OOC_turn -->\nPlan: continue.' },
+            { id: 'user-current', role: 'user', data: 'Write the next scene.' },
+        ]
+
+        expect(selectNarrativeWorkingMessages(messages, 1, true, true)
+            .map((message) => message.id)).toEqual([
+            'user-story', 'assistant-story', 'user-current',
+        ])
+        expect(selectNarrativeWorkingMessages(messages, 2, true, false)
+            .map((message) => message.id)).toContain('assistant-ooc')
+        expect(selectNarrativeWorkingMessages(messages, 2, true, false)
+            .map((message) => message.id)).toContain('user-ooc')
+
+        const completedOoc = messages.slice(0, 4)
+        expect(selectNarrativeWorkingMessages(completedOoc, 1, true, true)
+            .map((message) => message.id)).toEqual([
+            'user-story', 'assistant-story',
+        ])
+
+        const assistantRoleOoc = messages.map((message) =>
+            message.id === 'assistant-ooc' ? { ...message, role: 'assistant' } : message
+        )
+        expect(selectNarrativeWorkingMessages(assistantRoleOoc, 1, true, true)
+            .map((message) => message.id)).not.toContain('assistant-ooc')
+    })
+
     it('keeps the first greeting inside the message budget', () => {
         expect(shouldIncludeNarrativeFirstMessage(11, 12)).toBe(true)
         expect(shouldIncludeNarrativeFirstMessage(12, 12)).toBe(false)
