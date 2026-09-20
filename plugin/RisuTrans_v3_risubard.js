@@ -1,7 +1,7 @@
 //@api 3.0
 //@name RisuTrans
-//@display-name 📖 RisuTrans v3.4.1 +인풋확장
-//@version 3.4.1
+//@display-name 📖 RisuTrans v3.4.2 +인풋확장
+//@version 3.4.2
 //@arg translator_notes string "" "번역가의 노트 (프롬프트 내 {{slot::tnote}}로 삽입됨)"
 //@arg disable_safety int 1 "안전 필터 비활성화 (1=OFF, 0=ON)"
 (async () => {
@@ -771,6 +771,71 @@
     const INPUT_TL_WIKI_MAX_DOCS = 4;
     const INPUT_TL_WIKI_EXCERPT_CHARS = 320;
     const INPUT_TL_WIKI_MAX_CONTEXT_CHARS = 1600;
+    /* ★ 정본 이름 대장: 입력 언어와 BardWiki 언어가 달라도(예: 한국어 입력 ↔ 일본어 위키)
+       이름의 정본 표기를 항상 전달한다. 검색 매칭이 0건이어도 이름은 반드시 포함된다. */
+    const INPUT_TL_CANON_NAMES_MAX = 400;
+    const INPUT_TL_CANON_CHARS = 1500;
+    /* 이름 표기가 정본으로 확정적인 문서 유형. event/note/scene 제목은 서술형이라 제외.
+       concept은 정본 용어(精霊/霊装/封印)라 포함 가치가 있으나 목록이 길어질 수 있어 마지막 순위. */
+    const CANON_NAME_TYPES = ["character", "location", "item", "faction", "creature", "concept"];
+    function _canonNameRank(doc) {
+      const i = CANON_NAME_TYPES.indexOf(doc && doc.type);
+      return i === -1 ? CANON_NAME_TYPES.length : i;
+    }
+    /* 정본 표기 목록(제목 + 별칭) — 원문 언어와 무관하게 쓸 수 있는 이름 대장 */
+    function collectCanonNames(docs) {
+      const usable = (Array.isArray(docs) ? docs : []).filter((d) => d && d.status !== "retracted");
+      const ranked = usable
+        .map((doc, idx) => ({ doc, idx }))
+        .filter((e) => CANON_NAME_TYPES.includes(e.doc.type))
+        .sort((a, b) => _canonNameRank(a.doc) - _canonNameRank(b.doc) || a.idx - b.idx);
+      const seen = new Set();
+      const entries = [];
+      for (const { doc } of ranked) {
+        if (entries.length >= INPUT_TL_CANON_NAMES_MAX) break;
+        const title = typeof doc.title === "string" ? doc.title.trim() : "";
+        if (!title) continue;
+        const key = _normalizeDictTerm(title);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        const aliases = [];
+        for (const raw of Array.isArray(doc.aliases) ? doc.aliases : []) {
+          if (typeof raw !== "string") continue;
+          const alias = raw.trim();
+          if (!alias) continue;
+          const ak = _normalizeDictTerm(alias);
+          if (!ak || seen.has(ak)) continue;
+          seen.add(ak);
+          aliases.push(alias);
+        }
+        entries.push({ title: title, aliases: aliases, type: doc.type });
+      }
+      return entries;
+    }
+    /* 이름 대장 → 프롬프트 블록. 상한 초과 시 항목 단위로 꼬리부터 잘라낸다. */
+    function formatCanonNamesBlock(names) {
+      const list = Array.isArray(names) ? names : [];
+      if (!list.length) return "";
+      const intro =
+        `[This chat's canonical names — authoritative spellings]\n` +
+        `The source text may be written in another language and may refer to these entries by a different script (e.g. a Korean reading of a Japanese name).\n` +
+        `When a name refers to one of the entries below, use that entry's canonical spelling verbatim in the translation. Never transliterate it, translate it, or substitute a homophone — a wrong homophone is a different character.`;
+      const line = (e) => {
+        const a = e.aliases.length ? ` (aliases: ${e.aliases.join(", ")})` : "";
+        return `- [${e.type}] ${_neutralizeDictWikiSlots(e.title)}${_neutralizeDictWikiSlots(a)}`;
+      };
+      let kept = list.slice();
+      const body = (arr) => intro + "\n\n" + arr.map(line).join("\n");
+      while (kept.length > 1 && body(kept).length > INPUT_TL_CANON_CHARS) kept = kept.slice(0, -1);
+      return body(kept);
+    }
+    function formatCanonNamesLogLine(names) {
+      const list = Array.isArray(names) ? names : [];
+      if (!list.length) return "";
+      const head = list.slice(0, 12).map((e) => e.title);
+      const more = list.length - head.length;
+      return head.join(", ") + (more > 0 ? ` 외 ${more}개` : "");
+    }
     function formatInputTlWikiBlock(wiki) {
       if (!wiki || !wiki.enabled || !wiki.available || !wiki.hits.length) return "";
       const lines = wiki.hits.map((hit) => {
@@ -789,7 +854,12 @@
     async function _applyInputTlWikiContext(prompt, content) {
       if (!inputTlBardWikiEnabled) return { prompt: prompt, wiki: null };
       let wiki = null;
+      let canonNames = [];
       try {
+        /* 1) 정본 이름 대장 — 입력 언어와 무관하게 항상 전달 */
+        const loaded = await _loadDictWikiDocuments();
+        if (loaded.available) canonNames = collectCanonNames(loaded.docs);
+        /* 2) 본문 발췌 — 언어가 일치할 때만 매칭된다(없으면 이름 대장만으로 동작) */
         wiki = await collectDictWikiHits(content, {
           enabled: true,
           inputMatch: true,
@@ -801,8 +871,9 @@
       } catch (e) {
         wiki = { enabled: true, available: false, reason: (e && e.message) || String(e), hits: [] };
       }
-      const block = formatInputTlWikiBlock(wiki);
-      return { prompt: block ? `${prompt}\n\n${block}` : prompt, wiki: wiki };
+      const blocks = [formatInputTlWikiBlock(wiki), formatCanonNamesBlock(canonNames)];
+      const block = blocks.filter(Boolean).join("\n\n");
+      return { prompt: block ? `${prompt}\n\n${block}` : prompt, wiki: wiki, canonNames: canonNames };
     }
     function getLorebookTranslatePrompt() {
       const lang = getLoreDescTargetLanguage();
@@ -3775,6 +3846,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
         result: rec.result !== undefined ? String(rec.result) : "",
         error: rec.error !== undefined ? String(rec.error) : "",
         wiki: rec.wiki !== undefined ? String(rec.wiki) : "",
+        canonNames: rec.canonNames !== undefined ? String(rec.canonNames) : "",
       };
       try {
         const db = await _idbOpen();
@@ -3937,6 +4009,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
              없는 항목(검수 전송 등 LLM 호출이 아닌 기록)만 폴백 섹션을 보여준다. */
           let body =
             (r.wiki ? sec("BardWiki 근거", r.wiki) : "") +
+            (r.canonNames ? sec("정본 이름 (항상 전달)", r.canonNames) : "") +
             (r.request
               ? sec("실제 전송 요청" + (r.url ? " → " + r.url : ""), r.request)
               : sec("슬롯 치환 전 프롬프트 (요청 캡처 없음)", r.prompt) + sec("입력 콘텐츠", r.content));
@@ -4054,7 +4127,14 @@ The Translation section must contain the full {{slot::lang}} translation of the 
       _llmCapture = capture;
       try {
         const result = await translateSingleChunkWithRetry(withWiki.prompt, applied.content);
-        return { prompt: withWiki.prompt, content: applied.content, result: result, wiki: withWiki.wiki, llm: capture };
+        return {
+          prompt: withWiki.prompt,
+          content: applied.content,
+          result: result,
+          wiki: withWiki.wiki,
+          canonNames: withWiki.canonNames,
+          llm: capture,
+        };
       } finally {
         _llmCapture = null;
       }
@@ -4129,7 +4209,11 @@ The Translation section must contain the full {{slot::lang}} translation of the 
         const ctxChk = document.getElementById("rt-input-ctx-toggle");
         const ctxOn = ctxChk ? ctxChk.checked : inputTlContextTurns > 0;
         const turnsOverride = ctxOn ? (inputTlContextTurns > 0 ? inputTlContextTurns : 4) : 0;
-        const { prompt: fp, content: fc, result, wiki, llm } = await _runInputMethod(method, src, turnsOverride);
+        const { prompt: fp, content: fc, result, wiki, canonNames, llm } = await _runInputMethod(
+          method,
+          src,
+          turnsOverride,
+        );
         await _hideInputLoadingBar();
         if (_inputTranslateCancelled) {
           _inputTranslateCancelled = false;
@@ -4150,6 +4234,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
           content: fc,
           result: shown,
           wiki: formatInputTlWikiLogLine(wiki),
+          canonNames: formatCanonNamesLogLine(canonNames),
         });
       } catch (e) {
         await _hideInputLoadingBar();
@@ -4210,6 +4295,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
           llm: r.llm,
           result: result,
           wiki: formatInputTlWikiLogLine(r.wiki),
+          canonNames: formatCanonNamesLogLine(r.canonNames),
         });
       } catch (e) {
         if (e && e.message === "cancelled") errorMsg = "";
@@ -4240,7 +4326,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
       /* 즉시 전송 */
       await _showInputLoadingBar();
       try {
-        const { result, wiki, llm } = await _runInputMethod(inputTlMethod, content);
+        const { result, wiki, canonNames, llm } = await _runInputMethod(inputTlMethod, content);
         await _hideInputLoadingBar();
         if (_inputTranslateCancelled) {
           _inputTranslateCancelled = false;
@@ -4255,6 +4341,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
           llm: llm,
           result: payload,
           wiki: formatInputTlWikiLogLine(wiki),
+          canonNames: formatCanonNamesLogLine(canonNames),
         });
         return payload;
       } catch (e) {
@@ -4498,7 +4585,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
         .join(
           "",
         )}\n                    </select>\n                    <div id="rt-input-tl-lang-custom-wrap" style="margin-top:6px;${currentInputTlLang === "custom" ? "" : "display:none"}">\n                        <input class="rt-inp" id="rt-input-tl-lang-custom" value="${escapeHtml(customInputTlLang)}" placeholder="언어 이름 입력 (예: Spanish, French, Vietnamese...)">\n                    </div>\n                    <div id="rt-input-tl-lang-display" style="margin-top:4px;font-size:11px;color:var(--rt-text2);opacity:0.7">현재 인풋 번역 대상 언어: <b>${escapeHtml(getInputTlTargetLanguage())}</b></div>\n                </div>\n\n                <div style="display:flex;gap:10px;margin-top:10px;align-items:flex-start">\n                    <div style="flex:1">\n                        <div class="rt-label">재시도 횟수 (Max 10)</div>\n                        <input class="rt-inp" type="number" id="rt-input-tl-retry" min="0" max="10" value="${inputTlRetryCount}" style="width:100%">\n                    </div>\n                    <div style="flex:1;display:flex;flex-direction:column;gap:6px;margin-top:18px">\n                        <div style="display:flex;align-items:center;gap:6px">\n                            <input type="checkbox" id="rt-input-tl-pq" ${inputTlPreserveQuotes ? "checked" : ""}>\n                            <label for="rt-input-tl-pq" style="font-size:11.5px;color:var(--rt-text2);cursor:pointer">따옴표/백틱 보존</label>\n                        </div>\n                        <div style="display:flex;align-items:center;gap:6px">\n                            <input type="checkbox" id="rt-input-tl-ko-only" ${inputTlKoreanOnly ? "checked" : ""}>\n                            <label for="rt-input-tl-ko-only" style="font-size:11.5px;color:var(--rt-text2);cursor:pointer">한국어 감지 시에만 번역</label>\n                        </div>\n                        <div style="display:flex;align-items:center;gap:6px">\n                            <input type="checkbox" id="rt-input-tl-bardwiki" ${inputTlBardWikiEnabled ? "checked" : ""}>\n                            <label for="rt-input-tl-bardwiki" style="font-size:11.5px;color:var(--rt-text2);cursor:pointer">BardWiki 정본 용어 주입</label>\n                        </div>\n                    </div>\n                </div>\n                <div style="font-size:10.5px;color:var(--rt-text2);margin-top:4px;line-height:1.5;opacity:0.7">\n                    <b>재시도</b>: 번역 실패 시 자동으로 재시도<br>\n\t\t\t\t\t<b>따옴표 보존</b>: 번역 후 따옴표·백틱이 누락된 경우에만 자동 복원<br>\n\t\t\t\t\t<b>한국어 감지</b>: ON이면 한국어가 포함된 경우에만 번역, OFF이면 모든 입력을 번역<br>
-                    <b>BardWiki 정본 용어</b>: ON이면 현재 챗의 BardWiki에서 입력과 일치하는 문서(제목·별칭·본문)를 찾아 번역 프롬프트에 정본 근거로 넣습니다. 일치 문서가 없으면 아무것도 넣지 않습니다\n                </div>\n            </div>\n        </div>\n    </div>\n\n    \x3c!-- 📚 설명 / 로어북 / 사전 섹션 (접기 가능) --\x3e\n    <div class="rt-sec" id="rt-sec-lore-desc">\n        <div class="rt-sec-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" id="rt-sec-lore-desc-header">\n            📚 설명 / 로어북 / 사전\n            <span style="font-size:11px;color:var(--rt-text2);opacity:0.5;font-weight:normal" id="rt-sec-lore-desc-arrow">▶</span>\n        </div>\n        <div id="rt-sec-lore-desc-body" style="display:none">\n            <div class="rt-label" style="font-weight:bold;margin-bottom:4px">설명 / 로어북 번역</div>\n            <div class="rt-label">번역 프롬프트</div>\n            <select class="rt-sel" id="rt-lore-desc-preset-sel" style="width:100%;margin-bottom:6px">\n                ${loreDescPresetOpts}\n            </select>\n            <div id="rt-lore-desc-lang-section" style="${loreDescPresetId === "" ? "" : "display:none"}">\n                <div class="rt-label">번역 대상 언어</div>\n                <select class="rt-sel" id="rt-lore-desc-lang-sel" style="width:100%">\n                    ${Object.entries(
+                    <b>BardWiki 정본 용어</b>: ON이면 현재 챗의 BardWiki 정본 이름(제목·별칭)을 <b>항상</b> 번역 프롬프트에 넣습니다. 입력 언어와 위키 언어가 달라도(예: 한국어 입력 ↔ 일본어 위키) 정본 표기를 그대로 쓰게 되어 한자가 틀어지지 않습니다. 본문 발췌는 입력과 언어가 일치할 때만 추가됩니다\n                </div>\n            </div>\n        </div>\n    </div>\n\n    \x3c!-- 📚 설명 / 로어북 / 사전 섹션 (접기 가능) --\x3e\n    <div class="rt-sec" id="rt-sec-lore-desc">\n        <div class="rt-sec-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" id="rt-sec-lore-desc-header">\n            📚 설명 / 로어북 / 사전\n            <span style="font-size:11px;color:var(--rt-text2);opacity:0.5;font-weight:normal" id="rt-sec-lore-desc-arrow">▶</span>\n        </div>\n        <div id="rt-sec-lore-desc-body" style="display:none">\n            <div class="rt-label" style="font-weight:bold;margin-bottom:4px">설명 / 로어북 번역</div>\n            <div class="rt-label">번역 프롬프트</div>\n            <select class="rt-sel" id="rt-lore-desc-preset-sel" style="width:100%;margin-bottom:6px">\n                ${loreDescPresetOpts}\n            </select>\n            <div id="rt-lore-desc-lang-section" style="${loreDescPresetId === "" ? "" : "display:none"}">\n                <div class="rt-label">번역 대상 언어</div>\n                <select class="rt-sel" id="rt-lore-desc-lang-sel" style="width:100%">\n                    ${Object.entries(
         LORE_DESC_LANGUAGES,
       )
         .map(
@@ -4516,7 +4603,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
         )
         .join(
           "",
-        )}\n            </select>\n            <div id="rt-target-lang-custom-wrap" style="margin-top:6px;${currentTargetLang === "custom" ? "" : "display:none"}">\n                <input class="rt-inp" id="rt-target-lang-custom" value="${escapeHtml(customTargetLang)}" placeholder="언어 이름 입력 (예: Spanish, French, Vietnamese...)">\n            </div>\n            <div id="rt-dict-lang-display" style="margin-top:4px;font-size:10.5px;color:var(--rt-text2)">현재 검색 대상 언어: <b>${escapeHtml(getTargetLanguage())}</b></div>\n            <div style="display:flex;align-items:center;gap:6px;margin-top:8px">\n                <input type="checkbox" id="rt-dict-bardwiki-chk" ${dictBardWikiEnabled ? "checked" : ""}>\n                <label for="rt-dict-bardwiki-chk" style="font-size:11.5px;color:var(--rt-text2);cursor:pointer">BardWiki 문서를 사전 근거로 사용</label>\n            </div>\n            <div style="font-size:10.5px;color:var(--rt-text2);margin-top:4px;line-height:1.5;opacity:0.7">\n                현재 챗의 BardWiki에서 검색어와 제목·별칭·본문이 일치하는 문서를 찾아 정본 근거로 프롬프트에 넣습니다. 일치 문서가 없으면 일반 사전 정의로 답합니다. BardWiki API가 없는 환경에서는 자동으로 건너뜁니다.\n            </div>\n        </div>\n    </div>\n    \x3c!-- ⚙ 기타 섹션 --\x3e\n    <div class="rt-sec" id="rt-sec-misc">\n        <div class="rt-sec-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" id="rt-sec-misc-header">\n            ⚙ 기타\n            <span style="font-size:11px;color:var(--rt-text2);opacity:0.5;font-weight:normal" id="rt-sec-misc-arrow">▶</span>\n        </div>\n        <div id="rt-sec-misc-body" style="display:none">\n            <div class="rt-label" style="font-weight:bold;margin-bottom:4px">청크 설정</div>\n            <label class="rt-ckw"><input type="checkbox" id="rt-chunk-mode"${chunkModeEnabled ? " checked" : ""}> 긴 텍스트 자동 분할</label>\n            <div class="rt-row" style="margin-top:6px">\n                <div class="rt-label" style="margin-bottom:0">청크 크기 (자)</div>\n                <input class="rt-inp" type="number" id="rt-chunk-size" value="${chunkSize}" style="width:100px" min="500" max="30000">\n            </div>\n            <div class="rt-divider" style="margin:12px 0"></div>\n            <div class="rt-label" style="font-weight:bold;margin-bottom:4px">접근성</div>\n            <div style="font-size:10.5px;color:var(--rt-text2);margin-bottom:4px;opacity:0.8">실행 버전: <b>v3.4.1</b> · 입력 버튼 방식: mainDom 호환 모드</div>\n            <div style="font-size:10.5px;color:var(--rt-text2);margin-bottom:7px;opacity:0.8">진단 상태: <b>${escapeHtml(_inputTranslateButtonStatus)}</b></div>\n            <label class="rt-ckw"><input type="checkbox" id="rt-show-input-translate-btn"${showInputTranslateButton ? " checked" : ""}> 채팅 입력창 인풋 번역 빠른 토글 표시</label>\n            <div style="font-size:10.5px;color:var(--rt-text2);margin-top:3px;margin-bottom:8px;opacity:0.7">인풋 자동 번역이 활성화된 동안 입력창 왼쪽에 ON/OFF 버튼을 표시합니다</div>\n            <label class="rt-ckw"><input type="checkbox" id="rt-show-clear-btn"${showClearBtn ? " checked" : ""}> 텍스트 지우기 버튼 표시</label>\n            <div style="font-size:10.5px;color:var(--rt-text2);margin-top:3px;opacity:0.7">메인 탭 텍스트 입력창 우측 상단에 지우기 버튼을 표시합니다</div>\n        </div>\n    </div>\n\n    \x3c!-- Theme --\x3e\n    <div class="rt-sec">\n        <div class="rt-sec-title">🎨 테마</div>\n        <div class="rt-row">\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-theme-open">🎨 테마 설정 열기</button>\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-theme-toggle">${currentThemeMode === "dark" ? "☀️ 라이트" : "🌙 다크"}</button>\n        </div>\n    </div>\n\n    \x3c!-- Backup/Restore --\x3e\n    <div class="rt-sec">\n        <div class="rt-sec-title">💾 백업/복원</div>\n        <div class="rt-row">\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-export">📤 내보내기</button>\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-export-masked">📤 내보내기 (키 마스킹)</button>\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-import">📥 가져오기</button>\n        </div>\n        <div id="rt-backup-status" class="rt-status" style="display:none;margin-top:6px"></div>\n    </div>\n\n    <div style="text-align:center;margin-top:8px;font-size:11px;color:var(--rt-text2)">\n        RisuTrans v3.4.1 | API 3.0\n    </div>\n    `;
+        )}\n            </select>\n            <div id="rt-target-lang-custom-wrap" style="margin-top:6px;${currentTargetLang === "custom" ? "" : "display:none"}">\n                <input class="rt-inp" id="rt-target-lang-custom" value="${escapeHtml(customTargetLang)}" placeholder="언어 이름 입력 (예: Spanish, French, Vietnamese...)">\n            </div>\n            <div id="rt-dict-lang-display" style="margin-top:4px;font-size:10.5px;color:var(--rt-text2)">현재 검색 대상 언어: <b>${escapeHtml(getTargetLanguage())}</b></div>\n            <div style="display:flex;align-items:center;gap:6px;margin-top:8px">\n                <input type="checkbox" id="rt-dict-bardwiki-chk" ${dictBardWikiEnabled ? "checked" : ""}>\n                <label for="rt-dict-bardwiki-chk" style="font-size:11.5px;color:var(--rt-text2);cursor:pointer">BardWiki 문서를 사전 근거로 사용</label>\n            </div>\n            <div style="font-size:10.5px;color:var(--rt-text2);margin-top:4px;line-height:1.5;opacity:0.7">\n                현재 챗의 BardWiki에서 검색어와 제목·별칭·본문이 일치하는 문서를 찾아 정본 근거로 프롬프트에 넣습니다. 일치 문서가 없으면 일반 사전 정의로 답합니다. BardWiki API가 없는 환경에서는 자동으로 건너뜁니다.\n            </div>\n        </div>\n    </div>\n    \x3c!-- ⚙ 기타 섹션 --\x3e\n    <div class="rt-sec" id="rt-sec-misc">\n        <div class="rt-sec-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" id="rt-sec-misc-header">\n            ⚙ 기타\n            <span style="font-size:11px;color:var(--rt-text2);opacity:0.5;font-weight:normal" id="rt-sec-misc-arrow">▶</span>\n        </div>\n        <div id="rt-sec-misc-body" style="display:none">\n            <div class="rt-label" style="font-weight:bold;margin-bottom:4px">청크 설정</div>\n            <label class="rt-ckw"><input type="checkbox" id="rt-chunk-mode"${chunkModeEnabled ? " checked" : ""}> 긴 텍스트 자동 분할</label>\n            <div class="rt-row" style="margin-top:6px">\n                <div class="rt-label" style="margin-bottom:0">청크 크기 (자)</div>\n                <input class="rt-inp" type="number" id="rt-chunk-size" value="${chunkSize}" style="width:100px" min="500" max="30000">\n            </div>\n            <div class="rt-divider" style="margin:12px 0"></div>\n            <div class="rt-label" style="font-weight:bold;margin-bottom:4px">접근성</div>\n            <div style="font-size:10.5px;color:var(--rt-text2);margin-bottom:4px;opacity:0.8">실행 버전: <b>v3.4.2</b> · 입력 버튼 방식: mainDom 호환 모드</div>\n            <div style="font-size:10.5px;color:var(--rt-text2);margin-bottom:7px;opacity:0.8">진단 상태: <b>${escapeHtml(_inputTranslateButtonStatus)}</b></div>\n            <label class="rt-ckw"><input type="checkbox" id="rt-show-input-translate-btn"${showInputTranslateButton ? " checked" : ""}> 채팅 입력창 인풋 번역 빠른 토글 표시</label>\n            <div style="font-size:10.5px;color:var(--rt-text2);margin-top:3px;margin-bottom:8px;opacity:0.7">인풋 자동 번역이 활성화된 동안 입력창 왼쪽에 ON/OFF 버튼을 표시합니다</div>\n            <label class="rt-ckw"><input type="checkbox" id="rt-show-clear-btn"${showClearBtn ? " checked" : ""}> 텍스트 지우기 버튼 표시</label>\n            <div style="font-size:10.5px;color:var(--rt-text2);margin-top:3px;opacity:0.7">메인 탭 텍스트 입력창 우측 상단에 지우기 버튼을 표시합니다</div>\n        </div>\n    </div>\n\n    \x3c!-- Theme --\x3e\n    <div class="rt-sec">\n        <div class="rt-sec-title">🎨 테마</div>\n        <div class="rt-row">\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-theme-open">🎨 테마 설정 열기</button>\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-theme-toggle">${currentThemeMode === "dark" ? "☀️ 라이트" : "🌙 다크"}</button>\n        </div>\n    </div>\n\n    \x3c!-- Backup/Restore --\x3e\n    <div class="rt-sec">\n        <div class="rt-sec-title">💾 백업/복원</div>\n        <div class="rt-row">\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-export">📤 내보내기</button>\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-export-masked">📤 내보내기 (키 마스킹)</button>\n            <button class="rt-btn rt-bs rt-bsm" id="rt-btn-import">📥 가져오기</button>\n        </div>\n        <div id="rt-backup-status" class="rt-status" style="display:none;margin-top:6px"></div>\n    </div>\n\n    <div style="text-align:center;margin-top:8px;font-size:11px;color:var(--rt-text2)">\n        RisuTrans v3.4.2 | API 3.0\n    </div>\n    `;
       bindSettingsEvents();
     }
     function bindSettingsEvents() {
@@ -5361,7 +5448,7 @@ The Translation section must contain the full {{slot::lang}} translation of the 
       if (wasVisible === "true") {
         setTimeout(() => showWindow(), 300);
       }
-      console.log("✅ RisuTrans v3.4.1 initialized (API 3.0)");
+      console.log("✅ RisuTrans v3.4.2 initialized (API 3.0)");
     }
     init();
   } catch (e) {
