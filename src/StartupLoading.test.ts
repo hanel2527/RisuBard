@@ -11,6 +11,23 @@ const html = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8')
 const viteConfig = readFileSync(resolve(process.cwd(), 'vite.config.ts'), 'utf8')
 
 describe('localized startup screen', () => {
+    test('renders the static shell without waiting for app CSS or external fonts', () => {
+        expect(html).toContain('id="startup-shell-style"')
+        expect(html).toContain('src="/src/startup.ts"')
+        expect(html).not.toContain('href="/src/styles.css"')
+        expect(main).toContain('import "./styles.css"')
+        const stylesheetLinks = html.match(/<link[^>]*rel="stylesheet"[^>]*>/g) ?? []
+        expect(stylesheetLinks.every(link => link.includes('media="print"'))).toBe(true)
+    })
+
+    test('reports storage initialization before it starts and retains failed stages', () => {
+        expect(bootstrap.indexOf('await stage(language.startupLoading.storage)'))
+            .toBeGreaterThan(-1)
+        expect(bootstrap.indexOf('await stage(language.startupLoading.storage)'))
+            .toBeLessThan(bootstrap.indexOf('await forageStorage.Init()'))
+        expect(bootstrap).toContain('failStartupStage(LoadingStatusState, error)')
+        expect(app).toContain('LoadingStatusState.error')
+    })
     test('applies the saved language before mounting and localizes every bootstrap status', () => {
         expect(main.indexOf('applyEarlyLanguage()')).toBeLessThan(main.indexOf('mount(App'))
         expect(bootstrap).not.toMatch(/LoadingStatusState\.text\s*=\s*[`\"](?:Loading|Decoding|Reading|Checking|Updating)/)

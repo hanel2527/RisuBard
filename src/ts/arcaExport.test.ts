@@ -427,6 +427,98 @@ describe('exportArcaHtml', () => {
         expect(ordinary.style.borderLeftWidth).toBe('');
     });
 
+    it('exports parser quote marks as colored spans without destination highlight styles', async () => {
+        const root = document.createElement('div');
+        root.innerHTML = `<p>Prose <mark risu-mark="quote2">“Dialogue”</mark> <mark risu-mark="quote1">‘Thought’</mark></p>
+            <p><mark risu-mark="blockquote2">“Block dialogue”</mark></p>
+            <p><mark risu-mark="blockquote1">‘Block thought’</mark></p><mark>Highlight</mark>`;
+        const html = await exportArcaHtml(root, {
+            readStyle: (element, pseudo) => {
+                if (pseudo) return cssStyle('');
+                const kind = element.getAttribute('risu-mark');
+                return cssStyle(kind
+                    ? `color: ${kind.endsWith('1') ? 'rgb(127, 171, 241)' : 'rgb(241, 187, 87)'}; background-color: transparent;`
+                    : '');
+            },
+        });
+        const output = document.createElement('div');
+        output.innerHTML = html;
+        const spans = Array.from(output.querySelectorAll('span'));
+        expect(spans).toHaveLength(4);
+        expect(spans.map(span => span.style.color)).toEqual([
+            'rgb(241, 187, 87)', 'rgb(127, 171, 241)', 'rgb(241, 187, 87)', 'rgb(127, 171, 241)',
+        ]);
+        expect(output.querySelector('p')?.textContent).toBe('Prose “Dialogue” ‘Thought’');
+        expect(output.querySelectorAll('mark')).toHaveLength(1);
+        expect(output.querySelector('mark')?.textContent).toBe('Highlight');
+    });
+
+    it.each(['p', 'div', 'figure'])('exports a %s image wrapper without its white frame', async (tag) => {
+        const root = document.createElement('div');
+        root.innerHTML = `<${tag} class="portrait" style="border: 3px solid white; padding: 12px; border-radius: 12px;"><img src="data:image/png;base64,portrait"></${tag}>`;
+        const html = await exportArcaHtml(root, { readStyle: element => (element as HTMLElement).style });
+        const output = document.createElement('div');
+        output.innerHTML = html;
+        const frame = output.firstElementChild as HTMLElement;
+        const image = frame.querySelector('img')!;
+        expect(frame.tagName).toBe('P');
+        expect(frame.style.borderWidth).toBe('0px');
+        expect(frame.style.textAlign).toBe('center');
+        expect(image.style.borderWidth).toBe('0px');
+        expect(image.style.padding).toBe('0px');
+        expect(image.style.borderRadius).toBe('12px');
+    });
+
+    it('flattens nested image-only wrappers including rendering comments', async () => {
+        const root = document.createElement('div');
+        root.innerHTML = `<div style="border: 2px solid white; width: 100%;"><!--render--><div style="border: 1px solid white; border-radius: 20px;"><span><!--image--><img src="data:image/png;base64,portrait"></span></div><!--end--></div>`;
+        const output = document.createElement('div');
+        output.innerHTML = await exportArcaHtml(root, {
+            readStyle: element => (element as HTMLElement).style,
+            imageWidthPercent: 40,
+        });
+        expect(output.querySelectorAll('*')).toHaveLength(2);
+        const frame = output.firstElementChild as HTMLElement;
+        expect(frame.tagName).toBe('P');
+        expect(frame.style.borderWidth).toBe('0px');
+        expect(frame.style.textAlign).toBe('center');
+        const image = output.querySelector('img')!;
+        expect(image.style.borderWidth).toBe('0px');
+        expect(image.style.borderRadius).toBe('20px');
+        expect(image.style.maxWidth).toBe('40%');
+    });
+
+    it('removes the bordered image-only table from the reported Arca HTML', async () => {
+        const root = document.createElement('div');
+        root.innerHTML = `<table style="border: 2.75px solid rgb(235, 224, 224); border-radius: 20px; max-width: 100%; display: table;">
+            <tbody style="display: table-cell;"><tr style="display: table-row;"><td style="border: 0px solid rgb(69, 75, 97); text-align: center; display: table-cell;">
+            <p style="border: 0px; text-align: center;"><img alt="Yuri_uniform_shocked" src="data:image/png;base64,portrait" style="border: 0px; max-width: 40%;"></p>
+            </td></tr></tbody></table>`;
+        const output = document.createElement('div');
+        output.innerHTML = await exportArcaHtml(root, {
+            readStyle: element => (element as HTMLElement).style,
+            imageWidthPercent: 40,
+        });
+        expect(output.querySelector('table, tbody, tr, td')).toBeNull();
+        expect(output.querySelectorAll('*')).toHaveLength(2);
+        expect((output.firstElementChild as HTMLElement).style.textAlign).toBe('center');
+        const image = output.querySelector('img')!;
+        expect(image.alt).toBe('Yuri_uniform_shocked');
+        expect(image.style.borderWidth).toBe('0px');
+        expect(image.style.borderRadius).toBe('20px');
+        expect(image.style.maxWidth).toBe('40%');
+    });
+
+    it('keeps captions and unrelated bordered panels when flattening image wrappers', async () => {
+        const root = document.createElement('div');
+        root.innerHTML = `<figure style="border: 1px solid blue;"><img src="data:image/png;base64,portrait"><figcaption>Caption</figcaption></figure><div style="border: 1px solid red;">Status</div>`;
+        const output = document.createElement('div');
+        output.innerHTML = await exportArcaHtml(root, { readStyle: element => (element as HTMLElement).style });
+        expect(output.querySelector('figcaption')?.textContent).toBe('Caption');
+        expect(output.querySelector('figure')?.style.borderWidth).toBe('1px');
+        expect((output.lastElementChild as HTMLElement).style.borderWidth).toBe('1px');
+    });
+
     it('preserves external regex colors and supplies a safe explicit choice style', async () => {
         const root = document.createElement('div');
         root.innerHTML = `

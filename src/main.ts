@@ -1,4 +1,6 @@
 import "./ts/polyfill";
+import "./styles.css";
+import "./styles/nodeonly-standard.css";
 import "core-js/actual"
 import "./ts/log-capture"
 import "./ts/storage/database.svelte"
@@ -6,7 +8,7 @@ import App from "./App.svelte";
 import { loadData } from "./ts/bootstrap";
 import { initHotkey } from "./ts/hotkey";
 import { preLoadCheck } from "./preload";
-import { mount } from "svelte";
+import { mount, tick } from "svelte";
 import { applyEarlyLanguage } from "./lang";
 
 window.addEventListener('vite:preloadError', (event) => {
@@ -19,8 +21,6 @@ applyEarlyLanguage()
 let app = mount(App, {
     target: document.getElementById("app"),
 });
-loadData()
-initHotkey()
 
 async function handoffStartupLogo() {
     const preloader = document.getElementById('preloading')
@@ -31,6 +31,11 @@ async function handoffStartupLogo() {
     preloader?.remove()
 }
 
-void handoffStartupLogo()
+export const ready = (async () => {
+    await tick()
+    await handoffStartupLogo()
+    await loadData()
+    initHotkey()
+})()
 
 export default app;

@@ -295,7 +295,7 @@ function inlineSafeStyles(
     forcedDisplay?: 'table-cell',
     sourceBaseFontSize = '',
 ): void {
-    if (source.classList.length > 0 || source.hasAttribute('style')) {
+    if (source.classList.length > 0 || source.hasAttribute('style') || source.hasAttribute('risu-mark')) {
         for (const property of SAFE_STYLE_PROPERTIES) {
             const value = getStyleValue(style, property);
             if (property === 'font-size' && value === sourceBaseFontSize) {
@@ -408,18 +408,18 @@ function createPseudoElementClone(
 }
 
 function getSingleImageChild(element: HTMLElement): HTMLElement | null {
-    if (element.tagName !== 'DIV' && element.tagName !== 'FIGURE') {
+    if (!['DIV', 'FIGURE', 'P', 'SPAN', 'TABLE', 'TBODY', 'TR', 'TD'].includes(element.tagName)) {
         return null;
     }
     const meaningfulChildren = Array.from(element.childNodes).filter((node) => {
         if (node.nodeType === Node.TEXT_NODE) {
             return Boolean(node.textContent?.trim());
         }
-        return !(node instanceof HTMLBRElement);
+        return node.nodeType !== Node.COMMENT_NODE && !(node instanceof HTMLBRElement);
     });
     return meaningfulChildren.length === 1
         && meaningfulChildren[0] instanceof HTMLElement
-        && meaningfulChildren[0].tagName === 'IMG'
+        && (meaningfulChildren[0].tagName === 'IMG' || getSingleImageChild(meaningfulChildren[0]) !== null)
         ? meaningfulChildren[0]
         : null;
 }
@@ -446,6 +446,9 @@ async function createImageClone(
 }
 
 function applyImageSizing(image: HTMLImageElement, imageWidthPercent: number | undefined): void {
+    image.style.border = '0';
+    image.style.padding = '0';
+    image.style.boxShadow = 'none';
     appendRawStyle(image, 'display', 'inline-block');
     appendRawStyle(image, 'width', '100%');
     appendRawStyle(image, 'max-width', `${normalizeArcaChatImageWidthPercent(imageWidthPercent)}%`);
@@ -457,6 +460,8 @@ function applyImageSizing(image: HTMLImageElement, imageWidthPercent: number | u
 
 function createCenteredImageFrame(image: HTMLImageElement, outputDocument: Document): HTMLParagraphElement {
     const frame = outputDocument.createElement('p');
+    frame.style.border = '0';
+    frame.style.padding = '0';
     appendRawStyle(frame, 'display', 'block');
     appendRawStyle(frame, 'clear', 'both');
     appendRawStyle(frame, 'text-align', 'center');
@@ -645,15 +650,15 @@ async function cloneNodeForArca(
 
     const singleImage = getSingleImageChild(source);
     if (singleImage) {
-        const sourceUrl = singleImage.getAttribute('src');
-        if (!sourceUrl) {
-            return null;
+        const frame = await cloneNodeForArca(singleImage, outputDocument, options);
+        const image = frame instanceof HTMLElement ? frame.querySelector('img') : null;
+        if (image && !image.style.borderRadius) {
+            const radius = getStyleValue(computedStyle, 'border-radius');
+            if (shouldKeepStyle('border-radius', radius)) {
+                image.style.borderRadius = radius;
+            }
         }
-        const imageStyle = options.readStyle?.(singleImage) ?? singleImage.style;
-        const image = await createImageClone(singleImage, outputDocument, options, sourceUrl, imageStyle);
-        inlineSafeStyles(source, image, computedStyle, undefined, options.sourceBaseFontSize);
-        applyImageSizing(image, options.imageWidthPercent);
-        return createCenteredImageFrame(image, outputDocument);
+        return frame;
     }
 
     const backgroundUrl = extractBackgroundUrl(readBackgroundImage(source, options));
@@ -673,7 +678,11 @@ async function cloneNodeForArca(
         return createCenteredImageFrame(image, outputDocument);
     }
 
-    const clone = outputDocument.createElement(source.tagName.toLowerCase());
+    // Parser quote marks rely on app-only CSS. A plain span avoids the
+    // destination editor's default mark highlight after risu-mark is stripped.
+    const isQuoteMark = source.tagName === 'MARK'
+        && /^(?:quote|blockquote)[12]$/.test(source.getAttribute('risu-mark') ?? '');
+    const clone = outputDocument.createElement(isQuoteMark ? 'span' : source.tagName.toLowerCase());
     const display = getStyleValue(computedStyle, 'display');
     const flexDirection = getStyleValue(computedStyle, 'flex-direction');
     const tableRow = (display === 'flex' || display === 'grid' || display === 'inline-flex' || display === 'inline-grid')
