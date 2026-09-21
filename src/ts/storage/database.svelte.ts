@@ -905,7 +905,7 @@ export function setDatabase(data:Database){
             : false
     data.showRisuBardSaveLoadShortcuts ??= true
     data.chatUploadChunkMiB = normalizeChatUploadChunkMiB(data.chatUploadChunkMiB)
-    data.chatUploadChunkEnabled = data.chatUploadChunkEnabled !== false
+    data.chatUploadChunkEnabled = data.chatUploadChunkEnabled === true
     data.risuBardAutosaveInterval = normalizeAutosaveInterval(
         data.risuBardAutosaveInterval
     )

@@ -110,7 +110,7 @@ test.each([1, 8, 16])('saved %i MiB app setting controls chunked upload and pers
         requests++
         if (response.status === 202) expect(await getChat()).toEqual(original)
         return response
-    }, 'test-char-0', 0, 'chat-0-0', encoded, savedSettings.chatUploadChunkMiB)
+    }, 'test-char-0', 0, 'chat-0-0', encoded, savedSettings.chatUploadChunkMiB, true)
     expect(result.status, await result.clone().text()).toBe(200)
     expect(requests).toBe(2)
     expect((await getChat()).message[0].data === data).toBe(true)
@@ -158,7 +158,7 @@ test('entering external edit mode during upload prevents the final chunk from ov
             expect(edit.ok).toBe(true)
         }
         return response
-    }, 'test-char-0', 0, 'chat-0-0', encoded)
+    }, 'test-char-0', 0, 'chat-0-0', encoded, 8, true)
     expect(staged).toBe(true)
     expect(result.status).toBe(409)
     expect((await result.json()).code).toBe('EXTERNAL_EDIT_MODE')

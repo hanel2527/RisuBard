@@ -853,7 +853,7 @@ export class NodeStorage{
         const da = await uploadChatContent(
             (url, init) => this.authFetch(url, init), chaId, chatIndex, chatId, encoded,
             getDatabase().chatUploadChunkMiB,
-            getDatabase().chatUploadChunkEnabled !== false,
+            getDatabase().chatUploadChunkEnabled === true,
         )
         if (da.status === 409) {
             const data = await da.json()

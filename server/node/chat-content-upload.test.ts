@@ -43,7 +43,7 @@ test('a chat over 100 MiB round-trips byte for byte using requests no larger tha
         }
         expect(committed).toBeUndefined()
         return Response.json(result, { status: 202 })
-    }, 'character', 0, 'chat', payload)
+    }, 'character', 0, 'chat', payload, 8, true)
     expect(response.ok).toBe(true)
     expect(requests).toBe(13)
     expect(committed!.equals(payload)).toBe(true)
@@ -57,10 +57,10 @@ test('small chats keep the existing single-request endpoint', async () => {
     expect(request.mock.calls[0][0]).toBe('/api/chat-content/char%2Fescaped/2')
 })
 
-test('disabling chunk uploads sends a large chat once without chunk metadata', async () => {
+test.each([undefined, false])('unset or disabled chunk uploads (%s) send a large chat once without chunk metadata', async enabled => {
     const payload = new Uint8Array(CHAT_UPLOAD_CHUNK_BYTES + 1)
     const request = vi.fn(async (_url: string, _init: RequestInit) => Response.json({ success: true }))
-    await uploadChatContent(request, 'character', 0, 'chat', payload, 1, false)
+    await uploadChatContent(request, 'character', 0, 'chat', payload, 1, enabled)
     expect(request).toHaveBeenCalledOnce()
     const [url, init] = request.mock.calls[0]
     expect(url).toBe('/api/chat-content/character/0')
@@ -86,7 +86,7 @@ test.each([1, 16, 64])('the server accepts the app setting of %i MiB without sep
             return Response.json({ success: true })
         }
         return Response.json(result, { status: 202 })
-    }, 'character', 0, 'chat', payload, chunkMiB)
+    }, 'character', 0, 'chat', payload, chunkMiB, true)
     expect(lengths).toEqual([bytes, 17])
     expect(committed!.equals(payload)).toBe(true)
     expect(await readdir(root)).toEqual([])
@@ -150,7 +150,7 @@ test.each(['network', 'conflict', 'bad-ack'])('client aborts on %s without commi
         if (failure === 'conflict') return Response.json({ code: 'CANONICAL_FILES_CHANGED' }, { status: 409 })
         return Response.json({ uploadId: 'wrong', nextIndex: 1 }, { status: 202 })
     }
-    const result = uploadChatContent(request, 'character', 0, 'chat', new Uint8Array(CHAT_UPLOAD_CHUNK_BYTES + 1))
+    const result = uploadChatContent(request, 'character', 0, 'chat', new Uint8Array(CHAT_UPLOAD_CHUNK_BYTES + 1), 8, true)
     if (failure === 'conflict') {
         const response = await result
         expect(response.status).toBe(409)

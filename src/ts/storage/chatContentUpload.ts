@@ -8,7 +8,7 @@ export async function uploadChatContent(
     request: (url: string, init: RequestInit) => Promise<Response>,
     chaId: string, chatIndex: number, chatId: string, encoded: Uint8Array,
     chunkMiB: unknown = DEFAULT_CHAT_UPLOAD_CHUNK_MIB,
-    enabled = true,
+    enabled = false,
 ): Promise<Response> {
     // Snapshot once: changing settings must not resize an upload already in flight.
     const chunkBytes = normalizeChatUploadChunkMiB(chunkMiB) * 1024 * 1024

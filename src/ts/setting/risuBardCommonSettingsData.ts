@@ -373,7 +373,7 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
         labelKey: 'chatUploadChunkSize',
         helpKey: 'chatUploadChunkSize',
         bindKey: 'chatUploadChunkMiB',
-        condition: ({ db }) => db.chatUploadChunkEnabled !== false,
+        condition: ({ db }) => db.chatUploadChunkEnabled === true,
         setValue: (db, value) => { db.chatUploadChunkMiB = normalizeChatUploadChunkMiB(value) },
         options: { min: MIN_CHAT_UPLOAD_CHUNK_MIB, max: MAX_CHAT_UPLOAD_CHUNK_MIB, step: 1 },
         keywords: ['chunk', 'upload', 'size', 'save', '청크', '업로드', '크기', '저장'],
