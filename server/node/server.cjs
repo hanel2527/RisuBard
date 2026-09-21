@@ -45,7 +45,8 @@ const { openServerBrowser } = require('./open-server-browser.cjs');
 const { releaseToUpdateInfo } = require('./release-update.cjs');
 const { createChatContentPage } = require('./chat-content-page.cjs');
 const { stageBackupEntries } = require('./backup-entry-stream.cjs');
-const { encodeCanonicalBackupName, decodeCanonicalBackupName } = require('./canonical-backup-name.cjs');
+const { decodeCanonicalBackupName } = require('./canonical-backup-name.cjs');
+const { CANONICAL_BACKUP_DIRECTORIES, listCanonicalBackupEntries } = require('./canonical-backup-inventory.cjs');
 const { createCanonicalProjectionSync } = require('./canonical-projection-sync.cjs');
 const { createProjectionRevisionStore } = require('./projection-revision-store.cjs');
 const { createDirectWriteTracker } = require('./direct-write-tracker.cjs');
@@ -2233,44 +2234,6 @@ function encodeBackupEntry(name, data) {
     const dataLength = Buffer.allocUnsafe(4);
     dataLength.writeUInt32LE(data.length, 0);
     return Buffer.concat([nameLength, encodedName, dataLength, data]);
-}
-
-const CANONICAL_BACKUP_DIRECTORIES = [
-    'settings', 'secrets', 'presets', 'modules', 'personas', 'lorebooks',
-    'characters', 'index', 'risubard', 'trash', 'logs', 'request-logs',
-    'model-jobs',
-];
-
-async function listCanonicalBackupEntries() {
-    const entries = [];
-    async function walk(relativeDirectory) {
-        const absolute = path.join(savePath, relativeDirectory);
-        let children;
-        try { children = await fs.readdir(absolute, { withFileTypes: true }); }
-        catch { return; }
-        for (const child of children) {
-            if (child.name.endsWith('.tmp') || child.name.endsWith('.sha256')) continue;
-            const relativePath = path.join(relativeDirectory, child.name);
-            if (child.isDirectory()) await walk(relativePath);
-            else if (child.isFile()) {
-                const sourcePath = path.join(savePath, relativePath);
-                const stat = await fs.stat(sourcePath);
-                const portable = relativePath.split(path.sep).join('/');
-                entries.push({
-                    kind: 'canonical',
-                    sourcePath,
-                    // Legacy importers reject unknown slash-delimited namespaces.
-                    // A flat reversible name lets it retain and re-export this
-                    // RisuBard-only file without interpreting it.
-                    backupName: encodeCanonicalBackupName(portable),
-                    sortKey: `risubard-data/${portable}`,
-                    size: stat.size,
-                });
-            }
-        }
-    }
-    for (const directory of CANONICAL_BACKUP_DIRECTORIES) await walk(directory);
-    return entries.sort((left, right) => left.sortKey.localeCompare(right.sortKey));
 }
 
 function isInvalidBackupPathSegment(name) {
@@ -4649,7 +4612,7 @@ app.get('/api/backup/export', async (req, res, next) => {
             size: entry.size,
         }));
         const canonicalEntries = !settingsOnly && target === 'nodeonly'
-            ? await listCanonicalBackupEntries()
+            ? await listCanonicalBackupEntries(savePath)
             : [];
         const namespacedEntries = [
             ...kvListWithSizes('assets/')
@@ -4918,7 +4881,7 @@ app.post('/api/backup/server/save', async (req, res, next) => {
             ...kvListWithSizes('inlay_meta/').map((e) => ({ kind: 'kv', key: e.key, backupName: e.key, size: e.size })),
             ...inlayEntries,
             ...sidecarEntries,
-            ...await listCanonicalBackupEntries(),
+            ...await listCanonicalBackupEntries(savePath),
         ];
 
         const totalEntries = namespacedEntries.length + 1; // +1 for database
@@ -5781,7 +5744,7 @@ async function estimateServerBackupSize() {
     for (const it of kvListWithSizes('assets/')) total += it.size;
     for (const it of kvListWithSizes('inlay_meta/')) total += it.size;
     for (const e of listColdStorageBackupEntries()) total += e.size;
-    for (const e of await listCanonicalBackupEntries()) total += e.size;
+    for (const e of await listCanonicalBackupEntries(savePath)) total += e.size;
     total += await sumInlayFsBytes();
     return total;
 }
