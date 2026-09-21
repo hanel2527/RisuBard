@@ -15,6 +15,7 @@ const {
 
 const { DIRECTORY_INDEX, validateDirectoryMapping, createCharacterDirectoryResolver, resetCharacterDirectoryMappings } = require('./character-directories.cjs');
 const { createCharacterPackageManifest, validateCharacterPackageManifest } = require('./character-package-manifest.cjs');
+const { inspectCharacterPackageOwnership } = require('./character-package-preflight.cjs');
 const { allocateSegment, planDirectoryMapping } = require('./friendly-paths.cjs');
 
 const COLLECTIONS = [
@@ -914,6 +915,7 @@ function createUserDataRepository(options = {}) {
         finalizeAssistantDraft,
         getProjectionRevision,
         importLegacyDatabase,
+        inspectCharacterPackageOwnership: characterId => inspectCharacterPackageOwnership(exportLegacyDatabase(), stableId(characterId, 'character')),
         loadAssistantDraft,
         loadCharacter,
         loadChat,
