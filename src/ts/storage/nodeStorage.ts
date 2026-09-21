@@ -8,13 +8,14 @@
 import { language } from "src/lang"
 import { alertInput, waitAlert, notifyError } from "../alert"
 import { decodeRisuSave, encodeRisuSaveLegacy } from "./risuSave"
-import { normalizeChat, type Chat, type Message } from "./database.svelte"
+import { getDatabase, normalizeChat, type Chat, type Message } from "./database.svelte"
 import {
     assembleChatContentPages,
     getRemainingChatContentPageOffsets,
     type ChatContentPageEnvelope,
 } from './chatContentPage'
 import { isCanonicalFilesChangedResponse } from './canonicalConflict'
+import { uploadChatContent } from './chatContentUpload'
 
 const CHAT_CONTENT_TRANSFER_PAGE_SIZE = 200
 const CHAT_CONTENT_TRANSFER_CONCURRENCY = 4
@@ -849,14 +850,11 @@ export class NodeStorage{
 
     async saveChatContent(chaId: string, chatIndex: number, chatId: string, chat: any): Promise<void> {
         const encoded = encodeRisuSaveLegacy(chat)
-        const da = await this.authFetch(`/api/chat-content/${encodeURIComponent(chaId)}/${chatIndex}`, {
-            method: 'POST',
-            headers: {
-                'content-type': 'application/octet-stream',
-                'x-chat-id': chatId,
-            },
-            body: encoded,
-        })
+        const da = await uploadChatContent(
+            (url, init) => this.authFetch(url, init), chaId, chatIndex, chatId, encoded,
+            getDatabase().chatUploadChunkMiB,
+            getDatabase().chatUploadChunkEnabled === true,
+        )
         if (da.status === 409) {
             const data = await da.json()
             throw new ConflictError(

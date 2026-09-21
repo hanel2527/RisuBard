@@ -4,6 +4,7 @@ import { checkNullish, decryptBuffer, encryptBuffer, selectSingleFile } from '..
 import { changeLanguage, language } from '../../lang';
 import { DEFAULT_CHAT_LOAD_ADDITIONAL_PAGES, DEFAULT_CHAT_LOAD_INITIAL_PAGES, normalizeChatLoadPages } from '../chatLoadPages';
 import { normalizeChatPageSize } from '../chatPagination';
+import { normalizeChatUploadChunkMiB } from './chatUploadSettings';
 import { normalizeCollectionOrganizers, type CollectionOrganizers } from '../collectionOrganizer';
 import type { RisuPlugin } from '../plugins/plugins.svelte';
 import type {triggerscript as triggerscriptMain} from '../process/triggers';
@@ -903,6 +904,8 @@ export function setDatabase(data:Database){
             ? data.risuBardWikiMarkdownPreview
             : false
     data.showRisuBardSaveLoadShortcuts ??= true
+    data.chatUploadChunkMiB = normalizeChatUploadChunkMiB(data.chatUploadChunkMiB)
+    data.chatUploadChunkEnabled = data.chatUploadChunkEnabled === true
     data.risuBardAutosaveInterval = normalizeAutosaveInterval(
         data.risuBardAutosaveInterval
     )
@@ -1759,6 +1762,8 @@ export interface Database{
     risuBardMemoryWorkspaceHeight?: number
     showRisuBardSaveLoadShortcuts?: boolean
     risuBardAutosaveInterval?: number
+    chatUploadChunkMiB?: number
+    chatUploadChunkEnabled?: boolean
     risuBardAutosaveRetention?: number
     risuBardArcaChatImageWidthPercent?: number
     risuBardArcaChatFontSizePx?: number

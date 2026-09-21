@@ -567,6 +567,8 @@ export const languageEnglish = {
     risuBardSaveLoadShortcutHideConfirm: "Turn off the save/load buttons? You can turn them back on under BardWiki / Common options.",
     risuBardAutosaveInterval: "Autosave interval (turns)",
     risuBardAutosaveRetention: "Maximum autosaves retained",
+    chatUploadChunkSize: "Chat upload chunk size (MiB)",
+    chatUploadChunkEnabled: "Use chunked chat uploads",
     risuBardArcaChatExporter: "Arca Chat Extractor",
     risuBardArcaChatImageWidthPercent: "Exported image width (%)",
     risuBardArcaChatFontSizePx: "Font size (px)",

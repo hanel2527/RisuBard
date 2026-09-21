@@ -16,6 +16,17 @@ import {
     resolveRisuBardChatSettings,
     type RisuBardChatSettings,
 } from './risuBardSettings'
+import { PluginContextCache } from './pluginContextCache'
+import { RISUBARD_MEMORY_UPDATED_EVENT } from './memoryEvents'
+
+let compatibilityCaches = new WeakMap<
+    typeof fetch, WeakMap<typeof loadNarrativeInquiry, PluginContextCache<BardWikiPluginContextResult>>
+>()
+if (typeof window !== 'undefined') {
+    window.addEventListener(RISUBARD_MEMORY_UPDATED_EVENT, () => {
+        compatibilityCaches = new WeakMap()
+    })
+}
 
 export const BARDWIKI_VIRTUAL_MEMORY_MARKER = 'bardwiki-plugin-context-v1'
 
@@ -319,13 +330,15 @@ export async function saveBardWikiPluginDocument(
     },
     dependencies: Partial<BardWikiDocumentDependencies> = {}
 ): Promise<BardWikiPluginDocument> {
-    return (dependencies.saveDocument ?? saveManualWikiDocument)({
+    const result = await (dependencies.saveDocument ?? saveManualWikiDocument)({
         characterId: input.characterId,
         chatId: input.chatId,
         fetchImpl: input.fetchImpl,
         createAuth: input.createAuth,
         ...input.document,
     })
+    compatibilityCaches = new WeakMap()
+    return result
 }
 
 export async function setBardWikiPluginDocumentContextMode(
@@ -336,14 +349,18 @@ export async function setBardWikiPluginDocumentContextMode(
     },
     dependencies: Partial<BardWikiDocumentDependencies> = {}
 ): Promise<BardWikiPluginDocument> {
-    return (dependencies.setContextMode ?? setWikiDocumentContextMode)(input)
+    const result = await (dependencies.setContextMode ?? setWikiDocumentContextMode)(input)
+    compatibilityCaches = new WeakMap()
+    return result
 }
 
 export async function trashBardWikiPluginDocument(
     input: BardWikiPluginScope & { documentId: string },
     dependencies: Partial<BardWikiDocumentDependencies> = {}
 ): Promise<{ id: string; trashed: true }> {
-    return (dependencies.trashDocument ?? trashWikiDocument)(input)
+    const result = await (dependencies.trashDocument ?? trashWikiDocument)(input)
+    compatibilityCaches = new WeakMap()
+    return result
 }
 
 export interface BardWikiCompatibleCharacter {
@@ -364,7 +381,26 @@ export async function decorateBardWikiChatForPlugin<
     onError?: (error: unknown) => void
 }, dependencies: Partial<BardWikiPluginContextDependencies> = {}): Promise<T> {
     try {
-        const context = await buildBardWikiPluginContext(input, dependencies)
+        // Cache only compatibility reads; explicit bardWiki.getContext() stays fresh.
+        // Never cache the chat itself: polling must see current streaming state.
+        const settings = resolveRisuBardChatSettings(input.globalSettings, input.chat.risuBardSettings)
+        const recent = selectBardWikiPluginRecentMessages(
+            input.chat.message ?? [], settings.risuBardResponseMessageCount,
+            settings.risuBardResponseExcludeUserMessages,
+        ).map(({ role, data }) => ({ role, data }))
+        const key = JSON.stringify([input.characterId, input.chatId, settings, recent])
+        let loaders = compatibilityCaches.get(input.fetchImpl)
+        if (!loaders) {
+            loaders = new WeakMap()
+            compatibilityCaches.set(input.fetchImpl, loaders)
+        }
+        const loader = dependencies.loadInquiry ?? loadNarrativeInquiry
+        let cache = loaders.get(loader)
+        if (!cache) {
+            cache = new PluginContextCache()
+            loaders.set(loader, cache)
+        }
+        const context = await cache.get(key, () => buildBardWikiPluginContext(input, dependencies))
         return context.content
             ? injectBardWikiVirtualMemory(input.chat, context.content)
             : input.chat

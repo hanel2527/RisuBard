@@ -3,6 +3,7 @@ import { createCanonicalSaveConflict } from './canonicalSaveConflict'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import ts from 'typescript'
+import { uploadChatContent } from './chatContentUpload'
 
 const source = readFileSync(resolve(process.cwd(), 'src/ts/globalApi.svelte.ts'), 'utf8')
 function productionFunction(start: string, end: string) {
@@ -88,16 +89,14 @@ test('production rebase retains edits made during fetch and leaves unrelated ser
 test('chat endpoint rejects external changes before accepting a message into its cache', async () => {
     const server = readFileSync(resolve(process.cwd(), 'server/node/server.cjs'), 'utf8')
     const ast = ts.createSourceFile('server.cjs', server, ts.ScriptTarget.Latest, true)
-    const route = ast.statements.find(s => ts.isExpressionStatement(s) && ts.isCallExpression(s.expression)
-        && s.expression.expression.getText(ast) === 'app.post'
-        && s.expression.arguments[0]?.getText(ast) === "'/api/chat-content/:chaId/:chatIndex'")!
+    const route = ast.statements.find(s => ts.isFunctionDeclaration(s)
+        && s.name?.text === 'saveChatContentHandler')!
     expect(route).toBeTruthy()
-    let handler: any
     const next = vi.fn()
     const res: any = { status: vi.fn(() => res), json: vi.fn(), send: vi.fn() }
-    new Function('app', 'checkAuth', 'checkActiveSession', 'queueStorageOperation', 'externalEditSession',
-        'adoptExternallyChangedCanonicalProjection', 'sendCanonicalProjectionConflict', route.getText(ast))(
-        { post: (_: string, fn: any) => { handler = fn } }, async () => true, () => true,
+    const handler = new Function('checkAuth', 'checkActiveSession', 'queueStorageOperation', 'externalEditSession',
+        'adoptExternallyChangedCanonicalProjection', 'sendCanonicalProjectionConflict', `${route.getText(ast)}; return saveChatContentHandler`)(
+        async () => true, () => true,
         async (fn: any) => fn(), { isActive: () => false }, () => ({ etag: 'external' }),
         (response: any) => response.status(409).json({ code: 'CANONICAL_FILES_CHANGED' }),
     )
@@ -114,8 +113,10 @@ test.each(['CANONICAL_FILES_CHANGED', 'EXTERNAL_EDIT_MODE'])('chat transport ret
     class ConflictError extends Error {
         constructor(message: string, public currentEtag: string, public canonicalFilesChanged: boolean, public externalEditMode: boolean) { super(message) }
     }
-    const save = new Function('encodeRisuSaveLegacy', 'ConflictError', 'isCanonicalFilesChangedResponse', `${method}; return saveChatContent`)(
+    const save = new Function('encodeRisuSaveLegacy', 'ConflictError', 'isCanonicalFilesChangedResponse', 'uploadChatContent', 'getDatabase', `${method}; return saveChatContent`)(
         () => new Uint8Array(), ConflictError, (data: any) => data.code === 'CANONICAL_FILES_CHANGED',
+        uploadChatContent,
+        () => ({ chatUploadChunkMiB: 8 }),
     )
     const context = { authFetch: async () => ({ status: 409, json: async () => ({ code, currentEtag: 'new', error: 'conflict' }) }) }
     await expect(save.call(context, 'character', 0, 'chat', {})).rejects.toMatchObject({

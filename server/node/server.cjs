@@ -44,6 +44,8 @@ const { createRuntimeMemoryService } = require('./risubard-memory-runtime.cjs');
 const { openServerBrowser } = require('./open-server-browser.cjs');
 const { releaseToUpdateInfo } = require('./release-update.cjs');
 const { createChatContentPage } = require('./chat-content-page.cjs');
+const { createChatContentUploads, MAX_CHUNK_BYTES: CHAT_UPLOAD_MAX_CHUNK_BYTES } = require('./chat-content-upload.cjs');
+const chatContentUploads = createChatContentUploads();
 const { stageBackupEntries } = require('./backup-entry-stream.cjs');
 const { encodeCanonicalBackupName, decodeCanonicalBackupName } = require('./canonical-backup-name.cjs');
 const { createCanonicalProjectionSync } = require('./canonical-projection-sync.cjs');
@@ -951,7 +953,14 @@ app.use(express.json({ limit: '100mb' }));
 app.use((req, res, next) => {
     // Skip express.raw() for backup import — it must stream, not buffer into memory
     if (req.path === '/api/backup/import') return next();
-    return express.raw({ type: 'application/octet-stream', limit: '2gb' })(req, res, next);
+    const isChatUpload = req.path.startsWith('/api/chat-content-upload/');
+    // Fixed ceiling admits older in-flight uploads after the app changes its setting.
+    // The staging store validates each request against that upload's chosen size.
+    const limit = isChatUpload ? CHAT_UPLOAD_MAX_CHUNK_BYTES : '2gb';
+    return express.raw({ type: 'application/octet-stream', limit })(req, res, error => {
+        if (isChatUpload && error?.status === 413) return res.status(413).json({ error: 'Chat upload chunk too large' });
+        next(error);
+    });
 });
 app.use(express.text({ limit: '100mb' }));
 const {pipeline} = require('stream/promises')
@@ -5351,7 +5360,7 @@ app.get('/api/chat-content/:chaId/:chatIndex', async (req, res, next) => {
 });
 
 // POST /api/chat-content/:chaId/:chatIndex — save chat content to server
-app.post('/api/chat-content/:chaId/:chatIndex', async (req, res, next) => {
+async function saveChatContentHandler(req, res, next) {
     if (!await checkAuth(req, res)) { return; }
     if (!checkActiveSession(req, res)) return;
     try {
@@ -5425,6 +5434,31 @@ app.post('/api/chat-content/:chaId/:chatIndex', async (req, res, next) => {
             res.json({ success: true });
         });
     } catch (error) {
+        next(error);
+    }
+}
+app.post('/api/chat-content/:chaId/:chatIndex', saveChatContentHandler);
+app.post('/api/chat-content-upload/:chaId/:chatIndex', async (req, res, next) => {
+    if (!await checkAuth(req, res)) return;
+    if (!checkActiveSession(req, res)) return;
+    try {
+        const result = await chatContentUploads.accept(req);
+        if (!result.body) return res.status(202).json(result);
+        req.body = result.body;
+        // Recheck writer ownership and canonical conflicts at commit time.
+        return saveChatContentHandler(req, res, next);
+    } catch (error) {
+        if (error.status) return res.status(error.status).json({ error: error.message });
+        next(error);
+    }
+});
+app.delete('/api/chat-content-upload/:chaId/:chatIndex', async (req, res, next) => {
+    if (!await checkAuth(req, res)) return;
+    try {
+        await chatContentUploads.abort(req);
+        res.json({ success: true });
+    } catch (error) {
+        if (error.status) return res.status(error.status).json({ error: error.message });
         next(error);
     }
 });
@@ -6948,6 +6982,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
     process.on(sig, async () => {
         console.log(`[Server] Received ${sig}, flushing pending data...`);
         stopTunnel();
+        try { await chatContentUploads.close(); } catch (e) { logger.warn('[ChatContent] Upload cleanup error:', e); }
         try { await flushPendingDb(); } catch (e) { logger.error('[Server] Flush error:', e); }
         await saveObservation.flush();
         process.exit(0);
