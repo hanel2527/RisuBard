@@ -635,6 +635,7 @@ export const languageKorean = {
   risuBardAutosaveInterval: "자동저장 간격 (턴)",
   risuBardAutosaveRetention: "자동저장 최대 보관 수",
   chatUploadChunkSize: "채팅 업로드 청크 크기 (MiB)",
+  chatUploadChunkEnabled: "채팅 청크 업로드 사용",
   risuBardArcaChatExporter: "아카라이브 챗 추출기",
   risuBardArcaChatImageWidthPercent: "추출 시 이미지 너비 (%)",
   risuBardArcaChatFontSizePx: "폰트 크기 (px)",

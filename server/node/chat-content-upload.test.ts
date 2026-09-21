@@ -57,6 +57,17 @@ test('small chats keep the existing single-request endpoint', async () => {
     expect(request.mock.calls[0][0]).toBe('/api/chat-content/char%2Fescaped/2')
 })
 
+test('disabling chunk uploads sends a large chat once without chunk metadata', async () => {
+    const payload = new Uint8Array(CHAT_UPLOAD_CHUNK_BYTES + 1)
+    const request = vi.fn(async (_url: string, _init: RequestInit) => Response.json({ success: true }))
+    await uploadChatContent(request, 'character', 0, 'chat', payload, 1, false)
+    expect(request).toHaveBeenCalledOnce()
+    const [url, init] = request.mock.calls[0]
+    expect(url).toBe('/api/chat-content/character/0')
+    expect(init.body).toBe(payload)
+    expect(new Headers(init.headers).has('x-upload-index')).toBe(false)
+})
+
 test.each([1, 16, 64])('the server accepts the app setting of %i MiB without separate configuration', async chunkMiB => {
     const { store, root } = await setup()
     const bytes = chunkMiB * 1024 * 1024

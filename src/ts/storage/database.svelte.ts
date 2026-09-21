@@ -905,6 +905,7 @@ export function setDatabase(data:Database){
             : false
     data.showRisuBardSaveLoadShortcuts ??= true
     data.chatUploadChunkMiB = normalizeChatUploadChunkMiB(data.chatUploadChunkMiB)
+    data.chatUploadChunkEnabled = data.chatUploadChunkEnabled !== false
     data.risuBardAutosaveInterval = normalizeAutosaveInterval(
         data.risuBardAutosaveInterval
     )
@@ -1762,6 +1763,7 @@ export interface Database{
     showRisuBardSaveLoadShortcuts?: boolean
     risuBardAutosaveInterval?: number
     chatUploadChunkMiB?: number
+    chatUploadChunkEnabled?: boolean
     risuBardAutosaveRetention?: number
     risuBardArcaChatImageWidthPercent?: number
     risuBardArcaChatFontSizePx?: number
