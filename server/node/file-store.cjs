@@ -159,6 +159,27 @@ function publishTransaction(root, journal, options = {}) {
     let published = 0;
     let skipped = 0;
     for (const entry of journal.entries) {
+        if (entry.action === 'move') {
+            const source = resolveInside(root, entry.path);
+            const destination = resolveInside(root, entry.destination);
+            if (!fs.existsSync(source)) {
+                if (!fs.existsSync(destination)) {
+                    throw new Error(`Transaction move is missing for ${entry.path}`);
+                }
+                skipped += 1;
+                continue;
+            }
+            if (fs.existsSync(destination)) {
+                throw new Error(`Transaction move destination already exists: ${entry.destination}`);
+            }
+            fs.mkdirSync(path.dirname(destination), { recursive: true });
+            fs.renameSync(source, destination);
+            fsyncDirectory(path.dirname(source));
+            fsyncDirectory(path.dirname(destination));
+            published += 1;
+            if (options.failAfterPublish === published) throw new Error('simulated crash during transaction publish');
+            continue;
+        }
         const target = resolveInside(root, entry.path);
         if (matchesChecksum(target, entry.checksum)) {
             skipped += 1;
@@ -226,6 +247,22 @@ function commitTransaction(root, operations, options = {}) {
         return { committed: 0, published: 0, skipped: 0, stagedBytes: 0 };
     }
     const prepared = operations.map((operation) => {
+        if (operation.moveTo) {
+            if (operation.data !== undefined || operation.sourcePath) {
+                throw new Error(`Transaction move cannot include file data: ${operation.path}`);
+            }
+            const source = resolveInside(root, operation.path);
+            const destination = resolveInside(root, operation.moveTo);
+            if (fs.existsSync(destination)) {
+                throw new Error(`Transaction move destination already exists: ${operation.moveTo}`);
+            }
+            return {
+                action: 'move',
+                path: operation.path,
+                destination: operation.moveTo,
+                unchanged: !fs.existsSync(source),
+            };
+        }
         const target = resolveInside(root, operation.path);
         let data;
         let digest;
@@ -243,12 +280,12 @@ function commitTransaction(root, operations, options = {}) {
             }
             digest = checksum(data);
         }
-        return { path: operation.path, data, sourcePath, checksum: digest, unchanged: matchesStoredChecksum(target, digest) };
+        return { action: 'replace', path: operation.path, data, sourcePath, checksum: digest, unchanged: matchesStoredChecksum(target, digest) };
     });
     const unchanged = prepared.filter(entry => entry.unchanged);
     const pending = prepared.filter(entry => !entry.unchanged);
     if (pending.length === 0) {
-        assertUnchangedPreconditions(root, unchanged);
+        assertUnchangedPreconditions(root, unchanged.filter(entry => entry.action !== 'move'));
         return {
             committed: operations.length,
             published: 0,
@@ -262,6 +299,9 @@ function commitTransaction(root, operations, options = {}) {
     const stageDir = path.join(journalDir, `${id}.stage`);
     fs.mkdirSync(stageDir, { recursive: true });
     const entries = pending.map((operation, index) => {
+        if (operation.action === 'move') {
+            return { action: 'move', path: operation.path, destination: operation.destination };
+        }
         const staged = path.join(stageDir, `${index}.data`);
         if (operation.sourcePath) {
             copySynced(operation.sourcePath, staged);
@@ -269,11 +309,11 @@ function commitTransaction(root, operations, options = {}) {
             writeSynced(staged, operation.data);
         }
         if (checksumFile(staged) !== operation.checksum) throw new Error(`Transaction checksum failed: ${operation.path}`);
-        return { path: operation.path, staged, checksum: operation.checksum };
+        return { action: 'replace', path: operation.path, staged, checksum: operation.checksum };
     });
     fsyncDirectory(stageDir);
     try {
-        assertUnchangedPreconditions(root, unchanged);
+        assertUnchangedPreconditions(root, unchanged.filter(entry => entry.action !== 'move'));
     } catch (error) {
         fs.rmSync(stageDir, { recursive: true, force: true });
         fsyncDirectory(journalDir);
@@ -282,7 +322,9 @@ function commitTransaction(root, operations, options = {}) {
     const journalPath = path.join(journalDir, `${id}.json`);
     const journal = { schemaVersion: 1, id, state: 'prepared', createdAt: Date.now(), entries };
     writeJournal(journalPath, journal);
-    const stagedBytes = entries.reduce((total, entry) => total + fs.statSync(entry.staged).size, 0);
+    const stagedBytes = entries.reduce((total, entry) => (
+        entry.action === 'move' ? total : total + fs.statSync(entry.staged).size
+    ), 0);
     const published = publishTransaction(root, journal, options);
     cleanupJournal(journalPath, stageDir);
     return {

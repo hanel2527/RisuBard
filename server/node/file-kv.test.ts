@@ -98,6 +98,27 @@ describe('file-native KV compatibility projection', () => {
         expect(store.kvGet('assets/large')).toEqual(Buffer.alloc(2 * 1024 * 1024, 0x6b))
     })
 
+    it('prepares a file replacement without changing the live manifest and reloads it after publication', async () => {
+        const dataRoot = root()
+        const stagingRoot = root()
+        const sourcePath = path.join(stagingRoot, 'replacement.bin')
+        fs.writeFileSync(sourcePath, Buffer.from('replacement'))
+        const store = createFileKv({ dataRoot })
+        store.kvSet('assets/old', Buffer.from('old'))
+
+        const prepared = await store.preparePrefixReplacementFromFilesAsync([
+            { key: 'assets/new', sourcePath },
+        ], ['assets/'])
+
+        expect(store.kvList('assets/')).toEqual(['assets/old'])
+        const { commitTransaction } = require('./file-store.cjs')
+        commitTransaction(dataRoot, [{ path: 'kv/manifest.json', data: prepared.manifestBytes }])
+        expect(store.kvList('assets/')).toEqual(['assets/old'])
+        store.reloadManifest()
+        expect(store.kvList('assets/')).toEqual(['assets/new'])
+        expect(store.kvGet('assets/new')?.toString()).toBe('replacement')
+    })
+
     it('prepares replacement objects asynchronously before publishing one manifest', async () => {
         const dataRoot = root()
         const store = createFileKv({ dataRoot })

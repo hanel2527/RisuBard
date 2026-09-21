@@ -28,7 +28,7 @@ const getVips = () => {
     }
     return _vipsPromise
 }
-const { kvGet, kvSet, kvSetMany, kvSetManyAsync, kvReplacePrefixesAsync, kvReplacePrefixesFromFilesAsync, kvReplaceAllAsync, kvDel, kvDelMany, kvList,
+const { kvGet, kvSet, kvSetMany, kvSetManyAsync, kvReplacePrefixesAsync, kvReplacePrefixesFromFilesAsync, preparePrefixReplacementFromFilesAsync, reloadManifest, kvReplaceAllAsync, kvDel, kvDelMany, kvList,
         kvDelPrefix, kvListWithSizes, kvSize, kvGetUpdatedAt, kvCopyValue,
         gcChunks, reclaimableChunkBytes, objectStoreBytes, isDbBlobChunked, snapshotFootprint, repository: userDataRepository, compatibilityCache, characterAssets } = require('./db.cjs');
 const {
@@ -47,6 +47,7 @@ const { createChatContentPage } = require('./chat-content-page.cjs');
 const { stageBackupEntries } = require('./backup-entry-stream.cjs');
 const { decodeCanonicalBackupName } = require('./canonical-backup-name.cjs');
 const { CANONICAL_BACKUP_DIRECTORIES, listCanonicalBackupEntries } = require('./canonical-backup-inventory.cjs');
+const { publishBackupRestore } = require('./backup-restore-transaction.cjs');
 const { createCanonicalProjectionSync } = require('./canonical-projection-sync.cjs');
 const { createProjectionRevisionStore } = require('./projection-revision-store.cjs');
 const { createDirectWriteTracker } = require('./direct-write-tracker.cjs');
@@ -2511,6 +2512,7 @@ async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0
     await fs.mkdir(canonicalStagingDir, { recursive: true });
     await fs.mkdir(entryStagingDir, { recursive: true });
     let canonicalEntriesRestored = 0;
+    let atomicRestorePublished = false;
 
     function stagingInlayFilePath(id, ext) {
         return path.join(stagingDir, `${id}.${normalizeInlayExt(ext)}`);
@@ -2685,30 +2687,24 @@ async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0
             }
         }
         if (onPhase) onPhase('publishing');
-        await kvReplacePrefixesFromFilesAsync(stagedKvEntries, [
+        const replacedPrefixes = [
             'assets/', 'inlay/', 'inlay_thumb/', 'inlay_meta/', 'inlay_info/',
             'coldstorage/', 'drafts/', 'remotes/', REMOTE_MIGRATION_MARKER_KEY,
-        ]);
+        ];
         if (canonicalEntriesRestored > 0) {
-            const operations = [];
-            async function collect(relativeDirectory = '') {
-                const absolute = path.join(canonicalStagingDir, relativeDirectory);
-                for (const entry of await fs.readdir(absolute, { withFileTypes: true })) {
-                    const relativePath = path.join(relativeDirectory, entry.name);
-                    if (entry.isDirectory()) await collect(relativePath);
-                    else if (entry.isFile()) operations.push({
-                        path: relativePath,
-                        sourcePath: path.join(canonicalStagingDir, relativePath),
-                    });
-                }
-            }
-            await collect();
-            for (const directory of CANONICAL_BACKUP_DIRECTORIES) {
-                if (directory === 'trash') continue;
-                const current = path.join(savePath, directory);
-                if (existsSync(current)) moveToTrash(savePath, directory);
-            }
-            commitTransaction(savePath, operations);
+            const preparedKv = await preparePrefixReplacementFromFilesAsync(stagedKvEntries, replacedPrefixes);
+            await publishBackupRestore({
+                dataRoot: savePath,
+                canonicalStagingDir,
+                inlayStagingDir: stagingDir,
+                canonicalDirectories: CANONICAL_BACKUP_DIRECTORIES,
+                manifestBytes: preparedKv.manifestBytes,
+                store: { reloadManifest },
+                restoreId: `backup-${nodeCrypto.randomUUID()}`,
+            });
+            atomicRestorePublished = true;
+        } else {
+            await kvReplacePrefixesFromFilesAsync(stagedKvEntries, replacedPrefixes);
         }
     } catch (error) {
         await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
@@ -2721,21 +2717,25 @@ async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0
     await fs.rm(entryStagingDir, { recursive: true, force: true }).catch(() => {});
 
     if (onPhase) onPhase('finalizing');
-    await ensureInlayDir();
-    try {
-        if (existsSync(inlayDir)) {
-            await fs.rename(inlayDir, backupInlayDir);
-        }
-        await fs.rename(stagingDir, inlayDir);
-        await fs.writeFile(inlayMigrationMarker, new Date().toISOString(), 'utf-8');
-        await fs.rm(backupInlayDir, { recursive: true, force: true }).catch(() => {});
-    } catch (swapError) {
-        if (existsSync(backupInlayDir)) {
-            await fs.rm(inlayDir, { recursive: true, force: true }).catch(() => {});
-            await fs.rename(backupInlayDir, inlayDir).catch(() => {});
-        }
+    if (atomicRestorePublished) {
         await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
-        throw swapError;
+    } else {
+        await ensureInlayDir();
+        try {
+            if (existsSync(inlayDir)) {
+                await fs.rename(inlayDir, backupInlayDir);
+            }
+            await fs.rename(stagingDir, inlayDir);
+            await fs.writeFile(inlayMigrationMarker, new Date().toISOString(), 'utf-8');
+            await fs.rm(backupInlayDir, { recursive: true, force: true }).catch(() => {});
+        } catch (swapError) {
+            if (existsSync(backupInlayDir)) {
+                await fs.rm(inlayDir, { recursive: true, force: true }).catch(() => {});
+                await fs.rename(backupInlayDir, inlayDir).catch(() => {});
+            }
+            await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+            throw swapError;
+        }
     }
 
     invalidateDbCache();

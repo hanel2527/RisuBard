@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 const { createUserDataRepository } = require('./user-data-repository.cjs')
 const { atomicWriteJson } = require('./file-store.cjs')
-const { DIRECTORY_INDEX, createCharacterDirectoryResolver } = require('./character-directories.cjs')
+const { DIRECTORY_INDEX, createCharacterDirectoryResolver, resetCharacterDirectoryMappings } = require('./character-directories.cjs')
 const roots: string[] = []
 afterEach(() => roots.splice(0).forEach(root => fs.rmSync(root, { recursive: true, force: true })))
 function fixture() {
@@ -119,4 +119,20 @@ it('notifies other cached resolvers when a checked external mapping is published
     atomicWriteJson(dataRoot, DIRECTORY_INDEX, { schemaVersion: 1, characters: [{ id: 'char-1', directory: 'Alice', chats: [] }] })
     first.refresh()
     expect(second.characterDirectory('char-1')).toBe(path.join('characters', 'Alice'))
+})
+
+it('accepts a restored mapping replacement only after the explicit restore reset', () => {
+    const { dataRoot, repo } = fixture()
+    repo.publishCharacterDirectoryMapping('char-1')
+    const first = createCharacterDirectoryResolver(dataRoot)
+    const second = createCharacterDirectoryResolver(dataRoot)
+    expect(first.characterDirectory('char-1')).toBe(path.join('characters', 'Alice'))
+
+    fs.unlinkSync(path.join(dataRoot, DIRECTORY_INDEX))
+    fs.unlinkSync(path.join(dataRoot, `${DIRECTORY_INDEX}.sha256`))
+    expect(() => first.refresh()).toThrow(/missing/)
+
+    resetCharacterDirectoryMappings(dataRoot)
+    expect(first.characterDirectory('char-1')).toBe(path.join('characters', 'char-1'))
+    expect(second.characterDirectory('char-1')).toBe(path.join('characters', 'char-1'))
 })

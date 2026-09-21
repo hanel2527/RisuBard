@@ -194,6 +194,33 @@ describe('journal recovery and trash', () => {
         expect(fs.readdirSync(path.join(root, '.journal'))).toHaveLength(0)
     })
 
+    it('recovers a directory replacement and its new files from one journal', () => {
+        const root = tempRoot()
+        atomicWriteFile(root, 'characters/old/metadata.json', Buffer.from('old'))
+
+        expect(() => commitTransaction(root, [
+            { path: 'characters', moveTo: 'trash/restore-1/characters' },
+            { path: 'characters/new/metadata.json', data: Buffer.from('new') },
+            { path: 'kv/manifest.json', data: Buffer.from('{"schemaVersion":1,"entries":{}}') },
+        ], { failAfterPublish: 1 })).toThrow(/simulated crash/i)
+
+        expect(fs.existsSync(path.join(root, 'characters'))).toBe(false)
+        recoverTransactions(root)
+        expect(fs.readFileSync(path.join(root, 'characters/new/metadata.json'), 'utf8')).toBe('new')
+        expect(fs.readFileSync(path.join(root, 'trash/restore-1/characters/old/metadata.json'), 'utf8')).toBe('old')
+        expect(JSON.parse(fs.readFileSync(path.join(root, 'kv/manifest.json'), 'utf8'))).toEqual({ schemaVersion: 1, entries: {} })
+        expect(fs.readdirSync(path.join(root, '.journal'))).toHaveLength(0)
+    })
+
+    it('skips an optional move whose source is absent', () => {
+        const root = tempRoot()
+        expect(commitTransaction(root, [
+            { path: 'characters', moveTo: 'trash/restore-1/characters' },
+            { path: 'settings/app.json', data: Buffer.from('{}') },
+        ])).toEqual({ committed: 2, published: 1, skipped: 1, stagedBytes: 2 })
+        expect(fs.readFileSync(path.join(root, 'settings/app.json'), 'utf8')).toBe('{}')
+    })
+
     it('moves deleted canonical data to trash with recoverable bytes', () => {
         const root = tempRoot()
         atomicWriteFile(root, 'characters/char-1/metadata.json', Buffer.from('character'))

@@ -256,6 +256,26 @@ function createFileKv(options = {}) {
         saveManifest();
     }
 
+    async function preparePrefixReplacementFromFilesAsync(entries, prefixes) {
+        const prepared = await prepareFileEntriesAsync(entries);
+        const next = { ...manifest.entries };
+        for (const key of Object.keys(next)) {
+            if (prefixes.some(prefix => key === prefix || key.startsWith(prefix))) delete next[key];
+        }
+        for (const [key, entry] of prepared) next[key] = entry;
+        const candidate = { schemaVersion: 1, updatedAt: Date.now(), entries: next };
+        return { manifestBytes: Buffer.from(`${JSON.stringify(candidate, null, 2)}\n`, 'utf8') };
+    }
+
+    function reloadManifest() {
+        const next = readVerifiedJson(dataRoot, MANIFEST_PATH);
+        if (!next || next.schemaVersion !== 1 || typeof next.entries !== 'object') {
+            throw new Error('Unsupported or corrupt file KV manifest');
+        }
+        manifest = next;
+        characterAssets.reload();
+    }
+
     async function kvReplaceAllAsync(entries) {
         const prepared = await prepareEntriesAsync(entries);
         manifest.entries = Object.fromEntries(prepared);
@@ -403,6 +423,8 @@ function createFileKv(options = {}) {
         kvReplacePrefixes,
         kvReplacePrefixesAsync,
         kvReplacePrefixesFromFilesAsync,
+        preparePrefixReplacementFromFilesAsync,
+        reloadManifest,
         kvReplaceAll,
         kvReplaceAllAsync,
         kvDel,

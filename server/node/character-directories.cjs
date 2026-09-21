@@ -7,6 +7,7 @@ const { sanitizeSegment, collisionKey } = require('./friendly-paths.cjs');
 const DIRECTORY_INDEX = 'index/character-directories.json';
 const generations = new Map();
 const signatures = new Map();
+const restoreEpochs = new Map();
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 
 function validateDirectoryMapping(value) {
@@ -39,6 +40,14 @@ function createCharacterDirectoryResolver(dataRoot) {
     const root = path.resolve(dataRoot);
     let generation = -1;
     let mapping;
+    let restoreEpoch = restoreEpochs.get(root) || 0;
+    function acceptRestoreEpoch() {
+        const current = restoreEpochs.get(root) || 0;
+        if (restoreEpoch === current) return;
+        restoreEpoch = current;
+        mapping = undefined;
+        generation = -1;
+    }
     function safePath(relative) {
         const target = resolveInside(root, relative);
         let current = root;
@@ -49,6 +58,7 @@ function createCharacterDirectoryResolver(dataRoot) {
         return target;
     }
     function refresh() {
+        acceptRestoreEpoch();
         try {
             const target = safePath(DIRECTORY_INDEX);
             let next;
@@ -78,6 +88,7 @@ function createCharacterDirectoryResolver(dataRoot) {
         }
     }
     function snapshot() {
+        acceptRestoreEpoch();
         if (generation !== (generations.get(root) || 0)) refresh();
         return mapping;
     }
@@ -125,4 +136,11 @@ function createCharacterDirectoryResolver(dataRoot) {
     };
 }
 
-module.exports = { DIRECTORY_INDEX, validateDirectoryMapping, createCharacterDirectoryResolver };
+function resetCharacterDirectoryMappings(dataRoot) {
+    const root = path.resolve(dataRoot);
+    restoreEpochs.set(root, (restoreEpochs.get(root) || 0) + 1);
+    signatures.delete(root);
+    generations.set(root, (generations.get(root) || 0) + 1);
+}
+
+module.exports = { DIRECTORY_INDEX, validateDirectoryMapping, createCharacterDirectoryResolver, resetCharacterDirectoryMappings };

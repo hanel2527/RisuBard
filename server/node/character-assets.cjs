@@ -58,12 +58,16 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal }) {
             }
         }
     }
-    try {
-        safePath(INDEX);
-        const loaded = readVerifiedJson(dataRoot, INDEX);
-        if (loaded?.schemaVersion === 1 && loaded.characters && typeof loaded.characters === 'object' && !Array.isArray(loaded.characters)) state = loaded;
-    } catch { /* An optional replica index must never prevent startup. */ }
-    rebuild();
+    function reload() {
+        state = { schemaVersion: 1, characters: {} };
+        try {
+            safePath(INDEX);
+            const loaded = readVerifiedJson(dataRoot, INDEX);
+            if (loaded?.schemaVersion === 1 && loaded.characters && typeof loaded.characters === 'object' && !Array.isArray(loaded.characters)) state = loaded;
+        } catch { /* An optional replica index must never prevent startup. */ }
+        rebuild();
+    }
+    reload();
     function publish(next) {
         safePath(INDEX);
         atomicWriteJson(dataRoot, INDEX, next);
@@ -149,7 +153,7 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal }) {
         if (Object.hasOwn(state.characters, id)) publish({ schemaVersion: 1, characters: { ...state.characters, [id]: { ...state.characters[id], enabled: false } } });
         return status(id);
     }
-    return { migrate, read, status, disable, diagnostics: () => ({ scope: 'server-session', ...counters }) };
+    return { migrate, read, status, disable, reload, diagnostics: () => ({ scope: 'server-session', ...counters }) };
 }
 
 module.exports = { createCharacterAssets };
