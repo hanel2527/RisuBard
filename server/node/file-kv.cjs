@@ -134,7 +134,7 @@ function createFileKv(options = {}) {
     const dataRoot = path.resolve(options.dataRoot || path.join(process.cwd(), 'save'));
     fs.mkdirSync(dataRoot, { recursive: true });
     recoverTransactions(dataRoot);
-    const characterAssets = createCharacterAssets({ dataRoot, sourceSize: kvSize });
+    const characterAssets = createCharacterAssets({ dataRoot, sourceSize: kvSize, readOriginal: kvGetOriginal });
 
     let manifest = fs.existsSync(path.join(dataRoot, MANIFEST_PATH))
         ? readVerifiedJson(dataRoot, MANIFEST_PATH)
@@ -161,6 +161,13 @@ function createFileKv(options = {}) {
         if (!entry) return null;
         const replica = characterAssets.read(key, entry);
         if (replica !== null) return replica;
+        return kvGetOriginal(key);
+    }
+
+    // Explicit asset validation must bypass the performance-oriented replica reader.
+    function kvGetOriginal(key) {
+        const entry = manifest.entries[key];
+        if (!entry) return null;
         const objectPath = path.join(dataRoot, 'kv', 'objects', entry.object);
         let value;
         try { value = fs.readFileSync(objectPath); } catch { return null; }

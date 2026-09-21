@@ -27,7 +27,7 @@ function candidateNames(character) {
     return names;
 }
 
-function createCharacterAssets({ dataRoot, sourceSize }) {
+function createCharacterAssets({ dataRoot, sourceSize, readOriginal }) {
     let state = { schemaVersion: 1, characters: {} };
     let routes = new Map();
     const counters = { reads: 0, fallbacks: 0, copied: 0, failed: 0 };
@@ -45,8 +45,11 @@ function createCharacterAssets({ dataRoot, sourceSize }) {
         for (const [id, record] of Object.entries(state.characters)) {
             if (!validId(id) || record?.enabled !== true || !Array.isArray(record.entries)) continue;
             for (const entry of record.entries) {
-                if (entry && (entry.filename === undefined || validFilename(entry.filename)) && typeof entry.key === 'string' && entry.key.startsWith('assets/') && /^[a-f0-9]{64}$/.test(entry.hash) && Number.isSafeInteger(entry.size) && entry.size >= 0) {
-                    routes.set(entry.key, { ...entry, id });
+                if (entry && (entry.filename === undefined || validFilename(entry.filename)) && typeof entry.key === 'string' && entry.key.startsWith('assets/') && /^[a-f0-9]{64}$/.test(entry.hash) && Number.isSafeInteger(entry.size) && entry.size >= 0 && entry.size <= 64 * 1024 * 1024) {
+                    try {
+                        const target = safePath(`characters/${id}/assets/${entry.filename ?? entry.hash}`);
+                        routes.set(entry.key, { ...entry, id, target });
+                    } catch { /* Validate path boundaries at publication/load, outside normal reads. */ }
                 }
             }
         }
@@ -85,7 +88,7 @@ function createCharacterAssets({ dataRoot, sourceSize }) {
             if (otherData.includes(key)) { record.skipped++; continue; }
             try {
                 if (sourceSize(key) > 64 * 1024 * 1024) throw new Error('Oversized source');
-                const bytes = readSource(key);
+                const bytes = (readOriginal || readSource)(key);
                 if (!Buffer.isBuffer(bytes) || bytes.length > 64 * 1024 * 1024) throw new Error('Missing or oversized source');
                 const digest = hash(bytes);
                 const preferred = allocateSegment(sourceName, new Set(), true);
@@ -127,11 +130,9 @@ function createCharacterAssets({ dataRoot, sourceSize }) {
         try {
             // KV remains authoritative: replacement, import and deletion invalidate old replicas.
             if (entry.hash !== currentEntry.object || entry.size !== currentEntry.size) throw new Error('Stale replica');
-            if (!fs.existsSync(safePath(`characters/${entry.id}/metadata.json`))) throw new Error('Character removed');
-            const target = safePath(`characters/${entry.id}/assets/${entry.filename ?? entry.hash}`);
-            if (fs.statSync(target).size !== entry.size || entry.size > 64 * 1024 * 1024) throw new Error('Invalid replica size');
-            const value = fs.readFileSync(target);
-            if (value.length !== entry.size || hash(value) !== entry.hash) throw new Error('Invalid replica');
+            // SHA-256 verification belongs to migration/revalidation, not every image read.
+            const value = fs.readFileSync(entry.target);
+            if (value.length !== entry.size) throw new Error('Invalid replica size');
             counters.reads++;
             return value;
         } catch { counters.fallbacks++; return null; }

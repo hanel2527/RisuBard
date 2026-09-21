@@ -57,7 +57,7 @@ it('records missing sources, retries, and disables reads without deleting either
     expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
     expect(store.characterAssets.status('one').enabled).toBe(false)
 })
-it('keeps legacy export bytes identical and falls back after character deletion or corrupt replica index', () => {
+it('keeps KV-compatible bytes after metadata removal and falls back with a corrupt replica index', () => {
     const { root, store, db } = fixture()
     const before = store.kvList().map(key => [key, store.kvGet(key)])
     store.characterAssets.migrate(db, 'one', store.kvGet)
@@ -136,4 +136,38 @@ it('retains published filenames through interrupted rename and retries without o
     store.characterAssets.migrate(db, 'one', store.kvGet)
     expect(fs.readFileSync(path.join(root, 'characters', 'one', 'assets', 'Portrait.png')).toString()).toBe('portrait')
     expect(JSON.parse(fs.readFileSync(index, 'utf8')).characters.one.entries[0].filename).toBe('New portrait (2).png')
+})
+it('reads a current replica with one read and no hash, stat, lstat or metadata existence lookup', () => {
+    const { store, db } = fixture()
+    store.characterAssets.migrate(db, 'one', store.kvGet)
+    const read = vi.spyOn(fs, 'readFileSync')
+    const stat = vi.spyOn(fs, 'statSync')
+    const lstat = vi.spyOn(fs, 'lstatSync')
+    const exists = vi.spyOn(fs, 'existsSync')
+    const digest = vi.spyOn(crypto, 'createHash')
+    try {
+        expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
+        expect(read).toHaveBeenCalledTimes(1)
+        expect(stat).not.toHaveBeenCalled()
+        expect(lstat).not.toHaveBeenCalled()
+        expect(exists).not.toHaveBeenCalled()
+        expect(digest).not.toHaveBeenCalled()
+    } finally { vi.restoreAllMocks() }
+})
+it('detects same-size external changes only on explicit revalidation and repairs from original KV', () => {
+    const { root, store, db } = fixture()
+    store.characterAssets.migrate(db, 'one', store.kvGet)
+    const index = path.join(root, 'index', 'character-asset-replicas.json')
+    const old = JSON.parse(fs.readFileSync(index, 'utf8')).characters.one.entries[0]
+    fs.writeFileSync(path.join(root, 'characters', 'one', 'assets', old.filename), 'modified')
+    expect(store.kvGet('assets/portrait.png').toString()).toBe('modified')
+    const digest = vi.spyOn(crypto, 'createHash')
+    try {
+        expect(store.characterAssets.migrate(db, 'one', store.kvGet).copied).toBe(1)
+        expect(digest).toHaveBeenCalled()
+    } finally { digest.mockRestore() }
+    expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
+    const repaired = JSON.parse(fs.readFileSync(index, 'utf8')).characters.one.entries[0]
+    expect(repaired.hash).toBe(old.hash)
+    expect(repaired.filename).not.toBe(old.filename)
 })
