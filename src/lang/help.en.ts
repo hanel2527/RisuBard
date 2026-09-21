@@ -417,6 +417,7 @@ export const helpEn = {
             "Show a floating chat-request toast with the live phase, injected context items and their token counts, total input tokens, thinking/output tokens, and speed. Contents are never stored; turning it off hides the notification entirely.",
         risuBardAutosaveInterval:
             "Choose how many turns pass between autosaves. An interval of 5 saves turns 1, 6, 11, and so on.",
+        chatUploadChunkSize: "Data sent per request when saving a chat. Default: 8 MiB; range: 1–64 MiB. Changes apply to both the app and server on the next chat save without restarting. Smaller chunks require more requests.",
         risuBardAutosaveRetention:
             "Maximum rotating autosave files kept per chat. After the limit, the oldest autosave slot is overwritten.",
         risuBardArcaChatImageWidthPercent:

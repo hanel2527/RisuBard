@@ -634,6 +634,7 @@ export const languageKorean = {
   risuBardSaveLoadShortcutHideConfirm: "세이브/로드 버튼을 끌까요? Bardwiki / 공통 옵션에서 다시 켤 수 있습니다",
   risuBardAutosaveInterval: "자동저장 간격 (턴)",
   risuBardAutosaveRetention: "자동저장 최대 보관 수",
+  chatUploadChunkSize: "채팅 업로드 청크 크기 (MiB)",
   risuBardArcaChatExporter: "아카라이브 챗 추출기",
   risuBardArcaChatImageWidthPercent: "추출 시 이미지 너비 (%)",
   risuBardArcaChatFontSizePx: "폰트 크기 (px)",
