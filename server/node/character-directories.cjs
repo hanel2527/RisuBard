@@ -17,6 +17,7 @@ function validateDirectoryMapping(value) {
         const names = new Map();
         for (const entry of entries) {
             if (!validId(entry?.id) || ids.has(collisionKey(entry.id))) throw new Error('Invalid or duplicate mapped ID');
+            if (Object.hasOwn(entry, 'packageVersion') && entry.packageVersion !== 1) throw new Error('Invalid character package version');
             ids.add(collisionKey(entry.id));
             if (typeof entry.directory !== 'string' || entry.directory.startsWith('.') || sanitizeSegment(entry.directory) !== entry.directory) throw new Error('Unsafe mapped directory');
             if (entry.id !== entry.directory && collisionKey(entry.id) === collisionKey(entry.directory)) throw new Error('Mapped directory collision');

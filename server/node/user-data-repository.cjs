@@ -14,6 +14,7 @@ const {
 } = require('./file-store.cjs');
 
 const { DIRECTORY_INDEX, validateDirectoryMapping, createCharacterDirectoryResolver, resetCharacterDirectoryMappings } = require('./character-directories.cjs');
+const { createCharacterPackageManifest, validateCharacterPackageManifest } = require('./character-package-manifest.cjs');
 const { allocateSegment, planDirectoryMapping } = require('./friendly-paths.cjs');
 
 const COLLECTIONS = [
@@ -175,6 +176,12 @@ function createUserDataRepository(options = {}) {
             for (const id of listJsonIds(directory)) relativePaths.push(path.join(directory, `${id}.json`));
         }
         for (const characterId of directories.characterIds()) {
+            const mapped = directories.snapshot().characters.find(entry => entry.id === characterId);
+            if (mapped?.packageVersion === 1) {
+                const packagePath = path.join(directories.characterDirectory(characterId), 'package.json');
+                validateCharacterPackageManifest(readCanonicalJson(packagePath), mapped);
+                relativePaths.push(packagePath);
+            }
             const metadataPath = path.join(directories.characterDirectory(characterId), 'metadata.json');
             if (!fs.existsSync(resolveInside(dataRoot, metadataPath))) {
                 const error = new Error(`Canonical character metadata is missing: ${characterId}`);
@@ -476,6 +483,7 @@ function createUserDataRepository(options = {}) {
             fs.existsSync(path.join(source, 'chats')) ? fs.readdirSync(path.join(source, 'chats')) : []);
         delete mapping.active;
         delete mapping.schemaVersion;
+        mapping.packageVersion = 1;
         const next = validateDirectoryMapping({ schemaVersion: 1, characters: [...previous.characters, mapping] });
         const operations = [];
         function copyTree(relative, destination) {
@@ -503,6 +511,10 @@ function createUserDataRepository(options = {}) {
             }
         }
         copyTree(sourceDirectory, path.join('characters', mapping.directory));
+        operations.push({
+            path: path.join('characters', mapping.directory, 'package.json'),
+            data: jsonBytes(createCharacterPackageManifest(mapping)),
+        });
         // All copies are staged and verified before the journal publishes the mapping last.
         operations.push({ path: DIRECTORY_INDEX, data: jsonBytes(next) });
         try {
@@ -555,7 +567,7 @@ function createUserDataRepository(options = {}) {
             occupiedChats.add(chat.id);
             nextChats.push({ id: chat.id, directory });
         }
-        const nextEntry = { id, directory: nextDirectory, chats: [...nextChats, ...retainedChats] };
+        const nextEntry = { id, directory: nextDirectory, packageVersion: 1, chats: [...nextChats, ...retainedChats] };
         const next = validateDirectoryMapping({
             schemaVersion: 1,
             characters: previous.characters.map(entry => entry.id === id ? nextEntry : entry),
@@ -572,6 +584,10 @@ function createUserDataRepository(options = {}) {
                 sourceCreatedByTransaction: characterMoved,
             });
         }
+        operations.push({
+            path: path.join(nextRoot, 'package.json'),
+            data: jsonBytes(createCharacterPackageManifest(nextEntry)),
+        });
         operations.push({ path: DIRECTORY_INDEX, data: jsonBytes(next) });
         try {
             commitTransaction(dataRoot, operations, options.directoryMappingTransactionOptions || {});

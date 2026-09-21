@@ -21,6 +21,14 @@ it('publishes an explicit mapping, preserves old folders, and routes restart, wr
     const mapping = repo.publishCharacterDirectoryMapping('char-1')
     expect(mapping.directory).toBe('Alice')
     expect(mapping.chats[0].directory).toBe('First chat')
+    expect(mapping.packageVersion).toBe(1)
+    expect(JSON.parse(fs.readFileSync(path.join(dataRoot, 'characters/Alice/package.json'), 'utf8'))).toEqual({
+        schemaVersion: 1,
+        active: true,
+        characterId: 'char-1',
+        directory: 'Alice',
+        chats: [{ id: 'chat-1', directory: 'First chat' }],
+    })
     expect(repo.exportLegacyDatabase()).toEqual(before)
     const reopened = createUserDataRepository({ dataRoot })
     expect(reopened.loadAssistantDraft('char-1', 'chat-1').data).toBe('draft')
@@ -82,6 +90,14 @@ it('refreshes mapped character and chat directories after renames and new chat c
     expect(mapping.directory).toBe('Renamed')
     expect(mapping.chats.find((chat: any) => chat.id === 'chat-1')?.directory).toBe('Renamed chat')
     expect(mapping.chats.find((chat: any) => chat.id === 'chat-2')?.directory).toBe('New chat')
+    expect(JSON.parse(fs.readFileSync(path.join(dataRoot, 'characters/Renamed/package.json'), 'utf8'))).toMatchObject({
+        characterId: 'char-1',
+        directory: 'Renamed',
+        chats: [
+            { id: 'chat-1', directory: 'Renamed chat' },
+            { id: 'chat-2', directory: 'New chat' },
+        ],
+    })
     expect(fs.existsSync(path.join(dataRoot, 'characters/Alice'))).toBe(false)
     expect(fs.existsSync(path.join(dataRoot, 'characters/Renamed/chats/Renamed chat/draft.json'))).toBe(true)
     expect(fs.existsSync(path.join(dataRoot, 'characters/Renamed/chats/New chat/messages.jsonl'))).toBe(true)
@@ -146,6 +162,19 @@ it('rejects new IDs reserved by mapped directory names without changing current 
     const before = repo.exportLegacyDatabase()
     expect(() => repo.importLegacyDatabase({ characters: [{ chaId: 'ALICE', chats: [] }] })).toThrow(/collides/)
     expect(repo.exportLegacyDatabase()).toEqual(before)
+})
+
+it('fails closed when a declared character package identity is changed', () => {
+    const { dataRoot, repo } = fixture()
+    repo.publishCharacterDirectoryMapping('char-1')
+    atomicWriteJson(dataRoot, 'characters/Alice/package.json', {
+        schemaVersion: 1,
+        active: true,
+        characterId: 'another-character',
+        directory: 'Alice',
+        chats: [{ id: 'chat-1', directory: 'First chat' }],
+    })
+    expect(() => createUserDataRepository({ dataRoot })).toThrow(/package identity/)
 })
 
 it.each(['../escape', 'CON', 'trailing.', '.hidden', 'a/b', 'a\\b'])('rejects unsafe mapping directory %s', directory => {
