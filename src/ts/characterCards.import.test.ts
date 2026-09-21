@@ -174,6 +174,22 @@ describe('character import localization', () => {
     })
 })
 
+describe('character import display names', () => {
+    test('adds a numeric suffix when an imported character name already exists', async () => {
+        const first = cardFixture('chara_card_v3', undefined)
+        const second = cardFixture('chara_card_v3', undefined)
+        second.data.name = 'legacy card'
+
+        state.db.characters = []
+        await importCharacterProcess({ name: 'first.json', data: Buffer.from(JSON.stringify(first)) })
+        await importCharacterProcess({ name: 'second.json', data: Buffer.from(JSON.stringify(second)) })
+
+        expect(state.db.characters.map((character: any) => character.name)).toEqual([
+            'Legacy card', 'legacy card (2)',
+        ])
+    })
+})
+
 describe('legacy character-card replace-global-note compatibility', () => {
     test('persists an imported card before reporting success', async () => {
         await importFixture(cardFixture('chara_card_v3', undefined))

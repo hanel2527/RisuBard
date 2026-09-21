@@ -21,6 +21,7 @@ import { exportModuleLegacy, readModule, type RisuModule } from "./process/modul
 import { pinCharacterVaultQuickAccess } from './characterVault'
 import { normalizeFirstMessageStudioProject, type FirstMessageStudioProject } from './firstMessageStudio'
 import { normalizeBardLoreOwnerState, type BardLoreState } from './lorebook/bardLore'
+import { createUniqueDisplayName } from './displayName'
 
 
 const EXTERNAL_HUB_URL = 'https://sv.risuai.xyz';
@@ -128,7 +129,9 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
         }
         if((da.char_name || da.name) && (da.char_persona || da.description) && (da.char_greeting || da.first_mes)){
             let db = getDatabase()
-            db.characters.push(convertOffSpecCards(da))
+            const character = convertOffSpecCards(da)
+            character.name = createUniqueDisplayName(character.name, db.characters)
+            db.characters.push(character)
             setDatabaseLite(db)
             await persistImportedData()
             notifySuccess(language.importedCharacter)
@@ -393,7 +396,9 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
     if(parsed.spec !== 'chara_card_v2' && parsed.spec !== 'chara_card_v3'){
         const charaData:OldTavernChar = JSON.parse(Buffer.from(readedChara, 'base64').toString('utf-8'))
         const imgp = await saveAsset(img)
-        db.characters.push(convertOffSpecCards(charaData, imgp))
+        const character = convertOffSpecCards(charaData, imgp)
+        character.name = createUniqueDisplayName(character.name, db.characters)
+        db.characters.push(character)
         setDatabaseLite(db)
         await persistImportedData()
         notifySuccess(language.importedCharacter)
@@ -1027,6 +1032,7 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
         return char as any
     }
 
+    char.name = createUniqueDisplayName(char.name, db.characters)
     db.characters.push(char)
     await persistImportedData()
     notifySuccess(language.importedCharacter)

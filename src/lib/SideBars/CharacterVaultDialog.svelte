@@ -20,6 +20,7 @@
     import ManagerResizeHandles from '../UI/GUI/ManagerResizeHandles.svelte'
     import SolarBoldIcon from '../UI/Icons/SolarBoldIcon.svelte'
     import { DBState, selectedCharID } from 'src/ts/stores.svelte'
+    import { createUniqueDisplayName } from 'src/ts/displayName'
     import type { folder } from 'src/ts/storage/database.svelte'
     import {
         createCharacterVaultFolder,
@@ -279,8 +280,8 @@
         const value = await alertInput('캐릭터 이름 변경', [], oldName)
         const name = value.trim()
         if (!name || name === oldName) return
-        character.name = name
-        commit(`${oldName} → ${name} 이름 변경 완료`)
+        character.name = createUniqueDisplayName(name, DBState.db.characters, character.chaId)
+        commit(`${oldName} → ${character.name} 이름 변경 완료`)
     }
 
     function recolorActiveFolder(color: string) {

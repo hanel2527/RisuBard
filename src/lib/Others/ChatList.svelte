@@ -4,6 +4,7 @@
     
     import { DBState } from 'src/ts/stores.svelte';
     import { newChatModelDefaults } from 'src/ts/storage/database.svelte';
+    import { createUniqueDisplayName } from 'src/ts/displayName';
     import { ReloadGUIPointer, selectedCharID } from "../../ts/stores.svelte";
     import { DownloadIcon, SquarePenIcon, HardDriveUploadIcon, PlusIcon, TrashIcon, XIcon } from "@lucide/svelte";
     import { exportChat, importChat } from "../../ts/characters";
@@ -15,6 +16,13 @@
     let editMode = $state(false)
     /** @type {{close?: any}} */
     let { close = () => {} } = $props();
+
+    function commitChatName(index) {
+        const chats = DBState.db.characters[$selectedCharID].chats
+        const chat = chats[index]
+        if (!chat) return
+        chat.name = createUniqueDisplayName(chat.name, chats, chat.id)
+    }
 </script>
 
 <div class="risu-modal-overlay absolute w-full h-full z-40 bg-overlay/50 flex justify-center items-center">
@@ -35,7 +43,7 @@
                 }
             }} class="flex items-center text-textcolor border-t-1 border-solid border-0 border-darkborderc p-2 cursor-pointer" class:bg-selected={i === DBState.db.characters[$selectedCharID].chatPage}>
                 {#if editMode}
-                    <TextInput bind:value={DBState.db.characters[$selectedCharID].chats[i].name} padding={false}/>
+                    <TextInput bind:value={DBState.db.characters[$selectedCharID].chats[i].name} onchange={() => commitChatName(i)} padding={false}/>
                 {:else}
                     <span>{chat.name}</span>
                 {/if}
@@ -77,7 +85,7 @@
                 const len = character.chats.length
                 let chats = character.chats
                 const newChat = {
-                    message:[], note:'', name:`New Chat ${len + 1}`, localLore:[], fmIndex: -1, id: v4(),
+                    message:[], note:'', name:createUniqueDisplayName(`New Chat ${len + 1}`, chats), localLore:[], fmIndex: -1, id: v4(),
                     ...newChatModelDefaults(character, currentChat)
                 }
                 chats.unshift(newChat)

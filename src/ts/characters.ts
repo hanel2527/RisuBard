@@ -21,6 +21,7 @@ import { clearCharacterVaultNew, pinCharacterVaultQuickAccess } from './characte
 import { resetImportedBardWikiState } from './risubard/chatImportMemory'
 import { completeMemoryWikiFork, forkMemoryWiki } from './risubard/memoryWikiFork'
 import { needsCharacterRuntimeNormalization } from './characterRuntime'
+import { createUniqueDisplayName } from './displayName'
 
 export function createNewCharacter() {
     let db = getDatabase()
@@ -372,7 +373,7 @@ export async function importChat(){
             let newChat:Chat = {
                 message: [],
                 note: "",
-                name: "Imported Chat",
+                name: createUniqueDisplayName("Imported Chat", db.characters[selectedID].chats),
                 localLore: [],
                 fmIndex: -1,
                 id: v4(),
@@ -476,6 +477,10 @@ export async function importChat(){
                             resetImportedBardWikiState(imported)
                             missingWiki = true
                         }
+                        imported.name = createUniqueDisplayName(imported.name, [
+                            ...targetCharacter.chats,
+                            ...importedChats,
+                        ])
                         importedChats.push(imported)
                     }
                     targetCharacter.chatFolders ??= []
@@ -522,6 +527,7 @@ export async function importChat(){
             if(json.type === 'risuAllChats' && json.ver === 1){
                 const chats = json.data
                 if(Array.isArray(chats) && chats.length > 0){
+                    const importedChats: Chat[] = []
                     db.characters[selectedID].chats.unshift(...(chats.map((v) => {
                         if(!v.id){
                             v.id = uuidv4()
@@ -530,7 +536,13 @@ export async function importChat(){
                             v.localLore = []
                         }
                         v.fmIndex ??= -1
-                        return normalizeChat(v)
+                        const imported = normalizeChat(v)
+                        imported.name = createUniqueDisplayName(imported.name, [
+                            ...db.characters[selectedID].chats,
+                            ...importedChats,
+                        ])
+                        importedChats.push(imported)
+                        return imported
                     })))
                     notifySuccess(language.successImport)
                     return
@@ -544,7 +556,9 @@ export async function importChat(){
                 if(!(checkNullish(das.message) || checkNullish(das.note) || checkNullish(das.name) || checkNullish(das.localLore))){
                     das.fmIndex ??= -1
                     das.id = v4()
-                    db.characters[selectedID].chats.unshift(normalizeChat(das))
+                    const imported = normalizeChat(das)
+                    imported.name = createUniqueDisplayName(imported.name, db.characters[selectedID].chats)
+                    db.characters[selectedID].chats.unshift(imported)
                     notifySuccess(language.successImport)
                     return
                 }
@@ -563,7 +577,9 @@ export async function importChat(){
             const chat = doc.querySelector('.idat').textContent
             const json = JSON.parse(chat)
             if(json.message && json.note && json.name && json.localLore){
-                db.characters[selectedID].chats.unshift(normalizeChat(json))
+                const imported = normalizeChat(json)
+                imported.name = createUniqueDisplayName(imported.name, db.characters[selectedID].chats)
+                db.characters[selectedID].chats.unshift(imported)
                 notifySuccess(language.successImport)
             }
             else{

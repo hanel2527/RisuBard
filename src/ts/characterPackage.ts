@@ -18,6 +18,7 @@ import { reencodeImage } from './process/files/inlays'
 import { resolvePersonaById } from './personaScopes'
 import { getCharacterGalleryForExport, stripGalleryFromChats } from './risubard/gallery'
 import type { RisuBardGallery } from './storage/database.svelte'
+import { createUniqueDisplayName } from './displayName'
 
 // ── Types ──
 
@@ -315,7 +316,13 @@ function importChatsToCharacter(
             }
             targetChar.chatFolders = [...importedFolders, ...existingFolders]
         }
-        targetChar.chats.unshift(...importedChats.map(chat => normalizeChat(chat)))
+        const acceptedChats: Chat[] = []
+        for (const chat of importedChats) {
+            const imported = normalizeChat(chat)
+            imported.name = createUniqueDisplayName(imported.name, [...targetChar.chats, ...acceptedChats])
+            acceptedChats.push(imported)
+        }
+        targetChar.chats.unshift(...acceptedChats)
     } else {
         targetChar.chats = importedChats.map(chat => normalizeChat(chat))
         if (chatsJson.folders && Array.isArray(chatsJson.folders)) {

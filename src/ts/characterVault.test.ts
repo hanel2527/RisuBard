@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import type { Database, folder } from './storage/database.svelte'
+import type { Database, character, folder } from './storage/database.svelte'
 import {
     applyCharacterVaultClones,
     clearCharacterVaultNew,
@@ -332,6 +332,18 @@ describe('Character Vault state', () => {
         }])
         expect(db.characters.map((character) => character.chaId))
             .not.toContain('clone-a')
+    })
+
+    test('treats case variants of clone names as occupied', () => {
+        const db = makeDb()
+        db.characters.push({ chaId: 'duplicate', name: 'alice-2' } as character)
+
+        const [plan] = createCharacterVaultClones(db, ['a'], {
+            withChats: false,
+            createId: () => 'clone-a',
+        })
+
+        expect(plan.clone.name).toBe('Alice-3')
     })
 
     test('creates one empty chat when cloning without chats', () => {
