@@ -66,6 +66,80 @@ it('routes direct chat saves, new imports, revisions and chat trash while exclud
     expect(fs.existsSync(path.join(dataRoot, 'characters/Alice/chats/chat-2'))).toBe(true)
 })
 
+it('refreshes mapped character and chat directories after renames and new chat creation', () => {
+    const { dataRoot, repo } = fixture()
+    repo.saveAssistantDraft('char-1', 'chat-1', { role: 'char', data: 'draft' })
+    repo.publishCharacterDirectoryMapping('char-1')
+    const updated = repo.exportLegacyDatabase()
+    updated.characters[0].name = 'Renamed'
+    updated.characters[0].chats[0].name = 'Renamed chat'
+    updated.characters[0].chats.push({ id: 'chat-2', name: 'New chat', message: [{ role: 'user', data: 'new' }] })
+    repo.importLegacyDatabase(updated, { mode: 'replace' })
+    expect(fs.existsSync(path.join(dataRoot, 'characters/Alice/chats/chat-2'))).toBe(true)
+
+    const mapping = repo.refreshCharacterDirectoryMapping('char-1')
+
+    expect(mapping.directory).toBe('Renamed')
+    expect(mapping.chats.find((chat: any) => chat.id === 'chat-1')?.directory).toBe('Renamed chat')
+    expect(mapping.chats.find((chat: any) => chat.id === 'chat-2')?.directory).toBe('New chat')
+    expect(fs.existsSync(path.join(dataRoot, 'characters/Alice'))).toBe(false)
+    expect(fs.existsSync(path.join(dataRoot, 'characters/Renamed/chats/Renamed chat/draft.json'))).toBe(true)
+    expect(fs.existsSync(path.join(dataRoot, 'characters/Renamed/chats/New chat/messages.jsonl'))).toBe(true)
+    const reopened = createUserDataRepository({ dataRoot, allowDirectoryMapping: true })
+    expect(reopened.exportLegacyDatabase()).toEqual(updated)
+})
+
+it('numbers rename collisions', () => {
+    const { dataRoot, repo } = fixture()
+    repo.publishCharacterDirectoryMapping('char-1')
+    fs.mkdirSync(path.join(dataRoot, 'characters/Renamed'))
+    const updated = repo.exportLegacyDatabase()
+    updated.characters[0].name = 'Renamed'
+    updated.characters[0].chats[0].name = 'First chat'
+    updated.characters[0].chats.push({ id: 'chat-2', name: 'First chat', message: [] })
+    repo.importLegacyDatabase(updated, { mode: 'replace' })
+
+    const mapping = repo.refreshCharacterDirectoryMapping('char-1')
+
+    expect(mapping.directory).toBe('Renamed (2)')
+    expect(mapping.chats.map((chat: any) => chat.directory)).toEqual(['First chat', 'First chat (2)'])
+})
+
+it('keeps a deleted chat path reserved when assigning a later chat', () => {
+    const { repo } = fixture()
+    repo.publishCharacterDirectoryMapping('char-1')
+    const updated = repo.exportLegacyDatabase()
+    updated.characters[0].chats = [{ id: 'chat-2', name: 'First chat', message: [] }]
+    repo.importLegacyDatabase(updated, { mode: 'replace' })
+
+    const mapping = repo.refreshCharacterDirectoryMapping('char-1')
+
+    expect(mapping.chats).toEqual([
+        { id: 'chat-2', directory: 'First chat (2)' },
+        { id: 'chat-1', directory: 'First chat' },
+    ])
+})
+
+it('finishes an interrupted directory refresh before returning the injected error', () => {
+    const { dataRoot, repo } = fixture()
+    repo.publishCharacterDirectoryMapping('char-1')
+    const updated = repo.exportLegacyDatabase()
+    updated.characters[0].name = 'Renamed'
+    repo.importLegacyDatabase(updated)
+    const failing = createUserDataRepository({
+        dataRoot,
+        allowDirectoryMapping: true,
+        directoryMappingTransactionOptions: { failAfterPublish: 1 },
+    })
+
+    expect(() => failing.refreshCharacterDirectoryMapping('char-1')).toThrow(/simulated crash/)
+
+    const reopened = createUserDataRepository({ dataRoot, allowDirectoryMapping: true })
+    expect(reopened.loadCharacter('char-1').name).toBe('Renamed')
+    expect(fs.existsSync(path.join(dataRoot, 'characters/Renamed/metadata.json'))).toBe(true)
+    expect(fs.readdirSync(path.join(dataRoot, '.journal')).filter(name => name.endsWith('.json'))).toEqual([])
+})
+
 it('rejects new IDs reserved by mapped directory names without changing current files', () => {
     const { repo } = fixture()
     repo.publishCharacterDirectoryMapping('char-1')

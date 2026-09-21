@@ -13,8 +13,8 @@ const {
     resolveInside,
 } = require('./file-store.cjs');
 
-const { DIRECTORY_INDEX, validateDirectoryMapping, createCharacterDirectoryResolver } = require('./character-directories.cjs');
-const { planDirectoryMapping } = require('./friendly-paths.cjs');
+const { DIRECTORY_INDEX, validateDirectoryMapping, createCharacterDirectoryResolver, resetCharacterDirectoryMappings } = require('./character-directories.cjs');
+const { allocateSegment, planDirectoryMapping } = require('./friendly-paths.cjs');
 
 const COLLECTIONS = [
     ['botPresets', 'presets'],
@@ -517,6 +517,74 @@ function createUserDataRepository(options = {}) {
         return mapping;
     }
 
+    function refreshCharacterDirectoryMapping(characterId) {
+        if (options.allowDirectoryMapping !== true) throw new Error('Directory mapping publication is disabled');
+        const id = stableId(characterId, 'character');
+        directories.refresh();
+        const previous = directories.snapshot();
+        const current = previous.characters.find(entry => entry.id === id);
+        if (!current) throw new Error('Character directory is not mapped');
+        const summary = loadSidebarIndex().characters.find(entry => entry.id === id);
+        if (!summary) throw new Error('Canonical character is unavailable');
+        const character = loadCharacter(id);
+        const charactersRoot = directories.safePath('characters');
+        const occupiedCharacters = new Set(fs.readdirSync(charactersRoot));
+        occupiedCharacters.delete(current.directory);
+        for (const entry of previous.characters) {
+            if (entry.id === id) continue;
+            occupiedCharacters.add(entry.id);
+            occupiedCharacters.add(entry.directory);
+        }
+        const nextDirectory = allocateSegment(character.name, occupiedCharacters);
+        const currentRoot = path.join('characters', current.directory);
+        const nextRoot = path.join('characters', nextDirectory);
+        const currentChatsRoot = directories.safePath(path.join(currentRoot, 'chats'));
+        const occupiedChats = new Set(fs.existsSync(currentChatsRoot) ? fs.readdirSync(currentChatsRoot) : []);
+        const activeIds = new Set(summary.chats.map(chat => chat.id));
+        const retainedChats = current.chats.filter(chat => !activeIds.has(chat.id));
+        for (const chat of retainedChats) {
+            occupiedChats.add(chat.id);
+            occupiedChats.add(chat.directory);
+        }
+        const nextChats = [];
+        for (const chat of summary.chats) {
+            const old = current.chats.find(entry => entry.id === chat.id) || { id: chat.id, directory: chat.id };
+            occupiedChats.delete(old.directory);
+            const directory = allocateSegment(chat.name, occupiedChats);
+            occupiedChats.add(directory);
+            occupiedChats.add(chat.id);
+            nextChats.push({ id: chat.id, directory });
+        }
+        const nextEntry = { id, directory: nextDirectory, chats: [...nextChats, ...retainedChats] };
+        const next = validateDirectoryMapping({
+            schemaVersion: 1,
+            characters: previous.characters.map(entry => entry.id === id ? nextEntry : entry),
+        });
+        const operations = [];
+        const characterMoved = current.directory !== nextDirectory;
+        if (characterMoved) operations.push({ path: currentRoot, moveTo: nextRoot });
+        for (const chat of nextChats) {
+            const old = current.chats.find(entry => entry.id === chat.id) || { id: chat.id, directory: chat.id };
+            if (old.directory === chat.directory) continue;
+            operations.push({
+                path: path.join(nextRoot, 'chats', old.directory),
+                moveTo: path.join(nextRoot, 'chats', chat.directory),
+                sourceCreatedByTransaction: characterMoved,
+            });
+        }
+        operations.push({ path: DIRECTORY_INDEX, data: jsonBytes(next) });
+        try {
+            commitTransaction(dataRoot, operations, options.directoryMappingTransactionOptions || {});
+        } catch (error) {
+            recoverTransactions(dataRoot);
+            resetCharacterDirectoryMappings(dataRoot);
+            throw error;
+        }
+        resetCharacterDirectoryMappings(dataRoot);
+        directories.refresh();
+        return directories.snapshot().characters.find(entry => entry.id === id);
+    }
+
     function importLegacyDatabase(database, importOptions = {}) {
         if (!database || typeof database !== 'object') throw new Error('Legacy database must be an object');
         const mode = importOptions.mode || 'merge';
@@ -841,6 +909,7 @@ function createUserDataRepository(options = {}) {
         recoverPendingTransactions: () => recoverTransactions(dataRoot),
         saveAssistantDraft,
         publishCharacterDirectoryMapping,
+        refreshCharacterDirectoryMapping,
         syncLegacyPresetState,
         syncLegacyChatState,
         syncLegacyCollection,

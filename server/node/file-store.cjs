@@ -260,7 +260,7 @@ function commitTransaction(root, operations, options = {}) {
                 action: 'move',
                 path: operation.path,
                 destination: operation.moveTo,
-                unchanged: !fs.existsSync(source),
+                unchanged: !operation.sourceCreatedByTransaction && !fs.existsSync(source),
             };
         }
         const target = resolveInside(root, operation.path);
