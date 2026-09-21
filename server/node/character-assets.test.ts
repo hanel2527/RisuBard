@@ -1,8 +1,10 @@
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 const { createFileKv } = require('./file-kv.cjs')
+const { atomicWriteJson, atomicWriteFile } = require('./file-store.cjs')
 const roots: string[] = []
 afterEach(() => roots.splice(0).forEach(root => fs.rmSync(root, { recursive: true, force: true })))
 function fixture() {
@@ -30,7 +32,7 @@ it('falls back on corrupt or missing replicas, and honors replacement and deleti
     const { root, store, db } = fixture()
     store.characterAssets.migrate(db, 'one', store.kvGet)
     const dir = path.join(root, 'characters', 'one', 'assets')
-    const object = fs.readdirSync(dir).find(name => /^[a-f0-9]{64}$/.test(name))!
+    const object = JSON.parse(fs.readFileSync(path.join(root, 'index', 'character-asset-replicas.json'), 'utf8')).characters.one.entries[0].filename
     fs.writeFileSync(path.join(dir, object), 'broken')
     expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
     expect(store.characterAssets.diagnostics().fallbacks).toBe(1)
@@ -85,4 +87,53 @@ it('status changes no files and disabling one character preserves the other char
     expect(store.characterAssets.diagnostics().reads).toBe(reads)
     expect(store.kvGet('assets/shared.png').toString()).toBe('shared')
     expect(store.characterAssets.diagnostics().reads).toBe(reads + 1)
+})
+it('preserves friendly labels and extensions, numbers case-insensitive filename collisions and reuses verified names', () => {
+    const { root, store, db } = fixture()
+    store.kvSet('assets/first.png', Buffer.from('first'))
+    store.kvSet('assets/second.png', Buffer.from('second'))
+    db.characters[0].additionalAssets = [['Expression', 'assets/first.png', 'png'], ['expression', 'assets/second.png', 'png']]
+    const beforeMetadata = fs.readFileSync(path.join(root, 'characters', 'one', 'metadata.json'))
+    store.characterAssets.migrate(db, 'one', store.kvGet)
+    const index = path.join(root, 'index', 'character-asset-replicas.json')
+    const entries = JSON.parse(fs.readFileSync(index, 'utf8')).characters.one.entries
+    expect(entries.map(entry => entry.filename)).toEqual(['Expression.png', 'expression (2).png', 'portrait.png'])
+    store.characterAssets.migrate(db, 'one', store.kvGet)
+    expect(JSON.parse(fs.readFileSync(index, 'utf8')).characters.one.entries).toEqual(entries)
+    expect(fs.readFileSync(path.join(root, 'characters', 'one', 'metadata.json'))).toEqual(beforeMetadata)
+    expect(fs.readdirSync(path.join(root, 'characters'))).toEqual(['one'])
+    expect(createFileKv({ dataRoot: root }).kvGet('assets/second.png').toString()).toBe('second')
+})
+it('reads old hash-only replica entries and retains them when migrating to friendly filenames', () => {
+    const { root, store, db } = fixture()
+    const bytes = store.kvGet('assets/portrait.png')
+    const hash = crypto.createHash('sha256').update(bytes).digest('hex')
+    atomicWriteFile(root, `characters/one/assets/${hash}`, bytes)
+    atomicWriteJson(root, 'index/character-asset-replicas.json', { schemaVersion: 1, characters: { one: { enabled: true, copied: 1, skipped: 0, failed: 0, entries: [{ key: 'assets/portrait.png', hash, size: bytes.length }] } } })
+    const reopened = createFileKv({ dataRoot: root })
+    expect(reopened.kvGet('assets/portrait.png')).toEqual(bytes)
+    expect(reopened.characterAssets.diagnostics().reads).toBe(1)
+    reopened.characterAssets.migrate(db, 'one', reopened.kvGet)
+    expect(fs.readFileSync(path.join(root, 'characters', 'one', 'assets', 'portrait.png'))).toEqual(bytes)
+    expect(fs.readFileSync(path.join(root, 'characters', 'one', 'assets', hash))).toEqual(bytes)
+})
+it('retains published filenames through interrupted rename and retries without overwriting old copies', () => {
+    const { root, store, db } = fixture()
+    db.characters[0].additionalAssets = [['Portrait', 'assets/portrait.png', 'png']]
+    store.characterAssets.migrate(db, 'one', store.kvGet)
+    const index = path.join(root, 'index', 'character-asset-replicas.json')
+    const before = fs.readFileSync(index)
+    db.characters[0].additionalAssets[0][0] = 'New portrait'
+    const rename = fs.renameSync
+    const spy = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+        if (String(to) === index) throw new Error('Simulated publication interruption')
+        return rename(from, to)
+    })
+    try { expect(() => store.characterAssets.migrate(db, 'one', store.kvGet)).toThrow() }
+    finally { spy.mockRestore() }
+    expect(fs.readFileSync(index)).toEqual(before)
+    expect(createFileKv({ dataRoot: root }).kvGet('assets/portrait.png').toString()).toBe('portrait')
+    store.characterAssets.migrate(db, 'one', store.kvGet)
+    expect(fs.readFileSync(path.join(root, 'characters', 'one', 'assets', 'Portrait.png')).toString()).toBe('portrait')
+    expect(JSON.parse(fs.readFileSync(index, 'utf8')).characters.one.entries[0].filename).toBe('New portrait (2).png')
 })

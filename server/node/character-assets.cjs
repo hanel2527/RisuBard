@@ -4,9 +4,28 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { atomicWriteFile, atomicWriteJson, readVerifiedJson, resolveInside } = require('./file-store.cjs');
+const { sanitizeSegment, allocateSegment, collisionKey } = require('./friendly-paths.cjs');
 const INDEX = 'index/character-asset-replicas.json';
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
+const validFilename = value => typeof value === 'string' && value.length > 0 && sanitizeSegment(value) === value;
+
+function candidateNames(character) {
+    const names = new Map();
+    function add(key, label, extensionHint) {
+        if (typeof key !== 'string' || !/^assets\/[A-Za-z0-9._-]+$/.test(key)) return;
+        const basename = key.slice('assets/'.length);
+        const extension = path.posix.extname(basename) || (/^[A-Za-z0-9]{1,16}$/.test(extensionHint || '') ? `.${extensionHint}` : '');
+        let name = typeof label === 'string' && label.trim() ? label : basename;
+        if (extension && !name.toLowerCase().endsWith(extension.toLowerCase())) name += extension;
+        if (!names.has(key)) names.set(key, name);
+    }
+    // Preserve explicit asset labels where present; a hashed KV key cannot recover a lost upload filename.
+    for (const asset of character.additionalAssets || []) add(asset?.[1], asset?.[0], asset?.[2]);
+    for (const image of character.emotionImages || []) add(image?.[1], image?.[0]);
+    add(character.image);
+    return names;
+}
 
 function createCharacterAssets({ dataRoot, sourceSize }) {
     let state = { schemaVersion: 1, characters: {} };
@@ -26,7 +45,7 @@ function createCharacterAssets({ dataRoot, sourceSize }) {
         for (const [id, record] of Object.entries(state.characters)) {
             if (!validId(id) || record?.enabled !== true || !Array.isArray(record.entries)) continue;
             for (const entry of record.entries) {
-                if (entry && typeof entry.key === 'string' && entry.key.startsWith('assets/') && /^[a-f0-9]{64}$/.test(entry.hash) && Number.isSafeInteger(entry.size) && entry.size >= 0) {
+                if (entry && (entry.filename === undefined || validFilename(entry.filename)) && typeof entry.key === 'string' && entry.key.startsWith('assets/') && /^[a-f0-9]{64}$/.test(entry.hash) && Number.isSafeInteger(entry.size) && entry.size >= 0) {
                     routes.set(entry.key, { ...entry, id });
                 }
             }
@@ -55,26 +74,44 @@ function createCharacterAssets({ dataRoot, sourceSize }) {
         if (matches?.length !== 1 || matches[0].type === 'group') throw new Error('A unique character is required');
         if (!fs.existsSync(safePath(`characters/${id}/metadata.json`))) throw new Error('Canonical character is unavailable');
         const character = matches[0];
-        const candidates = new Set([character.image,
-            ...(character.emotionImages || []).map(value => value?.[1]),
-            ...(character.additionalAssets || []).map(value => value?.[1])]
-            .filter(value => typeof value === 'string' && /^assets\/[A-Za-z0-9._-]+$/.test(value)));
+        const candidates = candidateNames(character);
+        const directory = safePath(`characters/${id}/assets`);
+        const occupied = new Set(fs.existsSync(directory) ? fs.readdirSync(directory) : []);
+        const previous = state.characters[id]?.entries || [];
         // Conservative snapshot: any occurrence outside this character makes the asset shared.
         const otherData = JSON.stringify({ ...database, characters: database.characters.filter(value => value !== character) }).replace(/\\\\/g, '/');
         const record = { enabled: true, copied: 0, skipped: 0, failed: 0, entries: [] };
-        for (const key of candidates) {
+        for (const [key, sourceName] of candidates) {
             if (otherData.includes(key)) { record.skipped++; continue; }
             try {
                 if (sourceSize(key) > 64 * 1024 * 1024) throw new Error('Oversized source');
                 const bytes = readSource(key);
                 if (!Buffer.isBuffer(bytes) || bytes.length > 64 * 1024 * 1024) throw new Error('Missing or oversized source');
                 const digest = hash(bytes);
-                const relative = `characters/${id}/assets/${digest}`;
+                const preferred = allocateSegment(sourceName, new Set(), true);
+                const old = previous.find(entry => entry?.key === key && entry.hash === digest && entry.sourceName === preferred && validFilename(entry.filename));
+                let filename;
+                if (old) {
+                    try {
+                        const oldPath = safePath(`characters/${id}/assets/${old.filename}`);
+                        if (fs.statSync(oldPath).size === bytes.length && hash(fs.readFileSync(oldPath)) === digest) filename = old.filename;
+                    } catch { /* Keep a damaged old copy untouched; publish a new verified filename. */ }
+                }
+                const needsWrite = !filename;
+                if (!filename) {
+                    filename = allocateSegment(preferred, occupied, true);
+                    while ([...occupied].some(name => [filename, `${filename}.sha256`, `${filename}.bak`].some(candidate => collisionKey(candidate) === collisionKey(name)))) {
+                        occupied.add(filename);
+                        filename = allocateSegment(preferred, occupied, true);
+                    }
+                }
+                const relative = `characters/${id}/assets/${filename}`;
                 const target = safePath(relative);
-                atomicWriteFile(dataRoot, relative, bytes);
+                if (needsWrite) atomicWriteFile(dataRoot, relative, bytes);
                 const verified = fs.readFileSync(target);
                 if (verified.length !== bytes.length || hash(verified) !== digest) throw new Error('Replica verification failed');
-                record.entries.push({ key, hash: digest, size: bytes.length });
+                for (const name of [filename, `${filename}.sha256`, `${filename}.bak`]) occupied.add(name);
+                record.entries.push({ key, filename, sourceName: preferred, hash: digest, size: bytes.length });
                 record.copied++;
             } catch { record.failed++; }
         }
@@ -91,7 +128,7 @@ function createCharacterAssets({ dataRoot, sourceSize }) {
             // KV remains authoritative: replacement, import and deletion invalidate old replicas.
             if (entry.hash !== currentEntry.object || entry.size !== currentEntry.size) throw new Error('Stale replica');
             if (!fs.existsSync(safePath(`characters/${entry.id}/metadata.json`))) throw new Error('Character removed');
-            const target = safePath(`characters/${entry.id}/assets/${entry.hash}`);
+            const target = safePath(`characters/${entry.id}/assets/${entry.filename ?? entry.hash}`);
             if (fs.statSync(target).size !== entry.size || entry.size > 64 * 1024 * 1024) throw new Error('Invalid replica size');
             const value = fs.readFileSync(target);
             if (value.length !== entry.size || hash(value) !== entry.hash) throw new Error('Invalid replica');
