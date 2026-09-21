@@ -5,6 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { atomicWriteFile, atomicWriteJson, readVerifiedJson, resolveInside } = require('./file-store.cjs');
 const { sanitizeSegment, allocateSegment, collisionKey } = require('./friendly-paths.cjs');
+const { createCharacterDirectoryResolver } = require('./character-directories.cjs');
 const INDEX = 'index/character-asset-replicas.json';
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -30,6 +31,8 @@ function candidateNames(character) {
 function createCharacterAssets({ dataRoot, sourceSize, readOriginal }) {
     let state = { schemaVersion: 1, characters: {} };
     let routes = new Map();
+    const directories = createCharacterDirectoryResolver(dataRoot);
+    let routeMapping;
     const counters = { reads: 0, fallbacks: 0, copied: 0, failed: 0 };
     function safePath(relative) {
         const target = resolveInside(dataRoot, relative);
@@ -42,12 +45,13 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal }) {
     }
     function rebuild() {
         routes = new Map();
+        routeMapping = directories.snapshot();
         for (const [id, record] of Object.entries(state.characters)) {
             if (!validId(id) || record?.enabled !== true || !Array.isArray(record.entries)) continue;
             for (const entry of record.entries) {
                 if (entry && (entry.filename === undefined || validFilename(entry.filename)) && typeof entry.key === 'string' && entry.key.startsWith('assets/') && /^[a-f0-9]{64}$/.test(entry.hash) && Number.isSafeInteger(entry.size) && entry.size >= 0 && entry.size <= 64 * 1024 * 1024) {
                     try {
-                        const target = safePath(`characters/${id}/assets/${entry.filename ?? entry.hash}`);
+                        const target = safePath(`${directories.characterDirectory(id)}/assets/${entry.filename ?? entry.hash}`);
                         routes.set(entry.key, { ...entry, id, target });
                     } catch { /* Validate path boundaries at publication/load, outside normal reads. */ }
                 }
@@ -75,10 +79,10 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal }) {
         if (!validId(id)) throw new Error('Invalid character ID');
         const matches = database.characters?.filter(character => character.chaId === id);
         if (matches?.length !== 1 || matches[0].type === 'group') throw new Error('A unique character is required');
-        if (!fs.existsSync(safePath(`characters/${id}/metadata.json`))) throw new Error('Canonical character is unavailable');
+        if (!fs.existsSync(safePath(`${directories.characterDirectory(id)}/metadata.json`))) throw new Error('Canonical character is unavailable');
         const character = matches[0];
         const candidates = candidateNames(character);
-        const directory = safePath(`characters/${id}/assets`);
+        const directory = safePath(`${directories.characterDirectory(id)}/assets`);
         const occupied = new Set(fs.existsSync(directory) ? fs.readdirSync(directory) : []);
         const previous = state.characters[id]?.entries || [];
         // Conservative snapshot: any occurrence outside this character makes the asset shared.
@@ -96,7 +100,7 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal }) {
                 let filename;
                 if (old) {
                     try {
-                        const oldPath = safePath(`characters/${id}/assets/${old.filename}`);
+                        const oldPath = safePath(`${directories.characterDirectory(id)}/assets/${old.filename}`);
                         if (fs.statSync(oldPath).size === bytes.length && hash(fs.readFileSync(oldPath)) === digest) filename = old.filename;
                     } catch { /* Keep a damaged old copy untouched; publish a new verified filename. */ }
                 }
@@ -108,7 +112,7 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal }) {
                         filename = allocateSegment(preferred, occupied, true);
                     }
                 }
-                const relative = `characters/${id}/assets/${filename}`;
+                const relative = `${directories.characterDirectory(id)}/assets/${filename}`;
                 const target = safePath(relative);
                 if (needsWrite) atomicWriteFile(dataRoot, relative, bytes);
                 const verified = fs.readFileSync(target);
@@ -125,6 +129,9 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal }) {
         return status(id);
     }
     function read(key, currentEntry) {
+        try {
+            if (directories.snapshot() !== routeMapping) rebuild();
+        } catch { counters.fallbacks++; return null; }
         const entry = routes.get(key);
         if (!entry) return null;
         try {

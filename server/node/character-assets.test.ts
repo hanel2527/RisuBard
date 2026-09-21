@@ -171,3 +171,28 @@ it('detects same-size external changes only on explicit revalidation and repairs
     expect(repaired.hash).toBe(old.hash)
     expect(repaired.filename).not.toBe(old.filename)
 })
+
+it('refreshes existing replica routes once after mapping publication and preserves the one-read hot path', () => {
+    const { root, store, db } = fixture()
+    const { createUserDataRepository } = require('./user-data-repository.cjs')
+    // The lightweight A1 fixture metadata has no checksum until normal repository import.
+    atomicWriteJson(root, 'characters/one/metadata.json', { chaId: 'one' })
+    const repo = createUserDataRepository({ dataRoot: root, allowDirectoryMapping: true })
+    repo.importLegacyDatabase(db)
+    store.characterAssets.migrate(db, 'one', store.kvGet)
+    const mapped = repo.publishCharacterDirectoryMapping('one')
+    fs.writeFileSync(path.join(root, 'characters/one/assets/portrait.png'), 'old copy')
+    expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
+    const read = vi.spyOn(fs, 'readFileSync')
+    const stat = vi.spyOn(fs, 'statSync')
+    const lstat = vi.spyOn(fs, 'lstatSync')
+    try {
+        expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
+        expect(read).toHaveBeenCalledTimes(1)
+        expect(String(read.mock.calls[0][0])).toContain(mapped.directory)
+        expect(stat).not.toHaveBeenCalled()
+        expect(lstat).not.toHaveBeenCalled()
+    } finally { vi.restoreAllMocks() }
+    expect(createFileKv({ dataRoot: root }).kvGet('assets/portrait.png').toString()).toBe('portrait')
+    expect(store.characterAssets.migrate(db, 'one', store.kvGet).copied).toBe(1)
+})

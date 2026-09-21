@@ -35,7 +35,7 @@ function allocateSegment(name, occupied = new Set(), file = false) {
     }
 }
 
-// Design-only schema: never read by repository paths or persisted as an active mapping.
+// Pure candidate schema. Only the explicitly gated repository publisher consumes it.
 function planDirectoryMapping(character, characterDirectories = [], chatDirectories = []) {
     if (!character || typeof character.chaId !== 'string' || !character.chaId) throw new Error('Character ID required');
     const used = new Set(chatDirectories);
