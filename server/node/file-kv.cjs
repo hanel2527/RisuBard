@@ -6,6 +6,7 @@ const fsp = require('fs/promises');
 const os = require('os');
 const path = require('path');
 const { atomicWriteFile, atomicWriteJson, readVerifiedJson, recoverTransactions } = require('./file-store.cjs');
+const { createCharacterAssets } = require('./character-assets.cjs');
 
 const MANIFEST_PATH = 'kv/manifest.json';
 const HEX_MIGRATION_MARKER = 'migration/legacy-hex-save-folder.json';
@@ -133,6 +134,7 @@ function createFileKv(options = {}) {
     const dataRoot = path.resolve(options.dataRoot || path.join(process.cwd(), 'save'));
     fs.mkdirSync(dataRoot, { recursive: true });
     recoverTransactions(dataRoot);
+    const characterAssets = createCharacterAssets({ dataRoot, sourceSize: kvSize });
 
     let manifest = fs.existsSync(path.join(dataRoot, MANIFEST_PATH))
         ? readVerifiedJson(dataRoot, MANIFEST_PATH)
@@ -157,6 +159,8 @@ function createFileKv(options = {}) {
     function kvGet(key) {
         const entry = manifest.entries[key];
         if (!entry) return null;
+        const replica = characterAssets.read(key, entry);
+        if (replica !== null) return replica;
         const objectPath = path.join(dataRoot, 'kv', 'objects', entry.object);
         let value;
         try { value = fs.readFileSync(objectPath); } catch { return null; }
@@ -406,6 +410,7 @@ function createFileKv(options = {}) {
         reclaimableChunkBytes,
         objectStoreBytes,
         snapshotFootprint,
+        characterAssets,
     };
 }
 

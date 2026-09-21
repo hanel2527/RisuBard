@@ -30,7 +30,7 @@ const getVips = () => {
 }
 const { kvGet, kvSet, kvSetMany, kvSetManyAsync, kvReplacePrefixesAsync, kvReplacePrefixesFromFilesAsync, kvReplaceAllAsync, kvDel, kvDelMany, kvList,
         kvDelPrefix, kvListWithSizes, kvSize, kvGetUpdatedAt, kvCopyValue,
-        gcChunks, reclaimableChunkBytes, objectStoreBytes, isDbBlobChunked, snapshotFootprint, repository: userDataRepository, compatibilityCache } = require('./db.cjs');
+        gcChunks, reclaimableChunkBytes, objectStoreBytes, isDbBlobChunked, snapshotFootprint, repository: userDataRepository, compatibilityCache, characterAssets } = require('./db.cjs');
 const {
     addLogBatch, queryLogs, clearLogs, countLogs,
     logger, installProcessHandlers, expressErrorMiddleware,
@@ -3945,13 +3945,28 @@ app.get('/api/logs', async (req, res, next) => {
 app.get('/api/storage-diagnostics/report', async (req, res, next) => {
     if (!await checkAuth(req, res)) return;
     try {
-        res.json(await generateStorageDiagnosticReport({
+        const report = await generateStorageDiagnosticReport({
             dataRoot: savePath,
             appVersion: getCurrentVersion(),
-        }));
+        });
+        res.json({ ...report, characterAssets: characterAssets.diagnostics() });
     } catch (error) {
         next(error);
     }
+});
+
+require('./character-asset-routes.cjs').registerCharacterAssetRoutes(app, {
+    auth: checkAuth,
+    activeSession: checkActiveSession,
+    queue: queueStorageOperation,
+    assets: characterAssets,
+    readSource: kvGet,
+    prepare: async () => {
+        if (externalEditSession.isActive() || !canonicalProjectionReady || canonicalProjectionSync.hasExternalChanges()) return null;
+        await flushPendingDbWithinQueue({ materialize: false });
+        if (!canonicalProjectionReady || canonicalProjectionSync.hasExternalChanges()) return null;
+        return userDataRepository.exportLegacyDatabase();
+    },
 });
 
 app.delete('/api/logs', async (req, res, next) => {

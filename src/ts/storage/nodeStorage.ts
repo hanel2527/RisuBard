@@ -676,6 +676,18 @@ export class NodeStorage{
         })
     }
 
+    async characterAssetTransition(characterId: string, action: 'status' | 'migrate' | 'disable') {
+        const response = action === 'status'
+            ? await this.authFetch(`/api/character-assets/status?characterId=${encodeURIComponent(characterId)}`)
+            : await this.authFetch('/api/character-assets/transition', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ characterId, action }),
+            })
+        if (!response.ok) throw new Error(`Asset transition failed: ${response.status}`)
+        return response.json()
+    }
+
     // ── Server-side backup ─────────────────────────────────────────────────────
 
     async saveServerBackup(
