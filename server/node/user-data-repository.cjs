@@ -720,7 +720,9 @@ function createUserDataRepository(options = {}) {
             return {
                 ...character,
                 chats: summary.chats.map(chat => {
-                    const loaded = loadChat(summary.id, chat.id, readOptions);
+                    const loaded = exportOptions.metadataOnly
+                        ? readJson(chatMetadataPath(summary.id, chat.id), readOptions)
+                        : loadChat(summary.id, chat.id, readOptions);
                     if (chat.legacyMessagePresent !== false) return loaded;
                     const { message: _message, ...withoutMessage } = loaded;
                     return withoutMessage;
@@ -728,6 +730,29 @@ function createUserDataRepository(options = {}) {
             };
         });
         return database;
+    }
+
+    function loadStartupDatabase() {
+        const database = exportLegacyDatabase({ metadataOnly: true });
+        for (const character of database.characters) {
+            if (!character.chaId || character.coldstorage) throw new Error('Legacy migration required');
+            character.chats = character.chats.map(chat => {
+                if (!chat.id) throw new Error('Legacy chat ID migration required');
+                const stub = { id: chat.id, name: chat.name ?? '', _stub: true };
+                for (const field of ['lastDate', 'folderId', 'modules']) {
+                    if (field in chat) stub[field] = chat[field];
+                }
+                return stub;
+            });
+        }
+        return database;
+    }
+
+    function loadIndexedChat(characterId, chatIndex) {
+        if (!Number.isInteger(chatIndex) || chatIndex < 0) return null;
+        const summary = loadSidebarIndex().characters.find(character => character.id === characterId);
+        const chat = summary?.chats?.[chatIndex];
+        return chat ? loadChat(summary.id, chat.id) : null;
     }
 
     if (collectCanonicalSourcePaths().length > 0) {
@@ -745,6 +770,8 @@ function createUserDataRepository(options = {}) {
         loadAssistantDraft,
         loadCharacter,
         loadChat,
+        loadIndexedChat,
+        loadStartupDatabase,
         loadMessages,
         loadSidebarIndex,
         reconcileCanonicalProjection,

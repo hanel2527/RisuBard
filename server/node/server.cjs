@@ -259,7 +259,7 @@ function flushPendingDb() {
 }
 
 // Call only from an operation that already owns the storage queue.
-async function flushPendingDbWithinQueue() {
+async function flushPendingDbWithinQueue(options = {}) {
     if (adoptExternallyChangedCanonicalProjection()) return;
     if (saveTimers[DB_HEX_KEY]) {
         clearTimeout(saveTimers[DB_HEX_KEY]);
@@ -274,7 +274,7 @@ async function flushPendingDbWithinQueue() {
         }
         maybeCollectUnreferencedObjects();
     }
-    compatibilityCache.materialize('flush');
+    if (options.materialize !== false) compatibilityCache.materialize('flush');
 }
 
 function invalidateDbCache() {
@@ -3695,7 +3695,21 @@ async function readStorageItemPayload(key) {
 }
 
 async function prepareDatabaseRead(filePath, key, options = {}) {
-    if (options.flush === true) await flushPendingDbWithinQueue();
+    if (options.flush === true) await flushPendingDbWithinQueue({ materialize: false });
+    // Preserve the legacy migration lane for imported or invalidated databases.
+    // Writes still hydrate the complete chat store before any reassembly.
+    if (canonicalProjectionReady && isRemoteMigrationDone() && !externalEditSession.isActive()) {
+        try {
+            const stripped = normalizeJSON(userDataRepository.loadStartupDatabase());
+            if (normalizeOrphanFolderIds(stripped)) throw new Error('Legacy folder migration required');
+            dbCache[filePath] = stripped;
+            const value = encodeRisuSaveLegacyBuffer(stripped);
+            dbEtag = computeBufferEtag(value);
+            return { value, etag: dbEtag };
+        } catch (error) {
+            logger.warn('[Read] Canonical startup read unavailable; using compatibility reader', error?.code || error?.name);
+        }
+    }
     const stored = await readStorageItemPayload(key);
     if (stored === null) return { value: null, etag: null };
     let database;
@@ -5264,17 +5278,30 @@ function restoreColdStorageChat(chat) {
 }
 
 // GET /api/chat-content/:chaId/:chatIndex/page — retrieve a bounded chat page.
+function readCanonicalChatBeforeHydration(chaId, chatIndex) {
+    if (fullChatStore || !canonicalProjectionReady || !isRemoteMigrationDone()
+        || externalEditSession.isActive() || canonicalProjectionSync.hasExternalChanges()) return null;
+    try {
+        return userDataRepository.loadIndexedChat(chaId, chatIndex);
+    } catch (error) {
+        logger.warn('[Read] Canonical chat read unavailable; using compatibility reader', error?.code || error?.name);
+        return null;
+    }
+}
+
 app.get('/api/chat-content/:chaId/:chatIndex/page', async (req, res, next) => {
     if (!await checkAuth(req, res)) { return; }
     try {
         const chaId = req.params.chaId;
         const chatIndex = parseInt(req.params.chatIndex, 10);
         const expectedChatId = req.headers['x-chat-id'];
-        let chat = null;
+        let chat = readCanonicalChatBeforeHydration(chaId, chatIndex);
 
-        await ensureChatStore();
-        const charChats = fullChatStore.get(chaId);
-        if (charChats && expectedChatId) chat = charChats.get(expectedChatId) || null;
+        if (!chat) {
+            await ensureChatStore();
+            const charChats = fullChatStore.get(chaId);
+            if (charChats && expectedChatId) chat = charChats.get(expectedChatId) || null;
+        }
 
         if (!chat) {
             const raw = kvGet('database/database.bin');
@@ -5309,6 +5336,15 @@ app.get('/api/chat-content/:chaId/:chatIndex', async (req, res, next) => {
         const chatIndex = parseInt(req.params.chatIndex, 10);
         const expectedChatId = req.headers['x-chat-id'];
 
+        const directChat = readCanonicalChatBeforeHydration(chaId, chatIndex);
+        if (directChat) {
+            if (expectedChatId && directChat.id !== expectedChatId) {
+                return res.status(409).json({ error: 'Chat ID mismatch — index may have shifted' });
+            }
+            if (!restoreColdStorageChat(directChat)) return res.status(500).json({ error: 'Cold storage restore failed' });
+            res.setHeader('Content-Type', 'application/octet-stream');
+            return res.send(encodeRisuSaveLegacyBuffer(directChat));
+        }
         await ensureChatStore();
         // First try fullChatStore (fast path)
         const charChats = fullChatStore.get(chaId);

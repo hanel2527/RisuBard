@@ -69,6 +69,31 @@ function legacyDatabase() {
 }
 
 describe('canonical entity tree', () => {
+    it('reads startup metadata without reading message files, and hydrates only the requested chat', () => {
+        const dataRoot = root()
+        const repository = createUserDataRepository({ dataRoot })
+        const database = legacyDatabase()
+        database.characters[0].chats.push({ ...structuredClone(database.characters[0].chats[0]), id: 'chat-2' })
+        repository.importLegacyDatabase(database, { mode: 'sync' })
+        const reads = vi.spyOn(fs, 'readFileSync')
+        const startup = repository.loadStartupDatabase()
+        expect(startup.characters[0].chats[0]).toEqual({ id: 'chat-1', name: 'Chat', lastDate: 123, _stub: true })
+        expect(startup.characters[0].description).toBe(database.characters[0].description)
+        expect(reads.mock.calls.some(([file]) => String(file).endsWith('messages.jsonl'))).toBe(false)
+        reads.mockClear()
+        expect(repository.loadIndexedChat('char-1', 1)).toEqual(database.characters[0].chats[1])
+        expect(reads.mock.calls.some(([file]) => String(file).includes('chat-1'))).toBe(false)
+        expect(repository.exportLegacyDatabase()).toEqual(database)
+    })
+
+    it('declines direct startup for legacy chats needing persistent IDs', () => {
+        const repository = createUserDataRepository({ dataRoot: root() })
+        const database = legacyDatabase()
+        database.characters[0].chats[0].id = ''
+        repository.importLegacyDatabase(database, { mode: 'sync' })
+        expect(() => repository.loadStartupDatabase()).toThrow(/migration/i)
+    })
+
     it('writes only selected chat state and companion settings, with restart equality', () => {
         const dataRoot = root()
         const repository = createUserDataRepository({ dataRoot })
