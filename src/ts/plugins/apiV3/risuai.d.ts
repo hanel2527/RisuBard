@@ -1175,6 +1175,16 @@ interface ProviderResponse {
     success: boolean;
     /** Generated content (string or stream) */
     content: string | ReadableStream<string>;
+    /** Upstream termination reason, e.g. stop, length, or MAX_TOKENS. */
+    finishReason?: string;
+    /** Provider-reported token usage. Omit unavailable counts rather than guessing. */
+    usage?: {
+        promptTokens?: number;
+        completionTokens?: number;
+        totalTokens?: number;
+        cachedTokens?: number;
+        reasoningTokens?: number;
+    };
 }
 
 /**

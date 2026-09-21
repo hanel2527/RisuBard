@@ -404,6 +404,18 @@ export function createBardLoreAnalysisBatches(
     return batches
 }
 
+export function estimateBardLoreAnalysisOutputTokens(entry: BardLoreEntry): number {
+    const title = entry.comment.toLocaleLowerCase()
+    if (!compositeMarkers.some(marker => title.includes(marker))) return 512
+    const listItems = entry.content.match(/^\s*(?:[-*+]\s+|\d+[.)]\s+|\|(?!--))/gm)?.length ?? 0
+    const sections = entry.content.match(/^#{1,6}\s+/gm)?.length ?? 0
+    // Planning heuristic, not a provider limit: each expanded atom repeats metadata,
+    // source quotes and links. Prose catalogs use paragraphs as a fallback.
+    const atoms = Math.max(1, listItems, sections,
+        listItems === 0 && sections === 0 ? entry.content.split(/\n\s*\n/).filter(part => part.trim()).length : 0)
+    return 512 + atoms * 384
+}
+
 export async function planBardLoreAnalysisBatches(
     entries: BardLoreEntry[],
     catalog: BardLoreEntry[],
@@ -423,6 +435,7 @@ export async function planBardLoreAnalysisBatches(
     const planned: BardLoreAnalysisPlannedBatch[] = []
     let current: BardLoreEntry[] = []
     let currentTokens = 0
+    let currentOutputTokens = 0
 
     const measure = async (batch: BardLoreEntry[]) =>
         schemaTokens + await tokenize(buildBardLoreAnalysisPrompt(
@@ -438,10 +451,13 @@ export async function planBardLoreAnalysisBatches(
         planned.push({ entries: current, inputTokens: currentTokens })
         current = []
         currentTokens = 0
+        currentOutputTokens = 0
     }
 
     for (const entry of entries) {
         if (current.length >= maxEntries) commit()
+        const outputTokens = estimateBardLoreAnalysisOutputTokens(entry)
+        if (current.length > 0 && currentOutputTokens + outputTokens > settings.analysisOutputTokens) commit()
         let candidate = [...current, entry]
         let candidateTokens = await measure(candidate)
         if (candidateTokens > maxTokens && current.length > 0) {
@@ -457,6 +473,7 @@ export async function planBardLoreAnalysisBatches(
         }
         current = candidate
         currentTokens = candidateTokens
+        currentOutputTokens += outputTokens
         if (current.length >= maxEntries) commit()
     }
     commit()

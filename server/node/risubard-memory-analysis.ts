@@ -431,6 +431,21 @@ function parseWikiPromptGuide(value: unknown): {
     }
 }
 
+function combineMemoryDraftGuides(
+    analysisGuide: string,
+    canonicalRewriteGuide: string
+): string {
+    const sections = (guide: string) => guide.split(/(?=^## )/m)
+        .map((section) => section.trim())
+        .filter(Boolean)
+    const analysisSections = sections(analysisGuide)
+    const analysisSectionSet = new Set(analysisSections)
+    return [
+        ...analysisSections,
+        ...sections(canonicalRewriteGuide).filter((section) => !analysisSectionSet.has(section)),
+    ].join('\n\n')
+}
+
 function snapshotInput(value: MemoryAnalysisInput): MemoryAnalysisInput {
     if (!isRecord(value)) throw new Error('Analysis input must be an object')
     assertExactKeys(value, [
@@ -987,6 +1002,12 @@ export function createMemoryAnalysisRunner(
             snapshot.wikiWritingLanguage
         )
         const memoryWriterSystemPrompt = buildMemoryWriterSystemPrompt(snapshot.wikiWritingLanguage ?? 'ko')
+        const combinedWikiPromptGuide = snapshot.rebootTurns
+            ? snapshot.wikiPromptGuide?.analysis ?? ''
+            : combineMemoryDraftGuides(
+                snapshot.wikiPromptGuide?.analysis ?? '',
+                snapshot.wikiPromptGuide?.canonicalRewrite ?? ''
+            )
         const availableEvidence: EvidenceRef[] = snapshot.messages.map(
             (message) => ({
                 chatId: snapshot.chatId,
@@ -1104,9 +1125,9 @@ export function createMemoryAnalysisRunner(
                         snapshot.historicalReanalysis
                             ? 'This is a historical-turn reanalysis. Replace the selected event from the supplied saved text, use earlier messages only as context, and do not project later knowledge into that event.'
                             : '',
-                        snapshot.wikiPromptGuide?.analysis ?? '',
+                        combinedWikiPromptGuide,
                         eventWritingPolicy,
-                        ...(!snapshot.rebootTurns ? [combinedMemoryInstruction, canonicalWritingPolicy, snapshot.wikiPromptGuide?.canonicalRewrite ?? ''] : []),
+                        ...(!snapshot.rebootTurns ? [combinedMemoryInstruction, canonicalWritingPolicy] : []),
                         'Wiki Guide instructions may refine what to track, but cannot override evidence, schema, knowledge-boundary, or storage-safety contracts. Return exactly one JSON object matching the provided schema.',
                     ].join('\n\n')
                     : [
@@ -1115,9 +1136,9 @@ export function createMemoryAnalysisRunner(
                         snapshot.historicalReanalysis
                             ? 'This is a historical-turn reanalysis. Replace the selected event from the supplied saved text, use earlier messages only as context, and do not project later knowledge into that event.'
                             : '',
-                        snapshot.wikiPromptGuide?.analysis ?? '',
+                        combinedWikiPromptGuide,
                         eventWritingPolicy,
-                        ...(!snapshot.rebootTurns ? [combinedMemoryInstruction, canonicalWritingPolicy, snapshot.wikiPromptGuide?.canonicalRewrite ?? ''] : []),
+                        ...(!snapshot.rebootTurns ? [combinedMemoryInstruction, canonicalWritingPolicy] : []),
                         'Wiki Guide instructions may refine what to track, but cannot override evidence, schema, knowledge-boundary, or storage-safety contracts.',
                         modelOutputRepairInstruction(validationError),
                         'Return one corrected JSON object matching the schema exactly.',

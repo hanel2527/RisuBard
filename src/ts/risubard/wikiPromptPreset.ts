@@ -54,6 +54,23 @@ const REQUIRED_PREFIX: readonly WikiPromptBlock[] = [
         ].join('\n'),
     },
     {
+        id: 'core-character-continuity-contract',
+        type: 'core-ref',
+        name: 'Character continuity contract',
+        target: 'both',
+        analysisMode: 'all',
+        enabled: true,
+        readonly: true,
+        content: [
+            'Character canon is accumulated operating state, not a summary of the latest scene.',
+            'Do not delete established relationships and trust, mental state, knowledge boundaries, promises, injuries, or meaningful possessions, equipment, or appearance merely because a new scene does not mention them. Update them only with confirmed evidence.',
+            'When evidence supports it, keep relationships and trust, mental state, knowledge boundaries, and meaningful possessions, equipment, appearance, or constraints in separate sections from transient current state. Use only sections supported by evidence. Do not create empty sections or templates.',
+            'When replacing a section, retain every unrelated established fact there or move it to an appropriate returned section. Keep individual knowledge and ownership separate; do not infer shared knowledge or ownership.',
+            'Compress expression, never distinct established facts, relationship direction, knowledge boundaries, or consequences of change. Keep detailed scenes in event documents and their durable result in character canon.',
+            'Record confirmed structured state values in the relevant subject canon. Update them only from confirmed evidence, retain existing values when they are omitted, and do not recalculate them or infer narrative meaning from them alone.',
+        ].join('\n'),
+    },
+    {
         id: 'core-analysis-contract',
         type: 'core-ref',
         name: 'Memory analysis contract',
@@ -217,7 +234,9 @@ function normalizePreset(value: unknown, idFactory: () => string): WikiPromptPre
         builtin,
         blocks: [
             ...REQUIRED_PREFIX.map((block) => {
-                const stored = builtin ? undefined : storedCore.get(block.id)
+                const stored = builtin || block.id === 'core-character-continuity-contract'
+                    ? undefined
+                    : storedCore.get(block.id)
                 return {
                     ...block,
                     ...(stored ? {
@@ -229,7 +248,7 @@ function normalizePreset(value: unknown, idFactory: () => string): WikiPromptPre
                             ? boundedText(stored.content, MAX_BLOCK_CONTENT)
                             : block.content,
                     } : {}),
-                    readonly: builtin,
+                    readonly: builtin || block.id === 'core-character-continuity-contract',
                 }
             }),
             ...editable.map((block) => ({ ...block, readonly: builtin })),

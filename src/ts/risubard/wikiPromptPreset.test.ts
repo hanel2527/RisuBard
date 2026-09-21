@@ -18,6 +18,7 @@ describe('Wiki prompt presets', () => {
         expect(preset.builtin).toBe(true)
         expect(preset.blocks.map((block) => block.id)).toEqual([
             'core-evidence-contract',
+            'core-character-continuity-contract',
             'core-analysis-contract',
             'core-historical-analysis-contract',
             'main-wiki-guide',
@@ -36,6 +37,15 @@ describe('Wiki prompt presets', () => {
         expect(preset.blocks.find((block) =>
             block.id === 'default-puzzle-response-reasoning'
         )).toMatchObject({ target: 'response', readonly: true, enabled: true })
+        const continuity = preset.blocks.find((block) =>
+            block.id === 'core-character-continuity-contract'
+        )
+        expect(continuity).toMatchObject({ target: 'both', readonly: true, enabled: true })
+        expect(continuity?.content).toContain('Compress expression, never distinct established facts')
+        expect(continuity?.content).toContain('relationships and trust')
+        expect(continuity?.content).toContain('Do not create empty sections')
+        expect(continuity?.content).toContain('Record confirmed structured state values')
+        expect(continuity?.content).toContain('retain existing values when they are omitted')
     })
 
     test('restores required anchors and bounds imported editable blocks', () => {
@@ -195,6 +205,18 @@ describe('Wiki prompt presets', () => {
         )?.content).toBe('Custom analysis contract.')
         expect(imported.blocks.find((block) => block.id === 'main-wiki-guide')?.content)
             .toBe(duplicated.blocks.find((block) => block.id === 'main-wiki-guide')?.content)
+
+        for (const preset of [duplicated, imported]) {
+            const continuity = preset.blocks.find((block) =>
+                block.id === 'core-character-continuity-contract'
+            )
+            expect(continuity).toMatchObject({ type: 'core-ref', target: 'both', readonly: true })
+            const guide = compileWikiPromptGuide(preset)
+            expect(guide.analysis).toContain('Compress expression, never distinct established facts')
+            expect(guide.canonicalRewrite).toContain('Compress expression, never distinct established facts')
+            expect(guide.analysis.match(/Compress expression, never distinct established facts/g)).toHaveLength(1)
+            expect(guide.canonicalRewrite.match(/Compress expression, never distinct established facts/g)).toHaveLength(1)
+        }
 
         expect(deleteWikiPromptPreset([first], first.id)).toEqual({
             presets: [first],

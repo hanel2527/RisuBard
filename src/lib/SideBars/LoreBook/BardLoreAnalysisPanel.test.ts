@@ -633,8 +633,58 @@ describe('BardLoreAnalysisPanel', () => {
         expect(document.body.querySelector('[data-bard-lore-analysis-draft="second"]')).not.toBeNull()
     })
 
-    it('keeps recovered entries and retries only incomplete targets', async () => {
+    it('automatically splits unresolved targets after recovering a complete entry', async () => {
+        const targets = [source, ...['second', 'third'].map((id) => ({ ...structuredClone(source), id }))]
+        const candidate = (ref: number) => ({ ref, kind: 'location', activation: 'retrieve', aliases: [], tags: ['장소'], summary: `완성 ${ref}`, links: [] })
+        requestChatData.mockResolvedValueOnce({ type: 'success', result: '{"entries":[' + JSON.stringify(candidate(0)) + ',{"ref":1,"kind":"location"' })
+            .mockImplementation(async ({ formated }) => ({ type: 'success', result: JSON.stringify({
+                entries: JSON.parse(formated[0].content.split('\n').at(-1)).targets.map(({ ref }: { ref: number }) => candidate(ref)),
+            }) }))
+        const onAnalysisRunChange = vi.fn()
+        mounted = mount(BardLoreAnalysisPanel, {
+            target: document.body.appendChild(document.createElement('div')),
+            props: { entries: targets, settings: createBardLoreSettings({ analysisBatchEntries: 3 }), onChange: vi.fn(), onAnalysisRunChange },
+        })
+        await tick()
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-open]')!.click()
+        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-plan]')).not.toBeNull())
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analyze]')!.click()
+        await vi.waitFor(() => expect(onAnalysisRunChange.mock.calls.at(-1)?.[0]?.status).toBe('review'))
+        expect(requestChatData.mock.calls.map(([request]) => JSON.parse(request.formated[0].content.split('\n').at(-1)).targets.map(({ ref }: { ref: number }) => ref)))
+            .toEqual([[0, 1, 2], [1], [2]])
+        expect(onAnalysisRunChange.mock.calls.at(-1)?.[0].batches.map(({ status }: { status: string }) => status)).toEqual(['complete', 'complete', 'complete'])
+    })
+
+    it('replans a saved failed batch with current settings before retrying', async () => {
+        const targets = [source, { ...structuredClone(source), id: 'second' }]
+        requestChatData.mockImplementation(async ({ formated }) => ({ type: 'success', result: JSON.stringify({
+            entries: JSON.parse(formated[0].content.split('\n').at(-1)).targets.map(({ ref }: { ref: number }) => ({ ref, kind: 'location', activation: 'retrieve', aliases: [], tags: ['장소'], summary: '완성', links: [] })),
+        }) }))
+        const onAnalysisRunChange = vi.fn()
+        mounted = mount(BardLoreAnalysisPanel, {
+            target: document.body.appendChild(document.createElement('div')),
+            props: {
+                entries: targets, settings: createBardLoreSettings({ analysisBatchEntries: 1, analysisOutputTokens: 6400 }), onChange: vi.fn(), onAnalysisRunChange,
+                analysisRun: {
+                    schemaVersion: 1, id: 'saved-run', scope: 'all', targetIds: targets.map(({ id }) => id),
+                    createdAt: '', updatedAt: '', status: 'failed', overwriteExisting: false,
+                    settingsSnapshot: createBardLoreSettings({ analysisBatchEntries: 6, analysisOutputTokens: 8000 }),
+                    batches: [{ id: 'failed-batch', index: 0, targetIds: targets.map(({ id }) => id), estimatedInputTokens: 20, status: 'failed', error: 'bard-lore-analysis-invalid:invalid-json' }],
+                },
+            },
+        })
+        await tick()
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-open]')!.click()
+        await tick()
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-retry]')!.click()
+        await vi.waitFor(() => expect(onAnalysisRunChange.mock.calls.at(-1)?.[0]?.status).toBe('review'))
+        expect(requestChatData.mock.calls.map(([request]) => request.maxTokens)).toEqual([6400, 6400])
+        expect(requestChatData.mock.calls.map(([request]) => JSON.parse(request.formated[0].content.split('\n').at(-1)).targets.length)).toEqual([1, 1])
+    })
+
+    it('keeps recovered entries and automatically retries the remaining singleton', async () => {
         const second = structuredClone(source)
+        const third = { ...structuredClone(source), id: 'third' }
         second.id = 'second'
         second.key = '기사'
         second.comment = '불완전한 기사'
@@ -650,6 +700,7 @@ describe('BardLoreAnalysisPanel', () => {
                 summary: '회수된 탑.',
                 links: [],
             }),
+            JSON.stringify({ ref: 2, kind: 'location', activation: 'retrieve', aliases: [], tags: ['장소'], summary: '또 다른 완성 초안.', links: [] }),
             JSON.stringify({
                 ref: 1,
                 kind: 'character',
@@ -679,8 +730,8 @@ describe('BardLoreAnalysisPanel', () => {
         mounted = mount(BardLoreAnalysisPanel, {
             target: document.body.appendChild(document.createElement('div')),
             props: {
-                entries: [source, second],
-                settings: createBardLoreSettings({ analysisBatchEntries: 2 }),
+                entries: [source, second, third],
+                settings: createBardLoreSettings({ analysisBatchEntries: 3 }),
                 onChange: vi.fn(),
                 onAnalysisRunChange,
             },
@@ -690,19 +741,31 @@ describe('BardLoreAnalysisPanel', () => {
         document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-open]')!.click()
         await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-plan]')).not.toBeNull())
         document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analyze]')!.click()
-        await vi.waitFor(() => expect(requestChatData).toHaveBeenCalledOnce())
-        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-failure]')).not.toBeNull())
-
-        expect(document.body.querySelector('[data-bard-lore-analysis-name="source"]')?.classList.contains('complete')).toBe(true)
-        expect(document.body.querySelector('[data-bard-lore-analysis-name="second"]')?.classList.contains('failed')).toBe(true)
-        expect(document.body.querySelector('[data-bard-lore-analysis-recovered="second"]')?.textContent)
-            .toContain('회수된 불완전 초안')
-
-        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-retry]')!.click()
         await vi.waitFor(() => expect(requestChatData).toHaveBeenCalledTimes(2))
+        expect(document.body.querySelector('[data-bard-lore-analysis-name="source"]')?.classList.contains('complete')).toBe(true)
         const retryTargets = JSON.parse(requestChatData.mock.calls[1][0].formated[0].content.split('\n').at(-1)).targets
         expect(retryTargets.map(({ ref }: { ref: number }) => ref)).toEqual([1])
         await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-name="second"]')?.classList.contains('complete')).toBe(true))
+    })
+
+    it('stops after the remaining singleton fails its bounded repair attempts', async () => {
+        const second = { ...structuredClone(source), id: 'second' }
+        requestChatData.mockResolvedValueOnce({ type: 'success', result: '{"entries":[' + JSON.stringify({
+            ref: 0, kind: 'location', activation: 'retrieve', aliases: [], tags: ['장소'], summary: '완성', links: [],
+        }) + ',{"ref":1,"kind":"location"' })
+            .mockResolvedValue({ type: 'success', result: '{"entries":[{"ref":1,"kind":"location"' })
+        const onAnalysisRunChange = vi.fn()
+        mounted = mount(BardLoreAnalysisPanel, {
+            target: document.body.appendChild(document.createElement('div')),
+            props: { entries: [source, second], settings: createBardLoreSettings({ analysisBatchEntries: 2 }), onChange: vi.fn(), onAnalysisRunChange },
+        })
+        await tick()
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-open]')!.click()
+        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-plan]')).not.toBeNull())
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analyze]')!.click()
+        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-retry]')).not.toBeNull())
+        expect(requestChatData).toHaveBeenCalledTimes(3)
+        expect(onAnalysisRunChange.mock.calls.at(-1)?.[0].batches.map(({ status }: { status: string }) => status)).toEqual(['complete', 'failed'])
     })
 
     it('regenerates one invalid atomic singleton with a smaller response contract', async () => {

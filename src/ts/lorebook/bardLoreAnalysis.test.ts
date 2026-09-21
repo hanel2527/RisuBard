@@ -51,6 +51,27 @@ function entry(id: string, links: BardLoreEntry['bard']['links'] = []): BardLore
 }
 
 describe('Bard Lore AI analysis', () => {
+    it('budgets expanded roster output even when six timelines fit the input budget', async () => {
+        const entries = Array.from({ length: 6 }, (_, i) => ({
+            ...entry(String(i)),
+            comment: `${2010 + i} Academic Year School Timeline`,
+            content: Array.from({ length: 17 }, (_, person) => `* Student ${person}: Middle School 2nd Year`).join('\n'),
+        }))
+        const settings = createBardLoreSettings({ analysisBatchEntries: 6, analysisInputTokens: 14000, analysisOutputTokens: 8000 })
+        const plan = await planBardLoreAnalysisBatches(entries, entries, settings, async () => 100)
+        expect(plan.batches.map(batch => batch.entries.length)).toEqual([1, 1, 1, 1, 1, 1])
+        const larger = await planBardLoreAnalysisBatches(entries, entries, { ...settings, analysisOutputTokens: 24000 }, async () => 100)
+        expect(larger.batches.length).toBeLessThan(plan.batches.length)
+        expect(larger.batches.flatMap(batch => batch.entries)).toEqual(entries)
+    })
+
+    it('keeps a single oversized composite available and recognizes short named rosters', async () => {
+        const entries = ['a', 'b'].map(id => ({ ...entry(id), comment: 'Student roster', content: '* A\n* B\n* C' }))
+        const plan = await planBardLoreAnalysisBatches(entries, entries,
+            createBardLoreSettings({ analysisBatchEntries: 6, analysisInputTokens: 14000, analysisOutputTokens: 1000 }), async () => 100)
+        expect(plan.batches.map(batch => batch.entries.length)).toEqual([1, 1])
+    })
+
     it('collects entry, configurable connected depth, and complete scopes', () => {
         const entries = [
             entry('a', [{ targetId: 'b', relation: 'to', retrieval: 'supporting' }]),

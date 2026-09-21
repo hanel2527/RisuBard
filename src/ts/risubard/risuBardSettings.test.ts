@@ -156,6 +156,10 @@ describe('RisuBard analysis settings', () => {
         expect(policy).toContain('named sublocation')
         expect(policy).toContain('investigation thread')
         expect(policy).toContain('do not copy event sentences or paragraphs')
+        expect(policy).toContain('Compress expression, never distinct established facts')
+        expect(policy).toContain('relationships and trust')
+        expect(policy).toContain('meaningful possessions, equipment, injuries, or appearance')
+        expect(policy).toContain('Do not create empty sections')
     })
 
     test('resolves current-chat overrides over normalized global defaults', () => {

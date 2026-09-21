@@ -8,6 +8,11 @@ import {
 } from './bardLoreAnalysisSettings'
 
 describe('Grimoire analysis settings', () => {
+    it('allows enough output for the largest expanded roster', () => {
+        expect(recommendBardLoreAnalysisSettings({
+            targetCount: 6, estimatedInputTokens: 4755, minimumOutputTokens: 7040,
+        }).analysisOutputTokens).toBeGreaterThanOrEqual(7040)
+    })
     it('copies only the five analysis fields into another settings object', () => {
         const source = createBardLoreSettings({
             targetTokens: 99_999,
