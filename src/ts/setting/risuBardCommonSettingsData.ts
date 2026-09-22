@@ -1,4 +1,5 @@
 import type { SettingItem } from './types'
+import { MIN_CHAT_UPLOAD_CHUNK_MIB, MAX_CHAT_UPLOAD_CHUNK_MIB, normalizeChatUploadChunkMiB } from '../storage/chatUploadSettings'
 import { normalizeRisuBardCanonicalCustomStyle } from '../risubard/risuBardSettings'
 import { wikiWritingLanguageOptions } from '../risubard/wikiWritingLanguage'
 import { normalizeArcaChatTitleImageStyle } from '../arcaChatSaverSettings'
@@ -364,6 +365,25 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
         labelKey: 'risuBardShowSaveLoadShortcuts',
         bindKey: 'showRisuBardSaveLoadShortcuts',
         keywords: ['save', 'load', 'shortcut', 'floating', '세이브', '로드', '바로가기'],
+    },
+    {
+        id: 'risubard.common.chatUploadChunkEnabled',
+        type: 'check',
+        labelKey: 'chatUploadChunkEnabled',
+        helpKey: 'chatUploadChunkEnabled',
+        bindKey: 'chatUploadChunkEnabled',
+        keywords: ['chunk', 'upload', 'save', '청크', '업로드', '저장', '분할'],
+    },
+    {
+        id: 'risubard.common.chatUploadChunkSize',
+        type: 'number',
+        labelKey: 'chatUploadChunkSize',
+        helpKey: 'chatUploadChunkSize',
+        bindKey: 'chatUploadChunkMiB',
+        condition: ({ db }) => db.chatUploadChunkEnabled === true,
+        setValue: (db, value) => { db.chatUploadChunkMiB = normalizeChatUploadChunkMiB(value) },
+        options: { min: MIN_CHAT_UPLOAD_CHUNK_MIB, max: MAX_CHAT_UPLOAD_CHUNK_MIB, step: 1 },
+        keywords: ['chunk', 'upload', 'size', 'save', '청크', '업로드', '크기', '저장'],
     },
     {
         id: 'risubard.common.autosaveInterval',

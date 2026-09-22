@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
     BARDWIKI_VIRTUAL_MEMORY_MARKER,
     buildBardWikiPluginContext,
@@ -338,16 +338,31 @@ describe('BardWiki plugin service', () => {
             },
         }
 
+        const loadInquiry = vi.fn(async () => response)
         const decorated = await decorateBardWikiCharacterForPlugin({
             character,
             globalSettings: {},
             fetchImpl: fetch,
             createAuth: async () => 'auth',
-        }, { loadInquiry: async () => response })
+        }, { loadInquiry })
 
         expect(decorated.chats?.[0].hypaV3Data).toBeUndefined()
         expect(decorated.chats?.[1].hypaV3Data?.summaries.at(-1)?.text)
             .toContain('wiki memory')
+
+        for (let index = 0; index < 30; index++) {
+            const polled = await decorateBardWikiCharacterForPlugin({
+                character: structuredClone(character),
+                globalSettings: {}, fetchImpl: fetch, createAuth: async () => 'auth',
+            }, { loadInquiry })
+            expect(polled.chats?.[1].hypaV3Data?.summaries.at(-1)?.text).toContain('wiki memory')
+        }
+        expect(loadInquiry).toHaveBeenCalledTimes(1)
+        window.dispatchEvent(new CustomEvent('risubard-memory-updated'))
+        await decorateBardWikiCharacterForPlugin({
+            character, globalSettings: {}, fetchImpl: fetch, createAuth: async () => 'auth',
+        }, { loadInquiry })
+        expect(loadInquiry).toHaveBeenCalledTimes(2)
 
         const failed = await decorateBardWikiCharacterForPlugin({
             character,
