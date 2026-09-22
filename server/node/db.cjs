@@ -15,7 +15,11 @@ const store = createFileKv({ dataRoot });
 if (!store.kvGet('database/database.bin') && fs.existsSync(path.join(dataRoot, 'risuai.db'))) {
     migrateLegacySqlite({ dataRoot, store, sqlitePath: path.join(dataRoot, 'risuai.db') });
 }
-const repository = createUserDataRepository({ dataRoot });
+const repository = createUserDataRepository({
+    dataRoot,
+    allowDirectoryMapping: true,
+    maintainDirectoryNames: true,
+});
 const compatibilityCache = attachCompatibilityCache({
     store, repository, dataRoot,
     enabled: process.env.RISUBARD_DEFER_DATABASE !== '0',

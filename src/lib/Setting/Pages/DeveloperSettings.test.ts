@@ -31,6 +31,7 @@ describe('privacy-safe developer diagnostics page', () => {
         expect(source).toContain('language.storageDiagnosticsCopy')
         expect(source).toContain('report.directWrites.successes')
         expect(source).toContain('report.directWrites.fallbacks')
+        expect(source).toContain('<CharacterAssetTransition />')
         expect(source).not.toContain('storage-observation.jsonl')
     })
 })

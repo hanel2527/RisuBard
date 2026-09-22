@@ -14,6 +14,15 @@ function fixture() {
     repo.importLegacyDatabase({ characters: [{ chaId: 'char-1', name: 'Alice', chats: [{ id: 'chat-1', name: 'First chat', message: [{ role: 'user', data: 'hello' }] }] }] })
     return { dataRoot, repo }
 }
+it('permanently deletes a mapped character and retained legacy folder on a normal save', () => {
+    const { dataRoot, repo } = fixture()
+    repo.publishCharacterDirectoryMapping('char-1')
+    repo.importLegacyDatabase({ characters: [] }, { mode: 'sync' })
+    expect(fs.existsSync(path.join(dataRoot, 'characters/Alice'))).toBe(false)
+    expect(fs.existsSync(path.join(dataRoot, 'characters/char-1'))).toBe(false)
+    expect(fs.existsSync(path.join(dataRoot, 'trash'))).toBe(false)
+    expect(createUserDataRepository({ dataRoot }).exportLegacyDatabase().characters).toEqual([])
+})
 it('publishes an explicit mapping, preserves old folders, and routes restart, writes and deletion by stable IDs', () => {
     const { dataRoot, repo } = fixture()
     repo.saveAssistantDraft('char-1', 'chat-1', { role: 'char', data: 'draft' })
@@ -54,6 +63,33 @@ it('requires explicit internal opt-in and allocates case-insensitive collision-f
     const mapped = repo.publishCharacterDirectoryMapping('char-1')
     expect(mapped.directory).toBe('Alice (2)')
     expect(() => repo.publishCharacterDirectoryMapping('char-1')).toThrow(/already/)
+})
+
+it('rolls an active package back with its latest edits and remains readable after restart', () => {
+    const { dataRoot, repo } = fixture()
+    repo.publishCharacterDirectoryMapping('char-1')
+    const updated = repo.exportLegacyDatabase()
+    updated.characters[0].chats[0].message.push({ role: 'char', data: 'after migration' })
+    repo.importLegacyDatabase(updated)
+    expect(repo.rollbackCharacterDirectoryMapping('char-1')).toEqual({ enabled: false, directory: 'char-1', chats: 0 })
+    expect(fs.existsSync(path.join(dataRoot, 'characters/char-1/metadata.json'))).toBe(true)
+    expect(fs.existsSync(path.join(dataRoot, 'characters/Alice'))).toBe(false)
+    expect(fs.existsSync(path.join(dataRoot, 'characters/char-1/package.json'))).toBe(false)
+    const reopened = createUserDataRepository({ dataRoot })
+    expect(reopened.loadMessages('char-1', 'chat-1').at(-1)?.data).toBe('after migration')
+    expect(reopened.characterDirectoryStatus('char-1').enabled).toBe(false)
+})
+
+it('keeps active character and chat folder names in sync after canonical saves', () => {
+    const { dataRoot, repo } = fixture()
+    repo.publishCharacterDirectoryMapping('char-1')
+    const maintained = createUserDataRepository({ dataRoot, allowDirectoryMapping: true, maintainDirectoryNames: true })
+    const updated = maintained.exportLegacyDatabase()
+    updated.characters[0].name = 'Renamed'
+    updated.characters[0].chats[0].name = 'Renamed chat'
+    maintained.importLegacyDatabase(updated)
+    expect(fs.existsSync(path.join(dataRoot, 'characters/Renamed/chats/Renamed chat'))).toBe(true)
+    expect(maintained.characterDirectoryStatus('char-1')).toEqual({ enabled: true, directory: 'Renamed', chats: 1 })
 })
 
 it('routes direct chat saves, new imports, revisions and chat trash while excluding retained copies', () => {

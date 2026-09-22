@@ -556,7 +556,7 @@ export async function loadNarrativeMemoryWiki(input: {
 function requiredMutationString(
     value: string,
     label: string,
-    maximum: number
+    maximum = Infinity
 ): string {
     if (typeof value !== 'string'
         || value.trim().length === 0
@@ -663,7 +663,7 @@ export async function saveManualWikiDocument(input: {
                 requiredMutationString(alias, 'Wiki alias', 160)
             ),
         }),
-        markdown: requiredMutationString(input.markdown, 'Markdown', 12_000),
+        markdown: requiredMutationString(input.markdown, 'Markdown'),
     }
     const response = await invokeBrowserFetch(
         input.fetchImpl,

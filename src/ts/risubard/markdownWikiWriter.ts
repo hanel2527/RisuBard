@@ -66,7 +66,7 @@ export interface IsolatedMarkdownWikiBatchDraft {
     contentHash: string
 }
 
-function required(value: string, label: string, max: number): string {
+function required(value: string, label: string, max = Infinity): string {
     if (typeof value !== 'string'
         || value.trim().length === 0
         || value.trim().length > max) {
@@ -76,7 +76,7 @@ function required(value: string, label: string, max: number): string {
 }
 
 function normalizeDraft(value: string): string {
-    let markdown = required(value, 'Wiki draft', 12_000)
+    let markdown = required(value, 'Wiki draft')
         .replace(/^<Thoughts>[\s\S]*?<\/Thoughts>\s*/i, '')
         .replace(/^---\s*\r?\n[\s\S]*?\r?\n---\s*/i, '')
         .trim()

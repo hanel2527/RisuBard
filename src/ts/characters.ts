@@ -844,12 +844,7 @@ export async function removeChar(identifier:string|number,name:string, type:'nor
     if (index === -1 || index >= chars.length) {
         return
     }
-    if(type === 'normal'){
-        chars[index].trashTime = Date.now()
-    }
-    else{
-        chars.splice(index, 1)
-    }
+    chars.splice(index, 1)
     checkCharOrder()
     db.characters = chars
     requiresFullEncoderReload.state = true

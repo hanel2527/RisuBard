@@ -445,14 +445,11 @@ export function createCharacterVaultFolder(
 export function trashCharacterVaultCharacters(
     db: VaultDatabase,
     ids: string[],
-    trashedAt = Date.now()
 ): number {
     const selected = selectedIds(db, ids)
     if (selected.size === 0) return 0
 
-    for (const character of db.characters) {
-        if (selected.has(character.chaId)) character.trashTime = trashedAt
-    }
+    db.characters = db.characters.filter(character => !selected.has(character.chaId))
     db.characterOrder = deduplicateCharacterOrder(
         db.characterOrder.flatMap<string | folder>((entry) => {
             if (typeof entry === 'string') return selected.has(entry) ? [] : [entry]

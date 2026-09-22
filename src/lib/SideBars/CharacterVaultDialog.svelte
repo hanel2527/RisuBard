@@ -326,15 +326,16 @@
     async function trashSelected() {
         const count = selectedIds.length
         if (count === 0) return
-        if (!await alertConfirm(`선택한 ${count}명의 캐릭터를 휴지통으로 이동할까요?`)) {
+        if (!await alertConfirm(`선택한 ${count}명의 캐릭터를 삭제할까요?`)) {
             return
         }
+        if (!await alertConfirm('캐릭터와 채팅을 영구 삭제합니다. 되돌릴 수 없습니다. 계속할까요?')) return
         const trashed = trashCharacterVaultCharacters(DBState.db, selectedIds)
         if (trashed === 0) return
         selectedIds = []
         selectedCharID.set(-1)
         requiresFullEncoderReload.state = true
-        commit(`${trashed}명 캐릭터를 휴지통으로 이동`)
+        commit(`${trashed}명 캐릭터 삭제 완료`)
     }
 
     async function cloneSelected(withChats: boolean) {
@@ -795,7 +796,7 @@
                             aria-label="선택 캐릭터 삭제"
                             onclick={() => void trashSelected()}
                         >
-                            <SolarBoldIcon name="trash-bin-trash" size={15} /> 휴지통
+                            <SolarBoldIcon name="trash-bin-trash" size={15} /> 삭제
                         </ShButton>
                     </div>
                 </div>

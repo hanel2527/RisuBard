@@ -159,6 +159,14 @@ function publishTransaction(root, journal, options = {}) {
     let published = 0;
     let skipped = 0;
     for (const entry of journal.entries) {
+        if (entry.action === 'delete-character') {
+            const target = characterDeletionPath(root, entry.path);
+            fs.rmSync(target, { recursive: true, force: true });
+            fsyncDirectory(path.dirname(target));
+            published += 1;
+            if (options.failAfterPublish === published) throw new Error('simulated crash during transaction publish');
+            continue;
+        }
         if (entry.action === 'move') {
             const source = resolveInside(root, entry.path);
             const destination = resolveInside(root, entry.destination);
@@ -242,18 +250,43 @@ function assertUnchangedPreconditions(root, entries) {
     }
 }
 
+function characterDeletionPath(root, relativePath) {
+    const target = resolveInside(root, relativePath);
+    const parts = path.relative(path.resolve(root), target).split(path.sep);
+    if (parts.length !== 2 || parts[0] !== 'characters' || !parts[1] || parts[1].startsWith('.')) {
+        throw new Error('Deletion requires one character directory');
+    }
+    let current = path.resolve(root);
+    for (const part of parts) {
+        current = path.join(current, part);
+        if (fs.existsSync(current) && fs.lstatSync(current).isSymbolicLink()) throw new Error('Character deletion uses a symbolic link');
+    }
+    return target;
+}
+
 function commitTransaction(root, operations, options = {}) {
     if (!Array.isArray(operations) || operations.length === 0) {
         return { committed: 0, published: 0, skipped: 0, stagedBytes: 0 };
     }
-    const prepared = operations.map((operation) => {
+    const prepared = operations.map((operation, operationIndex) => {
+        if (operation.deleteCharacter === true) {
+            characterDeletionPath(root, operation.path);
+            if (operation.moveTo || operation.sourcePath || operation.data !== undefined) throw new Error('Deletion cannot include file data');
+            return { action: 'delete-character', path: operation.path, unchanged: false };
+        }
         if (operation.moveTo) {
             if (operation.data !== undefined || operation.sourcePath) {
                 throw new Error(`Transaction move cannot include file data: ${operation.path}`);
             }
             const source = resolveInside(root, operation.path);
             const destination = resolveInside(root, operation.moveTo);
-            if (fs.existsSync(destination)) {
+            const destinationClearedEarlier = operation.destinationClearedByTransaction === true
+                && operations.slice(0, operationIndex).some(previous => {
+                    if (!previous.moveTo) return false;
+                    const cleared = resolveInside(root, previous.path);
+                    return destination === cleared || destination.startsWith(`${cleared}${path.sep}`);
+                });
+            if (fs.existsSync(destination) && !destinationClearedEarlier) {
                 throw new Error(`Transaction move destination already exists: ${operation.moveTo}`);
             }
             return {
@@ -299,6 +332,7 @@ function commitTransaction(root, operations, options = {}) {
     const stageDir = path.join(journalDir, `${id}.stage`);
     fs.mkdirSync(stageDir, { recursive: true });
     const entries = pending.map((operation, index) => {
+        if (operation.action === 'delete-character') return { action: operation.action, path: operation.path };
         if (operation.action === 'move') {
             return { action: 'move', path: operation.path, destination: operation.destination };
         }
@@ -323,7 +357,7 @@ function commitTransaction(root, operations, options = {}) {
     const journal = { schemaVersion: 1, id, state: 'prepared', createdAt: Date.now(), entries };
     writeJournal(journalPath, journal);
     const stagedBytes = entries.reduce((total, entry) => (
-        entry.action === 'move' ? total : total + fs.statSync(entry.staged).size
+        entry.action === 'move' || entry.action === 'delete-character' ? total : total + fs.statSync(entry.staged).size
     ), 0);
     const published = publishTransaction(root, journal, options);
     cleanupJournal(journalPath, stageDir);

@@ -652,7 +652,6 @@ export function parseCanonicalBatch(
             )
         }
         const headings = new Set<string>()
-        let totalLength = 0
         const sections = boundedArray(
             item.sections,
             `canonical batch documents[${index}].sections`,
@@ -700,12 +699,6 @@ export function parseCanonicalBatch(
                 || (operation === 'delete' && content.length > 0)) {
                 throw new Error(
                     `canonical batch documents[${index}].sections[${sectionIndex}].content does not match operation`
-                )
-            }
-            totalLength += heading.length + content.length
-            if (totalLength > 12_000) {
-                throw new Error(
-                    `canonical batch documents[${index}].sections are too large`
                 )
             }
             return {

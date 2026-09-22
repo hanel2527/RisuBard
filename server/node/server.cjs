@@ -52,6 +52,8 @@ const { createCanonicalProjectionSync } = require('./canonical-projection-sync.c
 const { createProjectionRevisionStore } = require('./projection-revision-store.cjs');
 const { createDirectWriteTracker } = require('./direct-write-tracker.cjs');
 const { writeCanonicalProjection } = require('./canonical-projection-writer.cjs');
+const { reclaimDeletedCharacterAssets } = require('./deleted-character-assets.cjs');
+const { kvDelManyAndCollect } = require('./db.cjs');
 const { createExternalEditSession } = require('./external-edit-session.cjs');
 const {
     collectDatabaseAssetReferences,
@@ -1040,6 +1042,20 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
         canonicalProjectionSync.accept()
         phaseMetrics.revisionAcceptMs = elapsedMs(phaseStartedAt)
         canonicalProjectionReady = true
+        if (result.deletedAssetCandidates?.length) {
+            try {
+                const cleanup = reclaimDeletedCharacterAssets({
+                    candidates: result.deletedAssetCandidates,
+                    database: databaseObject,
+                    listKeys: kvList,
+                    read: kvGet,
+                    remove: kvDelManyAndCollect,
+                })
+                logger.info('[Character deletion] Asset cleanup completed', { count: cleanup.count, reclaimed: cleanup.reclaimed })
+            } catch {
+                logger.warn('[Character deletion] Asset cleanup incomplete; retained assets can be retried with orphan cleanup')
+            }
+        }
         saveObservation.record({
             kind: 'canonical-sync', trigger, outcome: 'success', operationId,
             durationMs: elapsedMs(startedAt), plannedFiles: result.files, ...phaseMetrics,
@@ -3930,6 +3946,21 @@ require('./character-asset-routes.cjs').registerCharacterAssetRoutes(app, {
     auth: checkAuth,
     activeSession: checkActiveSession,
     queue: queueStorageOperation,
+    assets: characterAssets,
+    readSource: kvGet,
+    prepare: async () => {
+        if (externalEditSession.isActive() || !canonicalProjectionReady || canonicalProjectionSync.hasExternalChanges()) return null;
+        await flushPendingDbWithinQueue({ materialize: false });
+        if (!canonicalProjectionReady || canonicalProjectionSync.hasExternalChanges()) return null;
+        return userDataRepository.exportLegacyDatabase();
+    },
+});
+
+require('./character-package-routes.cjs').registerCharacterPackageRoutes(app, {
+    auth: checkAuth,
+    activeSession: checkActiveSession,
+    queue: queueStorageOperation,
+    repository: userDataRepository,
     assets: characterAssets,
     readSource: kvGet,
     prepare: async () => {

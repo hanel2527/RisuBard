@@ -24,6 +24,26 @@ const settingsPath = resolve(process.cwd(), 'src/lib/Setting/Settings.svelte')
 const searchIndexPath = resolve(process.cwd(), 'src/ts/setting/searchIndex.ts')
 
 describe('RisuBard Wiki Prompt settings', () => {
+    test('opens the preset list in a scrollable dialog outside the editor flex layout', () => {
+        const page = readFileSync(pagePath, 'utf8')
+        expect(page).toContain('{#snippet headerActions()}')
+        expect(page).toMatch(/<PresetHeader\s+compact/)
+        expect(page).toContain('<ShDialog bind:open={choosingPreset}')
+        expect(page).toContain('bind:value={presetSearch}')
+        expect(page).toContain('filteredPresets as preset')
+        expect(page).toMatch(/\.preset-picker\s*\{[^}]*overflow-y: auto/)
+        expect(page).toContain('aria-pressed={preset.id === activePreset?.id}')
+    })
+
+    test('allows only optional built-in block toggles without unlocking their content', () => {
+        const workspace = readFileSync(resolve(process.cwd(), 'src/lib/Setting/Pages/RisuBardWikiPromptV2Workspace.svelte'), 'utf8')
+        expect(workspace).toContain("block.id === 'default-character-equipment'")
+        expect(workspace).toContain("block.id === 'default-length-compression'")
+        expect(workspace).toContain('disabled={!canToggle()}')
+        expect(workspace).toContain('setSelectedEnabled(event.currentTarget.checked)')
+        expect(workspace).toContain('readOnly={!canEdit()}')
+    })
+
     test('registers a dedicated RisuBard settings route', () => {
         expect(settingsSections[1].items).toContainEqual(expect.objectContaining({
             id: 'risubard-wiki-prompt',

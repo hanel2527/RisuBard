@@ -688,6 +688,18 @@ export class NodeStorage{
         return response.json()
     }
 
+    async characterPackageTransition(characterId: string, action: 'status' | 'migrate' | 'refresh' | 'rollback') {
+        const response = action === 'status'
+            ? await this.authFetch(`/api/character-packages/status?characterId=${encodeURIComponent(characterId)}`)
+            : await this.authFetch('/api/character-packages/transition', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ characterId, action }),
+            })
+        if (!response.ok) throw new Error(`Character package transition failed: ${response.status}`)
+        return response.json()
+    }
+
     // ── Server-side backup ─────────────────────────────────────────────────────
 
     async saveServerBackup(

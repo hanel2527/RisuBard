@@ -115,9 +115,6 @@ export function parseCanonicalSectionPatchMarkdown(
     value: string,
 ): CanonicalSectionPatch[] {
     if (!value.trim()) throw new Error('Canonical Markdown patch is empty')
-    if (value.length > 12_000) {
-        throw new Error('Canonical Markdown patch is too long')
-    }
     const headings = headingsOutsideFences(value)
     if (headings.length === 0 || headings[0].line.start !== 0) {
         throw new Error('Canonical Markdown patch must start with a direct H3 section')

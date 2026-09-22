@@ -722,7 +722,6 @@ function registerRisuBardMemoryRoutes(app, options) {
                 || !req.body.sourceMessageIds.every(hasBoundedId)
                 || typeof req.body.markdown !== 'string'
                 || req.body.markdown.trim().length === 0
-                || req.body.markdown.length > 12_000
                 || (req.body.append !== undefined
                     && typeof req.body.append !== 'boolean')) {
                 res.status(400).send({ error: 'Invalid Markdown wiki update' })
@@ -787,8 +786,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                     || req.body.sourceMessageIds.length < 1
                     || !req.body.sourceMessageIds.every(hasBoundedId)
                     || typeof req.body.markdown !== 'string'
-                    || req.body.markdown.trim().length === 0
-                    || req.body.markdown.length > 12_000) {
+                    || req.body.markdown.trim().length === 0) {
                     res.status(400).send({
                         error: 'Invalid canonical Markdown wiki update',
                     })
@@ -842,8 +840,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                                 && alias.trim().length > 0
                                 && alias.length <= 160)))
                     || typeof req.body.markdown !== 'string'
-                    || req.body.markdown.trim().length === 0
-                    || req.body.markdown.length > 12_000) {
+                    || req.body.markdown.trim().length === 0) {
                     res.status(400).send({
                         error: 'Invalid manual Markdown wiki update',
                     })

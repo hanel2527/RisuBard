@@ -221,6 +221,38 @@ describe('journal recovery and trash', () => {
         expect(fs.readFileSync(path.join(root, 'settings/app.json'), 'utf8')).toBe('{}')
     })
 
+    it('replays permanent character deletion after interruption without touching other characters', () => {
+        const root = tempRoot()
+        atomicWriteFile(root, 'characters/one/metadata.json', Buffer.from('one'))
+        atomicWriteFile(root, 'characters/two/metadata.json', Buffer.from('two'))
+        expect(() => commitTransaction(root, [
+            { path: 'index/sidebar.json', data: Buffer.from('{}') },
+            { path: 'characters/one', deleteCharacter: true },
+        ], { failAfterPublish: 1 })).toThrow(/simulated crash/)
+        recoverTransactions(root)
+        expect(fs.existsSync(path.join(root, 'characters/one'))).toBe(false)
+        expect(fs.readFileSync(path.join(root, 'characters/two/metadata.json'), 'utf8')).toBe('two')
+        expect(() => commitTransaction(root, [{ path: 'characters', deleteCharacter: true }])).toThrow(/one character/)
+        expect(() => commitTransaction(root, [{ path: '../outside', deleteCharacter: true }])).toThrow(/escapes/)
+    })
+
+    it('allows a move destination only when an earlier move clears it', () => {
+        const root = tempRoot()
+        atomicWriteFile(root, 'characters/legacy/metadata.json', Buffer.from('old'))
+        atomicWriteFile(root, 'characters/friendly/metadata.json', Buffer.from('current'))
+        commitTransaction(root, [
+            { path: 'characters/legacy', moveTo: 'trash/legacy' },
+            { path: 'characters/friendly', moveTo: 'characters/legacy', destinationClearedByTransaction: true },
+        ])
+        expect(fs.readFileSync(path.join(root, 'characters/legacy/metadata.json'), 'utf8')).toBe('current')
+        expect(fs.readFileSync(path.join(root, 'trash/legacy/metadata.json'), 'utf8')).toBe('old')
+
+        atomicWriteFile(root, 'characters/other/metadata.json', Buffer.from('other'))
+        expect(() => commitTransaction(root, [
+            { path: 'characters/other', moveTo: 'characters/legacy', destinationClearedByTransaction: true },
+        ])).toThrow(/destination already exists/)
+    })
+
     it('moves deleted canonical data to trash with recoverable bytes', () => {
         const root = tempRoot()
         atomicWriteFile(root, 'characters/char-1/metadata.json', Buffer.from('character'))

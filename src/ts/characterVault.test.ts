@@ -263,18 +263,16 @@ describe('Character Vault state', () => {
         expect(getFolder(db, 'folder-empty').data).toEqual([])
     })
 
-    test('moves selected characters to trash and preserves emptied folders', () => {
+    test('permanently removes selected characters and preserves emptied folders', () => {
         const db = makeDb()
         setCharacterVaultQuickAccess(db, [
             { kind: 'character', id: 'a' },
             { kind: 'folder', id: 'folder-1' },
         ])
 
-        expect(trashCharacterVaultCharacters(db, ['a', 'b'], 1234)).toBe(2)
-        expect(db.characters.find((character) => character.chaId === 'a')?.trashTime)
-            .toBe(1234)
-        expect(db.characters.find((character) => character.chaId === 'b')?.trashTime)
-            .toBe(1234)
+        expect(trashCharacterVaultCharacters(db, ['a', 'b'])).toBe(2)
+        expect(db.characters.find((character) => character.chaId === 'a')).toBeUndefined()
+        expect(db.characters.find((character) => character.chaId === 'b')).toBeUndefined()
         expect(db.characterOrder).toEqual([
             expect.objectContaining({ id: 'folder-1', data: [] }),
             'c',

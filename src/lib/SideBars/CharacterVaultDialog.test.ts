@@ -453,7 +453,20 @@ describe('CharacterVaultDialog', () => {
         expect(mocks.db.characterOrder).toContain('b')
     })
 
-    test('replaces selection-time folder creation with confirmed bulk trash', async () => {
+    test('keeps characters when the second deletion confirmation is cancelled', async () => {
+        await render()
+        click('Alice 선택')
+        await tick()
+        mocks.alertConfirm.mockResolvedValueOnce(true).mockResolvedValueOnce(false)
+        click('선택 캐릭터 삭제')
+        await tick()
+        await tick()
+        expect(mocks.alertConfirm).toHaveBeenCalledTimes(2)
+        expect(mocks.db.characters.find(character => character.chaId === 'a')).toBeDefined()
+        expect(mocks.requestImmediateSave).not.toHaveBeenCalled()
+    })
+
+    test('replaces selection-time folder creation with twice-confirmed permanent deletion', async () => {
         await render()
         click('Alice 선택')
         click('Cato 선택')
@@ -463,11 +476,11 @@ describe('CharacterVaultDialog', () => {
         expect(document.body.querySelector('[aria-label="선택 항목으로 폴더 생성"]')).toBeNull()
         click('선택 캐릭터 삭제')
         await tick()
+        await tick()
 
-        expect(mocks.db.characters.find((character) => character.chaId === 'a')?.trashTime)
-            .toEqual(expect.any(Number))
-        expect(mocks.db.characters.find((character) => character.chaId === 'c')?.trashTime)
-            .toEqual(expect.any(Number))
+        expect(mocks.alertConfirm).toHaveBeenCalledTimes(2)
+        expect(mocks.db.characters.find((character) => character.chaId === 'a')).toBeUndefined()
+        expect(mocks.db.characters.find((character) => character.chaId === 'c')).toBeUndefined()
         expect(mocks.selectedCharID.set).toHaveBeenCalledWith(-1)
         expect(mocks.requiresFullEncoderReload.state).toBe(true)
         expect(mocks.requestImmediateSave).toHaveBeenCalled()

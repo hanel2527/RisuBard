@@ -24,6 +24,8 @@ describe('Wiki prompt presets', () => {
             'main-wiki-guide',
             'default-puzzle-clue-tracker',
             'default-puzzle-response-reasoning',
+            'default-character-equipment',
+            'default-length-compression',
             'character-wiki-guide',
             'chat-wiki-guide',
             'core-output-contract',
@@ -238,4 +240,47 @@ describe('Wiki prompt presets', () => {
         expect(resolveWikiPromptPreset([first, second], 'second')).toBe(second)
         expect(resolveWikiPromptPreset([first, second], 'missing')).toBe(first)
     })
+})
+
+describe('versioned official character presets', () => {
+    test('ships current default and frozen backup and preserves selection on reload', () => {
+        const old = createDefaultWikiPromptPreset('old')
+        delete old.writingPolicyVersion
+        const state = normalizeWikiPromptPresetState({ presets: [old], chatPresetId: 'old' }, () => 'generated')
+        const backup = state.presets.find(p => p.name === '공식기본-260922')!
+        expect(backup).toBeDefined()
+        expect(state.chatPresetId).toBe('old')
+        expect(compileWikiPromptGuide(backup).canonicalRewrite).toContain('in separate sections from transient current state')
+        expect(compileWikiPromptGuide(state.presets[0]).canonicalRewrite).toContain('One primary home per fact')
+        const reloaded = normalizeWikiPromptPresetState({ presets: state.presets, chatPresetId: backup.id }, () => 'unused')
+        expect(reloaded.presets).toHaveLength(2)
+        expect(reloaded.chatPresetId).toBe(backup.id)
+        const imported = parseWikiPromptPreset(serializeWikiPromptPreset(backup), () => 'imported-backup')
+        expect(compileWikiPromptGuide(imported).canonicalRewrite).toBe(compileWikiPromptGuide(backup).canonicalRewrite)
+    })
+
+    test('optional compression survives normalization and does not discard essential facts', () => {
+        const preset = createDefaultWikiPromptPreset('new')
+        const block = preset.blocks.find(b => b.id === 'default-length-compression')!
+        expect(block).toMatchObject({ enabled: false })
+        expect(compileWikiPromptGuide(preset).canonicalRewrite).not.toContain('Apply stronger compression')
+        block.enabled = true
+        const restored = parseWikiPromptPreset(serializeWikiPromptPreset(preset), () => 'imported')
+        expect(compileWikiPromptGuide(restored).canonicalRewrite).toContain('Apply stronger compression')
+        expect(compileWikiPromptGuide(restored).canonicalRewrite).toContain('Never drop distinct still-valid facts')
+    })
+})
+
+
+test('keeps personal preset selection and policy while installing official choices', () => {
+    const personal = duplicateWikiPromptPreset(createDefaultWikiPromptPreset('seed'), 'personal')
+    personal.writingPolicyVersion = 1
+    personal.name = 'My wiki'
+    personal.blocks.find(block => block.id === 'main-wiki-guide')!.content = 'Track my custom facts.'
+    const state = normalizeWikiPromptPresetState({ presets: [personal], chatPresetId: personal.id }, () => 'generated')
+    expect(state.chatPresetId).toBe('personal')
+    expect(state.presets[0].writingPolicyVersion).toBe(1)
+    expect(compileWikiPromptGuide(state.presets[0]).analysis).toContain('Track my custom facts.')
+    expect(state.presets.filter(preset => preset.builtin)).toHaveLength(2)
+    expect(normalizeWikiPromptPresetState(state, () => 'unused')).toEqual(state)
 })

@@ -5,7 +5,7 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const os = require('os');
 const path = require('path');
-const { atomicWriteFile, atomicWriteJson, readVerifiedJson, recoverTransactions } = require('./file-store.cjs');
+const { atomicWriteFile, atomicWriteJson, readVerifiedJson, recoverTransactions, resolveInside } = require('./file-store.cjs');
 const { createCharacterAssets } = require('./character-assets.cjs');
 
 const MANIFEST_PATH = 'kv/manifest.json';
@@ -302,6 +302,26 @@ function createFileKv(options = {}) {
         return { count, bytes };
     }
 
+    function kvDelManyAndCollect(keys) {
+        const objects = new Set(keys.map(key => manifest.entries[key]?.object).filter(Boolean));
+        const previous = { ...manifest.entries };
+        let deleted;
+        try { deleted = kvDelMany(keys); }
+        catch (error) { manifest.entries = previous; throw error; }
+        const referenced = referencedObjects();
+        let reclaimed = 0;
+        for (const object of objects) {
+            if (!/^[a-f0-9]{64}$/.test(object) || referenced.has(object)) continue;
+            const target = resolveInside(dataRoot, path.join('kv', 'objects', object));
+            try {
+                const size = fs.statSync(target).size;
+                fs.unlinkSync(target);
+                reclaimed += size;
+            } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        }
+        return { ...deleted, reclaimed };
+    }
+
     function kvSize(key) {
         return manifest.entries[key]?.size ?? 0;
     }
@@ -429,6 +449,7 @@ function createFileKv(options = {}) {
         kvReplaceAllAsync,
         kvDel,
         kvDelMany,
+        kvDelManyAndCollect,
         kvSize,
         kvGetUpdatedAt,
         kvCopyValue,

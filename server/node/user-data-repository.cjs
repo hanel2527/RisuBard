@@ -17,6 +17,7 @@ const { DIRECTORY_INDEX, validateDirectoryMapping, createCharacterDirectoryResol
 const { createCharacterPackageManifest, validateCharacterPackageManifest } = require('./character-package-manifest.cjs');
 const { inspectCharacterPackageOwnership } = require('./character-package-preflight.cjs');
 const { allocateSegment, planDirectoryMapping } = require('./friendly-paths.cjs');
+const { collectNestedAssetReferences } = require('./orphan-cleanup.cjs');
 
 const COLLECTIONS = [
     ['botPresets', 'presets'],
@@ -465,8 +466,17 @@ function createUserDataRepository(options = {}) {
         return draft;
     }
 
-    // Internal fixture/maintenance boundary only. No server route enables this option.
-    // Package ownership, wiki relocation and native backup activation are separate gates.
+    function characterDirectoryStatus(characterId) {
+        const id = stableId(characterId, 'character');
+        directories.refresh();
+        const entry = directories.snapshot().characters.find(item => item.id === id);
+        return entry?.packageVersion === 1
+            ? { enabled: true, directory: entry.directory, chats: entry.chats.length }
+            : { enabled: false, directory: id, chats: 0 };
+    }
+
+    // Explicit single-character opt-in only. The authenticated server route is
+    // the product boundary; existing saves remain unchanged until it is called.
     function publishCharacterDirectoryMapping(characterId) {
         if (options.allowDirectoryMapping !== true) throw new Error('Directory mapping publication is disabled');
         const id = stableId(characterId, 'character');
@@ -602,6 +612,70 @@ function createUserDataRepository(options = {}) {
         return directories.snapshot().characters.find(entry => entry.id === id);
     }
 
+    function rollbackCharacterDirectoryMapping(characterId) {
+        if (options.allowDirectoryMapping !== true) throw new Error('Directory mapping publication is disabled');
+        const id = stableId(characterId, 'character');
+        directories.refresh();
+        const previous = directories.snapshot();
+        const current = previous.characters.find(entry => entry.id === id);
+        if (!current || current.packageVersion !== 1) return characterDirectoryStatus(id);
+        const currentRoot = path.join('characters', current.directory);
+        const legacyRoot = path.join('characters', id);
+        const token = `${Date.now()}-${crypto.randomUUID()}`;
+        const operations = [];
+        if (current.directory !== id) {
+            if (fs.existsSync(directories.safePath(legacyRoot))) {
+                operations.push({ path: legacyRoot, moveTo: path.join('trash', token, legacyRoot) });
+            }
+            operations.push({
+                path: currentRoot,
+                moveTo: legacyRoot,
+                destinationClearedByTransaction: true,
+            });
+        }
+        for (const chat of current.chats) {
+            if (chat.directory === chat.id) continue;
+            const source = path.join(legacyRoot, 'chats', chat.directory);
+            if (!fs.existsSync(directories.safePath(path.join(currentRoot, 'chats', chat.directory)))) continue;
+            operations.push({
+                path: source,
+                moveTo: path.join(legacyRoot, 'chats', chat.id),
+                sourceCreatedByTransaction: current.directory !== id,
+                destinationClearedByTransaction: true,
+            });
+        }
+        for (const name of ['package.json', 'package.json.sha256']) {
+            if (!fs.existsSync(directories.safePath(path.join(currentRoot, name)))) continue;
+            operations.push({
+                path: path.join(legacyRoot, name),
+                moveTo: path.join('trash', token, 'v3-package', name),
+                sourceCreatedByTransaction: current.directory !== id,
+            });
+        }
+        const next = validateDirectoryMapping({
+            schemaVersion: 1,
+            characters: previous.characters.filter(entry => entry.id !== id),
+        });
+        operations.push({ path: DIRECTORY_INDEX, data: jsonBytes(next) });
+        try {
+            commitTransaction(dataRoot, operations, options.directoryMappingTransactionOptions || {});
+        } catch (error) {
+            recoverTransactions(dataRoot);
+            resetCharacterDirectoryMappings(dataRoot);
+            throw error;
+        }
+        resetCharacterDirectoryMappings(dataRoot);
+        directories.refresh();
+        return characterDirectoryStatus(id);
+    }
+
+    function maintainMappedDirectories(characterIds) {
+        if (options.maintainDirectoryNames !== true) return;
+        directories.refresh();
+        const active = new Set(directories.snapshot().characters.filter(entry => entry.packageVersion === 1).map(entry => entry.id));
+        for (const id of characterIds) if (active.has(id)) refreshCharacterDirectoryMapping(id);
+    }
+
     function importLegacyDatabase(database, importOptions = {}) {
         if (!database || typeof database !== 'object') throw new Error('Legacy database must be an object');
         const mode = importOptions.mode || 'merge';
@@ -674,6 +748,25 @@ function createUserDataRepository(options = {}) {
         const sidebarCharacters = mode === 'merge' ? mergeById(previousIndex.characters, characters) : characters;
         const sidebar = { schemaVersion: 1, updatedAt: Date.now(), characters: sidebarCharacters, collections };
         operations.push({ path: 'index/sidebar.json', data: jsonBytes(sidebar) });
+        // Ordinary saves permanently delete explicitly removed characters. Keep
+        // backup/import replacement recovery separate from user deletion.
+        const deletedAssetCandidates = new Set();
+        if (mode === 'sync') {
+            const retainedIds = new Set(characters.map(character => character.id));
+            for (const previous of previousIndex.characters) {
+                if (retainedIds.has(previous.id)) continue;
+                collectNestedAssetReferences(loadCharacter(previous.id), deletedAssetCandidates);
+                for (const chat of previous.chats || []) {
+                    collectNestedAssetReferences(loadChat(previous.id, chat.id), deletedAssetCandidates);
+                }
+                const current = directories.characterDirectory(previous.id);
+                const legacy = path.join('characters', previous.id);
+                for (const relativePath of new Set([current, legacy])) {
+                    directories.safePath(relativePath);
+                    operations.push({ path: relativePath, deleteCharacter: true });
+                }
+            }
+        }
         const transaction = commitTransaction(dataRoot, operations);
 
         if (mode !== 'merge') {
@@ -688,6 +781,7 @@ function createUserDataRepository(options = {}) {
             for (const previousCharacter of previousIndex.characters) {
                 const retained = retainedCharacters.get(previousCharacter.id);
                 if (!retained) {
+                    if (mode === 'sync') continue;
                     const relativePath = directories.characterDirectory(previousCharacter.id);
                     if (fs.existsSync(resolveInside(dataRoot, relativePath))) moveToTrash(dataRoot, relativePath);
                     continue;
@@ -699,7 +793,8 @@ function createUserDataRepository(options = {}) {
                 }
             }
         }
-        return { mode, characters: characters.length, files: operations.length, transaction };
+        maintainMappedDirectories(characters.map(character => character.id));
+        return { mode, characters: characters.length, files: operations.length, transaction, deletedAssetCandidates: [...deletedAssetCandidates] };
     }
 
     function syncLegacyCollection(legacyName, values) {
@@ -845,7 +940,9 @@ function createUserDataRepository(options = {}) {
             };
         }
         operations.push({ path: 'index/sidebar.json', data: jsonBytes(sidebar) });
-        return { files: operations.length, transaction: commitTransaction(dataRoot, operations) };
+        const transaction = commitTransaction(dataRoot, operations);
+        maintainMappedDirectories([...dirtyCharacters].map(rawId => byId.get(rawId).id));
+        return { files: operations.length, transaction };
     }
 
     function loadCollection(directory, ids, options = {}) {
@@ -916,6 +1013,7 @@ function createUserDataRepository(options = {}) {
         getProjectionRevision,
         importLegacyDatabase,
         inspectCharacterPackageOwnership: characterId => inspectCharacterPackageOwnership(exportLegacyDatabase(), stableId(characterId, 'character')),
+        characterDirectoryStatus,
         loadAssistantDraft,
         loadCharacter,
         loadChat,
@@ -928,6 +1026,7 @@ function createUserDataRepository(options = {}) {
         saveAssistantDraft,
         publishCharacterDirectoryMapping,
         refreshCharacterDirectoryMapping,
+        rollbackCharacterDirectoryMapping,
         syncLegacyPresetState,
         syncLegacyChatState,
         syncLegacyCollection,

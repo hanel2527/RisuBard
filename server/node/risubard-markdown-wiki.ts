@@ -181,8 +181,8 @@ function normalizeMarkdown(value: string): { title: string; content: string } {
         .replace(/^<Thoughts>[\s\S]*?<\/Thoughts>\s*/i, '')
         .replace(/^---\s*\r?\n[\s\S]*?\r?\n---\s*/i, '')
         .trim()
-    if (content.length === 0 || content.length > 12_000) {
-        throw new Error('Markdown memory must contain 1-12000 characters')
+    if (content.length === 0) {
+        throw new Error('Markdown memory must not be empty')
     }
     if (/^#\s+\S+/m.test(content)) {
         content = content.replace(/^(#{1,5})(?=\s)/gm, '$1#')
