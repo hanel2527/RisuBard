@@ -28,7 +28,10 @@ vi.mock('src/ts/globalApi.svelte', () => ({
     requestImmediateSave: vi.fn(),
 }))
 vi.mock('src/ts/risubard/memoryWiki', () => ({ retractWikiEventsBySourceMessages: vi.fn() }))
-vi.mock('src/ts/risubard/memoryEvents', () => ({ announceRisuBardMemoryUpdated: vi.fn() }))
+vi.mock('src/ts/risubard/memoryEvents', async importOriginal => ({
+    ...await importOriginal<typeof import('src/ts/risubard/memoryEvents')>(),
+    announceRisuBardMemoryUpdated: vi.fn(),
+}))
 vi.mock('src/ts/risubard/memoryWikiFork', () => ({ completeMemoryWikiFork: vi.fn(), forkMemoryWiki: vi.fn() }))
 vi.mock('src/ts/gui/colorscheme', () => ({ ColorSchemeTypeStore: writable('dark') }))
 vi.mock('src/ts/model/modellist', () => ({ getModelInfo: vi.fn(() => null) }))

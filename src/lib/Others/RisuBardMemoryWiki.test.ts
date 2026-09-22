@@ -5,6 +5,7 @@ import { mount, tick, unmount } from 'svelte'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { completeMemoryWikiFork } from 'src/ts/risubard/memoryWikiFork'
+import { startGeneration, endGeneration } from 'src/ts/process/generationState'
 
 const mocks = vi.hoisted(() => ({
     loadNarrativeMemoryWiki: vi.fn(),
@@ -575,6 +576,18 @@ describe('RisuBardMemoryWiki', () => {
         find.dispatchEvent(new Event('input', { bubbles: true }))
         replacement.value = '길버트'
         replacement.dispatchEvent(new Event('input', { bubbles: true }))
+        await tick()
+        startGeneration('other-chat', 'find-replace-test')
+        try {
+            await tick()
+            document.querySelector<HTMLButtonElement>('[data-find-replace-run]')!.click()
+            await vi.waitFor(() => expect(document.querySelector('[data-find-replace] [role="alert"]')?.textContent).toContain('현재 작업이 끝난 뒤'))
+            expect(mocks.replaceWikiText).not.toHaveBeenCalled()
+            expect(mocks.saveChatToServer).not.toHaveBeenCalled()
+            expect(mocks.db.characters[0].chats[0].message[0].data).toBe('길버드가 왔다.')
+        } finally {
+            endGeneration('other-chat')
+        }
         await tick()
         document.querySelector<HTMLButtonElement>(
             '[data-find-replace-run]'

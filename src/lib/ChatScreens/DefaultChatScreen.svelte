@@ -39,7 +39,7 @@
         stopCurrentWikiReboot,
         sendChat,
     } from "../../ts/process/index.svelte";
-    import { abortGeneration, chatGenKey, endGeneration, generationStates, registerAbort, isAnyGenerating } from "../../ts/process/generationState";
+    import { abortGeneration, chatGenKey, endGeneration, generationStates, registerAbort } from "../../ts/process/generationState";
     import { claimPendingSend, clearPendingSend, markResumable, resumableSends, takeResumable } from "../../ts/process/request/pendingSends";
     import { ensureCurrentChatReady } from "../../ts/storage/chatStorage";
     import { sleep } from "../../ts/util";
@@ -1364,7 +1364,7 @@ import { isMobile } from 'src/ts/platform'
                             turnCount={targetPageTurnNavigation.turnCount}
                             onJump={jumpToPageTurn}
                             onFindReplace={() => findReplaceOpen = true}
-                            findReplaceDisabled={$isWikiGenerating || $isAnyGenerating || !!currentChatSlot?.isStreaming || !!currentChatSlot?.risuBardWikiReboot}
+                            findReplaceDisabled={!currentChatReady || !currentChatSlot?.id}
                         />
                     </div>
                 {/if}
