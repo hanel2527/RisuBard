@@ -99,6 +99,13 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
         keywords: ['Bard-chan', 'reranker', 'auxiliary model', '바드쨩', '재순위', '보조 모델'],
     },
     {
+        id: 'risubard.common.embedding',
+        type: 'custom',
+        componentId: 'WikiEmbeddingSettings',
+        fallbackLabel: 'Semantic search embedding',
+        keywords: ['embedding', 'semantic search', 'Hypa', 'memory', '임베딩', '의미 검색', '하이파', '기억'],
+    },
+    {
         id: 'risubard.chat.bardChanModel',
         type: 'select',
         labelKey: 'risuBardBardChanModelMode',

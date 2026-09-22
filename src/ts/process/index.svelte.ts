@@ -94,6 +94,8 @@ import {
     resolveHistoricalSourceMatchesById,
 } from '../risubard/historicalSourceRecall';
 import { rerankWithBardChan } from '../risubard/bardChanReranker';
+import { activateWikiEmbeddings, wikiEmbeddingRuntime } from '../risubard/wikiEmbeddingService';
+import { mergeWikiSemanticMatches, type WikiSemanticMatch } from '../risubard/wikiEmbeddingIndex';
 import { normalizeArcPlotterRuntimeSettings } from '../risubard/arcPlotterSettings';
 import {
     canonicalTurnNeedsRetry,
@@ -1599,10 +1601,20 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                 const inquiryStartedAt = performance.now()
                 try {
                     const inquirySettings = resolvedRisuBardSettings(currentChat)
-                    const loadInquiry = (semanticMatches?: readonly {
-                        documentId: string
-                        score: number
-                    }[]) => loadNarrativeInquiry({
+                    activateWikiEmbeddings(currentChar.chaId, narrativeSessionChatId, DBState.db)
+                    const embedded = await wikiEmbeddingRuntime.search(
+                        currentInput,
+                        buildBoundedNarrativeInquiryFallback(projectRecentMemoryMessages(
+                            currentChat.message.slice(currentChat.message.findLastIndex(
+                                message => message.disabled === 'allBefore',
+                            ) + 1), 4, undefined, undefined,
+                            !inquirySettings.risuBardResponseExcludeUserMessages,
+                            inquirySettings.risuBardIgnoreOocTurns,
+                        )),
+                    )
+                    // Refresh does not delay this response; inquiry verifies old ranges against live hashes.
+                    wikiEmbeddingRuntime.refresh()
+                    const loadInquiry = (semanticMatches?: readonly WikiSemanticMatch[]) => loadNarrativeInquiry({
                         characterId: currentChar.chaId,
                         chatId: narrativeSessionChatId,
                         currentInput,
@@ -1633,12 +1645,15 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                         }),
                         sourceLimit:
                             inquirySettings.risuBardHistoricalSourceMatchLimit,
-                        resolveSourceMatches: (messageIds) =>
+                        resolveSourceMatches: (messageIds, evidenceRequests) =>
                             resolveHistoricalSourceMatchesById({
                                 ignoreOocTurns: inquirySettings.risuBardIgnoreOocTurns,
                                 messageIds,
                                 messages: currentChat.message,
                                 currentInput,
+                                queryByMessageId: Object.fromEntries(evidenceRequests
+                                    .filter(request => request.documentId && embedded.evidenceHints[request.documentId])
+                                    .map(request => [request.messageId, embedded.evidenceHints[request.documentId!]])),
                                 excludeRecentMessages:
                                     normalizeNarrativeWorkingMessageLimit(
                                         inquirySettings.risuBardResponseMessageCount
@@ -1649,7 +1664,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                         timeoutMs: inquirySettings.risuBardInquiryTimeoutMs,
                         ...(semanticMatches ? { semanticMatches } : {}),
                     })
-                    const initialInquiry = await loadInquiry()
+                    const initialInquiry = await loadInquiry(embedded.matches)
                     const semanticMatches = await rerankWithBardChan({
                         enabled: inquirySettings.risuBardBardChanEnabled,
                         modelMode: inquirySettings.risuBardBardChanModelMode,
@@ -1660,7 +1675,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                             requestChatData(request, mode),
                     })
                     const rerankedInquiry = semanticMatches.length > 0
-                        ? await loadInquiry(semanticMatches)
+                        ? await loadInquiry(mergeWikiSemanticMatches(embedded.matches, semanticMatches))
                         : undefined
                     const inquiry = rerankedInquiry
                         ? {

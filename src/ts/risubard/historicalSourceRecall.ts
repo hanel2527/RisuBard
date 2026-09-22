@@ -64,6 +64,7 @@ export function resolveHistoricalSourceMatchesById(input: {
     messages: readonly HistoricalSourceMessage[]
     ignoreOocTurns?: boolean
     currentInput?: string
+    queryByMessageId?: Readonly<Record<string, string>>
     excludeRecentMessages?: number
 }): HistoricalSourceMatch[] {
     const requested = [...new Set(input.messageIds)].slice(0, MAX_SOURCE_MATCHES)
@@ -105,11 +106,9 @@ export function resolveHistoricalSourceMatchesById(input: {
             role: found.message.role === 'user'
                 ? 'user' as const
                 : 'assistant' as const,
-            content: centeredExcerpt(
-                content,
-                anchor,
-                MAX_SOURCE_EXCERPT_CHARACTERS
-            ),
+            content: input.queryByMessageId?.[messageId]?.trim()
+                ? semanticEvidenceExcerpt(content, input.queryByMessageId[messageId], MAX_SOURCE_EXCERPT_CHARACTERS)
+                : centeredExcerpt(content, anchor, MAX_SOURCE_EXCERPT_CHARACTERS),
             score: 1_000,
             occurredAt: found.occurredAt,
         }]
@@ -139,6 +138,34 @@ function queryTerms(value: string): string[] {
         .map(normalizedQueryTerm)
         .filter((term) => term.length > 1 && !QUERY_STOPWORDS.has(term)))]
         .slice(0, 32)
+}
+
+function semanticEvidenceExcerpt(content: string, query: string, maximum: number): string {
+    if (content.length <= maximum) return content.trim()
+    const terms = queryTerms(query.slice(0, 4096))
+    if (!terms.length) return centeredExcerpt(content, '', maximum)
+    const width = maximum - 2
+    const step = Math.floor(width / 2)
+    const windows: Array<{ start: number; hits: string[] }> = []
+    const frequencies = new Map<string, number>()
+    for (let start = 0; start < content.length; start += step) {
+        const text = normalized(content.slice(start, start + width))
+        const hits = terms.filter(term => text.includes(term))
+        windows.push({ start, hits })
+        for (const term of hits) frequencies.set(term, (frequencies.get(term) ?? 0) + 1)
+        if (start + width >= content.length) break
+    }
+    // Distinctive term coverage beats an early repeated title or generic mention.
+    let best = windows[0]
+    let bestScore = -1
+    for (const window of windows) {
+        const score = window.hits.reduce((total, term) => total
+            + Math.log(1 + windows.length / (frequencies.get(term) ?? 1)), 0)
+        if (score > bestScore) { best = window; bestScore = score }
+    }
+    const leading = best.start > 0 ? '…' : ''
+    const trailing = best.start + width < content.length ? '…' : ''
+    return `${leading}${content.slice(best.start, best.start + width)}${trailing}`
 }
 
 function centeredExcerpt(

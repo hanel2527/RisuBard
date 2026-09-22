@@ -56,6 +56,31 @@ describe('narrative context prompt composition', () => {
 })
 
 describe('actual narrative inquiry prompt', () => {
+    it('re-excerpts an already supplied source using the verified semantic event identity', async () => {
+        const request = { messageId: 'm', eventTitle: 'Archive', documentId: 'event' }
+        const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+            mode: 'v2-current', graphRevision: 0, indexRevision: 0, cacheStatus: 'current',
+            sources: [], evidenceRequests: [request],
+            metrics: { candidateCount: 1, inspectedNodeCount: 1, inspectedEdgeCount: 0,
+                selectedNodeCount: 0, selectedTokens: 0, hopCount: 0, auxiliaryModelCalls: 0 },
+        }))) as unknown as typeof fetch
+        const resolve = vi.fn(async () => [{
+            messageId: 'm', role: 'assistant' as const, occurredAt: 1, score: 1000,
+            content: 'The exact remembered sentence at the end.',
+        }])
+        await loadNarrativeInquiry({
+            characterId: 'c', chatId: 'chat', currentInput: 'What happened?',
+            semanticMatches: [{ documentId: 'event', score: 0.9, contentHash: 'hash', start: 12000, end: 12500 }],
+            sourceMatches: [{ messageId: 'm', role: 'assistant', occurredAt: 1, score: 2, content: 'Misleading beginning.' }],
+            resolveSourceMatches: resolve, fetchImpl, createAuth: async () => 'auth',
+        })
+        expect(resolve).toHaveBeenCalledWith(['m'], [request])
+        expect(fetchImpl).toHaveBeenCalledTimes(2)
+        const body = JSON.parse((fetchImpl as any).mock.calls[1][1].body)
+        expect(body.sourceMatches[0].content).toContain('exact remembered sentence')
+        expect(body.semanticMatches[0]).toMatchObject({ contentHash: 'hash', start: 12000, end: 12500 })
+    })
+
     it('assigns one stable v2 session ID to an idless legacy chat', () => {
         const chat: { id?: string } = {}
         const createId = vi.fn(() => 'generated-chat-id')

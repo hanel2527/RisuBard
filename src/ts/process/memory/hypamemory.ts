@@ -8,6 +8,18 @@ import { isLocalNetworkUrl } from "src/ts/network/localNetwork";
 
 export type HypaModel = 'custom'|'ada'|'openai3small'|'openai3large'|'MiniLM'|'MiniLMGPU'|'nomic'|'nomicGPU'|'bgeSmallEn'|'bgeSmallEnGPU'|'bgem3'|'bgem3GPU'|'multiMiniLM'|'multiMiniLMGPU'|'bgeM3Ko'|'bgeM3KoGPU'|'voyageContext3'
 
+/**
+ * Optional immutable credentials for callers that must not share Hypa's global
+ * embedding configuration. Omitted fields retain the historical DB fallback.
+ */
+export interface HypaEmbeddingConfig {
+    customEmbeddingUrl?: string
+    customEmbeddingKey?: string
+    customEmbeddingModel?: string
+    openAIKey?: string
+    voyageApiKey?: string
+}
+
 // In a typical environment, bge-m3 is a heavy model.
 // If your GPU can't handle this model, you'll see errror below.
 // Failed to execute 'mapAsync' on 'GPUBuffer': [Device] is lost
@@ -71,8 +83,9 @@ export class HypaProcesser{
     vectors:memoryVector[]
     model:HypaModel
     customEmbeddingUrl:string
+    private readonly embeddingConfig: HypaEmbeddingConfig
 
-    constructor(model:HypaModel|'auto' = 'auto',customEmbeddingUrl?:string){
+    constructor(model:HypaModel|'auto' = 'auto',customEmbeddingUrl?:string, config: HypaEmbeddingConfig = {}){
         this.vectors = []
         const db = getDatabase()
         if(model === 'auto'){
@@ -81,10 +94,13 @@ export class HypaProcesser{
         else{
             this.model = model
         }
-        this.customEmbeddingUrl = customEmbeddingUrl?.trim() || db.hypaCustomSettings?.url?.trim() || ""
+        this.embeddingConfig = { ...config }
+        this.customEmbeddingUrl = config.customEmbeddingUrl !== undefined
+            ? config.customEmbeddingUrl.trim()
+            : (customEmbeddingUrl?.trim() || db.hypaCustomSettings?.url?.trim() || "")
     }
 
-    async embedDocuments(texts: string[]): Promise<VectorArray[]> {
+    async embedDocuments(texts: string[], abortSignal?: AbortSignal): Promise<VectorArray[]> {
         const subPrompts = chunkArray(texts,50);
     
         const embeddings: VectorArray[] = [];
@@ -92,7 +108,7 @@ export class HypaProcesser{
         for (let i = 0; i < subPrompts.length; i += 1) {
           const input = subPrompts[i];
     
-          const data = await this.getEmbeds(input, 'document')
+          const data = await this.getEmbeds(input, 'document', abortSignal)
 
           embeddings.push(...data);
         }
@@ -101,20 +117,20 @@ export class HypaProcesser{
     }
     
     
-    async getEmbeds(input:string[]|string, inputType:'query'|'document' = 'query'):Promise<VectorArray[]> {
+    async getEmbeds(input:string[]|string, inputType:'query'|'document' = 'query', abortSignal?: AbortSignal):Promise<VectorArray[]> {
         if(isContextModel(this.model)){
-            const provider = getContextProvider(this.model)
+            const provider = getContextProvider(this.model, this.embeddingConfig.voyageApiKey)
             const inputs:string[] = Array.isArray(input) ? input : [input]
             if(inputType === 'query'){
-                return await provider.embedQueries(inputs)
+                return await provider.embedQueries(inputs, abortSignal)
             }
             const groups = inputs.map(s => [s])
-            const results = await provider.embedDocumentGroups(groups)
+            const results = await provider.embedDocumentGroups(groups, abortSignal)
             return results.map(group => group[0])
         }
         if(Object.keys(localModels.models).includes(this.model)){
             const inputs:string[] = Array.isArray(input) ? input : [input]
-            let results:Float32Array[] = await runEmbedding(inputs, localModels.models[this.model], localModels.gpuModels.includes(this.model) ? 'webgpu' : 'wasm')
+            let results:Float32Array[] = await runEmbedding(inputs, localModels.models[this.model], localModels.gpuModels.includes(this.model) ? 'webgpu' : 'wasm', abortSignal)
             return results
         }
         let gf = null;
@@ -128,16 +144,16 @@ export class HypaProcesser{
             const db = getDatabase()
             const fetchArgs = {
                 headers: {
-                    ...(db.hypaCustomSettings?.key?.trim() ? {"Authorization": "Bearer " + db.hypaCustomSettings.key.trim()} : {})
+                    ...((this.embeddingConfig.customEmbeddingKey !== undefined ? this.embeddingConfig.customEmbeddingKey.trim() : db.hypaCustomSettings?.key?.trim()) ? {"Authorization": "Bearer " + (this.embeddingConfig.customEmbeddingKey !== undefined ? this.embeddingConfig.customEmbeddingKey.trim() : db.hypaCustomSettings?.key?.trim())} : {})
                 },
                 body: {
                     "input": input,
-                    ...(db.hypaCustomSettings?.model?.trim() ? {"model": db.hypaCustomSettings.model.trim()} : {})
+                    ...((this.embeddingConfig.customEmbeddingModel !== undefined ? this.embeddingConfig.customEmbeddingModel.trim() : db.hypaCustomSettings?.model?.trim()) ? {"model": this.embeddingConfig.customEmbeddingModel !== undefined ? this.embeddingConfig.customEmbeddingModel.trim() : db.hypaCustomSettings?.model?.trim()} : {})
                 }
             };
  
             const localNetworkOpts = isLocalNetworkUrl(replaceUrl.toString()) ? { networkRoute: 'local_network' as const } : {};
-            gf = await globalFetch(replaceUrl.toString(), { ...fetchArgs, ...localNetworkOpts, logCategory: 'embedding', logSource: 'memory' })
+            gf = await globalFetch(replaceUrl.toString(), { ...fetchArgs, ...localNetworkOpts, logCategory: 'embedding', logSource: 'memory', abortSignal })
         }
         if(this.model === 'ada' || this.model === 'openai3small' || this.model === 'openai3large'){
             const db = getDatabase()
@@ -150,8 +166,9 @@ export class HypaProcesser{
             gf = await globalFetch("https://api.openai.com/v1/embeddings", {
                 logCategory: 'embedding',
                 logSource: 'memory',
+                abortSignal,
                 headers: {
-                    "Authorization": "Bearer " + (this.oaikey?.trim() || db.supaMemoryKey?.trim())
+                    "Authorization": "Bearer " + (this.embeddingConfig.openAIKey !== undefined ? this.embeddingConfig.openAIKey.trim() : (this.oaikey?.trim() || db.supaMemoryKey?.trim()))
                 },
                 body: {
                     "input": input,

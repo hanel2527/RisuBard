@@ -14,6 +14,7 @@
     import SliderInput from "src/lib/UI/GUI/SliderInput.svelte";
     import { getCharImage } from "src/ts/characters";
     import Accordion from "src/lib/UI/Accordion.svelte";
+    import SharedEmbeddingSettings from './SharedEmbeddingSettings.svelte';
     import CheckInput from "src/lib/UI/GUI/CheckInput.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
     import { untrack } from "svelte";
@@ -1211,47 +1212,7 @@
             <div class="mb-8"></div>
         {/if}
 
-        <span class="text-textcolor">{language.embedding} <Help key="embedding"/></span>
-        <SelectInput className="mt-2 mb-4" bind:value={DBState.db.hypaModel}>
-            {#if 'gpu' in navigator}
-                <OptionInput value="MiniLMGPU">MiniLM L6 v2 (GPU)</OptionInput>
-                <OptionInput value="nomicGPU">Nomic Embed Text v1.5 (GPU)</OptionInput>
-                <OptionInput value="bgeSmallEnGPU">BGE Small English (GPU)</OptionInput>
-                <OptionInput value="bgem3GPU">BGE Medium 3 (GPU)</OptionInput>
-                <OptionInput value="multiMiniLMGPU">Multilingual MiniLM L12 v2 (GPU)</OptionInput>
-                <OptionInput value="bgeM3KoGPU">BGE Medium 3 Korean (GPU)</OptionInput>
-            {/if}
-            <OptionInput value="MiniLM">MiniLM L6 v2 (CPU)</OptionInput>
-            <OptionInput value="nomic">Nomic Embed Text v1.5 (CPU)</OptionInput>
-            <OptionInput value="bgeSmallEn">BGE Small English (CPU)</OptionInput>
-            <OptionInput value="bgem3">BGE Medium 3 (CPU)</OptionInput>
-            <OptionInput value="multiMiniLM">Multilingual MiniLM L12 v2 (CPU)</OptionInput>
-            <OptionInput value="bgeM3Ko">BGE Medium 3 Korean (CPU)</OptionInput>
-            <OptionInput value="openai3small">OpenAI text-embedding-3-small</OptionInput>
-            <OptionInput value="openai3large">OpenAI text-embedding-3-large</OptionInput>
-            <OptionInput value="ada">OpenAI Ada</OptionInput>
-            <OptionInput value="custom">Custom (OpenAI-compatible)</OptionInput>
-            <OptionInput value="voyageContext3">Voyage Context 3</OptionInput>
-        </SelectInput>
-
-        {#if DBState.db.hypaModel === 'openai3small' || DBState.db.hypaModel === 'openai3large' || DBState.db.hypaModel === 'ada'}
-            <span class="text-textcolor">OpenAI API Key <Help key="embeddingOpenAIKey"/></span>
-            <TextInput className="mt-2" marginBottom bind:value={DBState.db.supaMemoryKey}/>
-        {/if}
-
-        {#if DBState.db.hypaModel === 'custom'}
-            <span class="text-textcolor">URL <Help key="embeddingCustomURL"/></span>
-            <TextInput className="mt-2" marginBottom bind:value={DBState.db.hypaCustomSettings.url}/>
-            <span class="text-textcolor">Key/Password <Help key="embeddingCustomKey"/></span>
-            <TextInput className="mt-2" marginBottom bind:value={DBState.db.hypaCustomSettings.key}/>
-            <span class="text-textcolor">Request Model <Help key="embeddingCustomModel"/></span>
-            <TextInput className="mt-2" marginBottom bind:value={DBState.db.hypaCustomSettings.model}/>
-        {/if}
-
-        {#if DBState.db.hypaModel === 'voyageContext3'}
-            <span class="text-textcolor">Voyage API Key <Help key="embeddingVoyageKey"/></span>
-            <TextInput className="mt-2" marginBottom hideText={DBState.db.hideApiKey} bind:value={DBState.db.voyageApiKey}/>
-        {/if}
+        <SharedEmbeddingSettings />
 
     </Accordion>
 {/if}

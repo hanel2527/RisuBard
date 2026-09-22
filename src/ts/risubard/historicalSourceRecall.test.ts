@@ -5,6 +5,18 @@ import {
 } from './historicalSourceRecall'
 
 describe('historical source recall', () => {
+    test('uses per-message semantic hints to find late evidence past an early generic title match', () => {
+        const tail = 'The secret ledger was delivered to the enemy. The courier wore a silver ring.'
+        const data = 'Archive discussed weather. ' + 'Ordinary weather. '.repeat(1000) + tail
+        const input = { messageIds: ['old'], currentInput: 'Archive betrayal', excludeRecentMessages: 1,
+            messages: [{ role: 'char', chatId: 'old', data }, { role: 'char', chatId: 'recent', data: 'Now' }] }
+        expect(resolveHistoricalSourceMatchesById(input)[0].content).not.toContain('silver ring')
+        const matches = resolveHistoricalSourceMatchesById({ ...input,
+            queryByMessageId: { old: 'Archive\nArchive\nThe secret ledger was delivered to the enemy.' } })
+        expect(matches[0].content).toContain('silver ring')
+        expect(matches[0].content.length).toBeLessThanOrEqual(1200)
+    })
+
     test('recovers a small early detail from a one-thousand-message chat', () => {
         const currentInput = '샘이 프로도에게 샤이어를 떠나기 전 마지막으로 마신 에일의 맛을 기억하느냐고 묻는다.'
         const messages = Array.from({ length: 1_000 }, (_, index) => ({

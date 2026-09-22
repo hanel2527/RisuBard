@@ -21,6 +21,39 @@ function document(
 }
 
 describe('progressive Markdown inquiry', () => {
+    test('preserves enclosing qualifications around a semantic passage', () => {
+        const content = '## Archive\n\n### Disproven rumors\n\n#### Courier\n\nThe courier gave a secret ledger to the enemy.'
+        const doc = document({ id: 'rumor', title: 'Archive', type: 'event', relativePath: 'events/rumor.md', content })
+        const result = inquireMarkdownDocuments({ documents: [doc], currentInput: 'betrayal',
+            semanticMatches: [{ documentId: doc.id, score: 0.9, contentHash: doc.contentHash, start: content.indexOf('The courier'), end: content.length }] })
+        expect(result.sources[0].content).toContain('Disproven rumors')
+        expect(result.sources[0].content).toContain('#### Courier')
+    })
+
+    test('keeps current character state ahead of a semantic history passage', () => {
+        const history = 'Alice once lived in the northern fortress.'
+        const content = '## Alice\n\n### Current State\nAlice lives in the southern village.\n\n### Story History\n' + history.repeat(500)
+        const doc = document({ id: 'alice', title: 'Alice', type: 'character', relativePath: 'characters/alice.md', content })
+        const result = inquireMarkdownDocuments({ documents: [doc], currentInput: 'Where is Alice now?',
+            semanticMatches: [{ documentId: 'alice', score: 0.9, contentHash: doc.contentHash, start: content.indexOf(history), end: content.indexOf(history) + history.length }],
+            tokenBudget: { target: 512, events: 512, perSource: 256, maximum: 1024 } })
+        expect(result.sources[0]?.content).toContain('southern village')
+        expect(result.sources[0]?.content).not.toContain('northern fortress')
+    })
+
+    test('recovers verified semantic passage beyond lexical window and routes evidence', () => {
+        const tail = 'The secret ledger was delivered to the enemy.'
+        const content = '# Archive\n\n' + 'Unrelated description. '.repeat(1200) + '\n\n' + tail
+        const doc = document({ id: 'ledger', type: 'event', title: 'Ledger', relativePath: 'events/ledger.md', content, sourceMessageIds: ['original'] })
+        const match = { documentId: doc.id, score: 0.9, contentHash: doc.contentHash, start: content.indexOf(tail), end: content.length }
+        const input = { documents: [doc], currentInput: 'betrayal', semanticMatches: [match], tokenBudget: { target: 512, events: 512, perSource: 256, maximum: 1024 } }
+        const result = inquireMarkdownDocuments(input)
+        expect(result.sources[0]?.content).toContain(tail)
+        expect(result.evidenceRequests).toEqual([{ messageId: 'original', eventTitle: 'Ledger', documentId: 'ledger' }])
+        expect(inquireMarkdownDocuments({ ...input, semanticMatches: [{ ...match, contentHash: 'stale' }] }).sources).toEqual([])
+        expect(inquireMarkdownDocuments({ ...input, semanticMatches: [{ ...match, end: content.length + 1 }] }).sources).toEqual([])
+    })
+
     test('preserves long routed historical evidence within the configured token budget', () => {
         const content = 'archive '.repeat(2000).trim()
         const result = inquireMarkdownDocuments({
@@ -961,6 +994,17 @@ describe('progressive Markdown inquiry', () => {
             currentInput: '계속 진행한다.',
             documents,
         })).toThrow('Required wiki context exceeds token budget')
+    })
+
+    test('does not replace mandatory context with one semantically matched passage', () => {
+        const content = '## Rules\n\n### Binding rules\nMagic always requires a spoken oath.\n\n### Anecdote\nA merchant sold a blue ribbon.'
+        const required = document({ id: 'rules', title: 'Rules', type: 'concept', relativePath: 'concepts/rules.md', content, contextMode: 'always' })
+        const result = inquireMarkdownDocuments({
+            currentInput: 'The merchant smiles.', documents: [required],
+            semanticMatches: [{ documentId: required.id, contentHash: required.contentHash, score: 0.9,
+                start: content.indexOf('A merchant'), end: content.length }],
+        })
+        expect(result.sources[0].content).toContain('Magic always requires a spoken oath.')
     })
 
     test('uses request budgets without changing retrieval relevance', () => {

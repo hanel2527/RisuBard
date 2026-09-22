@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { setContext } from 'svelte';
     import type { SettingItem, SettingContext } from 'src/ts/setting/types';
     import type { LLMModel } from 'src/ts/model/types';
     import { DBState } from 'src/ts/stores.svelte';
@@ -17,9 +18,11 @@
          * the ModelPreset-editor field grammar (label row + full-width control).
          * Default 'row' so every option page inherits the shared visual grammar. */
         layout?: 'stacked' | 'row' | 'block';
+        compact?: boolean;
     }
 
-    let { items, modelInfo, subModelInfo, layout = 'row' }: Props = $props();
+    let { items, modelInfo, subModelInfo, layout = 'row', compact = false }: Props = $props();
+    setContext('settings-compact-rows', () => compact);
 
     // Derive modelInfo if not provided
     let effectiveModelInfo = $derived(modelInfo ?? getModelInfo(DBState.db.aiModel));

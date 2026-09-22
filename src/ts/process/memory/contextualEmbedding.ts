@@ -4,8 +4,8 @@ import { contextHash, type VectorArray } from "./hypamemory";
 
 export interface ContextualEmbeddingProvider {
   readonly modelId: string;
-  embedDocumentGroups(groups: string[][]): Promise<VectorArray[][]>;
-  embedQueries(queries: string[]): Promise<VectorArray[]>;
+  embedDocumentGroups(groups: string[][], abortSignal?: AbortSignal): Promise<VectorArray[][]>;
+  embedQueries(queries: string[], abortSignal?: AbortSignal): Promise<VectorArray[]>;
   getCacheKeySuffix(contextTexts?: string[]): string;
 }
 
@@ -13,10 +13,10 @@ export function isContextModel(model: string): boolean {
   return model === 'voyageContext3';
 }
 
-export function getContextProvider(model: string): ContextualEmbeddingProvider | null {
+export function getContextProvider(model: string, voyageApiKey?: string): ContextualEmbeddingProvider | null {
   switch (model) {
     case 'voyageContext3':
-      return new VoyageContext3Provider();
+      return new VoyageContext3Provider(voyageApiKey);
     default:
       return null;
   }
@@ -30,16 +30,19 @@ const MAX_INPUTS_PER_REQUEST = 1000;
 class VoyageContext3Provider implements ContextualEmbeddingProvider {
   readonly modelId = VOYAGE_MODEL;
 
+  constructor(private readonly configuredApiKey?: string) {}
+
   private getApiKey(): string {
-    const db = getDatabase();
-    const apiKey = db.voyageApiKey?.trim();
+    const apiKey = this.configuredApiKey !== undefined
+      ? this.configuredApiKey.trim()
+      : getDatabase().voyageApiKey?.trim();
     if (!apiKey) {
       throw new Error('Voyage Context 3 requires a Voyage API Key');
     }
     return apiKey;
   }
 
-  async embedDocumentGroups(groups: string[][]): Promise<VectorArray[][]> {
+  async embedDocumentGroups(groups: string[][], abortSignal?: AbortSignal): Promise<VectorArray[][]> {
     const apiKey = this.getApiKey();
     const batches = this.batchGroups(groups);
     const allResults: VectorArray[][] = new Array(groups.length);
@@ -49,6 +52,7 @@ class VoyageContext3Provider implements ContextualEmbeddingProvider {
       const response = await globalFetch(VOYAGE_API_URL, {
         logCategory: 'embedding',
         logSource: 'memory',
+        abortSignal,
         headers: {
           "Authorization": "Bearer " + apiKey,
           "Content-Type": "application/json"
@@ -77,11 +81,12 @@ class VoyageContext3Provider implements ContextualEmbeddingProvider {
     return allResults;
   }
 
-  async embedQueries(queries: string[]): Promise<VectorArray[]> {
+  async embedQueries(queries: string[], abortSignal?: AbortSignal): Promise<VectorArray[]> {
     const apiKey = this.getApiKey();
     const response = await globalFetch(VOYAGE_API_URL, {
       logCategory: 'embedding',
       logSource: 'memory',
+      abortSignal,
       headers: {
         "Authorization": "Bearer " + apiKey,
         "Content-Type": "application/json"

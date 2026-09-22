@@ -59,6 +59,10 @@ import {
 } from '../risubard/risuBardSettings';
 import { normalizeWikiRebootJob } from '../risubard/wikiReboot';
 import { normalizeWikiWritingLanguage } from '../risubard/wikiWritingLanguage';
+import {
+    normalizeRisuBardEmbeddingSettings,
+    type RisuBardEmbeddingSettings,
+} from '../risubard/wikiEmbeddingSettings';
 import { createTogglePresetBaseline, type TogglePresetBaseline } from './togglePresetBaseline';
 import type { CanonicalTurnReceipt } from '../risubard/memoryWiki';
 import {
@@ -564,6 +568,7 @@ export function setDatabase(data:Database){
     data.colorSchemeName ??= 'dark'
     data.NAIsettings.starter ??= ""
     data.hypaModel ??= 'MiniLM'
+    data.risuBardEmbeddingSettings = normalizeRisuBardEmbeddingSettings(data.risuBardEmbeddingSettings)
     data.mancerHeader ??= ''
     data.emotionProcesser ??= 'submodel'
     data.translatorType ??= 'google'
@@ -1674,6 +1679,7 @@ export interface Database{
     promptBlockOverlayApplicationPresets?: PromptBlockOverlayApplicationPreset[]
     forceProxyAsOpenAI?:boolean
     hypaModel:HypaModel
+    risuBardEmbeddingSettings: RisuBardEmbeddingSettings
     saveTime?:number
     mancerHeader:string
     emotionProcesser:'submodel'|'embedding',

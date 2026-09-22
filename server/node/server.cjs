@@ -69,6 +69,7 @@ const { decodeRisuSave, encodeRisuSaveLegacyBuffer, calculateHash, normalizeJSON
 const { spawn, execSync } = require('child_process');
 const os = require('os');
 const { Readable, Transform } = require('stream');
+const { createProxyAbortController } = require('./proxy-abort-controller.cjs');
 
 // Install process-level error handlers before any other init so early crashes get logged.
 installProcessHandlers();
@@ -2882,7 +2883,11 @@ const reverseProxyFunc = async (req, res, next) => {
         return;
     }
     const timeoutMs = getRequestTimeoutMs(req.headers['risu-timeout-ms']);
-    const timeout = createTimeoutController(timeoutMs);
+    const proxyAbort = createProxyAbortController({
+        request: req,
+        response: res,
+        timeoutMs
+    });
     let originalResponse;
     try {
     const header = req.headers['risu-header'] ? JSON.parse(decodeURIComponent(req.headers['risu-header'])) : req.headers;
@@ -2921,10 +2926,8 @@ const reverseProxyFunc = async (req, res, next) => {
             method: req.method,
             headers: header,
             body: requestBody,
-            signal: timeout.signal
+            signal: proxyAbort.signal
         });
-        // get response body as stream
-        const originalBody = originalResponse.body;
         // get response headers
         const head = new Headers(originalResponse.headers);
         head.delete('content-security-policy');
@@ -2945,11 +2948,16 @@ const reverseProxyFunc = async (req, res, next) => {
         // send response status to client
         res.status(originalResponse.status);
         // send response body to client
-        await pipeline(originalResponse.body, res);
+        const originalBody = Readable.fromWeb(originalResponse.body);
+        originalBody.once('error', proxyAbort.markUpstreamFailure);
+        await pipeline(originalBody, res, { signal: proxyAbort.signal });
 
 
     }
     catch (err) {
+        if (proxyAbort.clientDisconnected()) {
+            return;
+        }
         if (err?.name === 'AbortError') {
             if (!res.headersSent) {
                 res.status(504).send({
@@ -2969,7 +2977,7 @@ const reverseProxyFunc = async (req, res, next) => {
         next(err);
         return;
     } finally {
-        timeout.cleanup();
+        proxyAbort.cleanup();
     }
 }
 

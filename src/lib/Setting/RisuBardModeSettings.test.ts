@@ -133,7 +133,7 @@ describe('RisuBard mode settings', () => {
         expect(sectionIds.map((id) => settingsData.indexOf(`id: '${id}'`)))
             .toEqual([...sectionIds.map((id) => settingsData.indexOf(`id: '${id}'`))].sort((a, b) => a - b))
         expect(sectionIds.every((id) => settingsData.includes(`id: '${id}'`))).toBe(true)
-        expect(commonPage).toContain('risuBardArcPlotterSettingsItems')
+        expect(commonPage).toContain('risuBardCommonSettingsItems')
         expect(commonPage).not.toContain('layout="stacked"')
         expect(settingsData).toContain("componentId: 'RisuBardArcPlotterPresets'")
         expect(settingsData).toContain("helpKey: 'risuBardArcPlotter'")
@@ -150,7 +150,7 @@ describe('RisuBard mode settings', () => {
     })
 
     test('exposes one shared canonical writing style page', () => {
-        expect(commonPage).toContain('risuBardCommonSettingsAfterArcPlotterItems')
+        expect(commonPage).toContain('<SettingRenderer items={section.items}')
         expect(databaseSource).toContain('risuBardCanonicalWritingStyle?:')
         expect(databaseSource).toContain('risuBardCanonicalCustomStyle?: string')
         expect(settingsData).toContain("bindKey: 'risuBardCanonicalWritingStyle'")
