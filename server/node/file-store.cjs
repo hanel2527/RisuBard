@@ -85,6 +85,10 @@ function preserveBackup(target) {
     const backup = `${target}.bak`;
     const temp = `${backup}.${crypto.randomUUID()}.tmp`;
     copySynced(target, temp);
+    // A copied package may have a sidecar for the previous backup revision.
+    // Backups are historical bytes, not a checksummed canonical write. Never
+    // leave that old checksum attached to the replacement backup.
+    fs.rmSync(`${backup}.sha256`, { force: true });
     fs.renameSync(temp, backup);
     fsyncDirectory(path.dirname(backup));
 }

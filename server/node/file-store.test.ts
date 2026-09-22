@@ -42,6 +42,15 @@ describe('resolveDataRoot', () => {
 })
 
 describe('crash-safe canonical writes', () => {
+    it('does not attach a stale sidecar to a newly preserved backup', () => {
+        const root = tempRoot()
+        atomicWriteJson(root, 'settings/app.json', { revision: 1 })
+        atomicWriteJson(root, 'settings/app.json.bak', { revision: 0 })
+        atomicWriteJson(root, 'settings/app.json', { revision: 2 })
+        expect(fs.existsSync(path.join(root, 'settings/app.json.bak.sha256'))).toBe(false)
+        expect(readVerifiedJson(root, 'settings/app.json.bak')).toEqual({ revision: 1 })
+        expect(readVerifiedJson(root, 'settings/app.json')).toEqual({ revision: 2 })
+    })
     it('validates bytes, publishes atomically, and preserves the previous revision', () => {
         const root = tempRoot()
         atomicWriteFile(root, 'settings/app.json', Buffer.from('{"revision":1}'), {

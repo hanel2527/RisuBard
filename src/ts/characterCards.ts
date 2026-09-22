@@ -22,6 +22,7 @@ import { pinCharacterVaultQuickAccess } from './characterVault'
 import { normalizeFirstMessageStudioProject, type FirstMessageStudioProject } from './firstMessageStudio'
 import { normalizeBardLoreOwnerState, type BardLoreState } from './lorebook/bardLore'
 import { createUniqueDisplayName } from './displayName'
+import { yieldImportTask } from './importTaskYield'
 
 
 const EXTERNAL_HUB_URL = 'https://sv.risuai.xyz';
@@ -192,7 +193,7 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
     
 
     alertWait(language.characterImportReading)
-    await sleep(10)
+    await yieldImportTask()
     
     // const readed = PngChunk.read(img, ['chara'])?.['chara']
     let readedChara = ''
@@ -745,7 +746,7 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
                     msg: language.characterImportEmotions(i + 1, risuext.emotions.length),
                     submsg: ((i + 1) / risuext.emotions.length * 100).toFixed(0)
                 })
-                await sleep(10)
+                await yieldImportTask()
                 if(risuext.emotions[i][1].startsWith('__asset:')){
                     const key = risuext.emotions[i][1].replace('__asset:', '')
                     const imgp = assetDict[key]
@@ -768,7 +769,7 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
                 })
 
                 if(i % 100 === 0){
-                    await sleep(10)
+                    await yieldImportTask()
                 }
                 let fileName = ''
                 if(risuext.additionalAssets[i].length >= 3)
@@ -794,7 +795,7 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
                     msg: language.characterImportVoiceFiles(i + 1, keys.length),
                     submsg: ((i + 1) / keys.length * 100).toFixed(0)
                 })
-                await sleep(10)
+                await yieldImportTask()
                 const key = keys[i]
                 if(risuext.vits[key].startsWith('__asset:')){
                     const rkey = risuext.vits[key].replace('__asset:', '')
@@ -838,7 +839,7 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
                     submsg: ((i + 1) / data.assets.length * 100).toFixed(0)
                 })
                 if(i % 100 === 0){
-                    await sleep(10)
+                    await yieldImportTask()
                 }
                 let fileName = ''
                 let imgp = ''

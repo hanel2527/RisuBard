@@ -1,12 +1,28 @@
 'use strict';
 
-function registerCharacterPackageRoutes(app, { auth, activeSession, queue, prepare, repository, assets, readSource }) {
+function registerCharacterPackageRoutes(app, { auth, activeSession, queue, prepare, repository, assets, readSource, acceptTransition, recordTransition }) {
     const valid = id => typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id);
     const result = characterId => ({
         ...repository.characterDirectoryStatus(characterId),
         assets: assets.status(characterId),
         diagnostics: assets.diagnostics(),
     });
+    const transition = operation => {
+        try { operation(); }
+        catch (error) {
+            if (error.canonicalTransitionRecovered === true) acceptTransition();
+            throw error;
+        }
+        acceptTransition();
+    };
+    const record = (action, outcome) => {
+        try {
+            recordTransition?.({
+                kind: 'character-package-transition', trigger: action, outcome,
+                ...(outcome === 'failure' ? { errorCode: 'CHARACTER_PACKAGE_TRANSITION_FAILED' } : {}),
+            });
+        } catch { /* Observation must not change a completed storage operation. */ }
+    };
 
     app.get('/api/character-packages/status', async (req, res, next) => {
         if (!await auth(req, res)) return;
@@ -29,24 +45,35 @@ function registerCharacterPackageRoutes(app, { auth, activeSession, queue, prepa
                     return res.status(404).json({ error: 'Character unavailable' });
                 }
                 if (action === 'rollback') {
-                    repository.rollbackCharacterDirectoryMapping(characterId);
+                    transition(() => repository.rollbackCharacterDirectoryMapping(characterId));
                     assets.reload();
                     assets.disable(characterId);
-                    return res.json(result(characterId));
+                    const status = result(characterId);
+                    record(action, 'success');
+                    return res.json(status);
                 }
                 const alreadyEnabled = repository.characterDirectoryStatus(characterId).enabled;
                 if (alreadyEnabled) {
-                    repository.refreshCharacterDirectoryMapping(characterId);
+                    transition(() => repository.refreshCharacterDirectoryMapping(characterId));
                 } else {
                     assets.migrate(database, characterId, readSource);
-                    repository.publishCharacterDirectoryMapping(characterId);
+                    transition(() => repository.publishCharacterDirectoryMapping(characterId));
                 }
                 assets.reload();
                 if (action === 'refresh' && alreadyEnabled) assets.migrate(database, characterId, readSource);
-                res.json(result(characterId));
+                const status = result(characterId);
+                record(action, 'success');
+                res.json(status);
             });
         } catch {
-            res.status(500).json({ error: 'Character package transition failed; recoverable source data was retained' });
+            record(action, 'failure');
+            let status;
+            try { status = result(characterId); } catch { /* Status may also be unavailable during recovery. */ }
+            res.status(500).json({
+                error: 'Character package transition failed; recoverable source data was retained',
+                code: 'CHARACTER_PACKAGE_TRANSITION_FAILED',
+                status,
+            });
         }
     });
 }

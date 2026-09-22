@@ -2671,6 +2671,7 @@ export const languageEnglish = {
     serverBackupDelete: "Delete",
     serverBackupRestoring: "Restoring backup from server...",
     serverBackupDownloading: "Downloading backup...",
+    backupDownloadRequested: "Backup download requested. Check your browser's downloads for progress and completion.",
     serverBackupDeleteConfirm: (filename: string) => `Delete backup "${filename}"? This cannot be undone.`,
     serverBackupDeleteSuccess: "Backup deleted.",
     pluginProviderNotFound: "Unknown Plugin detected. please change the model or enable the corresponding plugin.",
@@ -3246,7 +3247,7 @@ export const languageEnglish = {
         `Build a settings backup to carry over to a new instance. Characters, chat history and inlay images are left out.\n\n• Settings, API keys, modules, plugins, presets, personas, lorebooks, theme: ${baseSize}\n• Module assets (${moduleCount} module(s), ${assetCount.toLocaleString()} images): ${moduleSize}\n\nLeaving the assets out still carries the modules themselves. Their images will be blank until you re-download those modules on the new instance.`,
     backupSettingsOnlyWithModuleAssets: (size: string) => `Include module assets (${size})`,
     backupSettingsOnlyWithoutModuleAssets: (size: string) => `Settings only (${size})`,
-    backupSettingsOnlyModuleAssetsSkipped: "Settings backup saved.\n\n**Module assets were not included.** The restored instance will show your modules and their settings, but their images will be blank. Re-download those modules there to fill them back in.",
+    backupSettingsOnlyModuleAssetsSkipped: "Settings backup download requested. Check your browser's downloads for progress and completion.\n\n**Module assets are not included.** The restored instance will show your modules and their settings, but their images will be blank. Re-download those modules there to fill them back in.",
 
     relatedGithub: "GitHub",
     relatedGithubDesc: "Star this project to show your support.",

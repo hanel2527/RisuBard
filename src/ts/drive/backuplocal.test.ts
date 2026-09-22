@@ -1,125 +1,86 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
-    alertClear: vi.fn(),
-    alertError: vi.fn(),
-    alertWait: vi.fn(),
-    createWriteStream: vi.fn(),
-    exportBackup: vi.fn(),
-    notifySuccess: vi.fn(),
-    requestImmediateSave: vi.fn(),
+    alertClear: vi.fn(), alertError: vi.fn(), alertWait: vi.fn(), alertMd: vi.fn(),
+    alertConfirm: vi.fn(), alertConfirmMulti: vi.fn(),
+    createWriteStream: vi.fn(), exportBackup: vi.fn(), settingsBackupEstimate: vi.fn(),
+    notifySuccess: vi.fn(), notifyInfo: vi.fn(), requestImmediateSave: vi.fn(),
 }))
 
 vi.mock('../alert', () => ({
-    alertClear: mocks.alertClear,
-    alertConfirm: vi.fn(),
-    alertConfirmMulti: vi.fn(),
-    alertError: mocks.alertError,
-    alertMd: vi.fn(),
-    alertStore: { set: vi.fn() },
-    alertWait: mocks.alertWait,
-    notifyError: vi.fn(),
-    notifyInfo: vi.fn(),
-    notifySuccess: mocks.notifySuccess,
-    waitAlert: vi.fn(),
+    ...mocks,
+    alertStore: { set: vi.fn() }, notifyError: vi.fn(), waitAlert: vi.fn(),
 }))
-
 vi.mock('../globalApi.svelte', () => ({
-    downloadFile: vi.fn(),
-    forageStorage: {
-        exportBackup: mocks.exportBackup,
-    },
-    LocalWriter: class {},
+    downloadFile: vi.fn(), LocalWriter: class {},
+    forageStorage: { exportBackup: mocks.exportBackup, settingsBackupEstimate: mocks.settingsBackupEstimate },
     requestImmediateSave: mocks.requestImmediateSave,
 }))
-
 vi.mock('../storage/risuSave', () => ({ encodeRisuSaveLegacy: vi.fn() }))
 vi.mock('../storage/database.svelte', () => ({ getDatabase: vi.fn(() => ({ characters: [] })) }))
 vi.mock('../storage/chatStorage', () => ({ fetchChatFromServer: vi.fn() }))
-vi.mock('src/lang', () => ({ language: {} }))
-vi.mock('streamsaver', () => ({
-    createWriteStream: mocks.createWriteStream,
-    default: { createWriteStream: mocks.createWriteStream },
-}))
+vi.mock('src/lang', () => ({ language: {
+    backupDownloadRequested: 'Check browser downloads',
+    backupSettingsOnlyConfirm: () => 'Confirm',
+    backupSettingsOnlyWithModuleAssets: () => 'Include assets',
+    backupSettingsOnlyWithoutModuleAssets: () => 'Skip assets',
+    backupSettingsOnlyBreakdown: () => 'Breakdown',
+    backupSettingsOnlyModuleAssetsSkipped: 'Download requested without module assets',
+} }))
+vi.mock('streamsaver', () => ({ createWriteStream: mocks.createWriteStream }))
 
-import { SaveLocalBackup } from './backuplocal'
+import { SaveLocalBackup, SaveLocalBackupForUpstream, SaveSettingsOnlyBackup } from './backuplocal'
 
-describe('local backup download', () => {
-    const originalShowSaveFilePicker = window.showSaveFilePicker
-
+describe('local backup download handoff', () => {
     beforeEach(() => {
-        vi.clearAllMocks()
+        vi.resetAllMocks()
         mocks.requestImmediateSave.mockResolvedValue(undefined)
-        delete (window as Window & { showSaveFilePicker?: unknown }).showSaveFilePicker
+        mocks.exportBackup.mockResolvedValue(undefined)
+        mocks.alertConfirm.mockResolvedValue(true)
+        mocks.settingsBackupEstimate.mockResolvedValue({
+            dbBytes: 100, baseAssets: { bytes: 0 }, moduleAssets: { count: 0 },
+        })
     })
 
-    afterEach(() => {
-        if (originalShowSaveFilePicker) {
-            Object.defineProperty(window, 'showSaveFilePicker', {
-                configurable: true,
-                value: originalShowSaveFilePicker,
-            })
-        } else {
-            delete (window as Window & { showSaveFilePicker?: unknown }).showSaveFilePicker
-        }
-    })
-
-    it('streams to a native file handle without using the failing StreamSaver close path', async () => {
-        const expected = new Uint8Array([1, 2, 3, 4])
-        const written: number[] = []
-        const nativeWritable = new WritableStream<Uint8Array>({
-            write(chunk) {
-                written.push(...chunk)
-            },
-        })
-        const fileHandle = {
-            createWritable: vi.fn(async () => nativeWritable),
-        }
-        const showSaveFilePicker = vi.fn(async () => fileHandle)
-        Object.defineProperty(window, 'showSaveFilePicker', {
-            configurable: true,
-            value: showSaveFilePicker,
-        })
-        mocks.exportBackup.mockResolvedValue(new Response(expected, {
-            headers: {
-                'content-disposition': 'attachment; filename="risu-backup-test.bin"',
-                'content-length': String(expected.byteLength),
-            },
-        }))
-        mocks.createWriteStream.mockReturnValue({
-            getWriter: () => ({
-                write: vi.fn(),
-                close: vi.fn(async () => { throw new Error('StreamSaver close failed') }),
-            }),
-        })
-
-        await SaveLocalBackup()
-
-        expect(showSaveFilePicker).toHaveBeenCalledOnce()
-        expect(showSaveFilePicker.mock.invocationCallOrder[0]).toBeLessThan(
-            mocks.requestImmediateSave.mock.invocationCallOrder[0],
-        )
+    it.each([
+        ['full', SaveLocalBackup, undefined],
+        ['upstream', SaveLocalBackupForUpstream, { target: 'upstream' }],
+        ['settings', SaveSettingsOnlyBackup, { mode: 'settings', moduleAssets: true }],
+    ] as const)('flushes before handing off %s, without claiming completion', async (_name, save, options) => {
+        await save()
         expect(mocks.requestImmediateSave).toHaveBeenCalledWith({ flushServer: true, rejectOnFailure: true })
+        expect(mocks.exportBackup.mock.calls).toEqual(options ? [[options]] : [[]])
         expect(mocks.requestImmediateSave.mock.invocationCallOrder[0]).toBeLessThan(mocks.exportBackup.mock.invocationCallOrder[0])
-        expect(fileHandle.createWritable).toHaveBeenCalledOnce()
-        expect(written).toEqual([...expected])
         expect(mocks.createWriteStream).not.toHaveBeenCalled()
+        expect(mocks.notifySuccess).not.toHaveBeenCalled()
+        expect(mocks.notifyInfo).toHaveBeenCalledWith('Check browser downloads')
         expect(mocks.alertError).not.toHaveBeenCalled()
-        expect(mocks.notifySuccess).toHaveBeenCalledWith('Success')
     })
 
-    it('does not export or report success when the current state cannot be persisted', async () => {
-        const error = new Error('disk flush failed')
-        mocks.requestImmediateSave.mockRejectedValue(error)
-        Object.defineProperty(window, 'showSaveFilePicker', {
-            configurable: true,
-            value: vi.fn(async () => ({ createWritable: vi.fn() })),
-        })
-
+    it('does not download when saving the current state fails', async () => {
+        mocks.requestImmediateSave.mockRejectedValue(new Error('disk flush failed'))
         await SaveLocalBackup()
-
         expect(mocks.exportBackup).not.toHaveBeenCalled()
-        expect(mocks.notifySuccess).not.toHaveBeenCalled()
+        expect(mocks.notifyInfo).not.toHaveBeenCalled()
         expect(mocks.alertError).toHaveBeenCalledWith('disk flush failed')
+    })
+
+    it('reports a failed authentication handoff without claiming download success', async () => {
+        mocks.exportBackup.mockRejectedValue(new Error('Download authentication failed'))
+        await SaveLocalBackup()
+        expect(mocks.notifyInfo).not.toHaveBeenCalled()
+        expect(mocks.notifySuccess).not.toHaveBeenCalled()
+        expect(mocks.alertError).toHaveBeenCalledWith('Download authentication failed')
+    })
+
+    it('preserves the settings-only module asset choice', async () => {
+        mocks.settingsBackupEstimate.mockResolvedValue({
+            dbBytes: 100, baseAssets: { bytes: 0 }, moduleAssets: { count: 2, bytes: 200, moduleCount: 1 },
+        })
+        mocks.alertConfirmMulti.mockResolvedValue(1)
+        await SaveSettingsOnlyBackup()
+        expect(mocks.exportBackup).toHaveBeenCalledWith({ mode: 'settings', moduleAssets: false })
+        expect(mocks.alertMd).toHaveBeenCalledWith('Download requested without module assets')
+        expect(mocks.notifySuccess).not.toHaveBeenCalled()
     })
 })

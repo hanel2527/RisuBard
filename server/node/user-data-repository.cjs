@@ -514,7 +514,10 @@ function createUserDataRepository(options = {}) {
                     const sourcePath = directories.safePath(child);
                     operations.push({ path: target, sourcePath });
                     // Existing checksummed sources are also transaction preconditions.
-                    if (fs.existsSync(`${sourcePath}.sha256`)) {
+                    // Legacy backup sidecars can outlive their backup revision.
+                    // Preserve their bytes via verified staging, but enforce
+                    // canonical checksums only for the live files.
+                    if (!entry.name.endsWith('.bak') && fs.existsSync(`${sourcePath}.sha256`)) {
                         readCanonicalBytes(child);
                         operations.push({ path: child, sourcePath });
                     }
@@ -532,7 +535,10 @@ function createUserDataRepository(options = {}) {
             commitTransaction(dataRoot, operations, options.directoryMappingTransactionOptions || {});
         } catch (error) {
             // Do not leave a live repository discovering a half-published destination.
-            recoverTransactions(dataRoot);
+            const recovery = recoverTransactions(dataRoot);
+            if (recovery.recovered > 0 && JSON.stringify(readVerifiedJson(dataRoot, DIRECTORY_INDEX)) === JSON.stringify(next)) {
+                error.canonicalTransitionRecovered = true;
+            }
             throw error;
         } finally {
             directories.invalidate();
@@ -603,7 +609,10 @@ function createUserDataRepository(options = {}) {
         try {
             commitTransaction(dataRoot, operations, options.directoryMappingTransactionOptions || {});
         } catch (error) {
-            recoverTransactions(dataRoot);
+            const recovery = recoverTransactions(dataRoot);
+            if (recovery.recovered > 0 && JSON.stringify(readVerifiedJson(dataRoot, DIRECTORY_INDEX)) === JSON.stringify(next)) {
+                error.canonicalTransitionRecovered = true;
+            }
             resetCharacterDirectoryMappings(dataRoot);
             throw error;
         }
@@ -660,7 +669,10 @@ function createUserDataRepository(options = {}) {
         try {
             commitTransaction(dataRoot, operations, options.directoryMappingTransactionOptions || {});
         } catch (error) {
-            recoverTransactions(dataRoot);
+            const recovery = recoverTransactions(dataRoot);
+            if (recovery.recovered > 0 && JSON.stringify(readVerifiedJson(dataRoot, DIRECTORY_INDEX)) === JSON.stringify(next)) {
+                error.canonicalTransitionRecovered = true;
+            }
             resetCharacterDirectoryMappings(dataRoot);
             throw error;
         }

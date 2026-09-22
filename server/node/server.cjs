@@ -1746,6 +1746,15 @@ function sessionAuthMiddleware(req, res, next) {
     res.status(401).end()
 }
 
+// Browser-managed downloads cannot attach risu-auth headers. Only these read
+// endpoints also accept the existing HttpOnly, SameSite=Strict session cookie.
+async function checkBackupDownloadAuth(req, res) {
+    res.setHeader('cache-control', 'private, no-store')
+    const token = parseSessionCookie(req)
+    if (token && (sessions.get(token) ?? 0) > Date.now()) return true
+    return checkAuth(req, res)
+}
+
 // MIME detection by magic bytes (fallback when key has no extension)
 function detectMime(buf) {
     if (!buf || buf.length < 12) return 'application/octet-stream'
@@ -3969,6 +3978,8 @@ require('./character-package-routes.cjs').registerCharacterPackageRoutes(app, {
     auth: checkAuth,
     activeSession: checkActiveSession,
     queue: queueStorageOperation,
+    acceptTransition: () => canonicalProjectionSync.accept(),
+    recordTransition: event => saveObservation.record(event),
     repository: userDataRepository,
     assets: characterAssets,
     readSource: kvGet,
@@ -4592,7 +4603,7 @@ app.get('/api/backup/export/settings-estimate', async (req, res, next) => {
 });
 
 app.get('/api/backup/export', async (req, res, next) => {
-    if(!await checkAuth(req, res)){ return; }
+    if(!await checkBackupDownloadAuth(req, res)){ return; }
     try {
         // ?target=upstream is the lossy original-RisuAI format: it excludes
         // inlays plus RisuBard's canonical BardWiki/manuscript files. Ordinary
@@ -5156,7 +5167,7 @@ app.delete('/api/backup/server/:filename', async (req, res, next) => {
 
 // Download a server backup file
 app.get('/api/backup/server/download/:filename', async (req, res, next) => {
-    if (!await checkAuth(req, res)) { return; }
+    if (!await checkBackupDownloadAuth(req, res)) { return; }
     try {
         const filename = req.params.filename;
         if (!BACKUP_FILENAME_REGEX.test(filename)) {

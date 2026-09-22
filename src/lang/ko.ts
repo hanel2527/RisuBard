@@ -2825,6 +2825,7 @@ export const languageKorean = {
   serverBackupDelete: "삭제",
   serverBackupRestoring: "서버 백업에서 복원 중...",
   serverBackupDownloading: "백업 다운로드 중...",
+  backupDownloadRequested: "백업 다운로드를 요청했습니다. 진행 및 완료 여부는 브라우저의 다운로드 목록에서 확인하세요.",
   serverBackupDeleteConfirm: (filename: string) =>
     `"${filename}" 백업을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.`,
   serverBackupDeleteSuccess: "백업이 삭제되었습니다.",
@@ -3462,7 +3463,7 @@ export const languageKorean = {
   backupSettingsOnlyWithModuleAssets: (size: string) => `모듈 에셋 포함 (${size})`,
   backupSettingsOnlyWithoutModuleAssets: (size: string) => `설정만 (${size})`,
   backupSettingsOnlyModuleAssetsSkipped:
-    "설정 백업을 저장했습니다.\n\n**모듈 에셋은 담기지 않았습니다.** 복원한 인스턴스에서 모듈 목록과 설정은 그대로 보이지만 이미지는 비어 있습니다. 해당 모듈을 다시 받으면 채워집니다.",
+    "설정 백업 다운로드를 요청했습니다. 진행 및 완료 여부는 브라우저의 다운로드 목록에서 확인하세요.\n\n**모듈 에셋은 담기지 않습니다.** 복원한 인스턴스에서 모듈 목록과 설정은 그대로 보이지만 이미지는 비어 있습니다. 해당 모듈을 다시 받으면 채워집니다.",
 
   relatedGithub: "GitHub",
   relatedGithubDesc: "Star를 눌러 프로젝트를 응원해주세요.",

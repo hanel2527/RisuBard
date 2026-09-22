@@ -14,6 +14,58 @@ function fixture() {
     repo.importLegacyDatabase({ characters: [{ chaId: 'char-1', name: 'Alice', chats: [{ id: 'chat-1', name: 'First chat', message: [{ role: 'user', data: 'hello' }] }] }] })
     return { dataRoot, repo }
 }
+it('can migrate again after rename, new chat, rollback and restart', () => {
+    const { dataRoot, repo } = fixture()
+    const beforeMigration = repo.exportLegacyDatabase()
+    beforeMigration.characters[0].name = 'Alice before migration'
+    repo.importLegacyDatabase(beforeMigration, { mode: 'sync' })
+    repo.publishCharacterDirectoryMapping('char-1')
+    const edited = repo.exportLegacyDatabase()
+    edited.characters[0].name = 'Alice renamed'
+    edited.characters[0].chats[0].name = 'Renamed chat'
+    edited.characters[0].chats[0].message.push({ role: 'char', data: 'saved after transition' })
+    edited.characters[0].chats.push({ id: 'chat-2', name: 'New chat', message: [] })
+    repo.importLegacyDatabase(edited, { mode: 'sync' })
+    repo.refreshCharacterDirectoryMapping('char-1')
+    repo.rollbackCharacterDirectoryMapping('char-1')
+    // Saves made by older versions can leave a checksum for an older .bak.
+    const backup = path.join(dataRoot, 'characters/char-1/metadata.json.bak')
+    const historicalBytes = fs.readFileSync(backup)
+    fs.writeFileSync(`${backup}.sha256`, '0'.repeat(64))
+    const restarted = createUserDataRepository({ dataRoot, allowDirectoryMapping: true })
+    restarted.publishCharacterDirectoryMapping('char-1')
+    expect(restarted.characterDirectoryStatus('char-1')).toMatchObject({ enabled: true, chats: 2 })
+    expect(fs.readFileSync(path.join(dataRoot, 'characters/Alice renamed/metadata.json.bak'))).toEqual(historicalBytes)
+    expect(createUserDataRepository({ dataRoot }).exportLegacyDatabase()).toEqual(edited)
+})
+it('still rejects damaged live files before publishing a package', () => {
+    const { dataRoot, repo } = fixture()
+    const target = path.join(dataRoot, 'characters/char-1/chats/chat-1/messages.jsonl')
+    fs.appendFileSync(target, '{"data":"unverified"}\n')
+    expect(() => repo.publishCharacterDirectoryMapping('char-1')).toThrow(/checksum mismatch/)
+    expect(repo.characterDirectoryStatus('char-1').enabled).toBe(false)
+})
+it.each(['migrate', 'refresh', 'rollback'])('marks only completed journal recovery for %s as an internal transition', action => {
+    const { dataRoot, repo } = fixture()
+    if (action !== 'migrate') repo.publishCharacterDirectoryMapping('char-1')
+    if (action === 'refresh') {
+        const edited = repo.exportLegacyDatabase()
+        edited.characters[0].name = 'Renamed'
+        repo.importLegacyDatabase(edited)
+    }
+    const expected = repo.exportLegacyDatabase()
+    const failing = createUserDataRepository({ dataRoot, allowDirectoryMapping: true, directoryMappingTransactionOptions: { failAfterPublish: 1 } })
+    let caught: any
+    try {
+        if (action === 'migrate') failing.publishCharacterDirectoryMapping('char-1')
+        else if (action === 'refresh') failing.refreshCharacterDirectoryMapping('char-1')
+        else failing.rollbackCharacterDirectoryMapping('char-1')
+    } catch (error) { caught = error }
+    expect(caught?.canonicalTransitionRecovered).toBe(true)
+    const reopened = createUserDataRepository({ dataRoot })
+    expect(reopened.characterDirectoryStatus('char-1').enabled).toBe(action !== 'rollback')
+    expect(reopened.exportLegacyDatabase()).toEqual(expected)
+})
 it('permanently deletes a mapped character and retained legacy folder on a normal save', () => {
     const { dataRoot, repo } = fixture()
     repo.publishCharacterDirectoryMapping('char-1')
