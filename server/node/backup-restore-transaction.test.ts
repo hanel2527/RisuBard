@@ -16,7 +16,8 @@ it('publishes KV, canonical files and inlays as one recoverable restore generati
     store.kvSet('assets/old', Buffer.from('old-asset'))
     const repository = createUserDataRepository({ dataRoot, allowDirectoryMapping: true })
     repository.importLegacyDatabase({ characters: [{ chaId: 'old', name: 'Old', chats: [] }] })
-    repository.publishCharacterDirectoryMapping('old')
+    const mapping = repository.publishCharacterDirectoryMapping('old')
+    expect(mapping.directory).not.toBe('old')
     fs.mkdirSync(path.join(dataRoot, 'inlays'), { recursive: true })
     fs.writeFileSync(path.join(dataRoot, 'inlays/old.png'), 'old-inlay')
 
@@ -46,7 +47,8 @@ it('publishes KV, canonical files and inlays as one recoverable restore generati
     expect(repository.exportLegacyDatabase().characters.map((character: any) => character.chaId)).toEqual(['new'])
     expect(fs.readFileSync(path.join(dataRoot, 'inlays/new.png'), 'utf8')).toBe('new-inlay')
     expect(fs.existsSync(path.join(dataRoot, 'inlays/old.png'))).toBe(false)
-    expect(fs.readFileSync(path.join(dataRoot, 'trash/restore-1/characters/Old/metadata.json'), 'utf8')).toContain('Old')
+    expect(fs.readFileSync(path.join(dataRoot, 'trash/restore-1/characters', mapping.directory, 'metadata.json'), 'utf8')).toContain('Old')
+    expect(fs.readFileSync(path.join(dataRoot, 'trash/restore-1/characters/old/metadata.json'), 'utf8')).toContain('Old')
     expect(fs.readFileSync(path.join(dataRoot, 'trash/restore-1/inlays/old.png'), 'utf8')).toBe('old-inlay')
 })
 
