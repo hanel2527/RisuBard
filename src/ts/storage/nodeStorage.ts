@@ -446,6 +446,19 @@ export class NodeStorage{
         }
     }
 
+    async syncLiveFiles(revision?: string): Promise<import('./liveFileSync').LiveFileSyncResult> {
+        const response = await this.authFetch('/api/live-files/sync', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ revision }),
+        })
+        const data = await response.json()
+        if (!response.ok) {
+            throw Object.assign(new Error(data?.error || `Live file sync failed (${response.status})`), { code: data?.code })
+        }
+        return data
+    }
+
     private async externalEditRequest(path: string, method: 'GET' | 'POST'): Promise<ExternalEditModeStatus> {
         const response = await this.authFetch(path, { method })
         if (!response.ok) {

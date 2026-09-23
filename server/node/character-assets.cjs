@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { atomicWriteFile, atomicWriteJson, readVerifiedJson, resolveInside } = require('./file-store.cjs');
+const { atomicWriteFile, atomicWriteJson, readVerifiedJson, resolveInside, commitTransaction, recoverTransactions } = require('./file-store.cjs');
 const { sanitizeSegment, allocateSegment, collisionKey } = require('./friendly-paths.cjs');
 const { createCharacterDirectoryResolver } = require('./character-directories.cjs');
 const INDEX = 'index/character-asset-replicas.json';
@@ -28,11 +28,12 @@ function candidateNames(character) {
     return names;
 }
 
-function createCharacterAssets({ dataRoot, sourceSize, readOriginal }) {
+function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersion }) {
     let state = { schemaVersion: 1, characters: {} };
     let routes = new Map();
     const directories = createCharacterDirectoryResolver(dataRoot);
     let routeMapping;
+    const synced = new Map();
     const counters = { reads: 0, fallbacks: 0, copied: 0, failed: 0 };
     function safePath(relative) {
         const target = resolveInside(dataRoot, relative);
@@ -49,6 +50,9 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal }) {
         for (const [id, record] of Object.entries(state.characters)) {
             if (!validId(id) || record?.enabled !== true || !Array.isArray(record.entries)) continue;
             for (const entry of record.entries) {
+                // Live-edit copies may change before reconciliation. Shared KV references
+                // must keep serving immutable originals until new per-character keys publish.
+                if (entry?.readFromKv === true) continue;
                 if (entry && (entry.filename === undefined || validFilename(entry.filename)) && typeof entry.key === 'string' && entry.key.startsWith('assets/') && /^[a-f0-9]{64}$/.test(entry.hash) && Number.isSafeInteger(entry.size) && entry.size >= 0 && entry.size <= 64 * 1024 * 1024) {
                     try {
                         const target = safePath(`${directories.characterDirectory(id)}/assets/${entry.filename ?? entry.hash}`);
@@ -59,6 +63,7 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal }) {
         }
     }
     function reload() {
+        synced.clear();
         state = { schemaVersion: 1, characters: {} };
         try {
             safePath(INDEX);
@@ -132,6 +137,105 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal }) {
         counters.failed += record.failed;
         return status(id);
     }
+    // Called inside the canonical writer queue, after external edits have been adopted.
+    // Copies and both ownership indices publish together; retired bytes remain recoverable.
+    function sync(database) {
+        const mapping = directories.snapshot();
+        const mapped = new Set(mapping.characters.filter(entry => entry.packageVersion === 1).map(entry => entry.id));
+        const changed = (database.characters || []).filter(character => {
+            if (!mapped.has(character.chaId) || character.type === 'group') return false;
+            const signature = JSON.stringify([...candidateNames(character)].map(([key, name]) => [key, name, sourceVersion?.(key)]));
+            return synced.get(character.chaId) !== signature;
+        });
+        if (!changed.length) return { changed: false };
+        const livePath = 'index/live-character-assets.json';
+        let live = { schemaVersion: 1, characters: {} };
+        if (fs.existsSync(safePath(livePath))) live = readVerifiedJson(dataRoot, livePath);
+        if (live?.schemaVersion !== 1 || !live.characters || Array.isArray(live.characters)) throw new Error('Invalid live asset index');
+        const next = JSON.parse(JSON.stringify(state));
+        const operations = [];
+        const completed = new Map();
+        const retirement = `trash/asset-sync-${crypto.randomUUID()}`;
+        for (const character of changed) {
+            const id = character.chaId;
+            const relative = `${directories.characterDirectory(id)}/assets`;
+            const directory = safePath(relative);
+            const occupied = new Set(fs.existsSync(directory) ? fs.readdirSync(directory) : []);
+            const candidates = candidateNames(character);
+            const tracked = { ...(live.characters[id] || {}) };
+            for (const entry of state.characters[id]?.entries || []) {
+                const filename = entry.filename || entry.hash;
+                tracked[filename] = { key: entry.key, hash: entry.hash };
+            }
+            const record = { enabled: true, copied: 0, skipped: 0, failed: 0, entries: [] };
+            const kept = new Set();
+            for (const [key, sourceName] of candidates) {
+                const existing = Object.entries(tracked).find(([, entry]) => entry.key === key);
+                // A copy belongs to this folder; even shared KV originals remain untouched.
+                if (sourceSize(key) > 64 * 1024 * 1024) throw new Error('Oversized source');
+                const bytes = readOriginal(key);
+                if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > 64 * 1024 * 1024) throw new Error('Missing or oversized source');
+                const digest = hash(bytes);
+                let filename = existing?.[1].hash === digest ? existing[0] : undefined;
+                if (filename) {
+                    const target = safePath(`${relative}/${filename}`);
+                    if (!fs.existsSync(target) || hash(fs.readFileSync(target)) !== digest) {
+                        const error = new Error(`Asset changed outside the app: ${filename}`);
+                        error.code = 'CANONICAL_FILES_CHANGED';
+                        throw error;
+                    }
+                } else {
+                    filename = allocateSegment(sourceName, occupied, true);
+                    while ([...occupied].some(name => [filename, `${filename}.sha256`, `${filename}.bak`].some(candidate => collisionKey(candidate) === collisionKey(name)))) {
+                        occupied.add(filename);
+                        filename = allocateSegment(sourceName, occupied, true);
+                    }
+                    safePath(`${relative}/${filename}`);
+                    operations.push({ path: `${relative}/${filename}`, data: bytes });
+                    for (const name of [filename, `${filename}.sha256`, `${filename}.bak`]) occupied.add(name);
+                }
+                kept.add(filename);
+                tracked[filename] = { key, hash: digest };
+                record.entries.push({ key, filename, sourceName: allocateSegment(sourceName, new Set(), true), hash: digest, size: bytes.length, readFromKv: true });
+                record.copied++;
+            }
+            for (const [filename, entry] of Object.entries(tracked)) {
+                if (!entry.key || kept.has(filename)) continue;
+                const source = `${relative}/${filename}`;
+                const target = safePath(source);
+                if (fs.existsSync(target)) {
+                    const bytes = fs.readFileSync(target);
+                    if (hash(bytes) !== entry.hash) {
+                        const error = new Error(`Asset changed outside the app: ${filename}`);
+                        error.code = 'CANONICAL_FILES_CHANGED';
+                        throw error;
+                    }
+                    // The unchanged write adds a hash precondition before the journal is prepared.
+                    operations.push({ path: source, data: bytes });
+                    operations.push({ path: source, moveTo: `${retirement}/${id}/${filename}` });
+                    for (const suffix of ['.sha256', '.bak']) {
+                        if (fs.existsSync(safePath(`${source}${suffix}`))) operations.push({ path: `${source}${suffix}`, moveTo: `${retirement}/${id}/${filename}${suffix}` });
+                    }
+                }
+                delete tracked[filename];
+            }
+            next.characters[id] = record;
+            live.characters[id] = tracked;
+            completed.set(id, JSON.stringify([...candidates].map(([key, name]) => [key, name, sourceVersion?.(key)])));
+        }
+        operations.push({ path: INDEX, data: Buffer.from(JSON.stringify(next)) });
+        operations.push({ path: livePath, data: Buffer.from(JSON.stringify(live)) });
+        try { commitTransaction(dataRoot, operations); }
+        catch (error) {
+            recoverTransactions(dataRoot);
+            reload();
+            throw error;
+        }
+        state = next;
+        rebuild();
+        for (const [id, signature] of completed) synced.set(id, signature);
+        return { changed: true };
+    }
     function read(key, currentEntry) {
         try {
             if (directories.snapshot() !== routeMapping) rebuild();
@@ -153,7 +257,7 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal }) {
         if (Object.hasOwn(state.characters, id)) publish({ schemaVersion: 1, characters: { ...state.characters, [id]: { ...state.characters[id], enabled: false } } });
         return status(id);
     }
-    return { migrate, read, status, disable, reload, diagnostics: () => ({ scope: 'server-session', ...counters }) };
+    return { migrate, sync, read, status, disable, reload, diagnostics: () => ({ scope: 'server-session', ...counters }) };
 }
 
 module.exports = { createCharacterAssets };

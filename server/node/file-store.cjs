@@ -194,6 +194,11 @@ function publishTransaction(root, journal, options = {}) {
         }
         const target = resolveInside(root, entry.path);
         if (matchesChecksum(target, entry.checksum)) {
+            // The bytes may have been edited externally, or a crash may have
+            // occurred between publishing the file and its checksum sidecar.
+            if (!matchesStoredChecksum(target, entry.checksum)) {
+                replaceAtomic(`${target}.sha256`, Buffer.from(`${entry.checksum}\n`, 'utf8'));
+            }
             skipped += 1;
             continue;
         }

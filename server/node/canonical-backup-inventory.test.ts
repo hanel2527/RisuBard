@@ -59,6 +59,33 @@ it('roundtrips current mapped files through flat names without retired character
     commitTransaction(afterDelete, deleted.map(entry => ({ path: decodeCanonicalBackupName(entry.backupName), data: fs.readFileSync(entry.sourcePath) })))
     expect(createUserDataRepository({ dataRoot: afterDelete }).exportLegacyDatabase().characters).toEqual([])
 })
+it('preserves all characters through partial migration, restart, backup restore and rollback', async () => {
+    const { dataRoot, repo } = fixture()
+    const database = repo.exportLegacyDatabase()
+    database.characters.push({ chaId: 'char-2', name: 'Alice', chats: [{ id: 'chat-2', name: 'First chat', message: [{ role: 'char', data: 'second character' }] }] })
+    repo.importLegacyDatabase(database)
+    repo.publishCharacterDirectoryMapping('char-1')
+    const resumed = createUserDataRepository({ dataRoot, allowDirectoryMapping: true })
+    expect(resumed.characterDirectoryStatus('char-1').enabled).toBe(true)
+    expect(resumed.characterDirectoryStatus('char-2').enabled).toBe(false)
+    resumed.publishCharacterDirectoryMapping('char-2')
+    expect(resumed.characterDirectoryStatus('char-1').directory).not.toBe(resumed.characterDirectoryStatus('char-2').directory)
+    const edited = resumed.exportLegacyDatabase()
+    for (const character of edited.characters) character.chats[0].message.push({ role: 'user', data: `after migration ${character.chaId}` })
+    resumed.importLegacyDatabase(edited, { mode: 'sync' })
+    const restored = root()
+    const entries = await list(dataRoot)
+    commitTransaction(restored, entries.map(entry => ({ path: decodeCanonicalBackupName(entry.backupName), data: fs.readFileSync(entry.sourcePath) })))
+    for (const entry of entries) expect(fs.readFileSync(path.join(restored, decodeCanonicalBackupName(entry.backupName)))).toEqual(fs.readFileSync(entry.sourcePath))
+    const recovered = createUserDataRepository({ dataRoot: restored, allowDirectoryMapping: true })
+    expect(recovered.exportLegacyDatabase()).toEqual(edited)
+    for (const character of edited.characters) {
+        expect(recovered.characterDirectoryStatus(character.chaId).enabled).toBe(true)
+        recovered.rollbackCharacterDirectoryMapping(character.chaId)
+    }
+    expect(createUserDataRepository({ dataRoot: restored }).exportLegacyDatabase()).toEqual(edited)
+})
+
 it('rejects corrupt or missing published mapping and missing/empty checksum sidecars', async () => {
     const { dataRoot, repo } = fixture()
     repo.publishCharacterDirectoryMapping('char-1')

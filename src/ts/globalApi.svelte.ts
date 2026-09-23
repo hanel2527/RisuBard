@@ -36,8 +36,17 @@ import { collectDatabaseAssetReferences } from './storage/assetRefs'
 import { claimSaveDbRuntime } from './storage/saveDbRuntime'
 import { createCanonicalSaveConflict } from './storage/canonicalSaveConflict'
 import { hasDisplayNameCollision } from './displayName'
+import { applyLiveFileSnapshot, createLiveFileRefresh, type LiveFileConflict } from './storage/liveFileSync'
 
 export const forageStorage = new AutoStorage()
+
+let refreshLiveFilesImpl: (() => Promise<void>) | null = null
+export async function refreshLiveFiles() {
+    await refreshLiveFilesImpl?.()
+}
+
+// Keep recovery available even when browser storage is full or unavailable.
+export const liveFileConflictRecovery: { time: string, conflicts: LiveFileConflict[] }[] = []
 
 export async function downloadFile(name: string, dat: Uint8Array | ArrayBuffer | string) {
     if (typeof (dat) === 'string') {
@@ -361,12 +370,6 @@ export function requestImmediateSave(options?: {
     flushServer?: boolean
     rejectOnFailure?: boolean
 }) {
-    if (externalEditMode.active) {
-        if (options?.rejectOnFailure) {
-            return Promise.reject(new Error(language.externalEditModeSavePaused))
-        }
-        return Promise.resolve()
-    }
     return requestImmediateSaveImpl(options)
 }
 
@@ -416,11 +419,7 @@ export async function saveDb() {
         () => saveInFlight ?? Promise.resolve()
     )
     if (!saveRuntime.isActive()) return
-    try {
-        externalEditMode.active = (await forageStorage.getExternalEditModeStatus()).active
-    } catch {
-        externalEditMode.active = false
-    }
+    externalEditMode.active = false
     const knownChatIdsByCharacter = new Map<string, Set<string>>(
         (getDatabase()?.characters ?? [])
             .filter(character => character?.chaId)
@@ -541,6 +540,77 @@ export async function saveDb() {
         patchSyncBaseline = null
     }
 
+    let acknowledgedDb = supportsPatchSync ? patcher.snapshot() : null
+    let liveRevision: string | undefined
+    let lastLiveError = ''
+
+    // Called only while owning saveInFlight. Metadata reconciliation cannot race
+    // a patch acknowledgement, and never replaces hydrated chat objects.
+    async function syncLiveFilesNow() {
+        if (!supportsPatchSync || !saveRuntime.isActive()) return
+        const result = await forageStorage.syncLiveFiles(liveRevision)
+        if (result.snapshot) {
+            if (result.recovery?.conflicts) {
+                notifyInfo(`외부 파일 변경을 반영했습니다. 겹친 앱 편집 ${result.recovery.conflicts}건은 서버 데이터 폴더의 ${result.recovery.path}에 보관했습니다.`)
+            }
+            const recovery = applyLiveFileSnapshot(getDatabase(), acknowledgedDb, result.snapshot)
+            if (recovery.conflicts.length) {
+                const entry = { time: new Date().toISOString(), conflicts: recovery.conflicts }
+                liveFileConflictRecovery.push(entry)
+                try {
+                    const key = 'risubard-live-file-conflicts'
+                    const previous = JSON.parse(localStorage.getItem(key) || '[]')
+                    localStorage.setItem(key, JSON.stringify([...previous, entry]))
+                    notifyInfo('외부 파일 변경을 반영했습니다. 겹친 앱 편집 내용은 브라우저 복구 기록에 보관했습니다.')
+                } catch {
+                    await downloadFile(`risubard-local-edits-${Date.now()}.json`, JSON.stringify(entry, null, 2))
+                    notifyInfo('외부 파일 변경을 반영했습니다. 겹친 앱 편집 내용은 복구 파일로 내려받았습니다.')
+                }
+            }
+            await patcher.init(acknowledgedDb)
+            forceFullWriteOnRetry = false
+            for (const characterId of recovery.characterIds) {
+                if (!changeTracker.character.includes(characterId)) changeTracker.character.push(characterId)
+            }
+            changeTracker.root = true
+            changed = true
+            forageStorage.setDbEtag(result.etag)
+            await tick()
+            ReloadGUIPointer.update(value => value + 1)
+        }
+        if (result.error && result.error !== lastLiveError) {
+            notifyError(`외부 파일을 아직 반영하지 못했습니다: ${result.error}`)
+        }
+        lastLiveError = result.error || ''
+        // Do not allow an autosave to replace an incomplete external edit.
+        if (result.error) throw new Error(result.error)
+        liveRevision = result.revision
+    }
+
+    const refreshThisRuntime = createLiveFileRefresh({
+        isActive: () => supportsPatchSync && saveRuntime.isActive(),
+        getInFlight: () => saveInFlight,
+        setInFlight: operation => { saveInFlight = operation },
+        sync: syncLiveFilesNow,
+    })
+    refreshLiveFilesImpl = refreshThisRuntime
+    let pollPending = false
+    let lastPollError = ''
+    const livePoll = supportsPatchSync ? setInterval(() => {
+        if (pollPending || !saveRuntime.isActive() || document.hidden) return
+        pollPending = true
+        void refreshThisRuntime().then(() => { lastPollError = '' }).catch(error => {
+            if (error?.code === 'LIVE_FILES_INACTIVE') return
+            const message = String(error)
+            if (!lastLiveError && lastPollError !== message) console.warn('[Live files]', error)
+            lastPollError = message
+        }).finally(() => { pollPending = false })
+    }, 750) : null
+    saveRuntime.addCleanup(() => {
+        if (livePoll) clearInterval(livePoll)
+        if (refreshLiveFilesImpl === refreshThisRuntime) refreshLiveFilesImpl = null
+    })
+
     function hasTrackedChanges(toSave: toSaveType) {
         return !!(
             toSave.botPreset ||
@@ -622,7 +692,7 @@ export async function saveDb() {
             void triggerSave({
                 skipBroadcast: true,
             })
-            if (!externalEditMode.active) void flushServerDbKeepalive()
+            void flushServerDbKeepalive()
         }
         const handleVisibilityFlush = () => {
             if (document.visibilityState === 'hidden') flushImmediate();
@@ -987,8 +1057,10 @@ export async function saveDb() {
                         return 'noop'
                     }
                     if (e.canonicalFilesChanged) {
-                        canonicalSaveConflict.mark()
-                        return resolveCanonicalSaveConflict(toSave)
+                        requeueTrackedChanges(toSave)
+                        await syncLiveFilesNow()
+                        changed = true
+                        return 'retry'
                     }
                 }
                 console.error(`[Save] Failed to save chat ${chaId}/${chatId}:`, e)
@@ -1174,8 +1246,10 @@ export async function saveDb() {
                     return 'noop'
                 }
                 if (patchResult.canonicalFilesChanged) {
-                    canonicalSaveConflict.mark()
-                    return resolveCanonicalSaveConflict(toSave)
+                    requeueTrackedChanges(toSave)
+                    await syncLiveFilesNow()
+                    changed = true
+                    return 'retry'
                 }
                 saved = patchResult.success
                 if (patchResult.etag) {
@@ -1229,8 +1303,10 @@ export async function saveDb() {
                         return 'noop'
                     }
                     if (conflictErr.canonicalFilesChanged) {
-                        canonicalSaveConflict.mark()
-                        return resolveCanonicalSaveConflict(toSave)
+                        requeueTrackedChanges(toSave)
+                        await syncLiveFilesNow()
+                        changed = true
+                        return 'retry'
                     }
                     console.warn('[Save] Full-write conflict detected, rebasing tracked local changes on latest server DB...')
                     await rebaseTrackedLocalChangesOnLatestServerDb(conflictErr.currentEtag ?? null, db, toSave)
@@ -1249,6 +1325,7 @@ export async function saveDb() {
         }
 
         updateKnownChatsAfterSuccessfulSave(db, toSave)
+        if (supportsPatchSync) acknowledgedDb = patcher.snapshot()
 
         if (newEtag) {
             forageStorage.setDbEtag(newEtag)
@@ -1264,19 +1341,21 @@ export async function saveDb() {
         rejectOnFailure?: boolean
     }) {
         if (!saveRuntime.isActive()) return
-        if (externalEditMode.active) return
-        if (saveInFlight) {
-            return saveInFlight
+        while (saveInFlight) {
+            try { await saveInFlight } catch {}
         }
+        if (!saveRuntime.isActive()) return
 
-        const toSave = takeTrackedChanges()
-        if (!hasTrackedChanges(toSave) && !options?.forceFullWrite && !forceFullWriteOnRetry) {
+        if (!hasTrackedChanges(changeTracker) && !options?.forceFullWrite && !forceFullWriteOnRetry) {
             return
         }
 
         saveInFlight = (async () => {
             saving.state = true
+            let toSave: toSaveType | null = null
             try {
+                await syncLiveFilesNow()
+                toSave = takeTrackedChanges()
                 const result = await persistTrackedChanges(toSave, {
                     ...options,
                     forceFullWrite: options?.forceFullWrite || forceFullWriteOnRetry,
@@ -1299,8 +1378,14 @@ export async function saveDb() {
                     ))
                 }
             } catch (error) {
+                if (!toSave && (lastLiveError || error?.code === 'LIVE_FILES_INACTIVE')) {
+                    changed = true
+                    if (options?.rejectOnFailure) throw error
+                    await sleep(750)
+                    return
+                }
                 forceFullWriteOnRetry ||= supportsPatchSync
-                requeueTrackedChanges(toSave)
+                if (toSave) requeueTrackedChanges(toSave)
                 savetrys += 1
                 if (options?.rejectOnFailure) {
                     changed = true
@@ -1327,7 +1412,7 @@ export async function saveDb() {
     requestImmediateSaveImpl = async (options) => {
         changed = true
         await tick()
-        if (saveInFlight) await saveInFlight
+        await refreshThisRuntime()
         await triggerSave({
             forceFullWrite: options?.forceFullWrite,
             rejectOnFailure: options?.rejectOnFailure,

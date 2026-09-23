@@ -30,7 +30,7 @@ import { dispatchCommittedChatOutput } from "../plugins/pluginChatOutput";
 import { getModelInfo, LLMFlags } from "../model/modellist";
 import { resolveChatModelBinding, resolvePresetMaxOutputTokens } from "./request/modelPresetBinding";
 import { getModuleAssets, getModuleLorebooksWithSources, getModuleToggles } from "./modules";
-import { forageStorage, readImage } from "../globalApi.svelte";
+import { forageStorage, readImage, refreshLiveFiles } from "../globalApi.svelte";
 import { chatGenKey, chatProcessStage, endGeneration, isChatGenerating, setGenerationStage, startGeneration } from "./generationState";
 import { clearPendingSend, registerPendingSend } from "./request/pendingSends";
 import {
@@ -1128,6 +1128,13 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     preview?:boolean
     previewPrompt?:boolean
 } = {}):Promise<boolean> {
+
+    try {
+        await refreshLiveFiles()
+    } catch (error) {
+        notifyError(`외부 파일을 확인하지 못해 전송하지 않았습니다: ${error instanceof Error ? error.message : String(error)}`)
+        return false
+    }
 
     const selected = DBState.db.characters[get(selectedCharID)]
     const selectedConversation = selected?.chats[selected.chatPage]

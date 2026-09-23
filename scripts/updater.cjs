@@ -320,8 +320,12 @@ async function main() {
     const backupDir = path.join(tmpDir, 'backup');
     fs.mkdirSync(backupDir, { recursive: true });
 
-    for (const entry of fs.readdirSync(ROOT)) {
+    // Only replace entries supplied by the release. Unrelated user files must
+    // never enter the temporary backup, which is deleted after a successful update.
+    const releaseEntries = fs.readdirSync(extractedRoot);
+    for (const entry of releaseEntries) {
         if (keep.has(entry)) continue;
+        if (!fs.existsSync(path.join(ROOT, entry))) continue;
         try {
             fs.renameSync(path.join(ROOT, entry), path.join(backupDir, entry));
         } catch (e) {
@@ -336,11 +340,9 @@ async function main() {
 
     // Phase 2: move new files from extracted to root
     const moved = [];
-    const skipMove = new Set(['save', 'scripts', 'update.bat']);
-    if (isWin || skipBinReplacement) skipMove.add('bin');
     try {
-        for (const entry of fs.readdirSync(extractedRoot)) {
-            if (skipMove.has(entry)) continue;
+        for (const entry of releaseEntries) {
+            if (keep.has(entry)) continue;
             const src = path.join(extractedRoot, entry);
             const dest = path.join(ROOT, entry);
             if (fs.existsSync(dest)) {

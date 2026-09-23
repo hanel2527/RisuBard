@@ -1,5 +1,6 @@
 <script lang="ts">
-    import { BookIcon, DownloadIcon, FlagIcon, ImageIcon, LinkIcon, SmileIcon, TrashIcon } from '@lucide/svelte';
+    import { BookIcon, DownloadIcon, FlagIcon, ImageIcon, LinkIcon, LoaderCircleIcon, PackageIcon, SmileIcon, TrashIcon } from '@lucide/svelte';
+    import { onDestroy } from 'svelte';
     import { language } from 'src/lang';
     import { alertConfirm, alertInput, alertNormal, notifyInfo } from 'src/ts/alert';
     import { hubURL, type hubType, downloadRisuHub, getRealmInfo } from 'src/ts/characterCards';
@@ -9,6 +10,8 @@
     import ShButton from '../GUI/ShButton.svelte';
     import ShDialog from '../GUI/ShDialog.svelte';
     import { tooltip } from 'src/ts/gui/tooltip';
+    import { downloadProtonModule, findSingleProtonLink } from 'src/ts/realm/protonModule';
+    import { importRisum } from 'src/ts/process/modules';
 
     interface Props {
         openedData: hubType;
@@ -16,6 +19,19 @@
 
     let { openedData = $bindable() }: Props = $props();
     let isKorean = $derived(DBState.db.language === 'ko');
+    let moduleLink = $derived(findSingleProtonLink(openedData.desc));
+    let moduleStage = $state<'idle' | 'checking' | 'downloading' | 'importing' | 'done' | 'unsupported' | 'password' | 'error'>('idle');
+    let moduleBusy = $derived(['checking', 'downloading', 'importing'].includes(moduleStage));
+    let downloadedBytes = $state(0);
+    let totalBytes = $state<number | undefined>();
+    let moduleController: AbortController | undefined;
+    onDestroy(() => moduleController?.abort());
+    $effect(() => {
+        openedData.id;
+        moduleController?.abort();
+        moduleController = undefined;
+        moduleStage = 'idle';
+    });
     let ui = $derived(isKorean ? {
         madeBy: '제작자',
         viewOriginal: '원본 캐릭터 보기',
@@ -23,6 +39,17 @@
         assets: '추가 에셋 포함',
         lorebook: '로어북 포함',
         download: '다운로드 후 채팅',
+        importModule: '모듈 가져오기',
+        checkingModule: '링크 확인 중…',
+        downloadingModule: '모듈 다운로드 중…',
+        importingModule: '모듈 임포트 중…',
+        moduleDone: '모듈을 가져왔습니다. 모듈 설정에서 사용할 수 있습니다.',
+        moduleUnsupported: '폴더 또는 지원하지 않는 파일입니다. Proton Drive에서 열어주세요.',
+        modulePassword: '추가 비밀번호가 필요한 링크입니다. Proton Drive에서 열어주세요.',
+        moduleError: '모듈을 가져오지 못했습니다. 다시 시도하거나 원본을 열어주세요.',
+        openOriginal: '원본 열기',
+        retry: '다시 시도',
+        cancel: '취소',
         copyLink: 'RisuRealm 링크 복사',
         report: '캐릭터 신고',
         reportConfirm: '이 캐릭터를 신고할까요?',
@@ -36,6 +63,17 @@
         assets: 'Additional assets',
         lorebook: 'Lorebook',
         download: 'Download & Chat',
+        importModule: 'Import module',
+        checkingModule: 'Checking link…',
+        downloadingModule: 'Downloading module…',
+        importingModule: 'Importing module…',
+        moduleDone: 'Module imported. You can use it in module settings.',
+        moduleUnsupported: 'This is a folder or an unsupported file. Open it in Proton Drive.',
+        modulePassword: 'This link requires an additional password. Open it in Proton Drive.',
+        moduleError: 'Could not import the module. Try again or open the original.',
+        openOriginal: 'Open original',
+        retry: 'Try again',
+        cancel: 'Cancel',
         copyLink: 'Copy RisuRealm link',
         report: 'Report character',
         reportConfirm: 'Report this character?',
@@ -45,7 +83,41 @@
     });
 
     function close() {
+        if (moduleBusy) return;
         openedData = null;
+    }
+
+    async function getModule() {
+        if (!moduleLink || moduleBusy) return;
+        const controller = new AbortController();
+        moduleController = controller;
+        moduleStage = 'checking';
+        downloadedBytes = 0;
+        totalBytes = undefined;
+        try {
+            const result = await downloadProtonModule(moduleLink, {
+                signal: controller.signal,
+                onProgress: (downloaded, total) => {
+                    if (moduleController !== controller) return;
+                    moduleStage = 'downloading';
+                    downloadedBytes = downloaded;
+                    totalBytes = total;
+                },
+            });
+            if (moduleController !== controller) return;
+            controller.signal.throwIfAborted();
+            if (result.kind === 'external') {
+                moduleStage = result.reason;
+                return;
+            }
+            moduleStage = 'importing';
+            await importRisum(result.data);
+            moduleStage = 'done';
+        } catch {
+            if (moduleController === controller) moduleStage = controller.signal.aborted ? 'idle' : 'error';
+        } finally {
+            if (moduleController === controller) moduleController = undefined;
+        }
     }
 </script>
 
@@ -53,8 +125,9 @@
     open={true}
     onOpenChange={(open) => { if (!open) close(); }}
     size="lg"
-    closeOnEscape={true}
-    closeOnOutsideClick={true}
+    closable={!moduleBusy}
+    closeOnEscape={!moduleBusy}
+    closeOnOutsideClick={!moduleBusy}
     contentClass="max-h-[calc(100dvh-1rem)] gap-0 rounded-2xl p-0 overflow-hidden"
     bodyClass="min-h-0 min-w-0 flex-1 overflow-y-auto"
     closeClass="right-5 top-5 z-10 rounded-full border border-darkborderc bg-darkbg/90 p-1.5"
@@ -109,10 +182,17 @@
             <div class="mt-3"><RealmLicense license={openedData.license} /></div>
 
             <div class="mt-auto flex flex-wrap items-center gap-2 border-t border-darkborderc pt-4">
-                <ShButton variant="primary" className="grow" onclick={() => {
+                <ShButton variant="primary" className="grow" disabled={moduleBusy} onclick={() => {
                     void downloadRisuHub(openedData.id);
                     close();
                 }}><DownloadIcon size={17} /> {ui.download}</ShButton>
+
+                {#if moduleLink}
+                    <ShButton variant="outline" className="grow" disabled={moduleBusy || moduleStage === 'done'} onclick={getModule}>
+                        {#if moduleBusy}<LoaderCircleIcon size={17} class="animate-spin" />{:else}<PackageIcon size={17} />{/if}
+                        {moduleStage === 'checking' ? ui.checkingModule : moduleStage === 'downloading' ? ui.downloadingModule : moduleStage === 'importing' ? ui.importingModule : moduleStage === 'error' ? ui.retry : ui.importModule}
+                    </ShButton>
+                {/if}
 
                 <ShButton variant="ghost" size="icon" aria-label={ui.copyLink} onclick={async () => {
                     await navigator.clipboard.writeText(`https://realm.risuai.net/character/${openedData.id}`);
@@ -142,6 +222,28 @@
                     }}><TrashIcon size={18} /></ShButton>
                 {/if}
             </div>
+            {#if moduleLink && moduleStage !== 'idle'}
+                <div class="mt-3 space-y-2 text-sm text-textcolor2">
+                    <p role="status" aria-live="polite">
+                        {#if moduleStage === 'downloading'}
+                            {(downloadedBytes / 1048576).toFixed(1)} MiB{totalBytes ? ` / ${(totalBytes / 1048576).toFixed(1)} MiB` : ''}
+                        {:else if moduleStage === 'done'}{ui.moduleDone}
+                        {:else if moduleStage === 'unsupported'}{ui.moduleUnsupported}
+                        {:else if moduleStage === 'password'}{ui.modulePassword}
+                        {:else if moduleStage === 'error'}{ui.moduleError}
+                        {:else if moduleStage === 'importing'}{ui.importingModule}
+                        {:else}{ui.checkingModule}{/if}
+                    </p>
+                    {#if moduleStage === 'downloading' && totalBytes && totalBytes > 0}
+                        <progress class="h-2 w-full accent-primary" aria-label={ui.downloadingModule} max={totalBytes} value={downloadedBytes}></progress>
+                    {/if}
+                    {#if moduleStage === 'checking' || moduleStage === 'downloading'}
+                        <ShButton variant="outline" size="sm" onclick={() => moduleController?.abort()}>{ui.cancel}</ShButton>
+                    {:else if ['unsupported', 'password', 'error'].includes(moduleStage)}
+                        <ShButton variant="outline" size="sm" href={moduleLink} target="_blank" rel="noopener noreferrer">{ui.openOriginal}</ShButton>
+                    {/if}
+                </div>
+            {/if}
         </div>
     </div>
 </ShDialog>

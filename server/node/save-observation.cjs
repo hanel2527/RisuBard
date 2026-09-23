@@ -55,7 +55,7 @@ function createSaveObservation(options = {}) {
         }).catch(() => {});
     }
 
-    return { record, flush: () => pending };
+    return { sessionId, record, flush: () => pending };
 }
 
 module.exports = { createSaveObservation };

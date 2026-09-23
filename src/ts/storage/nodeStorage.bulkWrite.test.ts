@@ -19,6 +19,35 @@ vi.mock('./chatContentPage', () => ({ assembleChatContentPages: vi.fn() }))
 
 import { NodeStorage } from './nodeStorage'
 
+describe('NodeStorage live file synchronization', () => {
+    it('sends the revision through authenticated transport without advancing the save etag', async () => {
+        const storage = new NodeStorage()
+        storage.setDbEtag('acknowledged')
+        const result = { revision: 'new', etag: 'remote', snapshot: { characters: [], loreBook: [] } }
+        const authFetch = vi.fn(async () => new Response(JSON.stringify(result), { status: 200 }))
+        ;(storage as any).authFetch = authFetch
+        expect(await storage.syncLiveFiles('old')).toEqual(result)
+        expect(authFetch).toHaveBeenCalledWith('/api/live-files/sync', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"revision":"old"}',
+        })
+        expect(storage._lastDbEtag).toBe('acknowledged')
+    })
+
+    it('rejects a failed sync instead of accepting a partial response', async () => {
+        const storage = new NodeStorage()
+        ;(storage as any).authFetch = vi.fn(async () => new Response('{"error":"writer busy"}', { status: 423 }))
+        await expect(storage.syncLiveFiles()).rejects.toThrow('writer busy')
+    })
+
+    it('preserves the inactive code so background polling can stay quiet while send preflight still rejects', async () => {
+        const storage = new NodeStorage()
+        ;(storage as any).authFetch = vi.fn(async () => new Response(
+            '{"code":"LIVE_FILES_INACTIVE","error":"writer inactive"}', { status: 409 },
+        ))
+        await expect(storage.syncLiveFiles()).rejects.toMatchObject({ code: 'LIVE_FILES_INACTIVE' })
+    })
+})
+
 describe('NodeStorage bulk asset writes', () => {
     it('sends up to 200 small assets per request', async () => {
         const storage = new NodeStorage()

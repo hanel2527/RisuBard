@@ -17,6 +17,122 @@ function fixture() {
     const db = { characters: [{ chaId: 'one', image: 'assets/portrait.png', additionalAssets: [['shared', 'assets/shared.png', 'png']] }, { chaId: 'two', image: 'assets/shared.png' }] }
     return { root, store, db }
 }
+function mappedFixture() {
+    const fixtureValue = fixture()
+    const { root, store, db } = fixtureValue
+    const { createUserDataRepository } = require('./user-data-repository.cjs')
+    atomicWriteJson(root, 'characters/one/metadata.json', { chaId: 'one' })
+    const repo = createUserDataRepository({ dataRoot: root, allowDirectoryMapping: true })
+    repo.importLegacyDatabase(db)
+    const mapped = repo.publishCharacterDirectoryMapping('one')
+    return { ...fixtureValue, directory: path.join(root, 'characters', mapped.directory, 'assets') }
+}
+it('syncs V3 app replacement and removal, preserves shared KV, and skips unchanged saves', () => {
+    const { root, store, db, directory } = mappedFixture()
+    expect(store.characterAssets.sync(db).changed).toBe(true)
+    expect(fs.readFileSync(path.join(directory, 'portrait.png')).toString()).toBe('portrait')
+    const read = vi.spyOn(fs, 'readFileSync')
+    try {
+        expect(store.characterAssets.sync(db).changed).toBe(false)
+        expect(read).not.toHaveBeenCalled()
+    } finally { read.mockRestore() }
+    store.kvSet('assets/new.png', Buffer.from('new portrait'))
+    db.characters[0].image = 'assets/new.png'
+    store.characterAssets.sync(db)
+    expect(fs.existsSync(path.join(directory, 'portrait.png'))).toBe(false)
+    expect(fs.readFileSync(path.join(directory, 'new.png')).toString()).toBe('new portrait')
+    expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
+    expect(store.kvGet('assets/shared.png').toString()).toBe('shared')
+    expect(fs.readFileSync(path.join(directory, 'shared.png')).toString()).toBe('shared')
+    db.characters[0].image = ''
+    db.characters[0].additionalAssets = []
+    store.characterAssets.sync(db)
+    expect(fs.existsSync(path.join(directory, 'new.png'))).toBe(false)
+    const live = JSON.parse(fs.readFileSync(path.join(root, 'index/live-character-assets.json'), 'utf8'))
+    expect(live.characters.one).toEqual({})
+})
+it('preserves external asset bytes when app removal races with an unadopted edit and retries', () => {
+    const { store, db, directory } = mappedFixture()
+    store.characterAssets.sync(db)
+    const target = path.join(directory, 'portrait.png')
+    fs.writeFileSync(target, 'external')
+    db.characters[0].image = ''
+    expect(() => store.characterAssets.sync(db)).toThrow('Asset changed outside the app')
+    expect(fs.readFileSync(target).toString()).toBe('external')
+    fs.writeFileSync(target, 'portrait')
+    expect(store.characterAssets.sync(db).changed).toBe(true)
+    expect(fs.existsSync(target)).toBe(false)
+})
+it('leaves legacy ID layouts and unknown files untouched during app asset sync', () => {
+    const legacy = fixture()
+    expect(legacy.store.characterAssets.sync(legacy.db).changed).toBe(false)
+    expect(fs.existsSync(path.join(legacy.root, 'characters/one/assets'))).toBe(false)
+    const { store, db, directory } = mappedFixture()
+    fs.mkdirSync(directory, { recursive: true })
+    fs.writeFileSync(path.join(directory, 'user.txt'), 'user')
+    store.characterAssets.sync(db)
+    expect(fs.readFileSync(path.join(directory, 'user.txt')).toString()).toBe('user')
+})
+it('invalidates the sync fast path when bytes change under the same KV key', () => {
+    const { root, store, db, directory } = mappedFixture()
+    db.characters[0].additionalAssets = []
+    const { createCharacterAssets } = require('./character-assets.cjs')
+    let bytes = Buffer.from('portrait')
+    const assets = createCharacterAssets({ dataRoot: root, sourceSize: () => bytes.length,
+        readOriginal: () => bytes, sourceVersion: () => bytes.toString() })
+    assets.sync(db)
+    bytes = Buffer.from('replacement')
+    expect(assets.sync(db).changed).toBe(true)
+    expect(fs.existsSync(path.join(directory, 'portrait.png'))).toBe(false)
+    expect(fs.readFileSync(path.join(directory, 'portrait (2).png')).toString()).toBe('replacement')
+    expect(store.kvGet('assets/shared.png').toString()).toBe('shared')
+})
+it('materializes independent copies of a shared asset in each V3 folder without removing the KV original', () => {
+    const { root, store, db, directory } = mappedFixture()
+    const { createUserDataRepository } = require('./user-data-repository.cjs')
+    const repo = createUserDataRepository({ dataRoot: root, allowDirectoryMapping: true })
+    const other = repo.publishCharacterDirectoryMapping('two')
+    store.characterAssets.sync(db)
+    const second = path.join(root, 'characters', other.directory, 'assets/shared.png')
+    expect(fs.readFileSync(path.join(directory, 'shared.png')).toString()).toBe('shared')
+    expect(fs.readFileSync(second).toString()).toBe('shared')
+    db.characters[0].additionalAssets = []
+    store.characterAssets.sync(db)
+    expect(fs.existsSync(path.join(directory, 'shared.png'))).toBe(false)
+    expect(fs.readFileSync(second).toString()).toBe('shared')
+    expect(store.kvGet('assets/shared.png').toString()).toBe('shared')
+})
+it('does not serve unadopted same-size external edits through shared KV references', () => {
+    const { root, store, db, directory } = mappedFixture()
+    store.characterAssets.sync(db)
+    // The other character remains unmapped but uses the exact same KV key.
+    fs.writeFileSync(path.join(directory, 'shared.png'), 'edited')
+    expect(store.kvGet('assets/shared.png').toString()).toBe('shared')
+    expect(createFileKv({ dataRoot: root }).kvGet('assets/shared.png').toString()).toBe('shared')
+    expect(fs.readFileSync(path.join(directory, 'shared.png')).toString()).toBe('edited')
+})
+it('recovers interrupted asset publication before retrying without duplicating or resurrecting files', () => {
+    const { root, store, db, directory } = mappedFixture()
+    db.characters[0].additionalAssets = []
+    store.characterAssets.sync(db)
+    store.kvSet('assets/new.png', Buffer.from('new'))
+    db.characters[0].image = 'assets/new.png'
+    const index = path.join(root, 'index/character-asset-replicas.json')
+    const rename = fs.renameSync
+    let failed = false
+    const spy = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+        if (!failed && String(to) === index) { failed = true; throw new Error('interrupted publication') }
+        return rename(from, to)
+    })
+    try { expect(() => store.characterAssets.sync(db)).toThrow('interrupted publication') }
+    finally { spy.mockRestore() }
+    store.characterAssets.sync(db)
+    expect(fs.existsSync(path.join(directory, 'portrait.png'))).toBe(false)
+    expect(fs.readFileSync(path.join(directory, 'new.png')).toString()).toBe('new')
+    expect(fs.readdirSync(directory).filter(name => name.endsWith('.png'))).toEqual(['new.png'])
+    const live = JSON.parse(fs.readFileSync(path.join(root, 'index/live-character-assets.json'), 'utf8'))
+    expect(Object.keys(live.characters.one)).toEqual(['new.png'])
+})
 it('copies only unique explicit character references and retains KV bytes across reopen', () => {
     const { root, store, db } = fixture()
     const before = fs.readFileSync(path.join(root, 'kv', 'manifest.json'))

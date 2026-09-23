@@ -57,6 +57,7 @@ const { writeCanonicalProjection } = require('./canonical-projection-writer.cjs'
 const { reclaimDeletedCharacterAssets } = require('./deleted-character-assets.cjs');
 const { kvDelManyAndCollect } = require('./db.cjs');
 const { createExternalEditSession } = require('./external-edit-session.cjs');
+const { createLiveCharacterFiles, metadataSnapshot, mergePendingLiveDatabase, createLiveFileRecovery } = require('./live-character-files.cjs');
 const {
     collectDatabaseAssetReferences,
     collectNestedAssetReferences,
@@ -285,6 +286,10 @@ async function flushPendingDbWithinQueue(options = {}) {
 }
 
 function invalidateDbCache() {
+    liveFileRecovery.complete();
+    liveFilesAdoption = null;
+    liveFilesRecovery = null;
+    liveFilesPendingWrites = false;
     compatibilityCache.setVerified(false);
     directWriteTracker.clear(DB_HEX_KEY);
     delete dbCache[DB_HEX_KEY];
@@ -370,14 +375,14 @@ async function decodeDatabaseWithPersistentChatIds(raw, options = {}) {
 
     if (needsPersist) {
         kvSet('database/database.bin', encodeRisuSaveLegacyBuffer(dbObj));
-        persistCanonicalProjection(dbObj);
+        persistCanonicalProjection(dbObj, { preserveCharacterLayout: true });
         if (runMaintenance) maybeCollectUnreferencedObjects();
     }
     if (migrationResult) {
         migrationResult.coldStorageFailed = coldRestoreResult.failed;
     }
     if (!canonicalProjectionReady) {
-        persistCanonicalProjection(dbObj);
+        persistCanonicalProjection(dbObj, { preserveCharacterLayout: true });
     }
     return dbObj;
 }
@@ -1003,6 +1008,27 @@ const canonicalProjectionSync = createCanonicalProjectionSync({
 })
 let externalEditSession
 let canonicalProjectionReady = existsSync(path.join(savePath, 'index', 'sidebar.json'))
+const liveCharacterFiles = createLiveCharacterFiles({ repository: userDataRepository, writeAsset: kvSet, writeAssets: kvSetMany, reloadAssets: () => characterAssets.reload() });
+let liveFilesRevision = nodeCrypto.randomUUID();
+let liveFilesPendingWrites = false;
+let liveFilesAdoption = null;
+let liveFilesRecovery = null;
+const liveFileRecovery = createLiveFileRecovery(savePath);
+const interruptedLiveAdoption = liveFileRecovery.load();
+if (interruptedLiveAdoption) {
+    liveFilesAdoption = {
+        pending: interruptedLiveAdoption.record.pending,
+        baseline: interruptedLiveAdoption.record.baseline,
+        recovery: interruptedLiveAdoption.info,
+        recoverySaved: true,
+    };
+    liveCharacterFiles.invalidate();
+}
+function preserveLiveFileRecovery(record) {
+    // Publish before touching the acknowledged cache or canonical merge. A
+    // failed write aborts adoption; recovery does not depend on browser storage.
+    return liveFileRecovery.save(record);
+}
 function persistCanonicalProjection(databaseObject, observationContext = {}) {
     const startedAt = performance.now()
     const operationId = observationContext.operationId || nodeCrypto.randomUUID()
@@ -1019,7 +1045,9 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
             error.code = 'EXTERNAL_EDIT_MODE'
             throw error
         }
-        if (canonicalProjectionSync.hasExternalChanges()) {
+        if (observationContext.externalRevision
+            ? userDataRepository.getProjectionRevision() !== observationContext.externalRevision
+            : canonicalProjectionSync.hasExternalChanges()) {
             const error = new Error('Canonical entity files changed outside RisuBard before projection save')
             error.code = 'CANONICAL_FILES_CHANGED'
             throw error
@@ -1040,6 +1068,7 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
             repository: userDataRepository,
             database: databaseObject,
             directCollection: observationContext.directCollection,
+            preserveCharacterLayout: observationContext.preserveCharacterLayout || !canonicalProjectionReady,
         })
         const result = write.result
         strategy = write.strategy
@@ -1047,8 +1076,14 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
         fallbackCode = write.fallbackCode
         phaseMetrics.transactionMs = elapsedMs(phaseStartedAt)
         phaseStartedAt = performance.now()
+        errorStage = 'character-assets'
+        characterAssets.sync(databaseObject)
         errorStage = 'revision-accept'
         canonicalProjectionSync.accept()
+        if (!observationContext.adoptingLiveFiles) {
+            liveCharacterFiles.accept(databaseObject)
+            liveFilesPendingWrites = false
+        }
         phaseMetrics.revisionAcceptMs = elapsedMs(phaseStartedAt)
         canonicalProjectionReady = true
         if (result.deletedAssetCandidates?.length) {
@@ -1097,17 +1132,42 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
     }
 }
 
-function adoptExternallyChangedCanonicalProjection() {
+function adoptExternallyChangedCanonicalProjection(liveOnly = false) {
     if (!canonicalProjectionReady) return null
-    const changed = canonicalProjectionSync.loadExternalChanges()
-    if (!changed) return null
-
+    try {
+    const fresh = liveCharacterFiles.reconcile() || (!liveOnly && canonicalProjectionSync.loadExternalChanges())
+    if (!fresh && !liveFilesAdoption) return null
+    if (!liveFilesAdoption) {
+        liveFilesAdoption = {
+            changed: fresh,
+            pending: liveFilesPendingWrites
+                ? normalizeJSON(reassembleFullDb(dbCache[DB_HEX_KEY] || stripChatsFromDb(fresh.database))) : null,
+            baseline: fresh.previous,
+        }
+    } else if (fresh) {
+        liveFilesAdoption.changed = fresh
+        liveFilesAdoption.readyDb = null
+    }
+    if (!liveFilesAdoption.changed) {
+        liveFilesAdoption.changed = { database: userDataRepository.exportLegacyDatabase(), revision: userDataRepository.getProjectionRevision() }
+    }
+    const { changed, pending, baseline } = liveFilesAdoption
+    let fullDb = liveFilesAdoption.readyDb || normalizeJSON(changed.database)
+    if (!liveFilesAdoption.readyDb && pending && baseline) {
+        const conflicts = []
+        fullDb = mergePendingLiveDatabase(pending, baseline, fullDb, conflicts)
+        if (!liveFilesAdoption.recoverySaved) {
+            liveFilesAdoption.recovery = preserveLiveFileRecovery({ pending, baseline, conflicts, externalRevision: changed.revision })
+            liveFilesAdoption.recoverySaved = true
+        }
+        persistCanonicalProjection(fullDb, { trigger: 'live-files-merge', externalRevision: changed.revision, adoptingLiveFiles: true })
+    }
+    liveFilesAdoption.readyDb = fullDb
     if (saveTimers[DB_HEX_KEY]) {
         clearTimeout(saveTimers[DB_HEX_KEY])
         delete saveTimers[DB_HEX_KEY]
     }
     directWriteTracker.clear(DB_HEX_KEY)
-    const fullDb = normalizeJSON(changed.database)
     const encoded = encodeRisuSaveLegacyBuffer(fullDb)
     kvSet('database/database.bin', encoded)
     initChatStore(fullDb)
@@ -1115,9 +1175,21 @@ function adoptExternallyChangedCanonicalProjection() {
     dbCache[DB_HEX_KEY] = stripped
     dbEtag = computeBufferEtag(encodeRisuSaveLegacyBuffer(stripped))
     externallyAdoptedDbEtag = dbEtag
-    canonicalProjectionSync.accept(changed.revision)
+    canonicalProjectionSync.accept()
+    liveCharacterFiles.accept(fullDb)
+    liveFileRecovery.complete()
+    liveFilesRecovery = liveFilesAdoption.recovery || null
+    liveFilesPendingWrites = false
+    liveFilesAdoption = null
+    liveFilesRevision = nodeCrypto.randomUUID()
     logger.info('[CanonicalProjection] Adopted externally edited canonical entity files')
     return { etag: dbEtag, revision: changed.revision }
+    } catch (error) {
+        // A canonical journal may already have published before a later stage
+        // failed. Re-read it even if the OS watcher misses that publication.
+        liveCharacterFiles.invalidate()
+        throw error
+    }
 }
 
 externalEditSession = createExternalEditSession({
@@ -2776,6 +2848,9 @@ async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0
     invalidateDbCache();
     if (canonicalEntriesRestored > 0) {
         canonicalProjectionSync.accept();
+        liveCharacterFiles.reset();
+        liveFilesRevision = nodeCrypto.randomUUID();
+        characterAssets.reload();
         canonicalProjectionReady = true;
     }
 
@@ -3404,6 +3479,36 @@ app.get('/api/external-edit/status', async (req, res) => {
     res.json(externalEditSession.status())
 })
 
+app.post('/api/live-files/sync', async (req, res, next) => {
+    if (!await checkAuth(req, res)) return
+    // Polling must not advance lastWriteAt or steal/deactivate another tab.
+    if (sessionLock.peek(req.headers['x-session-id']) === 'stale') {
+        return res.status(409).json({ code: 'LIVE_FILES_INACTIVE', error: 'This session is no longer the active writer' })
+    }
+    try {
+        await queueStorageOperation(async () => {
+            let errorMessage
+            try {
+                try { adoptExternallyChangedCanonicalProjection(true) }
+                catch (error) {
+                    if (error?.code !== 'LIVE_FILES_SETTLING') throw error
+                    await new Promise(resolve => setTimeout(resolve, 275))
+                    adoptExternallyChangedCanonicalProjection(true)
+                }
+                if (externalEditSession.isActive()) await externalEditSession.finish()
+            } catch (error) { errorMessage = String(error?.message || error) }
+            // Do not expose partial data or advance the client's acknowledgement
+            // after a failed validation. The next poll retries the same files.
+            const payload = { revision: liveFilesRevision, etag: dbEtag, ...(errorMessage ? { error: errorMessage } : {}) }
+            if (!errorMessage && req.body?.revision !== liveFilesRevision) {
+                payload.snapshot = metadataSnapshot(dbCache[DB_HEX_KEY] || userDataRepository.loadStartupDatabase())
+                if (liveFilesRecovery?.conflicts) payload.recovery = liveFilesRecovery
+            }
+            res.json(payload)
+        })
+    } catch (error) { next(error) }
+})
+
 app.post('/api/external-edit/start', async (req, res, next) => {
     if (!await checkAuth(req, res)) return
     if (!checkActiveSession(req, res)) return
@@ -3950,9 +4055,11 @@ app.get('/api/logs', async (req, res, next) => {
 app.get('/api/storage-diagnostics/report', async (req, res, next) => {
     if (!await checkAuth(req, res)) return;
     try {
+        await saveObservation.flush();
         const report = await generateStorageDiagnosticReport({
             dataRoot: savePath,
             appVersion: getCurrentVersion(),
+            sessionId: saveObservation.sessionId,
         });
         res.json({ ...report, characterAssets: characterAssets.diagnostics() });
     } catch (error) {
@@ -3978,7 +4085,10 @@ require('./character-package-routes.cjs').registerCharacterPackageRoutes(app, {
     auth: checkAuth,
     activeSession: checkActiveSession,
     queue: queueStorageOperation,
-    acceptTransition: () => canonicalProjectionSync.accept(),
+    acceptTransition: () => {
+        canonicalProjectionSync.accept();
+        liveCharacterFiles.invalidate();
+    },
     recordTransition: event => saveObservation.record(event),
     repository: userDataRepository,
     assets: characterAssets,
@@ -4353,6 +4463,7 @@ app.post('/api/patch', async (req, res, next) => {
                 throw patchErr;
             }
             dbCache[filePath] = snapshot;
+            if (decodedKey === 'database/database.bin') liveFilesPendingWrites = true;
             if (decodedKey === 'database/database.bin') directWriteTracker.observe(filePath, patch, snapshot);
 
             // Schedule save to KV (debounced) — merge full chats back for database.bin
@@ -5465,6 +5576,7 @@ async function saveChatContentHandler(req, res, next) {
                 fullChatStore.set(chaId, new Map());
             }
             fullChatStore.get(chaId).set(expectedChatId, chatData);
+            liveFilesPendingWrites = true;
             directWriteTracker.observeChat(DB_HEX_KEY, chaId, expectedChatId);
 
             // Schedule debounced persist (reuses existing timer mechanism)
@@ -6699,9 +6811,12 @@ app.post('/api/self-update', async (req, res) => {
         const backupDir = path.join(updateTmp, 'backup');
         await fs.mkdir(backupDir, { recursive: true });
 
-        const oldEntries = await fs.readdir(appDir);
-        for (const e of oldEntries) {
+        // Scope both backup and installation to release entries. Unknown root
+        // files belong to the user and must survive temporary-backup cleanup.
+        const releaseEntries = await fs.readdir(sourceDir);
+        for (const e of releaseEntries) {
             if (keep.has(e)) continue;
+            if (!existsSync(path.join(appDir, e))) continue;
             try {
                 await fs.rename(path.join(appDir, e), path.join(backupDir, e));
             } catch (backupErr) {
@@ -6715,13 +6830,10 @@ app.post('/api/self-update', async (req, res) => {
         }
 
         // Phase 2: move new files from extracted to app root
-        const skipMove = new Set(['save', 'scripts']);
-        if (isWin) skipMove.add('bin');
         const moved = [];
         try {
-            const newEntries = await fs.readdir(sourceDir);
-            for (const e of newEntries) {
-                if (skipMove.has(e)) continue;
+            for (const e of releaseEntries) {
+                if (keep.has(e)) continue;
                 const dest = path.join(appDir, e);
                 await fs.rm(dest, { recursive: true, force: true }).catch(() => {});
                 await moveAcrossVolumes(path.join(sourceDir, e), dest);

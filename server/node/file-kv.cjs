@@ -134,7 +134,8 @@ function createFileKv(options = {}) {
     const dataRoot = path.resolve(options.dataRoot || path.join(process.cwd(), 'save'));
     fs.mkdirSync(dataRoot, { recursive: true });
     recoverTransactions(dataRoot);
-    const characterAssets = createCharacterAssets({ dataRoot, sourceSize: kvSize, readOriginal: kvGetOriginal });
+    const characterAssets = createCharacterAssets({ dataRoot, sourceSize: kvSize, readOriginal: kvGetOriginal,
+        sourceVersion: key => manifest.entries[key]?.object });
 
     let manifest = fs.existsSync(path.join(dataRoot, MANIFEST_PATH))
         ? readVerifiedJson(dataRoot, MANIFEST_PATH)

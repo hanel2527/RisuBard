@@ -51,6 +51,94 @@ afterEach(async () => {
 })
 
 describe('character V3 transition selection', () => {
+    it('runs all active characters sequentially and resumes from server status after remount', async () => {
+        const enabled = new Set<string>(['active-a'])
+        mocks.transition.mockImplementation(async (id, action) => {
+            if (action === 'migrate') enabled.add(id)
+            return { enabled: enabled.has(id), assets: { enabled: enabled.has(id), failed: 0 } }
+        })
+        await render()
+        click('전체 캐릭터 V3 전환 / 재개')
+        await vi.waitFor(() => expect(document.body.textContent).toContain('전체 처리 완료'))
+        expect(mocks.transition.mock.calls).toEqual([
+            ['active-a', 'status'], ['active-b', 'status'], ['active-b', 'migrate'],
+        ])
+        await unmount(component!)
+        component = undefined
+        mocks.transition.mockClear()
+        await render()
+        click('전체 캐릭터 V3 전환 / 재개')
+        await vi.waitFor(() => expect(document.body.textContent).toContain('전체 처리 완료'))
+        expect(mocks.transition.mock.calls).toEqual([['active-a', 'status'], ['active-b', 'status']])
+    })
+
+    it('isolates a failed character and reports asset failures without counting them as complete', async () => {
+        mocks.transition.mockImplementation(async (id, action) => {
+            if (id === 'active-a') throw new Error('unavailable')
+            return { enabled: action === 'migrate', assets: { failed: 2 } }
+        })
+        await render()
+        click('전체 캐릭터 V3 전환 / 재개')
+        await vi.waitFor(() => expect(document.body.textContent).toContain('전체 처리 완료'))
+        expect(mocks.transition.mock.calls).toEqual([
+            ['active-a', 'status'], ['active-b', 'status'], ['active-b', 'migrate'],
+        ])
+        expect(document.body.textContent).toContain('상태 확인 또는 전환 실패')
+        expect(document.body.textContent).toContain('에셋 2개 실패')
+    })
+
+    it('stops after the in-flight character and does not start another request', async () => {
+        let resolveStatus!: (value: unknown) => void
+        mocks.transition.mockImplementation(() => new Promise(resolve => { resolveStatus = resolve }))
+        await render()
+        click('전체 캐릭터 V3 전환 / 재개')
+        await vi.waitFor(() => expect(mocks.transition).toHaveBeenCalledTimes(1))
+        click('중단')
+        resolveStatus({ enabled: false, assets: { failed: 0 } })
+        await vi.waitFor(() => expect(document.body.textContent).toContain('전체 처리 중단'))
+        expect(mocks.transition.mock.calls).toEqual([['active-a', 'status']])
+    })
+
+    it('rechecks deletion after status and excludes characters added after the batch starts', async () => {
+        mocks.transition.mockImplementation(async () => {
+            mocks.db.characters[0].trashTime = 123
+            mocks.db.characters.push({ chaId: 'new', name: 'New' })
+            return { enabled: true, assets: { enabled: true, failed: 0 } }
+        })
+        await render()
+        click('전체 캐릭터 V3 전환 / 재개')
+        await vi.waitFor(() => expect(document.body.textContent).toContain('전체 처리 완료'))
+        expect(mocks.transition.mock.calls).toEqual([['active-a', 'status'], ['active-b', 'status']])
+        expect(document.body.textContent).toContain('삭제되어 제외')
+    })
+
+    it('refreshes a mapped character whose assets failed on an earlier attempt', async () => {
+        mocks.transition.mockImplementation(async (_id, action) => ({
+            enabled: true, assets: { enabled: true, failed: action === 'status' ? 1 : 0 },
+        }))
+        await render()
+        click('전체 캐릭터 V3 전환 / 재개')
+        await vi.waitFor(() => expect(document.body.textContent).toContain('전체 처리 완료'))
+        expect(mocks.transition.mock.calls).toEqual([
+            ['active-a', 'status'], ['active-a', 'refresh'], ['active-b', 'status'], ['active-b', 'refresh'],
+        ])
+    })
+
+    it('finishes only the current migration when leaving the settings screen', async () => {
+        let finish!: (value: unknown) => void
+        mocks.transition.mockImplementation(async (_id, action) => action === 'status'
+            ? { enabled: false, assets: { enabled: false, failed: 0 } }
+            : new Promise(resolve => { finish = resolve }))
+        await render()
+        click('전체 캐릭터 V3 전환 / 재개')
+        await vi.waitFor(() => expect(mocks.transition).toHaveBeenCalledTimes(2))
+        await unmount(component!)
+        component = undefined
+        finish({ enabled: true, assets: { enabled: true, failed: 0 } })
+        await tick()
+        expect(mocks.transition.mock.calls).toEqual([['active-a', 'status'], ['active-a', 'migrate']])
+    })
+
     it('reports a failed migration and reads the resulting partial state once', async () => {
         mocks.transition.mockRejectedValueOnce(new Error('mapping failed'))
             .mockResolvedValueOnce({ enabled: false, directory: '', chats: 0,

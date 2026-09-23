@@ -105,6 +105,8 @@ describe('portable installation transaction', () => {
 
     test('marks success and removes the backup only after the new server starts', async () => {
         const root = installationFixture()
+        write(root, '아치브 센터/nested/archive.bin', 'user archive')
+        write(root, 'personal.txt', 'user notes')
         const child = { pid: 123 }
         const start = vi.fn(async () => {
             expect(readVersion(root)).toBe('0.9.35')
@@ -117,6 +119,8 @@ describe('portable installation transaction', () => {
         expect(fs.readFileSync(path.join(root, '.installed-version'), 'utf8')).toBe('v0.9.35')
         expect(fs.readFileSync(path.join(root, 'save/characters.json'), 'utf8')).toBe('keep my characters')
         expect(fs.existsSync(path.join(root, '.update-tmp'))).toBe(false)
+        expect(fs.readFileSync(path.join(root, '아치브 센터/nested/archive.bin'), 'utf8')).toBe('user archive')
+        expect(fs.readFileSync(path.join(root, 'personal.txt'), 'utf8')).toBe('user notes')
     })
 
     test('rejects an invalid staged package before moving any installed file', async () => {

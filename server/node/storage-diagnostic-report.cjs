@@ -80,9 +80,7 @@ function collectIssues(rows) {
         a.area.localeCompare(b.area) || a.stage.localeCompare(b.stage) || a.code.localeCompare(b.code));
 }
 
-async function generateStorageDiagnosticReport(options = {}) {
-    const dataRoot = path.resolve(options.dataRoot || path.join(process.cwd(), 'save'));
-    const rows = await readRows(dataRoot);
+function summarizeRows(rows) {
     const saveRows = rows.filter(row => row.kind === 'compatibility-persist');
     const canonicalRows = rows.filter(row => row.kind === 'canonical-sync');
     const directRows = canonicalRows.filter(row => ['bot-presets-direct', 'chat-direct'].includes(row.strategy));
@@ -92,9 +90,6 @@ async function generateStorageDiagnosticReport(options = {}) {
     const observed = rows.length;
 
     return {
-        reportType: 'risubard-storage-diagnostics',
-        schemaVersion: 1,
-        appVersion: String(options.appVersion || 'unknown').slice(0, 32),
         status: observed === 0 ? 'no-observations' : issues.length ? 'issues-detected' : 'no-issues-observed',
         saves: {
             deferred: saveRows.filter(row => row.outcome === 'success' && row.projectionDeferred === true).length,
@@ -134,6 +129,21 @@ async function generateStorageDiagnosticReport(options = {}) {
             includesRawLogs: false,
             omitted: ['timestamps', 'paths', 'names', 'messages', 'identifiers', 'hashes', 'database sizes', 'entity counts'],
         },
+    };
+}
+
+async function generateStorageDiagnosticReport(options = {}) {
+    const dataRoot = path.resolve(options.dataRoot || path.join(process.cwd(), 'save'));
+    const rows = await readRows(dataRoot);
+    const hasSession = typeof options.sessionId === 'string' && options.sessionId.length > 0;
+    return {
+        reportType: 'risubard-storage-diagnostics',
+        schemaVersion: 1,
+        appVersion: String(options.appVersion || 'unknown').slice(0, 32),
+        scope: hasSession ? 'server-session' : 'retained-logs',
+        ...summarizeRows(hasSession ? rows.filter(row => row.sessionId === options.sessionId) : rows),
+        // Retain historical evidence without attributing older runs to this session/version.
+        ...(hasSession ? { history: { scope: 'retained-logs', ...summarizeRows(rows) } } : {}),
     };
 }
 

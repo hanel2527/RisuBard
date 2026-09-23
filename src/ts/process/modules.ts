@@ -328,6 +328,21 @@ export async function readModule(buf:Buffer):Promise<RisuModule> {
     return module
 }
 
+export async function importRisum(data: Uint8Array): Promise<void> {
+    const module = await readModule(Buffer.from(data))
+    if (!module?.id || !module.name) throw new Error(language.errors.noData)
+    const db = getDatabase()
+    db.modules.push(module)
+    try {
+        await requestImmediateSave({ flushServer: true, rejectOnFailure: true })
+    } catch (error) {
+        const index = db.modules.findIndex(item => item.id === module.id)
+        if (index !== -1) db.modules.splice(index, 1)
+        throw error
+    }
+    notifySuccess(language.successImport)
+}
+
 export async function importModule(){
     const f = await selectSingleFile(['json', 'lorebook', 'risum', 'charx'])
     if(!f){
@@ -359,11 +374,7 @@ export async function importModule(){
     }
     if(f.name.endsWith('.risum')){
         try {
-            const buf = Buffer.from(fileData)
-            const module = await readModule(buf)
-            db.modules.push(module)
-            await requestImmediateSave({ flushServer: true, rejectOnFailure: true })
-            notifySuccess(language.successImport)
+            await importRisum(fileData)
         } catch (error) {
             console.error(error)
             alertError(language.errors.noData)

@@ -18,6 +18,14 @@ afterEach(() => {
 })
 
 describe('save observation log', () => {
+    it('exposes the same session identity used in persisted observations', async () => {
+        const dataRoot = tempRoot()
+        const observation = createSaveObservation({ dataRoot })
+        observation.record({ kind: 'compatibility-persist', outcome: 'success' })
+        await observation.flush()
+        const row = JSON.parse(fs.readFileSync(path.join(dataRoot, 'logs/storage-observation.jsonl'), 'utf8'))
+        expect(observation.sessionId).toBe(row.sessionId)
+    })
     it('retains canonical phase timings without recording file identities', async () => {
         const dataRoot = tempRoot()
         const observation = createSaveObservation({ dataRoot })

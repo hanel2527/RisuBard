@@ -56,6 +56,8 @@ test.each([
         const saveRuntime = { isActive: () => true }, externalEditMode = { active: false }, saving = {};
         const flags = { character: [], chat: [], root: true, botPreset: true, modules: false, plugins: false, pluginCustomStorage: false };
         let dirty = true;
+        const changeTracker = { get root() { return dirty }, get botPreset() { return dirty } };
+        const syncLiveFilesNow = async () => {}, lastLiveError = '';
         const takeTrackedChanges = () => { const value = dirty ? {...flags} : {...flags, root: false, botPreset: false}; dirty = false; return value; };
         const hasTrackedChanges = value => value.root || value.botPreset;
         const requeueTrackedChanges = () => { dirty = true; };
