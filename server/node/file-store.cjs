@@ -85,6 +85,10 @@ function preserveBackup(target) {
     const backup = `${target}.bak`;
     const temp = `${backup}.${crypto.randomUUID()}.tmp`;
     copySynced(target, temp);
+    // A copied package may have a sidecar for the previous backup revision.
+    // Backups are historical bytes, not a checksummed canonical write. Never
+    // leave that old checksum attached to the replacement backup.
+    fs.rmSync(`${backup}.sha256`, { force: true });
     fs.renameSync(temp, backup);
     fsyncDirectory(path.dirname(backup));
 }
@@ -159,6 +163,35 @@ function publishTransaction(root, journal, options = {}) {
     let published = 0;
     let skipped = 0;
     for (const entry of journal.entries) {
+        if (entry.action === 'delete-character') {
+            const target = characterDeletionPath(root, entry.path);
+            fs.rmSync(target, { recursive: true, force: true });
+            fsyncDirectory(path.dirname(target));
+            published += 1;
+            if (options.failAfterPublish === published) throw new Error('simulated crash during transaction publish');
+            continue;
+        }
+        if (entry.action === 'move') {
+            const source = resolveInside(root, entry.path);
+            const destination = resolveInside(root, entry.destination);
+            if (!fs.existsSync(source)) {
+                if (!fs.existsSync(destination)) {
+                    throw new Error(`Transaction move is missing for ${entry.path}`);
+                }
+                skipped += 1;
+                continue;
+            }
+            if (fs.existsSync(destination)) {
+                throw new Error(`Transaction move destination already exists: ${entry.destination}`);
+            }
+            fs.mkdirSync(path.dirname(destination), { recursive: true });
+            fs.renameSync(source, destination);
+            fsyncDirectory(path.dirname(source));
+            fsyncDirectory(path.dirname(destination));
+            published += 1;
+            if (options.failAfterPublish === published) throw new Error('simulated crash during transaction publish');
+            continue;
+        }
         const target = resolveInside(root, entry.path);
         if (matchesChecksum(target, entry.checksum)) {
             skipped += 1;
@@ -221,11 +254,52 @@ function assertUnchangedPreconditions(root, entries) {
     }
 }
 
+function characterDeletionPath(root, relativePath) {
+    const target = resolveInside(root, relativePath);
+    const parts = path.relative(path.resolve(root), target).split(path.sep);
+    if (parts.length !== 2 || parts[0] !== 'characters' || !parts[1] || parts[1].startsWith('.')) {
+        throw new Error('Deletion requires one character directory');
+    }
+    let current = path.resolve(root);
+    for (const part of parts) {
+        current = path.join(current, part);
+        if (fs.existsSync(current) && fs.lstatSync(current).isSymbolicLink()) throw new Error('Character deletion uses a symbolic link');
+    }
+    return target;
+}
+
 function commitTransaction(root, operations, options = {}) {
     if (!Array.isArray(operations) || operations.length === 0) {
         return { committed: 0, published: 0, skipped: 0, stagedBytes: 0 };
     }
-    const prepared = operations.map((operation) => {
+    const prepared = operations.map((operation, operationIndex) => {
+        if (operation.deleteCharacter === true) {
+            characterDeletionPath(root, operation.path);
+            if (operation.moveTo || operation.sourcePath || operation.data !== undefined) throw new Error('Deletion cannot include file data');
+            return { action: 'delete-character', path: operation.path, unchanged: false };
+        }
+        if (operation.moveTo) {
+            if (operation.data !== undefined || operation.sourcePath) {
+                throw new Error(`Transaction move cannot include file data: ${operation.path}`);
+            }
+            const source = resolveInside(root, operation.path);
+            const destination = resolveInside(root, operation.moveTo);
+            const destinationClearedEarlier = operation.destinationClearedByTransaction === true
+                && operations.slice(0, operationIndex).some(previous => {
+                    if (!previous.moveTo) return false;
+                    const cleared = resolveInside(root, previous.path);
+                    return destination === cleared || destination.startsWith(`${cleared}${path.sep}`);
+                });
+            if (fs.existsSync(destination) && !destinationClearedEarlier) {
+                throw new Error(`Transaction move destination already exists: ${operation.moveTo}`);
+            }
+            return {
+                action: 'move',
+                path: operation.path,
+                destination: operation.moveTo,
+                unchanged: !operation.sourceCreatedByTransaction && !fs.existsSync(source),
+            };
+        }
         const target = resolveInside(root, operation.path);
         let data;
         let digest;
@@ -243,12 +317,12 @@ function commitTransaction(root, operations, options = {}) {
             }
             digest = checksum(data);
         }
-        return { path: operation.path, data, sourcePath, checksum: digest, unchanged: matchesStoredChecksum(target, digest) };
+        return { action: 'replace', path: operation.path, data, sourcePath, checksum: digest, unchanged: matchesStoredChecksum(target, digest) };
     });
     const unchanged = prepared.filter(entry => entry.unchanged);
     const pending = prepared.filter(entry => !entry.unchanged);
     if (pending.length === 0) {
-        assertUnchangedPreconditions(root, unchanged);
+        assertUnchangedPreconditions(root, unchanged.filter(entry => entry.action !== 'move'));
         return {
             committed: operations.length,
             published: 0,
@@ -262,6 +336,10 @@ function commitTransaction(root, operations, options = {}) {
     const stageDir = path.join(journalDir, `${id}.stage`);
     fs.mkdirSync(stageDir, { recursive: true });
     const entries = pending.map((operation, index) => {
+        if (operation.action === 'delete-character') return { action: operation.action, path: operation.path };
+        if (operation.action === 'move') {
+            return { action: 'move', path: operation.path, destination: operation.destination };
+        }
         const staged = path.join(stageDir, `${index}.data`);
         if (operation.sourcePath) {
             copySynced(operation.sourcePath, staged);
@@ -269,11 +347,11 @@ function commitTransaction(root, operations, options = {}) {
             writeSynced(staged, operation.data);
         }
         if (checksumFile(staged) !== operation.checksum) throw new Error(`Transaction checksum failed: ${operation.path}`);
-        return { path: operation.path, staged, checksum: operation.checksum };
+        return { action: 'replace', path: operation.path, staged, checksum: operation.checksum };
     });
     fsyncDirectory(stageDir);
     try {
-        assertUnchangedPreconditions(root, unchanged);
+        assertUnchangedPreconditions(root, unchanged.filter(entry => entry.action !== 'move'));
     } catch (error) {
         fs.rmSync(stageDir, { recursive: true, force: true });
         fsyncDirectory(journalDir);
@@ -282,7 +360,9 @@ function commitTransaction(root, operations, options = {}) {
     const journalPath = path.join(journalDir, `${id}.json`);
     const journal = { schemaVersion: 1, id, state: 'prepared', createdAt: Date.now(), entries };
     writeJournal(journalPath, journal);
-    const stagedBytes = entries.reduce((total, entry) => total + fs.statSync(entry.staged).size, 0);
+    const stagedBytes = entries.reduce((total, entry) => (
+        entry.action === 'move' || entry.action === 'delete-character' ? total : total + fs.statSync(entry.staged).size
+    ), 0);
     const published = publishTransaction(root, journal, options);
     cleanupJournal(journalPath, stageDir);
     return {

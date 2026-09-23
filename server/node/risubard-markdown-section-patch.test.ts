@@ -5,6 +5,30 @@ import {
 } from './risubard-markdown-section-patch'
 
 describe('canonical Markdown section patches', () => {
+    test('consolidates legacy sections without losing facts or untouched relationships', () => {
+        const markdown = [
+            '## 쿠루미',
+            '### 감정과 정신 상태', '가해자에게 분노한다.',
+            '### 지식과 현재 상태', '탈출 위험을 안다. 방호구를 찾는 중이다.',
+            '### 관계와 신뢰', '쇼지를 신뢰한다. BOND 4.',
+        ].join('\n\n')
+        const consolidated = applyCanonicalSectionPatches({
+            markdown, title: '쿠루미',
+            patches: [
+                { heading: '현재 상태', operation: 'upsert', content: '방호구를 찾는 중이다. 가해자에게 분노한다.' },
+                { heading: '지식과 비밀', operation: 'upsert', content: '탈출 위험을 안다.' },
+                { heading: '감정과 정신 상태', operation: 'delete', content: '' },
+                { heading: '지식과 현재 상태', operation: 'delete', content: '' },
+            ],
+        })
+        expect(consolidated).toContain('### 관계와 신뢰\n\n쇼지를 신뢰한다. BOND 4.')
+        expect(consolidated).not.toContain('### 감정과 정신 상태')
+        expect(consolidated).not.toContain('### 지식과 현재 상태')
+        for (const fact of ['가해자에게 분노한다.', '탈출 위험을 안다.', '방호구를 찾는 중이다.']) {
+            expect(consolidated.split(fact)).toHaveLength(2)
+        }
+    })
+
     test('replaces one H3 section while preserving untouched sections', () => {
         const markdown = [
             '## 루치아',

@@ -28,9 +28,9 @@ const getVips = () => {
     }
     return _vipsPromise
 }
-const { kvGet, kvSet, kvSetMany, kvSetManyAsync, kvReplacePrefixesAsync, kvReplacePrefixesFromFilesAsync, kvReplaceAllAsync, kvDel, kvDelMany, kvList,
+const { kvGet, kvSet, kvSetMany, kvSetManyAsync, kvReplacePrefixesAsync, kvReplacePrefixesFromFilesAsync, preparePrefixReplacementFromFilesAsync, reloadManifest, kvReplaceAllAsync, kvDel, kvDelMany, kvList,
         kvDelPrefix, kvListWithSizes, kvSize, kvGetUpdatedAt, kvCopyValue,
-        gcChunks, reclaimableChunkBytes, objectStoreBytes, isDbBlobChunked, snapshotFootprint, repository: userDataRepository, compatibilityCache } = require('./db.cjs');
+        gcChunks, reclaimableChunkBytes, objectStoreBytes, isDbBlobChunked, snapshotFootprint, repository: userDataRepository, compatibilityCache, characterAssets } = require('./db.cjs');
 const {
     addLogBatch, queryLogs, clearLogs, countLogs,
     logger, installProcessHandlers, expressErrorMiddleware,
@@ -44,12 +44,18 @@ const { createRuntimeMemoryService } = require('./risubard-memory-runtime.cjs');
 const { openServerBrowser } = require('./open-server-browser.cjs');
 const { releaseToUpdateInfo } = require('./release-update.cjs');
 const { createChatContentPage } = require('./chat-content-page.cjs');
+const { createChatContentUploads, MAX_CHUNK_BYTES: CHAT_UPLOAD_MAX_CHUNK_BYTES } = require('./chat-content-upload.cjs');
+const chatContentUploads = createChatContentUploads();
 const { stageBackupEntries } = require('./backup-entry-stream.cjs');
-const { encodeCanonicalBackupName, decodeCanonicalBackupName } = require('./canonical-backup-name.cjs');
+const { decodeCanonicalBackupName } = require('./canonical-backup-name.cjs');
+const { CANONICAL_BACKUP_DIRECTORIES, listCanonicalBackupEntries } = require('./canonical-backup-inventory.cjs');
+const { publishBackupRestore } = require('./backup-restore-transaction.cjs');
 const { createCanonicalProjectionSync } = require('./canonical-projection-sync.cjs');
 const { createProjectionRevisionStore } = require('./projection-revision-store.cjs');
 const { createDirectWriteTracker } = require('./direct-write-tracker.cjs');
 const { writeCanonicalProjection } = require('./canonical-projection-writer.cjs');
+const { reclaimDeletedCharacterAssets } = require('./deleted-character-assets.cjs');
+const { kvDelManyAndCollect } = require('./db.cjs');
 const { createExternalEditSession } = require('./external-edit-session.cjs');
 const {
     collectDatabaseAssetReferences,
@@ -67,6 +73,7 @@ const { decodeRisuSave, encodeRisuSaveLegacyBuffer, calculateHash, normalizeJSON
 const { spawn, execSync } = require('child_process');
 const os = require('os');
 const { Readable, Transform } = require('stream');
+const { createProxyAbortController } = require('./proxy-abort-controller.cjs');
 
 // Install process-level error handlers before any other init so early crashes get logged.
 installProcessHandlers();
@@ -259,7 +266,7 @@ function flushPendingDb() {
 }
 
 // Call only from an operation that already owns the storage queue.
-async function flushPendingDbWithinQueue() {
+async function flushPendingDbWithinQueue(options = {}) {
     if (adoptExternallyChangedCanonicalProjection()) return;
     if (saveTimers[DB_HEX_KEY]) {
         clearTimeout(saveTimers[DB_HEX_KEY]);
@@ -274,7 +281,7 @@ async function flushPendingDbWithinQueue() {
         }
         maybeCollectUnreferencedObjects();
     }
-    compatibilityCache.materialize('flush');
+    if (options.materialize !== false) compatibilityCache.materialize('flush');
 }
 
 function invalidateDbCache() {
@@ -951,7 +958,14 @@ app.use(express.json({ limit: '100mb' }));
 app.use((req, res, next) => {
     // Skip express.raw() for backup import — it must stream, not buffer into memory
     if (req.path === '/api/backup/import') return next();
-    return express.raw({ type: 'application/octet-stream', limit: '2gb' })(req, res, next);
+    const isChatUpload = req.path.startsWith('/api/chat-content-upload/');
+    // Fixed ceiling admits older in-flight uploads after the app changes its setting.
+    // The staging store validates each request against that upload's chosen size.
+    const limit = isChatUpload ? CHAT_UPLOAD_MAX_CHUNK_BYTES : '2gb';
+    return express.raw({ type: 'application/octet-stream', limit })(req, res, error => {
+        if (isChatUpload && error?.status === 413) return res.status(413).json({ error: 'Chat upload chunk too large' });
+        next(error);
+    });
 });
 app.use(express.text({ limit: '100mb' }));
 const {pipeline} = require('stream/promises')
@@ -1037,6 +1051,20 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
         canonicalProjectionSync.accept()
         phaseMetrics.revisionAcceptMs = elapsedMs(phaseStartedAt)
         canonicalProjectionReady = true
+        if (result.deletedAssetCandidates?.length) {
+            try {
+                const cleanup = reclaimDeletedCharacterAssets({
+                    candidates: result.deletedAssetCandidates,
+                    database: databaseObject,
+                    listKeys: kvList,
+                    read: kvGet,
+                    remove: kvDelManyAndCollect,
+                })
+                logger.info('[Character deletion] Asset cleanup completed', { count: cleanup.count, reclaimed: cleanup.reclaimed })
+            } catch {
+                logger.warn('[Character deletion] Asset cleanup incomplete; retained assets can be retried with orphan cleanup')
+            }
+        }
         saveObservation.record({
             kind: 'canonical-sync', trigger, outcome: 'success', operationId,
             durationMs: elapsedMs(startedAt), plannedFiles: result.files, ...phaseMetrics,
@@ -1718,6 +1746,15 @@ function sessionAuthMiddleware(req, res, next) {
     res.status(401).end()
 }
 
+// Browser-managed downloads cannot attach risu-auth headers. Only these read
+// endpoints also accept the existing HttpOnly, SameSite=Strict session cookie.
+async function checkBackupDownloadAuth(req, res) {
+    res.setHeader('cache-control', 'private, no-store')
+    const token = parseSessionCookie(req)
+    if (token && (sessions.get(token) ?? 0) > Date.now()) return true
+    return checkAuth(req, res)
+}
+
 // MIME detection by magic bytes (fallback when key has no extension)
 function detectMime(buf) {
     if (!buf || buf.length < 12) return 'application/octet-stream'
@@ -2235,44 +2272,6 @@ function encodeBackupEntry(name, data) {
     return Buffer.concat([nameLength, encodedName, dataLength, data]);
 }
 
-const CANONICAL_BACKUP_DIRECTORIES = [
-    'settings', 'secrets', 'presets', 'modules', 'personas', 'lorebooks',
-    'characters', 'index', 'risubard', 'trash', 'logs', 'request-logs',
-    'model-jobs',
-];
-
-async function listCanonicalBackupEntries() {
-    const entries = [];
-    async function walk(relativeDirectory) {
-        const absolute = path.join(savePath, relativeDirectory);
-        let children;
-        try { children = await fs.readdir(absolute, { withFileTypes: true }); }
-        catch { return; }
-        for (const child of children) {
-            if (child.name.endsWith('.tmp') || child.name.endsWith('.sha256')) continue;
-            const relativePath = path.join(relativeDirectory, child.name);
-            if (child.isDirectory()) await walk(relativePath);
-            else if (child.isFile()) {
-                const sourcePath = path.join(savePath, relativePath);
-                const stat = await fs.stat(sourcePath);
-                const portable = relativePath.split(path.sep).join('/');
-                entries.push({
-                    kind: 'canonical',
-                    sourcePath,
-                    // Legacy importers reject unknown slash-delimited namespaces.
-                    // A flat reversible name lets it retain and re-export this
-                    // RisuBard-only file without interpreting it.
-                    backupName: encodeCanonicalBackupName(portable),
-                    sortKey: `risubard-data/${portable}`,
-                    size: stat.size,
-                });
-            }
-        }
-    }
-    for (const directory of CANONICAL_BACKUP_DIRECTORIES) await walk(directory);
-    return entries.sort((left, right) => left.sortKey.localeCompare(right.sortKey));
-}
-
 function isInvalidBackupPathSegment(name) {
     return (
         !name ||
@@ -2548,6 +2547,7 @@ async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0
     await fs.mkdir(canonicalStagingDir, { recursive: true });
     await fs.mkdir(entryStagingDir, { recursive: true });
     let canonicalEntriesRestored = 0;
+    let atomicRestorePublished = false;
 
     function stagingInlayFilePath(id, ext) {
         return path.join(stagingDir, `${id}.${normalizeInlayExt(ext)}`);
@@ -2722,30 +2722,24 @@ async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0
             }
         }
         if (onPhase) onPhase('publishing');
-        await kvReplacePrefixesFromFilesAsync(stagedKvEntries, [
+        const replacedPrefixes = [
             'assets/', 'inlay/', 'inlay_thumb/', 'inlay_meta/', 'inlay_info/',
             'coldstorage/', 'drafts/', 'remotes/', REMOTE_MIGRATION_MARKER_KEY,
-        ]);
+        ];
         if (canonicalEntriesRestored > 0) {
-            const operations = [];
-            async function collect(relativeDirectory = '') {
-                const absolute = path.join(canonicalStagingDir, relativeDirectory);
-                for (const entry of await fs.readdir(absolute, { withFileTypes: true })) {
-                    const relativePath = path.join(relativeDirectory, entry.name);
-                    if (entry.isDirectory()) await collect(relativePath);
-                    else if (entry.isFile()) operations.push({
-                        path: relativePath,
-                        sourcePath: path.join(canonicalStagingDir, relativePath),
-                    });
-                }
-            }
-            await collect();
-            for (const directory of CANONICAL_BACKUP_DIRECTORIES) {
-                if (directory === 'trash') continue;
-                const current = path.join(savePath, directory);
-                if (existsSync(current)) moveToTrash(savePath, directory);
-            }
-            commitTransaction(savePath, operations);
+            const preparedKv = await preparePrefixReplacementFromFilesAsync(stagedKvEntries, replacedPrefixes);
+            await publishBackupRestore({
+                dataRoot: savePath,
+                canonicalStagingDir,
+                inlayStagingDir: stagingDir,
+                canonicalDirectories: CANONICAL_BACKUP_DIRECTORIES,
+                manifestBytes: preparedKv.manifestBytes,
+                store: { reloadManifest },
+                restoreId: `backup-${nodeCrypto.randomUUID()}`,
+            });
+            atomicRestorePublished = true;
+        } else {
+            await kvReplacePrefixesFromFilesAsync(stagedKvEntries, replacedPrefixes);
         }
     } catch (error) {
         await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
@@ -2758,21 +2752,25 @@ async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0
     await fs.rm(entryStagingDir, { recursive: true, force: true }).catch(() => {});
 
     if (onPhase) onPhase('finalizing');
-    await ensureInlayDir();
-    try {
-        if (existsSync(inlayDir)) {
-            await fs.rename(inlayDir, backupInlayDir);
-        }
-        await fs.rename(stagingDir, inlayDir);
-        await fs.writeFile(inlayMigrationMarker, new Date().toISOString(), 'utf-8');
-        await fs.rm(backupInlayDir, { recursive: true, force: true }).catch(() => {});
-    } catch (swapError) {
-        if (existsSync(backupInlayDir)) {
-            await fs.rm(inlayDir, { recursive: true, force: true }).catch(() => {});
-            await fs.rename(backupInlayDir, inlayDir).catch(() => {});
-        }
+    if (atomicRestorePublished) {
         await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
-        throw swapError;
+    } else {
+        await ensureInlayDir();
+        try {
+            if (existsSync(inlayDir)) {
+                await fs.rename(inlayDir, backupInlayDir);
+            }
+            await fs.rename(stagingDir, inlayDir);
+            await fs.writeFile(inlayMigrationMarker, new Date().toISOString(), 'utf-8');
+            await fs.rm(backupInlayDir, { recursive: true, force: true }).catch(() => {});
+        } catch (swapError) {
+            if (existsSync(backupInlayDir)) {
+                await fs.rm(inlayDir, { recursive: true, force: true }).catch(() => {});
+                await fs.rename(backupInlayDir, inlayDir).catch(() => {});
+            }
+            await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+            throw swapError;
+        }
     }
 
     invalidateDbCache();
@@ -2919,7 +2917,11 @@ const reverseProxyFunc = async (req, res, next) => {
         return;
     }
     const timeoutMs = getRequestTimeoutMs(req.headers['risu-timeout-ms']);
-    const timeout = createTimeoutController(timeoutMs);
+    const proxyAbort = createProxyAbortController({
+        request: req,
+        response: res,
+        timeoutMs
+    });
     let originalResponse;
     try {
     const header = req.headers['risu-header'] ? JSON.parse(decodeURIComponent(req.headers['risu-header'])) : req.headers;
@@ -2958,10 +2960,8 @@ const reverseProxyFunc = async (req, res, next) => {
             method: req.method,
             headers: header,
             body: requestBody,
-            signal: timeout.signal
+            signal: proxyAbort.signal
         });
-        // get response body as stream
-        const originalBody = originalResponse.body;
         // get response headers
         const head = new Headers(originalResponse.headers);
         head.delete('content-security-policy');
@@ -2982,11 +2982,16 @@ const reverseProxyFunc = async (req, res, next) => {
         // send response status to client
         res.status(originalResponse.status);
         // send response body to client
-        await pipeline(originalResponse.body, res);
+        const originalBody = Readable.fromWeb(originalResponse.body);
+        originalBody.once('error', proxyAbort.markUpstreamFailure);
+        await pipeline(originalBody, res, { signal: proxyAbort.signal });
 
 
     }
     catch (err) {
+        if (proxyAbort.clientDisconnected()) {
+            return;
+        }
         if (err?.name === 'AbortError') {
             if (!res.headersSent) {
                 res.status(504).send({
@@ -3006,7 +3011,7 @@ const reverseProxyFunc = async (req, res, next) => {
         next(err);
         return;
     } finally {
-        timeout.cleanup();
+        proxyAbort.cleanup();
     }
 }
 
@@ -3695,7 +3700,21 @@ async function readStorageItemPayload(key) {
 }
 
 async function prepareDatabaseRead(filePath, key, options = {}) {
-    if (options.flush === true) await flushPendingDbWithinQueue();
+    if (options.flush === true) await flushPendingDbWithinQueue({ materialize: false });
+    // Preserve the legacy migration lane for imported or invalidated databases.
+    // Writes still hydrate the complete chat store before any reassembly.
+    if (canonicalProjectionReady && isRemoteMigrationDone() && !externalEditSession.isActive()) {
+        try {
+            const stripped = normalizeJSON(userDataRepository.loadStartupDatabase());
+            if (normalizeOrphanFolderIds(stripped)) throw new Error('Legacy folder migration required');
+            dbCache[filePath] = stripped;
+            const value = encodeRisuSaveLegacyBuffer(stripped);
+            dbEtag = computeBufferEtag(value);
+            return { value, etag: dbEtag };
+        } catch (error) {
+            logger.warn('[Read] Canonical startup read unavailable; using compatibility reader', error?.code || error?.name);
+        }
+    }
     const stored = await readStorageItemPayload(key);
     if (stored === null) return { value: null, etag: null };
     let database;
@@ -3931,13 +3950,45 @@ app.get('/api/logs', async (req, res, next) => {
 app.get('/api/storage-diagnostics/report', async (req, res, next) => {
     if (!await checkAuth(req, res)) return;
     try {
-        res.json(await generateStorageDiagnosticReport({
+        const report = await generateStorageDiagnosticReport({
             dataRoot: savePath,
             appVersion: getCurrentVersion(),
-        }));
+        });
+        res.json({ ...report, characterAssets: characterAssets.diagnostics() });
     } catch (error) {
         next(error);
     }
+});
+
+require('./character-asset-routes.cjs').registerCharacterAssetRoutes(app, {
+    auth: checkAuth,
+    activeSession: checkActiveSession,
+    queue: queueStorageOperation,
+    assets: characterAssets,
+    readSource: kvGet,
+    prepare: async () => {
+        if (externalEditSession.isActive() || !canonicalProjectionReady || canonicalProjectionSync.hasExternalChanges()) return null;
+        await flushPendingDbWithinQueue({ materialize: false });
+        if (!canonicalProjectionReady || canonicalProjectionSync.hasExternalChanges()) return null;
+        return userDataRepository.exportLegacyDatabase();
+    },
+});
+
+require('./character-package-routes.cjs').registerCharacterPackageRoutes(app, {
+    auth: checkAuth,
+    activeSession: checkActiveSession,
+    queue: queueStorageOperation,
+    acceptTransition: () => canonicalProjectionSync.accept(),
+    recordTransition: event => saveObservation.record(event),
+    repository: userDataRepository,
+    assets: characterAssets,
+    readSource: kvGet,
+    prepare: async () => {
+        if (externalEditSession.isActive() || !canonicalProjectionReady || canonicalProjectionSync.hasExternalChanges()) return null;
+        await flushPendingDbWithinQueue({ materialize: false });
+        if (!canonicalProjectionReady || canonicalProjectionSync.hasExternalChanges()) return null;
+        return userDataRepository.exportLegacyDatabase();
+    },
 });
 
 app.delete('/api/logs', async (req, res, next) => {
@@ -4552,7 +4603,7 @@ app.get('/api/backup/export/settings-estimate', async (req, res, next) => {
 });
 
 app.get('/api/backup/export', async (req, res, next) => {
-    if(!await checkAuth(req, res)){ return; }
+    if(!await checkBackupDownloadAuth(req, res)){ return; }
     try {
         // ?target=upstream is the lossy original-RisuAI format: it excludes
         // inlays plus RisuBard's canonical BardWiki/manuscript files. Ordinary
@@ -4620,7 +4671,7 @@ app.get('/api/backup/export', async (req, res, next) => {
             size: entry.size,
         }));
         const canonicalEntries = !settingsOnly && target === 'nodeonly'
-            ? await listCanonicalBackupEntries()
+            ? await listCanonicalBackupEntries(savePath)
             : [];
         const namespacedEntries = [
             ...kvListWithSizes('assets/')
@@ -4889,7 +4940,7 @@ app.post('/api/backup/server/save', async (req, res, next) => {
             ...kvListWithSizes('inlay_meta/').map((e) => ({ kind: 'kv', key: e.key, backupName: e.key, size: e.size })),
             ...inlayEntries,
             ...sidecarEntries,
-            ...await listCanonicalBackupEntries(),
+            ...await listCanonicalBackupEntries(savePath),
         ];
 
         const totalEntries = namespacedEntries.length + 1; // +1 for database
@@ -5116,7 +5167,7 @@ app.delete('/api/backup/server/:filename', async (req, res, next) => {
 
 // Download a server backup file
 app.get('/api/backup/server/download/:filename', async (req, res, next) => {
-    if (!await checkAuth(req, res)) { return; }
+    if (!await checkBackupDownloadAuth(req, res)) { return; }
     try {
         const filename = req.params.filename;
         if (!BACKUP_FILENAME_REGEX.test(filename)) {
@@ -5264,17 +5315,30 @@ function restoreColdStorageChat(chat) {
 }
 
 // GET /api/chat-content/:chaId/:chatIndex/page — retrieve a bounded chat page.
+function readCanonicalChatBeforeHydration(chaId, chatIndex) {
+    if (fullChatStore || !canonicalProjectionReady || !isRemoteMigrationDone()
+        || externalEditSession.isActive() || canonicalProjectionSync.hasExternalChanges()) return null;
+    try {
+        return userDataRepository.loadIndexedChat(chaId, chatIndex);
+    } catch (error) {
+        logger.warn('[Read] Canonical chat read unavailable; using compatibility reader', error?.code || error?.name);
+        return null;
+    }
+}
+
 app.get('/api/chat-content/:chaId/:chatIndex/page', async (req, res, next) => {
     if (!await checkAuth(req, res)) { return; }
     try {
         const chaId = req.params.chaId;
         const chatIndex = parseInt(req.params.chatIndex, 10);
         const expectedChatId = req.headers['x-chat-id'];
-        let chat = null;
+        let chat = readCanonicalChatBeforeHydration(chaId, chatIndex);
 
-        await ensureChatStore();
-        const charChats = fullChatStore.get(chaId);
-        if (charChats && expectedChatId) chat = charChats.get(expectedChatId) || null;
+        if (!chat) {
+            await ensureChatStore();
+            const charChats = fullChatStore.get(chaId);
+            if (charChats && expectedChatId) chat = charChats.get(expectedChatId) || null;
+        }
 
         if (!chat) {
             const raw = kvGet('database/database.bin');
@@ -5309,6 +5373,15 @@ app.get('/api/chat-content/:chaId/:chatIndex', async (req, res, next) => {
         const chatIndex = parseInt(req.params.chatIndex, 10);
         const expectedChatId = req.headers['x-chat-id'];
 
+        const directChat = readCanonicalChatBeforeHydration(chaId, chatIndex);
+        if (directChat) {
+            if (expectedChatId && directChat.id !== expectedChatId) {
+                return res.status(409).json({ error: 'Chat ID mismatch — index may have shifted' });
+            }
+            if (!restoreColdStorageChat(directChat)) return res.status(500).json({ error: 'Cold storage restore failed' });
+            res.setHeader('Content-Type', 'application/octet-stream');
+            return res.send(encodeRisuSaveLegacyBuffer(directChat));
+        }
         await ensureChatStore();
         // First try fullChatStore (fast path)
         const charChats = fullChatStore.get(chaId);
@@ -5351,7 +5424,7 @@ app.get('/api/chat-content/:chaId/:chatIndex', async (req, res, next) => {
 });
 
 // POST /api/chat-content/:chaId/:chatIndex — save chat content to server
-app.post('/api/chat-content/:chaId/:chatIndex', async (req, res, next) => {
+async function saveChatContentHandler(req, res, next) {
     if (!await checkAuth(req, res)) { return; }
     if (!checkActiveSession(req, res)) return;
     try {
@@ -5425,6 +5498,31 @@ app.post('/api/chat-content/:chaId/:chatIndex', async (req, res, next) => {
             res.json({ success: true });
         });
     } catch (error) {
+        next(error);
+    }
+}
+app.post('/api/chat-content/:chaId/:chatIndex', saveChatContentHandler);
+app.post('/api/chat-content-upload/:chaId/:chatIndex', async (req, res, next) => {
+    if (!await checkAuth(req, res)) return;
+    if (!checkActiveSession(req, res)) return;
+    try {
+        const result = await chatContentUploads.accept(req);
+        if (!result.body) return res.status(202).json(result);
+        req.body = result.body;
+        // Recheck writer ownership and canonical conflicts at commit time.
+        return saveChatContentHandler(req, res, next);
+    } catch (error) {
+        if (error.status) return res.status(error.status).json({ error: error.message });
+        next(error);
+    }
+});
+app.delete('/api/chat-content-upload/:chaId/:chatIndex', async (req, res, next) => {
+    if (!await checkAuth(req, res)) return;
+    try {
+        await chatContentUploads.abort(req);
+        res.json({ success: true });
+    } catch (error) {
+        if (error.status) return res.status(error.status).json({ error: error.message });
         next(error);
     }
 });
@@ -5730,7 +5828,7 @@ async function estimateServerBackupSize() {
     for (const it of kvListWithSizes('assets/')) total += it.size;
     for (const it of kvListWithSizes('inlay_meta/')) total += it.size;
     for (const e of listColdStorageBackupEntries()) total += e.size;
-    for (const e of await listCanonicalBackupEntries()) total += e.size;
+    for (const e of await listCanonicalBackupEntries(savePath)) total += e.size;
     total += await sumInlayFsBytes();
     return total;
 }
@@ -6948,6 +7046,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
     process.on(sig, async () => {
         console.log(`[Server] Received ${sig}, flushing pending data...`);
         stopTunnel();
+        try { await chatContentUploads.close(); } catch (e) { logger.warn('[ChatContent] Upload cleanup error:', e); }
         try { await flushPendingDb(); } catch (e) { logger.error('[Server] Flush error:', e); }
         await saveObservation.flush();
         process.exit(0);

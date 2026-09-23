@@ -121,3 +121,15 @@ describe('bounded Markdown excerpts', () => {
         expect(excerpt.length).toBeLessThanOrEqual(500)
     })
 })
+
+test('prioritizes modular character state over a long major-transition map', () => {
+    const content = ['## 쿠루미', '### 주요 전환', '과거 전투 '.repeat(800),
+        '### 인물 핵심', '육상부 출신', '### 관계와 신뢰', '쇼지를 신뢰한다',
+        '### 지식과 비밀', '탈출 계획을 안다', '### 장비와 소지품', '공사용 삽'].join('\n\n')
+    const excerpt = selectMarkdownExcerpt({ content, documentType: 'character', query: '쿠루미', maximumCharacters: 350, chronologyIntent: false })
+    expect(excerpt).toContain('육상부 출신')
+    expect(excerpt).toContain('쇼지를 신뢰한다')
+    expect(excerpt).toContain('탈출 계획을 안다')
+    expect(excerpt).toContain('공사용 삽')
+    expect(excerpt).not.toContain('### 주요 전환')
+})

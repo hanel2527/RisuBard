@@ -91,6 +91,18 @@
         return Boolean(block && !readonly && !block.readonly && block.type !== 'injection')
     }
 
+    function canToggle(block = selectedBlock): boolean {
+        return canEdit(block) || Boolean(preset.builtin && block?.type === 'text' && (
+            block.id === 'default-character-equipment' || block.id === 'default-length-compression'
+        ))
+    }
+
+    function setSelectedEnabled(enabled: boolean) {
+        if (!canToggle() || !selectedBlock) return
+        selectedBlock.enabled = enabled
+        onTouch()
+    }
+
     function replaceBlock(blockId: string, item: PromptItem) {
         const block = preset.blocks.find((entry) => entry.id === blockId)
         if (!canEdit(block) || !block) return
@@ -219,7 +231,7 @@
                     {#if selectedBlock.target === 'analysis'}
                         <label><span>Mode</span><select value={selectedBlock.analysisMode ?? 'all'} disabled={!canEdit()} onchange={(event) => updateSelected({ analysisMode: event.currentTarget.value as WikiPromptBlock['analysisMode'] })}><option value="all">all</option><option value="normal">normal</option><option value="historical">historical</option></select></label>
                     {/if}
-                    <label class="enabled"><input type="checkbox" checked={selectedBlock.enabled} disabled={!canEdit()} onchange={(event) => updateSelected({ enabled: event.currentTarget.checked })} />{language.promptV2.active}</label>
+                    <label class="enabled"><input type="checkbox" checked={selectedBlock.enabled} disabled={!canToggle()} onchange={(event) => setSelectedEnabled(event.currentTarget.checked)} />{language.promptV2.active}</label>
                     <div class="toolbar-buttons">
                         <ShButton size="icon-sm" variant="ghost" onclick={() => moveSelected(-1)} disabled={!canEdit()} title={language.promptV2.moveUp}><ChevronUpIcon size={15} /></ShButton>
                         <ShButton size="icon-sm" variant="ghost" onclick={() => moveSelected(1)} disabled={!canEdit()} title={language.promptV2.moveDown}><ChevronDownIcon size={15} /></ShButton>

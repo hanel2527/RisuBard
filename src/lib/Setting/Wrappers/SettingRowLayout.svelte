@@ -1,5 +1,7 @@
 <script lang="ts">
     import type { Snippet } from 'svelte';
+    import { getContext } from 'svelte';
+    import Help from 'src/lib/Others/Help.svelte';
     import type { SettingItem } from 'src/ts/setting/types';
     import { getLabel } from 'src/ts/setting/utils';
     import { language } from 'src/lang';
@@ -11,6 +13,7 @@
     }
 
     let { item, control }: Props = $props();
+    const compact = getContext<() => boolean>('settings-compact-rows') ?? (() => false);
 
     // Inline help text under the label (replaces the tooltip icon in row mode).
     const helpText = $derived(
@@ -25,8 +28,8 @@
     class="settings-standard-row flex items-center justify-between gap-4 border-t border-darkborderc"
 >
     <div class="flex flex-col min-w-0">
-        <span class="text-sm text-textcolor">{getLabel(item)}</span>
-        {#if helpText}<p class="text-xs text-textcolor2 mt-0.5 whitespace-pre-line">{helpText}</p>{/if}
+        <span class="text-sm text-textcolor">{getLabel(item)}{#if compact() && item.helpKey}<Help key={item.helpKey as any} name={getLabel(item)} unrecommended={item.helpUnrecommended ?? false} />{/if}</span>
+        {#if helpText && !compact()}<p class="text-xs text-textcolor2 mt-0.5 whitespace-pre-line">{helpText}</p>{/if}
     </div>
     <div class="shrink-0">{@render control?.()}</div>
 </div>

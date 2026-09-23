@@ -41,12 +41,13 @@ export function recommendBardLoreAnalysisSettings(input: {
     targetCount: number
     estimatedInputTokens: number
     minimumInputTokens?: number
+    minimumOutputTokens?: number
 }): BardLoreAnalysisSettings {
     const targetCount = Math.max(1, Math.floor(input.targetCount))
     const averageInput = Math.max(1, input.estimatedInputTokens / targetCount)
     const analysisBatchEntries = Math.min(20, targetCount, Math.max(1, Math.floor(12_000 / averageInput)))
     const analysisInputTokens = roundUp(Math.max(4_000, Math.max(averageInput * analysisBatchEntries, input.minimumInputTokens ?? 0) * 1.15), 1_000)
-    const analysisOutputTokens = roundUp(Math.max(2_000, analysisBatchEntries * 400), 1_000)
+    const analysisOutputTokens = roundUp(Math.max(2_000, analysisBatchEntries * 400, input.minimumOutputTokens ?? 0), 1_000)
     return {
         analysisBatchEntries,
         analysisInputTokens,

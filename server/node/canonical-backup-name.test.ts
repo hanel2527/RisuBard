@@ -22,8 +22,10 @@ describe('RisuBard canonical backup entry names', () => {
 
     it('wires the flat name into export and both names into import', () => {
         const server = fs.readFileSync('server/node/server.cjs', 'utf8')
-
-        expect(server).toContain('backupName: encodeCanonicalBackupName(portable)')
+        const inventory = fs.readFileSync('server/node/canonical-backup-inventory.cjs', 'utf8')
+        expect(server).toContain("require('./canonical-backup-inventory.cjs')")
+        expect(server).toContain('listCanonicalBackupEntries(savePath)')
+        expect(inventory).toContain('backupName: encodeCanonicalBackupName(portable)')
         expect(server).toContain('const canonicalPortable = decodeCanonicalBackupName(name)')
     })
 })

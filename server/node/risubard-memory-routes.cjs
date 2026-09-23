@@ -72,7 +72,11 @@ function validSemanticMatches(value) {
     return Array.isArray(value)
         && value.length <= 32
         && value.every((match) =>
-            hasExactKeys(match, ['documentId', 'score'])
+            (hasExactKeys(match, ['documentId', 'score'])
+                || (hasExactKeys(match, ['documentId', 'score', 'contentHash', 'start', 'end'])
+                    && hasBoundedId(match.contentHash)
+                    && Number.isSafeInteger(match.start) && match.start >= 0
+                    && Number.isSafeInteger(match.end) && match.end > match.start))
             && hasBoundedId(match.documentId)
             && Number.isFinite(match.score)
             && match.score > 0
@@ -525,6 +529,31 @@ function registerRisuBardMemoryRoutes(app, options) {
         }
     })
 
+    app.post('/api/risubard/memory/embedding-catalog', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            const body = req.body
+            if (!isRecord(body) || !hasExactKeys(body, ['characterId', 'chatId',
+                ...(body.offset === undefined ? [] : ['offset']),
+                ...(body.revision === undefined ? [] : ['revision'])])
+                || !hasBoundedId(body.characterId) || !hasBoundedId(body.chatId)
+                || (body.offset !== undefined && (!Number.isSafeInteger(body.offset) || body.offset < 0))
+                || (body.revision !== undefined && !hasBoundedId(body.revision))
+                || (body.offset > 0 && body.revision === undefined)) {
+                res.status(400).send({ error: 'Invalid embedding catalog request' })
+                return
+            }
+            res.send(await options.service.embeddingCatalog(body))
+        }
+        catch (error) {
+            if (error instanceof Error && error.message === 'Embedding catalog revision changed') {
+                res.status(409).send({ error: error.message })
+                return
+            }
+            next(error)
+        }
+    })
+
     app.post('/api/risubard/memory/inquiry', async (req, res, next) => {
         try {
             if (!await options.auth(req, res)) return
@@ -693,7 +722,6 @@ function registerRisuBardMemoryRoutes(app, options) {
                 || !req.body.sourceMessageIds.every(hasBoundedId)
                 || typeof req.body.markdown !== 'string'
                 || req.body.markdown.trim().length === 0
-                || req.body.markdown.length > 12_000
                 || (req.body.append !== undefined
                     && typeof req.body.append !== 'boolean')) {
                 res.status(400).send({ error: 'Invalid Markdown wiki update' })
@@ -758,8 +786,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                     || req.body.sourceMessageIds.length < 1
                     || !req.body.sourceMessageIds.every(hasBoundedId)
                     || typeof req.body.markdown !== 'string'
-                    || req.body.markdown.trim().length === 0
-                    || req.body.markdown.length > 12_000) {
+                    || req.body.markdown.trim().length === 0) {
                     res.status(400).send({
                         error: 'Invalid canonical Markdown wiki update',
                     })
@@ -813,8 +840,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                                 && alias.trim().length > 0
                                 && alias.length <= 160)))
                     || typeof req.body.markdown !== 'string'
-                    || req.body.markdown.trim().length === 0
-                    || req.body.markdown.length > 12_000) {
+                    || req.body.markdown.trim().length === 0) {
                     res.status(400).send({
                         error: 'Invalid manual Markdown wiki update',
                     })

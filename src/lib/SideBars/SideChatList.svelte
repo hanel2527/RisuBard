@@ -29,6 +29,7 @@
     import { forageStorage } from "src/ts/globalApi.svelte";
     import { completeMemoryWikiFork, forkMemoryWiki } from "src/ts/risubard/memoryWikiFork";
     import { mergeCharacterChats } from "src/ts/risubard/chatMerge";
+    import { createUniqueDisplayName } from 'src/ts/displayName';
     import { doingChat, isAnyGenerating } from "src/ts/process/generationState";
     import { isWikiGenerating } from "src/ts/risubard/wikiGenerationState";
     import ChatMergeDialog from "./ChatMergeDialog.svelte";
@@ -103,7 +104,7 @@
         const newChat = {
             message: [] as any[],
             note: '',
-            name: `New Chat ${chara.chats.length + 1}`,
+            name: createUniqueDisplayName(`New Chat ${chara.chats.length + 1}`, chara.chats),
             localLore: [] as any[],
             fmIndex: -1,
             id: v4(),
@@ -124,7 +125,7 @@
             activeChat.name,
         )
         if(!nextName?.trim()) return
-        activeChat.name = nextName.trim()
+        activeChat.name = createUniqueDisplayName(nextName, chara.chats, activeChat.id)
         chara.chats = chara.chats
         void requestImmediateSave()
     }

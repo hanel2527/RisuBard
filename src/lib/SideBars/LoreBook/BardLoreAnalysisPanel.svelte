@@ -49,6 +49,7 @@
         collectBardLoreAnalysisTargets,
         completeBardLoreAnalysisBatch,
         createBardLoreAnalysisRun,
+        estimateBardLoreAnalysisOutputTokens,
         failBardLoreAnalysisBatch,
         finishBardLoreAnalysisRun,
         isBardLoreCompositeEntry,
@@ -56,7 +57,6 @@
         partitionRecoveredBardLoreAnalysisBatch,
         pauseBardLoreAnalysisRun,
         planBardLoreAnalysisBatches,
-        retryFailedBardLoreAnalysisBatches,
         recoverBardLoreAnalysisResponse,
         startBardLoreAnalysisBatch,
         type BardLoreAnalysisPlan,
@@ -461,6 +461,7 @@
                 targetCount: targets.length,
                 estimatedInputTokens: estimate.totalInputTokens,
                 minimumInputTokens: estimate.batches.reduce((largest, batch) => Math.max(largest, batch.inputTokens), 0),
+                minimumOutputTokens: targets.reduce((largest, entry) => Math.max(largest, estimateBardLoreAnalysisOutputTokens(entry)), 0),
             })
             if (currentRun) recommended.analysisLinkedDepth = workingSettings.analysisLinkedDepth
             const next = createBardLoreSettings({ ...workingSettings, ...recommended })
@@ -697,6 +698,8 @@
                     const message = cause instanceof Error ? cause.message : String(cause)
                     const diagnostic = diagnoseBardLoreAnalysisFailure({ ...diagnosticContext, error: message })
                     next = { ...next, batches: next.batches.map((item) => item.id === batchState.id ? { ...item, diagnostic } : item) }
+                    let failedBatch = batchState
+                    let failedBatchIndex = batchIndex
                     if (BARD_LORE_PARTIAL_RECOVERY_ENABLED && isJsonProtocolFailure(message) && responseText) {
                         const recovered = recoverBardLoreAnalysisResponse(responseText, batch, entries, sourceHashes)
                         const qualityFailedIds = new Set(auditBardLoreAnalysisDraft(
@@ -729,22 +732,37 @@
                                 message,
                                 createUuid,
                             )
-                            saveRun(next)
-                            continue
+                            const unresolvedIndex = next.batches.findIndex((item, index) =>
+                                index >= batchIndex && item.status === 'failed' && item.targetIds.some((id) => batchState.targetIds.includes(id)),
+                            )
+                            if (unresolvedIndex < 0 || batchState.targetIds.length === 1) {
+                                saveRun(next)
+                                continue
+                            }
+                            failedBatchIndex = unresolvedIndex
+                            failedBatch = next.batches[unresolvedIndex]
+                            if (failedBatch.targetIds.length === 1) {
+                                next = { ...next, batches: next.batches.map((item, index) =>
+                                    index === unresolvedIndex ? { ...item, status: 'pending' as const, error: undefined, diagnostic: undefined } : item,
+                                ) }
+                                saveRun(next)
+                                batchIndex = unresolvedIndex - 1
+                                continue
+                            }
                         }
                     }
-                    if (isJsonProtocolFailure(message) && batchState.targetIds.length > 1) {
-                        const midpoint = Math.ceil(batchState.targetIds.length / 2)
+                    if (isJsonProtocolFailure(message) && failedBatch.targetIds.length > 1) {
+                        const midpoint = Math.ceil(failedBatch.targetIds.length / 2)
                         const targetGroups = [
-                            batchState.targetIds.slice(0, midpoint),
-                            batchState.targetIds.slice(midpoint),
+                            failedBatch.targetIds.slice(0, midpoint),
+                            failedBatch.targetIds.slice(midpoint),
                         ]
                         const replacements = targetGroups.map((targetIds) => ({
                             id: createUuid(),
                             index: 0,
                             targetIds,
                             estimatedInputTokens: Math.ceil(
-                                batchState.estimatedInputTokens * targetIds.length / batchState.targetIds.length,
+                                failedBatch.estimatedInputTokens * targetIds.length / failedBatch.targetIds.length,
                             ),
                             status: 'pending' as const,
                         }))
@@ -752,13 +770,13 @@
                             ...next,
                             updatedAt: new Date().toISOString(),
                             batches: [
-                                ...next.batches.slice(0, batchIndex),
+                                ...next.batches.slice(0, failedBatchIndex),
                                 ...replacements,
-                                ...next.batches.slice(batchIndex + 1),
+                                ...next.batches.slice(failedBatchIndex + 1),
                             ].map((item, index) => ({ ...item, index })),
                         }
                         saveRun(next)
-                        batchIndex -= 1
+                        batchIndex = failedBatchIndex - 1
                         continue
                     }
                     next = failBardLoreAnalysisBatch(
@@ -814,9 +832,11 @@
         void executeRun(next)
     }
 
-    function retryFailed() {
-        if (!currentRun) return
-        const next = retryFailedBardLoreAnalysisBatches(currentRun)
+    async function retryFailed() {
+        if (!currentRun || analyzing || planning) return
+        await replanCurrentRun(workingSettings)
+        if (!currentRun || error || planning) return
+        const next = { ...currentRun, status: 'running' as const }
         saveRun(next)
         void executeRun(next)
     }

@@ -21,6 +21,7 @@
         value: string | number;
         className?: string;
         size?: 'sm'|'md'|'lg'|'xl';
+        ariaLabel?: string;
         children?: import('svelte').Snippet;
         onchange?: (event: Event & {
             currentTarget: EventTarget & HTMLSelectElement;
@@ -31,6 +32,7 @@
         value = $bindable(),
         className = "",
         size = 'md',
+        ariaLabel,
         children,
         onchange
     }: Props = $props();
@@ -214,6 +216,7 @@
         </div>
         <select
             bind:this={selectEl}
+            aria-label={ariaLabel}
             bind:value
             {onchange}
             class="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
@@ -227,6 +230,7 @@
     <div
         bind:this={triggerEl}
         role="combobox"
+        aria-label={ariaLabel}
         aria-controls={listboxId}
         aria-expanded={open ? 'true' : 'false'}
         aria-haspopup="listbox"

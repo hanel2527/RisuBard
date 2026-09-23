@@ -8,6 +8,7 @@
         value: string | number;
         className?: string;
         size?: 'sm'|'md'|'lg'|'xl';
+        ariaLabel?: string;
         children?: import('svelte').Snippet;
         onchange?: (event: Event & {
             currentTarget: EventTarget & HTMLSelectElement;
@@ -18,11 +19,12 @@
         value = $bindable(),
         className = "",
         size = 'md',
+        ariaLabel,
         children,
         onchange
     }: Props = $props();
 </script>
 
-<ShSelect bind:value {className} {size} {onchange}>
+<ShSelect bind:value {className} {size} {onchange} {ariaLabel}>
     {@render children?.()}
 </ShSelect>

@@ -5,7 +5,8 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const os = require('os');
 const path = require('path');
-const { atomicWriteFile, atomicWriteJson, readVerifiedJson, recoverTransactions } = require('./file-store.cjs');
+const { atomicWriteFile, atomicWriteJson, readVerifiedJson, recoverTransactions, resolveInside } = require('./file-store.cjs');
+const { createCharacterAssets } = require('./character-assets.cjs');
 
 const MANIFEST_PATH = 'kv/manifest.json';
 const HEX_MIGRATION_MARKER = 'migration/legacy-hex-save-folder.json';
@@ -133,6 +134,7 @@ function createFileKv(options = {}) {
     const dataRoot = path.resolve(options.dataRoot || path.join(process.cwd(), 'save'));
     fs.mkdirSync(dataRoot, { recursive: true });
     recoverTransactions(dataRoot);
+    const characterAssets = createCharacterAssets({ dataRoot, sourceSize: kvSize, readOriginal: kvGetOriginal });
 
     let manifest = fs.existsSync(path.join(dataRoot, MANIFEST_PATH))
         ? readVerifiedJson(dataRoot, MANIFEST_PATH)
@@ -155,6 +157,15 @@ function createFileKv(options = {}) {
     }
 
     function kvGet(key) {
+        const entry = manifest.entries[key];
+        if (!entry) return null;
+        const replica = characterAssets.read(key, entry);
+        if (replica !== null) return replica;
+        return kvGetOriginal(key);
+    }
+
+    // Explicit asset validation must bypass the performance-oriented replica reader.
+    function kvGetOriginal(key) {
         const entry = manifest.entries[key];
         if (!entry) return null;
         const objectPath = path.join(dataRoot, 'kv', 'objects', entry.object);
@@ -245,6 +256,26 @@ function createFileKv(options = {}) {
         saveManifest();
     }
 
+    async function preparePrefixReplacementFromFilesAsync(entries, prefixes) {
+        const prepared = await prepareFileEntriesAsync(entries);
+        const next = { ...manifest.entries };
+        for (const key of Object.keys(next)) {
+            if (prefixes.some(prefix => key === prefix || key.startsWith(prefix))) delete next[key];
+        }
+        for (const [key, entry] of prepared) next[key] = entry;
+        const candidate = { schemaVersion: 1, updatedAt: Date.now(), entries: next };
+        return { manifestBytes: Buffer.from(`${JSON.stringify(candidate, null, 2)}\n`, 'utf8') };
+    }
+
+    function reloadManifest() {
+        const next = readVerifiedJson(dataRoot, MANIFEST_PATH);
+        if (!next || next.schemaVersion !== 1 || typeof next.entries !== 'object') {
+            throw new Error('Unsupported or corrupt file KV manifest');
+        }
+        manifest = next;
+        characterAssets.reload();
+    }
+
     async function kvReplaceAllAsync(entries) {
         const prepared = await prepareEntriesAsync(entries);
         manifest.entries = Object.fromEntries(prepared);
@@ -269,6 +300,26 @@ function createFileKv(options = {}) {
         }
         if (count > 0) saveManifest();
         return { count, bytes };
+    }
+
+    function kvDelManyAndCollect(keys) {
+        const objects = new Set(keys.map(key => manifest.entries[key]?.object).filter(Boolean));
+        const previous = { ...manifest.entries };
+        let deleted;
+        try { deleted = kvDelMany(keys); }
+        catch (error) { manifest.entries = previous; throw error; }
+        const referenced = referencedObjects();
+        let reclaimed = 0;
+        for (const object of objects) {
+            if (!/^[a-f0-9]{64}$/.test(object) || referenced.has(object)) continue;
+            const target = resolveInside(dataRoot, path.join('kv', 'objects', object));
+            try {
+                const size = fs.statSync(target).size;
+                fs.unlinkSync(target);
+                reclaimed += size;
+            } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        }
+        return { ...deleted, reclaimed };
     }
 
     function kvSize(key) {
@@ -392,10 +443,13 @@ function createFileKv(options = {}) {
         kvReplacePrefixes,
         kvReplacePrefixesAsync,
         kvReplacePrefixesFromFilesAsync,
+        preparePrefixReplacementFromFilesAsync,
+        reloadManifest,
         kvReplaceAll,
         kvReplaceAllAsync,
         kvDel,
         kvDelMany,
+        kvDelManyAndCollect,
         kvSize,
         kvGetUpdatedAt,
         kvCopyValue,
@@ -406,6 +460,7 @@ function createFileKv(options = {}) {
         reclaimableChunkBytes,
         objectStoreBytes,
         snapshotFootprint,
+        characterAssets,
     };
 }
 

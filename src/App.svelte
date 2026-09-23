@@ -235,10 +235,12 @@
                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                     <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                 </svg>
-                <span>{language.startupLoading.title}</span>
+                <span role="status" aria-live="polite">{LoadingStatusState.text || language.startupLoading.starting}</span>
             </div>
 
-            <span class="text-sm mt-2 text-textcolor2">{LoadingStatusState.text || language.startupLoading.starting}</span>
+            {#if LoadingStatusState.error}
+                <p role="alert" class="text-sm mt-3 max-w-[90vw] whitespace-pre-wrap break-words text-danger">{language.startupLoading.failed}: {LoadingStatusState.error}</p>
+            {/if}
         </div>
     {:else if $settingsOpen}
         {#await loadSettings()}

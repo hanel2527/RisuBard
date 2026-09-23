@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { onDestroy } from 'svelte';
     import { getCustomBackground, getEmotion } from "../../ts/util";
     
     import { DBState, risuBardGalleryOpen } from 'src/ts/stores.svelte';
@@ -23,6 +24,8 @@
     import { isWikiGenerating } from 'src/ts/risubard/wikiGenerationState';
     import { resolveChatTextSurface } from 'src/ts/gui/textTheme';
     import { chatGenKey, generationStates } from 'src/ts/process/generationState';
+    import { activateWikiEmbeddings, wikiEmbeddingRuntime } from 'src/ts/risubard/wikiEmbeddingService';
+    import { RISUBARD_MEMORY_UPDATED_EVENT, type RisuBardMemoryUpdatedDetail } from 'src/ts/risubard/memoryEvents';
     let openChatList = $state(false)
     let openModuleList = $state(false)
     let saveSlotsOpen = $state(false)
@@ -34,6 +37,29 @@
     let galleryCharacter = $derived(
         currentCharacter?.type === 'character' ? currentCharacter : undefined
     )
+
+    onDestroy(() => wikiEmbeddingRuntime.stop())
+
+    $effect(() => {
+        const characterId = currentCharacter?.chaId
+        const chatId = currentCharacter?.chats[currentCharacter.chatPage]?.id
+        const settings = DBState.db
+        if (!characterId || !chatId) {
+            wikiEmbeddingRuntime.stop()
+            return
+        }
+        activateWikiEmbeddings(characterId, chatId, settings)
+        const refresh = (event: Event) => {
+            const detail = (event as CustomEvent<RisuBardMemoryUpdatedDetail>).detail
+            if (detail?.characterId === characterId && detail.chatId === chatId) {
+                wikiEmbeddingRuntime.refresh()
+            }
+        }
+        window.addEventListener(RISUBARD_MEMORY_UPDATED_EVENT, refresh)
+        return () => {
+            window.removeEventListener(RISUBARD_MEMORY_UPDATED_EVENT, refresh)
+        }
+    })
 
     function openSaveSlots(mode: 'save' | 'load'): void {
         if(savingSlot) return

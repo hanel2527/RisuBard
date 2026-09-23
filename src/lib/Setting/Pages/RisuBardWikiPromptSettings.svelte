@@ -19,12 +19,17 @@
     import SettingPage from 'src/lib/UI/GUI/SettingPage.svelte'
     import SettingTabs from 'src/lib/UI/GUI/SettingTabs.svelte'
     import ShButton from 'src/lib/UI/GUI/ShButton.svelte'
+    import ShDialog from 'src/lib/UI/GUI/ShDialog.svelte'
     import TextInput from 'src/lib/UI/GUI/TextInput.svelte'
     import RisuBardWikiPromptReferenceSheet from './RisuBardWikiPromptReferenceSheet.svelte'
     import RisuBardWikiPromptV2Workspace from './RisuBardWikiPromptV2Workspace.svelte'
 
     let activeTab = $state(0)
     let choosingPreset = $state(false)
+    let presetSearch = $state('')
+    let filteredPresets = $derived((DBState.db.risuBardWikiPromptPresets ?? []).filter(
+        (preset) => preset.name.toLocaleLowerCase().includes(presetSearch.trim().toLocaleLowerCase()),
+    ))
     let promptingHelpOpen = $state(false)
     let promptWorkspace: RisuBardWikiPromptV2Workspace | undefined = $state()
     let activePreset = $derived(resolveWikiPromptPreset(
@@ -103,22 +108,14 @@
     description={language.risuBardWikiPrompt.description}
     fullWidth={activeTab === 0}
 >
-    <PresetHeader
-        label={language.risuBardWikiPrompt.activePreset}
-        activeName={activePreset?.name ?? '—'}
-        onManage={() => { choosingPreset = !choosingPreset }}
-    />
-
-    {#if choosingPreset}
-        <div class="preset-picker">
-            {#each DBState.db.risuBardWikiPromptPresets ?? [] as preset (preset.id)}
-                <button class:selected={preset.id === activePreset?.id} onclick={() => selectPreset(preset.id)}>
-                    <span>{preset.name}</span>
-                    {#if preset.id === activePreset?.id}<small>{language.risuBardWikiPrompt.current}</small>{/if}
-                </button>
-            {/each}
-        </div>
-    {/if}
+    {#snippet headerActions()}
+        <PresetHeader
+            compact
+            label={language.risuBardWikiPrompt.activePreset}
+            activeName={activePreset?.name ?? '—'}
+            onManage={() => { presetSearch = ''; choosingPreset = true }}
+        />
+    {/snippet}
 
     <SettingTabs
         tabs={[{ label: language.prompt, value: 0 }, { label: language.basicInfo, value: 1 }]}
@@ -153,9 +150,34 @@
     <RisuBardWikiPromptReferenceSheet bind:open={promptingHelpOpen} />
 </SettingPage>
 
+<ShDialog bind:open={choosingPreset} size="lg" closeOnEscape closeOnOutsideClick={false}>
+    {#snippet title()}{language.risuBardWikiPrompt.activePreset}{/snippet}
+    <div class="picker-tools">
+        <label class="picker-search">
+            <span>{language.search}</span>
+            <TextInput bind:value={presetSearch} placeholder={language.search} fullwidth />
+        </label>
+        <ShButton variant="outline" onclick={createPreset}><PlusIcon size={16} />{language.risuBardWikiPrompt.createPreset}</ShButton>
+        <ShButton variant="outline" onclick={importPreset}><UploadIcon size={16} />{language.presetImport}</ShButton>
+    </div>
+    <div class="preset-picker">
+        {#each filteredPresets as preset (preset.id)}
+            <button type="button" class:selected={preset.id === activePreset?.id} aria-pressed={preset.id === activePreset?.id} onclick={() => selectPreset(preset.id)}>
+                <span>{preset.name}</span>
+                {#if preset.id === activePreset?.id}<small>{language.risuBardWikiPrompt.current}</small>{/if}
+            </button>
+        {/each}
+    </div>
+</ShDialog>
+
 <style>
-    .preset-picker, .basic-panel { overflow: hidden; margin: -.65rem 0 1rem; border: 1px solid var(--settings-border, var(--risu-theme-darkborderc)); border-radius: var(--settings-radius, .75rem); background: var(--settings-surface, var(--risu-theme-bgcolor)); }
+    .preset-picker, .basic-panel { border: 1px solid var(--settings-border, var(--risu-theme-darkborderc)); border-radius: var(--settings-radius, .75rem); background: var(--settings-surface, var(--risu-theme-bgcolor)); }
+    .preset-picker { max-height: 55dvh; overflow-y: auto; margin-top: .75rem; }
+    .picker-tools { display: flex; flex-wrap: wrap; align-items: end; gap: .5rem; }
+    .picker-search { display: grid; flex: 1 1 12rem; gap: .35rem; }
     .preset-picker button { display: flex; width: 100%; align-items: center; justify-content: space-between; padding: .75rem 1rem; text-align: left; }
+    .preset-picker button span { overflow-wrap: anywhere; }
+    .preset-picker button small { flex-shrink: 0; margin-left: .75rem; }
     .preset-picker button + button { border-top: 1px solid var(--settings-border, var(--risu-theme-darkborderc)); }
     .preset-picker button.selected { color: var(--risu-theme-textcolor); background: color-mix(in srgb, var(--risu-theme-selected) 55%, transparent); }
     .preset-picker small { color: var(--risu-theme-textcolor2); }

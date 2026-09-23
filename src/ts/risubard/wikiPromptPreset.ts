@@ -15,6 +15,7 @@ export interface WikiPromptBlock {
 
 export interface WikiPromptPreset {
     schemaVersion: 1
+    writingPolicyVersion?: 1 | 2
     id: string
     name: string
     revision: number
@@ -54,6 +55,24 @@ const REQUIRED_PREFIX: readonly WikiPromptBlock[] = [
         ].join('\n'),
     },
     {
+        id: 'core-character-continuity-contract',
+        type: 'core-ref',
+        name: 'Character continuity contract',
+        target: 'both',
+        analysisMode: 'all',
+        enabled: true,
+        readonly: true,
+        content: [
+            'Character canon is accumulated operating state, not a summary of the latest scene.',
+            'Do not delete established relationships and trust, mental state, knowledge boundaries, promises, injuries, or meaningful possessions, equipment, or appearance merely because a new scene does not mention them. Update them only with confirmed evidence.',
+            'An optional history or turning-point map should contain about 3-6 major irreversible or causally useful transitions, not a turn-by-turn action log.',
+            'When evidence supports it, keep relationships and trust, mental state, knowledge boundaries, and meaningful possessions, equipment, appearance, or constraints in separate sections from transient current state. Use only sections supported by evidence. Do not create empty sections or templates.',
+            'When replacing a section, retain every unrelated established fact there or move it to an appropriate returned section. Keep individual knowledge and ownership separate; do not infer shared knowledge or ownership.',
+            'Compress expression, never distinct established facts, relationship direction, knowledge boundaries, or consequences of change. Keep detailed scenes in event documents and their durable result in character canon.',
+            'Record confirmed structured state values in the relevant subject canon. Update them only from confirmed evidence, retain existing values when they are omitted, and do not recalculate them or infer narrative meaning from them alone.',
+        ].join('\n'),
+    },
+    {
         id: 'core-analysis-contract',
         type: 'core-ref',
         name: 'Memory analysis contract',
@@ -79,6 +98,33 @@ const REQUIRED_PREFIX: readonly WikiPromptBlock[] = [
             'Replace conflicting event details and recover omissions without projecting later knowledge back into the selected turn.',
             'Canonical updates may correct history, but must preserve a character current-state section that represents later events.',
         ].join('\n'),
+    },
+]
+
+// Version 1 retains the shipped 2026-09-22 continuity contract above.
+const MODULAR_CONTINUITY = [
+    ...REQUIRED_PREFIX.find(block => block.id === 'core-character-continuity-contract')!.content!
+        .split('\n').filter(line => !line.startsWith('When evidence supports it,') && !line.startsWith('An optional history')),
+    'Use only these character section roles, translated into the selected wiki writing language: 인물 핵심 (Identity), 현재 상태 (Current State), 관계와 신뢰 (Relationships and Trust), 지식과 비밀 (Knowledge and Secrets), 주요 전환 (Major Transitions). Omit sections without evidence. Do not create empty sections or templates.',
+    'Identity owns stable identity, background, personality and durable abilities. Current State owns current situation, goals, physical condition, constraints, unresolved tasks, and still-relevant emotion and mental state; it is not a recap of the latest scene.',
+    'Relationships and Trust owns each counterpart current relationship, trust, conflict, promises and explicit values. Knowledge and Secrets owns individual knowledge, uncertainty, mistaken beliefs and who shares a secret; never equate objective truth with shared knowledge.',
+    'One primary home per fact. Keep its full explanation in that section; elsewhere mention only the distinct consequence needed there. Stable temperament belongs to Identity, current distress to Current State, feelings about a counterpart to Relationships and Trust.',
+    'Major Transitions records consequential changes to identity, goals, relationships, abilities, affiliation or lasting constraints with exact event links. Allow independent transitions to grow across a long story; no fixed item or character quota. Merge successive steps of the same transition rather than logging every encounter, movement or turn.',
+    'During a justified update, consolidate overlapping legacy headings into these roles. Return the destination replacements and deletion patches for obsolete source sections together, preserving every unrelated still-valid fact. Do not delete a section until its necessary facts are represented in the same patch batch. Merely having older headings is not a reason to update.',
+    'Meaningful equipment remains in Identity or Current State unless the equipment module is enabled. Do not create a Related Documents section just to repeat links already present.',
+].join('\n')
+
+export const OFFICIAL_WIKI_BACKUP_ID = 'official-wiki-260922'
+const OPTIONAL_BLOCKS: WikiPromptBlock[] = [
+    {
+        id: 'default-character-equipment', type: 'text', name: '장비와 소지품',
+        target: 'both', enabled: true, readonly: true, analysisMode: 'all',
+        content: 'Equipment module: use a separate 장비와 소지품 (Equipment and Possessions) section in the selected wiki language when supported by evidence. It owns meaningful possessions, ownership, availability, acquisition, loss and condition. Move equipment details from other sections here without duplicating them; other sections may retain only a distinct identity trait or action constraint. Never infer ownership from proximity or another character equipment. Omit empty sections.',
+    },
+    {
+        id: 'default-length-compression', type: 'text', name: '분량 압축',
+        target: 'both', enabled: false, readonly: true, analysisMode: 'all',
+        content: 'Apply stronger compression when updating character canon. Consolidate repeated explanations and counterpart relationship bullets, replace obsolete current states from confirmed evidence, and group consecutive steps of the same major transition with exact event links. Keep scene details in event documents. Never drop distinct still-valid facts, current state, relationship direction or values, knowledge boundaries, secrets, unresolved promises, meaningful equipment, or causal consequences merely to shorten the document. Keep each major transition meaning as well as its link. Prefer the shortest faithful expression, but impose no fixed length or item quota. Move facts and delete redundant source sections in the same patch batch only after preserving their necessary content.',
     },
 ]
 
@@ -207,8 +253,10 @@ function normalizePreset(value: unknown, idFactory: () => string): WikiPromptPre
             content: '',
         })
     }
+    const writingPolicyVersion = source.writingPolicyVersion === 2 ? 2 : 1
     return {
         schemaVersion: 1,
+        writingPolicyVersion,
         id: boundedText(source.id, 120) || idFactory(),
         name: boundedText(source.name, 120) || 'Default Wiki Prompt',
         revision: Number.isSafeInteger(source.revision)
@@ -217,9 +265,13 @@ function normalizePreset(value: unknown, idFactory: () => string): WikiPromptPre
         builtin,
         blocks: [
             ...REQUIRED_PREFIX.map((block) => {
-                const stored = builtin ? undefined : storedCore.get(block.id)
+                const stored = builtin || block.id === 'core-character-continuity-contract'
+                    ? undefined
+                    : storedCore.get(block.id)
                 return {
                     ...block,
+                    ...(block.id === 'core-character-continuity-contract' && writingPolicyVersion === 2
+                        ? { content: MODULAR_CONTINUITY } : {}),
                     ...(stored ? {
                         name: boundedText(stored.name, 80) || block.name,
                         target: normalizeTarget(stored.target),
@@ -229,7 +281,7 @@ function normalizePreset(value: unknown, idFactory: () => string): WikiPromptPre
                             ? boundedText(stored.content, MAX_BLOCK_CONTENT)
                             : block.content,
                     } : {}),
-                    readonly: builtin,
+                    readonly: builtin || block.id === 'core-character-continuity-contract',
                 }
             }),
             ...editable.map((block) => ({ ...block, readonly: builtin })),
@@ -254,7 +306,7 @@ function normalizePreset(value: unknown, idFactory: () => string): WikiPromptPre
     }
 }
 
-export function createDefaultWikiPromptPreset(id: string): WikiPromptPreset {
+function createLegacyWikiPromptPreset(id: string): WikiPromptPreset {
     return normalizePreset({
         id,
         builtin: true,
@@ -293,6 +345,18 @@ export function createDefaultWikiPromptPreset(id: string): WikiPromptPreset {
     }, () => id)
 }
 
+export function createDefaultWikiPromptPreset(id: string): WikiPromptPreset {
+    const legacy = createLegacyWikiPromptPreset(id)
+    return normalizePreset({
+        ...legacy, name: '공식기본', writingPolicyVersion: 2,
+        blocks: [...legacy.blocks, ...OPTIONAL_BLOCKS.map(block => ({ ...block }))],
+    }, () => id)
+}
+
+function createOfficialBackup(): WikiPromptPreset {
+    return { ...createLegacyWikiPromptPreset(OFFICIAL_WIKI_BACKUP_ID), name: '공식기본-260922' }
+}
+
 export function createWikiPromptPreset(id: string, name = 'Wiki Prompt'): WikiPromptPreset {
     const preset = duplicateWikiPromptPreset(createDefaultWikiPromptPreset(id), id)
     preset.name = name.slice(0, 120)
@@ -309,8 +373,20 @@ export function normalizeWikiPromptPresetState(
     const rawPresets = Array.isArray(source.presets)
         ? source.presets.slice(0, MAX_PRESETS)
         : []
-    const presets = rawPresets.map((preset) => normalizePreset(preset, idFactory))
+    const presets = rawPresets.map((preset) => {
+        const normalized = normalizePreset(preset, idFactory)
+        // Existing official selections retain their stable ID; personal copies retain their policy.
+        return normalized.builtin && normalized.id !== OFFICIAL_WIKI_BACKUP_ID
+            && normalized.writingPolicyVersion !== 2
+            ? createDefaultWikiPromptPreset(normalized.id) : normalized
+    })
     if (presets.length === 0) presets.push(createDefaultWikiPromptPreset(idFactory()))
+    if (!presets.some(preset => preset.builtin && preset.writingPolicyVersion === 2)) {
+        presets.push(createDefaultWikiPromptPreset('official-wiki-current'))
+    }
+    if (!presets.some(preset => preset.id === OFFICIAL_WIKI_BACKUP_ID)) {
+        presets.push(createOfficialBackup())
+    }
     const ids = new Set(presets.map((preset) => preset.id))
     const fallbackId = presets[0].id
     const chatPresetId = boundedText(source.chatPresetId, 120)

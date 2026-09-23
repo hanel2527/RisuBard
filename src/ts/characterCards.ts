@@ -21,6 +21,8 @@ import { exportModuleLegacy, readModule, type RisuModule } from "./process/modul
 import { pinCharacterVaultQuickAccess } from './characterVault'
 import { normalizeFirstMessageStudioProject, type FirstMessageStudioProject } from './firstMessageStudio'
 import { normalizeBardLoreOwnerState, type BardLoreState } from './lorebook/bardLore'
+import { createUniqueDisplayName } from './displayName'
+import { yieldImportTask } from './importTaskYield'
 
 
 const EXTERNAL_HUB_URL = 'https://sv.risuai.xyz';
@@ -128,7 +130,9 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
         }
         if((da.char_name || da.name) && (da.char_persona || da.description) && (da.char_greeting || da.first_mes)){
             let db = getDatabase()
-            db.characters.push(convertOffSpecCards(da))
+            const character = convertOffSpecCards(da)
+            character.name = createUniqueDisplayName(character.name, db.characters)
+            db.characters.push(character)
             setDatabaseLite(db)
             await persistImportedData()
             notifySuccess(language.importedCharacter)
@@ -189,7 +193,7 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
     
 
     alertWait(language.characterImportReading)
-    await sleep(10)
+    await yieldImportTask()
     
     // const readed = PngChunk.read(img, ['chara'])?.['chara']
     let readedChara = ''
@@ -393,7 +397,9 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
     if(parsed.spec !== 'chara_card_v2' && parsed.spec !== 'chara_card_v3'){
         const charaData:OldTavernChar = JSON.parse(Buffer.from(readedChara, 'base64').toString('utf-8'))
         const imgp = await saveAsset(img)
-        db.characters.push(convertOffSpecCards(charaData, imgp))
+        const character = convertOffSpecCards(charaData, imgp)
+        character.name = createUniqueDisplayName(character.name, db.characters)
+        db.characters.push(character)
         setDatabaseLite(db)
         await persistImportedData()
         notifySuccess(language.importedCharacter)
@@ -740,7 +746,7 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
                     msg: language.characterImportEmotions(i + 1, risuext.emotions.length),
                     submsg: ((i + 1) / risuext.emotions.length * 100).toFixed(0)
                 })
-                await sleep(10)
+                await yieldImportTask()
                 if(risuext.emotions[i][1].startsWith('__asset:')){
                     const key = risuext.emotions[i][1].replace('__asset:', '')
                     const imgp = assetDict[key]
@@ -763,7 +769,7 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
                 })
 
                 if(i % 100 === 0){
-                    await sleep(10)
+                    await yieldImportTask()
                 }
                 let fileName = ''
                 if(risuext.additionalAssets[i].length >= 3)
@@ -789,7 +795,7 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
                     msg: language.characterImportVoiceFiles(i + 1, keys.length),
                     submsg: ((i + 1) / keys.length * 100).toFixed(0)
                 })
-                await sleep(10)
+                await yieldImportTask()
                 const key = keys[i]
                 if(risuext.vits[key].startsWith('__asset:')){
                     const rkey = risuext.vits[key].replace('__asset:', '')
@@ -833,7 +839,7 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
                     submsg: ((i + 1) / data.assets.length * 100).toFixed(0)
                 })
                 if(i % 100 === 0){
-                    await sleep(10)
+                    await yieldImportTask()
                 }
                 let fileName = ''
                 let imgp = ''
@@ -1027,6 +1033,7 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
         return char as any
     }
 
+    char.name = createUniqueDisplayName(char.name, db.characters)
     db.characters.push(char)
     await persistImportedData()
     notifySuccess(language.importedCharacter)

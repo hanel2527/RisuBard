@@ -43,7 +43,7 @@ export interface NarrativeInquiryResponse {
     indexRevision: number
     cacheStatus: 'current' | 'missing-or-stale'
     sources: ContextSource[]
-    evidenceRequests: Array<{ messageId: string, eventTitle: string }>
+    evidenceRequests: Array<{ messageId: string, eventTitle: string, documentId?: string }>
     rerankCandidates: NarrativeRerankCandidate[]
     entityCandidates: Array<{ id: string, title: string }>
     metrics: {
@@ -123,6 +123,9 @@ export async function loadNarrativeInquiry(input: {
     semanticMatches?: readonly {
         documentId: string
         score: number
+        contentHash?: string
+        start?: number
+        end?: number
     }[]
     entityHints?: readonly {
         kind: 'character'
@@ -131,7 +134,8 @@ export async function loadNarrativeInquiry(input: {
     sourceMatches?: readonly HistoricalSourceMatch[]
     sourceLimit?: number
     resolveSourceMatches?: (
-        messageIds: readonly string[]
+        messageIds: readonly string[],
+        evidenceRequests: readonly { messageId: string; eventTitle: string; documentId?: string }[],
     ) => readonly HistoricalSourceMatch[] | Promise<readonly HistoricalSourceMatch[]>
     fetchImpl: typeof fetch
     createAuth(): Promise<string>
@@ -362,18 +366,21 @@ export async function loadNarrativeInquiry(input: {
         : Array.isArray(value.evidenceRequests)
             ? value.evidenceRequests.slice(0, 32).map((request) => {
                 if (!isRecord(request)
-                    || !hasExactKeys(request, ['messageId', 'eventTitle'])
+                    || !hasRequiredAndOnlyKeys(request, ['messageId', 'eventTitle'], ['documentId'])
                     || typeof request.messageId !== 'string'
                     || request.messageId.trim().length === 0
                     || request.messageId.length > 1_024
                     || typeof request.eventTitle !== 'string'
                     || request.eventTitle.trim().length === 0
-                    || request.eventTitle.length > 512) {
+                    || request.eventTitle.length > 512
+                    || (request.documentId !== undefined && (typeof request.documentId !== 'string'
+                        || !request.documentId.trim() || request.documentId.length > 1024))) {
                     throw new Error('Invalid RisuBard evidence request')
                 }
                 return {
                     messageId: request.messageId,
                     eventTitle: request.eventTitle,
+                    ...(request.documentId === undefined ? {} : { documentId: request.documentId as string }),
                 }
             })
             : (() => {
@@ -438,10 +445,10 @@ export async function loadNarrativeInquiry(input: {
         (input.sourceMatches ?? []).map((match) => match.messageId)
     )
     const missingSourceIds = evidenceRequests
+        .filter((request) => request.documentId || !suppliedSourceIds.has(request.messageId))
         .map((request) => request.messageId)
-        .filter((messageId) => !suppliedSourceIds.has(messageId))
     if (input.resolveSourceMatches && missingSourceIds.length > 0) {
-        const resolved = await input.resolveSourceMatches(missingSourceIds)
+        const resolved = await input.resolveSourceMatches(missingSourceIds, evidenceRequests)
         const merged = [...resolved, ...(input.sourceMatches ?? [])]
             .filter((match, index, matches) => matches.findIndex((candidate) =>
                 candidate.messageId === match.messageId) === index)
@@ -451,7 +458,8 @@ export async function loadNarrativeInquiry(input: {
                     ? input.sourceLimit as number
                     : 8
             )))
-        if (merged.some((match) => !suppliedSourceIds.has(match.messageId))) {
+        if (merged.some((match) => !suppliedSourceIds.has(match.messageId)
+            || (input.sourceMatches ?? []).find(item => item.messageId === match.messageId)?.content !== match.content)) {
             return loadNarrativeInquiry({
                 ...input,
                 sourceMatches: merged,

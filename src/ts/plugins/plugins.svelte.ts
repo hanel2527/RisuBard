@@ -13,7 +13,7 @@ import { loadV3Plugins } from "./apiV3/v3.svelte";
 import { pluginCodeTranspiler } from "./apiV3/transpiler";
 import { runPluginUpdate } from "./pluginUpdate";
 import { PluginChatOutputListeners, V2_CHAT_OUTPUT_OWNER, createV2ChatOutputApi } from "./pluginChatOutput";
-import type { PluginProviderStructuredOutput } from './providerStructuredOutput';
+import type { PluginProviderResponse, PluginProviderStructuredOutput } from './providerStructuredOutput';
 import { createPluginFetchLogging } from './pluginFetchLogging';
 
 export const customProviderStore = writable([] as string[])
@@ -486,7 +486,7 @@ export type EditFunction = (content: string) => string | null | undefined | Prom
 type ReplacerFunction = (content: OpenAIChat[], type: string) => OpenAIChat[] | Promise<OpenAIChat[]>
 
 export const pluginV2 = {
-    providers: new Map<string, (arg: PluginV2ProviderArgument, abortSignal?: AbortSignal) => Promise<{ success: boolean, content: string | ReadableStream<string> }>>(),
+    providers: new Map<string, (arg: PluginV2ProviderArgument, abortSignal?: AbortSignal) => Promise<PluginProviderResponse>>(),
     providerOptions: new Map<string, PluginV2ProviderOptions>(),
     editdisplay: new Set<EditFunction>(),
     editoutput: new Set<EditFunction>(),

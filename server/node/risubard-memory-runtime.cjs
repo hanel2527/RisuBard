@@ -203,6 +203,7 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
         readGraphForInquiry: (characterId, chatId) =>
             graph.readForInquiry(characterId, chatId),
         inquireNarrative: (input) => wiki.inquire(input),
+        embeddingCatalog: (input) => wiki.embeddingCatalog(input),
         saveMarkdownWikiTurn: (input) => serialized(
             input.characterId,
             input.chatId,

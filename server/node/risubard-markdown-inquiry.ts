@@ -93,6 +93,9 @@ export interface MarkdownInquiryInput {
     semanticMatches?: readonly {
         documentId: string
         score: number
+        contentHash?: string
+        start?: number
+        end?: number
     }[]
     entityHints?: readonly {
         kind: 'character'
@@ -132,6 +135,7 @@ export interface MarkdownInquiryResult {
     evidenceRequests: Array<{
         messageId: string
         eventTitle: string
+        documentId?: string
     }>
     entityCandidates: []
     metrics: {
@@ -384,6 +388,17 @@ function arcRouteTargets(
     return targets
 }
 
+function semanticExcerpt(document: MarkdownWikiDocument, start: number, end: number): string {
+    const headings: Array<{ level: number; text: string }> = []
+    for (const heading of document.content.slice(0, start).matchAll(/^(#{1,6})\s+(.+)$/gm)) {
+        const level = heading[1].length
+        while (headings.length && headings[headings.length - 1].level >= level) headings.pop()
+        headings.push({ level, text: heading[0].trim() })
+    }
+    return [`## ${document.title}`, ...headings.map(heading => heading.text),
+        document.content.slice(start, end)].join('\n\n')
+}
+
 export function inquireMarkdownDocuments(
     input: MarkdownInquiryInput
 ): MarkdownInquiryResult {
@@ -428,9 +443,20 @@ export function inquireMarkdownDocuments(
             || right.document.updated.localeCompare(left.document.updated)
             || left.document.id.localeCompare(right.document.id))
     const semanticScores = new Map<string, number>()
+    const semanticPassages = new Map<string, { start: number; end: number; score: number }>()
     for (const match of input.semanticMatches ?? []) {
         if (!Number.isFinite(match.score) || match.score <= 0
             || !byId.has(match.documentId)) continue
+        const document = byId.get(match.documentId)!
+        if (match.contentHash !== undefined || match.start !== undefined || match.end !== undefined) {
+            if (match.contentHash !== document.contentHash
+                || !Number.isSafeInteger(match.start) || !Number.isSafeInteger(match.end)
+                || match.start! < 0 || match.end! <= match.start!
+                || match.end! > document.content.length) continue
+            if (match.score > (semanticPassages.get(match.documentId)?.score ?? 0)) {
+                semanticPassages.set(match.documentId, { start: match.start!, end: match.end!, score: match.score })
+            }
+        }
         semanticScores.set(
             match.documentId,
             Math.max(semanticScores.get(match.documentId) ?? 0, match.score)
@@ -652,7 +678,13 @@ export function inquireMarkdownDocuments(
         })),
         ...automatic,
     ].map((candidate) => {
-        const content = selectTokenBoundedExcerpt({
+        const passage = semanticPassages.get(candidate.document.id)
+        const preferSemantic = passage && !requiredIds.has(candidate.document.id)
+            && !(currentStateIntent && candidate.document.type === 'character')
+        const content = preferSemantic ? truncateToTokenBudget(
+            semanticExcerpt(candidate.document, passage.start, passage.end),
+            tokenBudget.perSource,
+        ) : selectTokenBoundedExcerpt({
             content: candidate.document.content,
             documentType: candidate.document.type,
             query: retrievalInput,
@@ -750,17 +782,24 @@ export function inquireMarkdownDocuments(
         ? Math.max(0, Math.min(MAX_SOURCE_MATCHES, input.sourceLimit as number))
         : DEFAULT_SELECTED_SOURCE_MESSAGES
     const selectedEventSources = new Map<string, string>()
+    const semanticEventSourceDocuments = new Map<string, string>()
     for (const candidate of selected) {
         if (candidate.document.type !== 'event') continue
         for (const messageId of candidate.document.sourceMessageIds) {
             if (!selectedEventSources.has(messageId)) {
                 selectedEventSources.set(messageId, candidate.document.title)
+                if (semanticPassages.has(candidate.document.id)) {
+                    semanticEventSourceDocuments.set(messageId, candidate.document.id)
+                }
             }
         }
     }
     const evidenceRequests = [...selectedEventSources]
         .slice(0, sourceLimit)
-        .map(([messageId, eventTitle]) => ({ messageId, eventTitle }))
+        .map(([messageId, eventTitle]) => ({ messageId, eventTitle,
+            ...(semanticEventSourceDocuments.has(messageId)
+                ? { documentId: semanticEventSourceDocuments.get(messageId)! } : {}),
+        }))
     const preparedSourceMatches = (input.sourceMatches ?? [])
         .slice(0, MAX_SOURCE_MATCHES)
         .map((match) => {
@@ -771,10 +810,16 @@ export function inquireMarkdownDocuments(
                 1,
                 tokenBudget.perSource - countInquiryTokens(`${heading}\n`),
             )
+            const semanticDocumentId = semanticEventSourceDocuments.get(match.messageId)
+            const semanticDocument = semanticDocumentId ? byId.get(semanticDocumentId) : undefined
+            const semanticPassage = semanticDocumentId ? semanticPassages.get(semanticDocumentId) : undefined
+            const evidenceQuery = semanticDocument && semanticPassage
+                ? semanticDocument.content.slice(semanticPassage.start, semanticPassage.end)
+                : retrievalInput
             const excerpt = selectTokenBoundedExcerpt({
                 content: match.content,
                 documentType: 'other',
-                query: retrievalInput,
+                query: evidenceQuery,
                 chronologyIntent: false,
             }, bodyTokenBudget)
             const content = `${heading}\n${truncateToTokenBudget(

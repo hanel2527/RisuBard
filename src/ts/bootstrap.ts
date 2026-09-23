@@ -33,6 +33,7 @@ import { initModelJobRecovery } from "./process/request/jobRecovery";
 import { convertStubsToPlaceholders } from "./storage/chatStorage";
 import { isChatStub, purgeUnsupportedGroupChats } from "./storage/database.svelte";
 import { normalizeFirstMessageStudioProject } from './firstMessageStudio'
+import { advanceStartupStage, failStartupStage } from './startupProgress'
 import { canDeleteAssetsAfterPluginStorageScan, collectNestedAssetReferences, isAutoAssetCleanupEnabled, shouldDeleteUnreferencedAsset } from './storage/assetRefs'
 
 /**
@@ -41,31 +42,36 @@ import { canDeleteAssetsAfterPluginStorageScan, collectNestedAssetReferences, is
 export async function loadData() {
     const loaded = get(loadedStore)
     if (!loaded) {
+        const stage = (label: string) => advanceStartupStage(LoadingStatusState, label)
         try {
             applyEarlyLanguage()
             let createdFreshDatabase = false
             {
+                await stage(language.startupLoading.storage)
                 await forageStorage.Init()
 
-                LoadingStatusState.text = language.startupLoading.localSave
+                await stage(language.startupLoading.localSave)
                 let gotStorage: Uint8Array = await forageStorage.getItem('database/database.bin') as unknown as Uint8Array
-                LoadingStatusState.text = language.startupLoading.decodingLocalSave
                 if (checkNullish(gotStorage)) {
+                    await stage(language.startupLoading.creatingSave)
                     createdFreshDatabase = true
                     gotStorage = encodeRisuSaveLegacy({})
                     await forageStorage.setItem('database/database.bin', gotStorage)
                 }
                 try {
+                    await stage(language.startupLoading.decodingLocalSave)
                     const decoded = await decodeRisuSave(gotStorage)
+                    await stage(language.startupLoading.applyingData)
                     setPatchSyncBaseline(decoded)
                     setDatabase(decoded)
                 } catch (error) {
                     console.error(error)
+                    await stage(language.startupLoading.findingBackups)
                     const backups = await getDbBackups()
                     let backupLoaded = false
                     for (const backup of backups) {
                         try {
-                            LoadingStatusState.text = language.startupLoading.readingBackup.replace('{0}', String(backup))
+                            await stage(language.startupLoading.readingBackup.replace('{0}', String(backup)))
                             const backupData: Uint8Array = await forageStorage.getItem(`database/dbbackup-${backup}.bin`) as unknown as Uint8Array
                             const backupDecoded = await decodeRisuSave(backupData)
                             setPatchSyncBaseline(backupDecoded)
@@ -110,7 +116,7 @@ export async function loadData() {
                     changeLanguage(mappedLanguage)
                 }
             }
-            LoadingStatusState.text = language.startupLoading.plugins
+            await stage(language.startupLoading.plugins)
             try {
                 await loadPlugins()
             } catch (error) { }
@@ -118,17 +124,19 @@ export async function loadData() {
                 //@ts-expect-error navigator.standalone is iOS Safari non-standard property, not in Navigator interface
                 const isInStandaloneMode = (window.matchMedia('(display-mode: standalone)').matches) || (window.navigator.standalone) || document.referrer.includes('android-app://');
                 if (isInStandaloneMode) {
+                    await stage(language.startupLoading.storagePermission)
                     await navigator.storage.persist()
                 }
             } catch (error) {
 
             }
-            LoadingStatusState.text = language.startupLoading.checkingFormat
+            await stage(language.startupLoading.checkingFormat)
             await checkNewFormat()
 
             // Convert any ChatStubs (from server-stripped database.bin) to placeholder Chats
             // so runtime code only sees Chat objects
             {
+                await stage(language.startupLoading.preparingChats)
                 const dbForConvert = getDatabase()
                 for (const char of dbForConvert.characters) {
                     char.chats = convertStubsToPlaceholders(char.chats)
@@ -137,7 +145,7 @@ export async function loadData() {
 
             const db = getDatabase();
 
-            LoadingStatusState.text = language.startupLoading.updatingState
+            await stage(language.startupLoading.updatingState)
             updateColorScheme()
             updateTextThemeAndCSS()
             updateAnimationSpeed()
@@ -160,11 +168,12 @@ export async function loadData() {
                 initMobileGesture()
                 MobileGUI.set(true)
             }
-            loadedStore.set(true)
+            await stage(language.startupLoading.finishing)
             selectedCharID.set(-1)
             startObserveDom()
             assignIds()
             registerModelDynamic()
+            loadedStore.set(true)
             saveDb()
             moduleUpdate()
             // cleanChunks는 화면 진입 후 유휴 시간에 실행 (부트 블로킹 제거)
@@ -185,6 +194,7 @@ export async function loadData() {
                 })
             }
         } catch (error) {
+            failStartupStage(LoadingStatusState, error)
             alertError(error)
         }
     }

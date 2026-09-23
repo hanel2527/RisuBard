@@ -40,7 +40,7 @@ describe('RisuBard analysis settings', () => {
             expect(event).toContain(`(${locale})`)
             expect(canon).toContain('dynamic lorebook')
             expect(canon).toContain('recommended')
-            expect(canon).toContain('3-6')
+            expect(canon).not.toContain('3-6')
             expect(canon).toContain('entire body')
             expect(canon).toContain('existing document titles')
             expect(event).toContain('When compressing')
@@ -142,7 +142,7 @@ describe('RisuBard analysis settings', () => {
         expect(policy).toContain('do not present both states as current')
         expect(policy).toContain('### 현재 상태')
         expect(policy).toContain('### 작중 행적')
-        expect(policy).toContain('3-6')
+        expect(policy).not.toContain('3-6')
         expect(policy).toContain('[[event document titles]]')
         expect(policy).toContain('copy its complete title character-for-character')
         expect(policy).toContain('[[exact title|display text]]')
@@ -156,6 +156,10 @@ describe('RisuBard analysis settings', () => {
         expect(policy).toContain('named sublocation')
         expect(policy).toContain('investigation thread')
         expect(policy).toContain('do not copy event sentences or paragraphs')
+        expect(policy).toContain('Compress expression, never distinct established facts')
+        expect(policy).toContain('relationships and trust')
+        expect(policy).toContain('meaningful possessions, equipment, injuries, or appearance')
+        expect(policy).toContain('Do not create empty sections')
     })
 
     test('resolves current-chat overrides over normalized global defaults', () => {

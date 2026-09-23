@@ -42,6 +42,15 @@ describe('resolveDataRoot', () => {
 })
 
 describe('crash-safe canonical writes', () => {
+    it('does not attach a stale sidecar to a newly preserved backup', () => {
+        const root = tempRoot()
+        atomicWriteJson(root, 'settings/app.json', { revision: 1 })
+        atomicWriteJson(root, 'settings/app.json.bak', { revision: 0 })
+        atomicWriteJson(root, 'settings/app.json', { revision: 2 })
+        expect(fs.existsSync(path.join(root, 'settings/app.json.bak.sha256'))).toBe(false)
+        expect(readVerifiedJson(root, 'settings/app.json.bak')).toEqual({ revision: 1 })
+        expect(readVerifiedJson(root, 'settings/app.json')).toEqual({ revision: 2 })
+    })
     it('validates bytes, publishes atomically, and preserves the previous revision', () => {
         const root = tempRoot()
         atomicWriteFile(root, 'settings/app.json', Buffer.from('{"revision":1}'), {
@@ -192,6 +201,65 @@ describe('journal recovery and trash', () => {
         expect(JSON.parse(fs.readFileSync(path.join(root, 'settings/app.json'), 'utf8'))).toEqual({ ok: true })
         expect(JSON.parse(fs.readFileSync(path.join(root, 'presets/preset-1.json'), 'utf8'))).toEqual({ id: 'preset-1' })
         expect(fs.readdirSync(path.join(root, '.journal'))).toHaveLength(0)
+    })
+
+    it('recovers a directory replacement and its new files from one journal', () => {
+        const root = tempRoot()
+        atomicWriteFile(root, 'characters/old/metadata.json', Buffer.from('old'))
+
+        expect(() => commitTransaction(root, [
+            { path: 'characters', moveTo: 'trash/restore-1/characters' },
+            { path: 'characters/new/metadata.json', data: Buffer.from('new') },
+            { path: 'kv/manifest.json', data: Buffer.from('{"schemaVersion":1,"entries":{}}') },
+        ], { failAfterPublish: 1 })).toThrow(/simulated crash/i)
+
+        expect(fs.existsSync(path.join(root, 'characters'))).toBe(false)
+        recoverTransactions(root)
+        expect(fs.readFileSync(path.join(root, 'characters/new/metadata.json'), 'utf8')).toBe('new')
+        expect(fs.readFileSync(path.join(root, 'trash/restore-1/characters/old/metadata.json'), 'utf8')).toBe('old')
+        expect(JSON.parse(fs.readFileSync(path.join(root, 'kv/manifest.json'), 'utf8'))).toEqual({ schemaVersion: 1, entries: {} })
+        expect(fs.readdirSync(path.join(root, '.journal'))).toHaveLength(0)
+    })
+
+    it('skips an optional move whose source is absent', () => {
+        const root = tempRoot()
+        expect(commitTransaction(root, [
+            { path: 'characters', moveTo: 'trash/restore-1/characters' },
+            { path: 'settings/app.json', data: Buffer.from('{}') },
+        ])).toEqual({ committed: 2, published: 1, skipped: 1, stagedBytes: 2 })
+        expect(fs.readFileSync(path.join(root, 'settings/app.json'), 'utf8')).toBe('{}')
+    })
+
+    it('replays permanent character deletion after interruption without touching other characters', () => {
+        const root = tempRoot()
+        atomicWriteFile(root, 'characters/one/metadata.json', Buffer.from('one'))
+        atomicWriteFile(root, 'characters/two/metadata.json', Buffer.from('two'))
+        expect(() => commitTransaction(root, [
+            { path: 'index/sidebar.json', data: Buffer.from('{}') },
+            { path: 'characters/one', deleteCharacter: true },
+        ], { failAfterPublish: 1 })).toThrow(/simulated crash/)
+        recoverTransactions(root)
+        expect(fs.existsSync(path.join(root, 'characters/one'))).toBe(false)
+        expect(fs.readFileSync(path.join(root, 'characters/two/metadata.json'), 'utf8')).toBe('two')
+        expect(() => commitTransaction(root, [{ path: 'characters', deleteCharacter: true }])).toThrow(/one character/)
+        expect(() => commitTransaction(root, [{ path: '../outside', deleteCharacter: true }])).toThrow(/escapes/)
+    })
+
+    it('allows a move destination only when an earlier move clears it', () => {
+        const root = tempRoot()
+        atomicWriteFile(root, 'characters/legacy/metadata.json', Buffer.from('old'))
+        atomicWriteFile(root, 'characters/friendly/metadata.json', Buffer.from('current'))
+        commitTransaction(root, [
+            { path: 'characters/legacy', moveTo: 'trash/legacy' },
+            { path: 'characters/friendly', moveTo: 'characters/legacy', destinationClearedByTransaction: true },
+        ])
+        expect(fs.readFileSync(path.join(root, 'characters/legacy/metadata.json'), 'utf8')).toBe('current')
+        expect(fs.readFileSync(path.join(root, 'trash/legacy/metadata.json'), 'utf8')).toBe('old')
+
+        atomicWriteFile(root, 'characters/other/metadata.json', Buffer.from('other'))
+        expect(() => commitTransaction(root, [
+            { path: 'characters/other', moveTo: 'characters/legacy', destinationClearedByTransaction: true },
+        ])).toThrow(/destination already exists/)
     })
 
     it('moves deleted canonical data to trash with recoverable bytes', () => {

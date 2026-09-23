@@ -41,6 +41,46 @@ function createHarness() {
 }
 
 describe('RisuBard memory routes', () => {
+    test('authenticates catalog pages, bounds offsets and reports revision conflicts', async () => {
+        const { registerRisuBardMemoryRoutes } = require('./risubard-memory-routes.cjs')
+        const harness = createHarness()
+        const service = { embeddingCatalog: vi.fn(async () => ({ revision: 'rev', chunks: [], nextOffset: null })) }
+        const auth = vi.fn(async () => false)
+        registerRisuBardMemoryRoutes(harness.app, { auth, service })
+        const route = harness.routes.get('/api/risubard/memory/embedding-catalog')!
+        const next = vi.fn()
+        const body = { characterId: 'char', chatId: 'chat' }
+        await route({ body }, harness.response, next)
+        expect(service.embeddingCatalog).not.toHaveBeenCalled()
+        auth.mockResolvedValue(true)
+        await route({ body: { ...body, offset: 64 } }, harness.response, next)
+        expect(harness.response.statusCode).toBe(400)
+        expect(service.embeddingCatalog).not.toHaveBeenCalled()
+        await route({ body: { ...body, offset: 64, revision: 'rev' } }, harness.response, next)
+        expect(service.embeddingCatalog).toHaveBeenCalledWith({ ...body, offset: 64, revision: 'rev' })
+        service.embeddingCatalog.mockRejectedValueOnce(new Error('Embedding catalog revision changed'))
+        await route({ body: { ...body, offset: 64, revision: 'rev' } }, harness.response, next)
+        expect(harness.response.statusCode).toBe(409)
+        expect(next).not.toHaveBeenCalled()
+    })
+
+    test('accepts verified semantic ranges and rejects partial ranges or supplied text', async () => {
+        const { registerRisuBardMemoryRoutes } = require('./risubard-memory-routes.cjs')
+        const harness = createHarness()
+        const service = { inquireNarrative: vi.fn(async () => ({ sources: [] })) }
+        registerRisuBardMemoryRoutes(harness.app, { auth: async () => true, service })
+        const route = harness.routes.get('/api/risubard/memory/inquiry')!
+        const match = { documentId: 'event', score: 0.9, contentHash: 'hash', start: 14000, end: 14500 }
+        const body = { characterId: 'char', chatId: 'chat', currentInput: 'betrayal' }
+        await route({ body: { ...body, semanticMatches: [match] } }, harness.response, vi.fn())
+        expect(service.inquireNarrative).toHaveBeenCalledOnce()
+        for (const invalid of [{ ...match, end: undefined }, { ...match, start: -1 }, { ...match, text: 'untrusted' }]) {
+            await route({ body: { ...body, semanticMatches: [invalid] } }, harness.response, vi.fn())
+            expect(harness.response.statusCode).toBe(400)
+        }
+        expect(service.inquireNarrative).toHaveBeenCalledOnce()
+    })
+
     test('authenticates wiki transfer and rejects reserved documents before service writes', async () => {
         const { registerRisuBardMemoryRoutes } = require('./risubard-memory-routes.cjs')
         const harness = createHarness()

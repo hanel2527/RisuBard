@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import type { Database, folder } from './storage/database.svelte'
+import type { Database, character, folder } from './storage/database.svelte'
 import {
     applyCharacterVaultClones,
     clearCharacterVaultNew,
@@ -263,18 +263,16 @@ describe('Character Vault state', () => {
         expect(getFolder(db, 'folder-empty').data).toEqual([])
     })
 
-    test('moves selected characters to trash and preserves emptied folders', () => {
+    test('permanently removes selected characters and preserves emptied folders', () => {
         const db = makeDb()
         setCharacterVaultQuickAccess(db, [
             { kind: 'character', id: 'a' },
             { kind: 'folder', id: 'folder-1' },
         ])
 
-        expect(trashCharacterVaultCharacters(db, ['a', 'b'], 1234)).toBe(2)
-        expect(db.characters.find((character) => character.chaId === 'a')?.trashTime)
-            .toBe(1234)
-        expect(db.characters.find((character) => character.chaId === 'b')?.trashTime)
-            .toBe(1234)
+        expect(trashCharacterVaultCharacters(db, ['a', 'b'])).toBe(2)
+        expect(db.characters.find((character) => character.chaId === 'a')).toBeUndefined()
+        expect(db.characters.find((character) => character.chaId === 'b')).toBeUndefined()
         expect(db.characterOrder).toEqual([
             expect.objectContaining({ id: 'folder-1', data: [] }),
             'c',
@@ -332,6 +330,18 @@ describe('Character Vault state', () => {
         }])
         expect(db.characters.map((character) => character.chaId))
             .not.toContain('clone-a')
+    })
+
+    test('treats case variants of clone names as occupied', () => {
+        const db = makeDb()
+        db.characters.push({ chaId: 'duplicate', name: 'alice-2' } as character)
+
+        const [plan] = createCharacterVaultClones(db, ['a'], {
+            withChats: false,
+            createId: () => 'clone-a',
+        })
+
+        expect(plan.clone.name).toBe('Alice-3')
     })
 
     test('creates one empty chat when cloning without chats', () => {

@@ -13,6 +13,12 @@ const {
     resolveInside,
 } = require('./file-store.cjs');
 
+const { DIRECTORY_INDEX, validateDirectoryMapping, createCharacterDirectoryResolver, resetCharacterDirectoryMappings } = require('./character-directories.cjs');
+const { createCharacterPackageManifest, validateCharacterPackageManifest } = require('./character-package-manifest.cjs');
+const { inspectCharacterPackageOwnership } = require('./character-package-preflight.cjs');
+const { allocateSegment, planDirectoryMapping } = require('./friendly-paths.cjs');
+const { collectNestedAssetReferences } = require('./orphan-cleanup.cjs');
+
 const COLLECTIONS = [
     ['botPresets', 'presets'],
     ['modules', 'modules'],
@@ -114,6 +120,7 @@ function createUserDataRepository(options = {}) {
     const dataRoot = path.resolve(options.dataRoot || path.join(process.cwd(), 'save'));
     fs.mkdirSync(dataRoot, { recursive: true });
     recoverTransactions(dataRoot);
+    const directories = createCharacterDirectoryResolver(dataRoot);
 
     function checksumMismatch(relativePath) {
         const error = new Error(`Canonical file checksum mismatch: ${relativePath}`);
@@ -160,32 +167,31 @@ function createUserDataRepository(options = {}) {
             .map(entry => entry.name.slice(0, -'.json'.length));
     }
 
-    function listDirectoryIds(directory) {
-        const absolute = path.join(dataRoot, directory);
-        if (!fs.existsSync(absolute)) return [];
-        return fs.readdirSync(absolute, { withFileTypes: true })
-            .filter(entry => entry.isDirectory() && !entry.name.startsWith('.'))
-            .map(entry => entry.name);
-    }
-
     function collectCanonicalSourcePaths() {
+        directories.refresh();
         const relativePaths = [];
+        if (directories.snapshot().characters.length) relativePaths.push(DIRECTORY_INDEX);
         for (const relativePath of ['settings/app.json', 'secrets/credentials.json']) {
             if (fs.existsSync(resolveInside(dataRoot, relativePath))) relativePaths.push(relativePath);
         }
         for (const [, directory] of COLLECTIONS) {
             for (const id of listJsonIds(directory)) relativePaths.push(path.join(directory, `${id}.json`));
         }
-        for (const characterId of listDirectoryIds('characters')) {
-            const metadataPath = path.join('characters', characterId, 'metadata.json');
+        for (const characterId of directories.characterIds()) {
+            const mapped = directories.snapshot().characters.find(entry => entry.id === characterId);
+            if (mapped?.packageVersion === 1) {
+                const packagePath = path.join(directories.characterDirectory(characterId), 'package.json');
+                validateCharacterPackageManifest(readCanonicalJson(packagePath), mapped);
+                relativePaths.push(packagePath);
+            }
+            const metadataPath = path.join(directories.characterDirectory(characterId), 'metadata.json');
             if (!fs.existsSync(resolveInside(dataRoot, metadataPath))) {
                 const error = new Error(`Canonical character metadata is missing: ${characterId}`);
                 error.code = 'CANONICAL_FILES_CHANGED';
                 throw error;
             }
             relativePaths.push(metadataPath);
-            const chatsDirectory = path.join('characters', characterId, 'chats');
-            for (const chatId of listDirectoryIds(chatsDirectory)) {
+            for (const chatId of directories.chatIds(characterId)) {
                 const metadata = chatMetadataPath(characterId, chatId);
                 const messages = messagesPath(characterId, chatId);
                 if (!fs.existsSync(resolveInside(dataRoot, metadata))
@@ -264,15 +270,15 @@ function createUserDataRepository(options = {}) {
 
     function loadCharacter(characterId, options = {}) {
         const id = stableId(characterId, 'character');
-        return readJson(path.join('characters', id, 'metadata.json'), options);
+        return readJson(path.join(directories.characterDirectory(id), 'metadata.json'), options);
     }
 
     function messagesPath(characterId, chatId) {
-        return path.join('characters', stableId(characterId, 'character'), 'chats', stableId(chatId, 'chat'), 'messages.jsonl');
+        return path.join(directories.chatDirectory(stableId(characterId, 'character'), stableId(chatId, 'chat')), 'messages.jsonl');
     }
 
     function chatMetadataPath(characterId, chatId) {
-        return path.join('characters', stableId(characterId, 'character'), 'chats', stableId(chatId, 'chat'), 'metadata.json');
+        return path.join(directories.chatDirectory(stableId(characterId, 'character'), stableId(chatId, 'chat')), 'metadata.json');
     }
 
     function loadMessages(characterId, chatId) {
@@ -323,22 +329,28 @@ function createUserDataRepository(options = {}) {
 
         const characterIds = orderedIds(
             previousIndex?.characters?.map(character => character?.id).filter(Boolean),
-            listDirectoryIds('characters'),
+            directories.characterIds(),
         );
         const characters = [];
         const sidebarCharacters = [];
         for (const characterId of characterIds) {
-            const metadataPath = path.join('characters', characterId, 'metadata.json');
+            const metadataPath = path.join(directories.characterDirectory(characterId), 'metadata.json');
             const metadata = readCanonicalJson(metadataPath);
+            if (metadata.chaId && stableId(metadata.chaId, 'character') !== characterId) {
+                throw new Error('Canonical character directory does not match its stable ID');
+            }
             const previousCharacter = previousIndex?.characters?.find(character => character?.id === characterId);
             const chatIds = orderedIds(
                 previousCharacter?.chats?.map(chat => chat?.id).filter(Boolean),
-                listDirectoryIds(path.join('characters', characterId, 'chats')),
+                directories.chatIds(characterId),
             );
             const chats = [];
             const chatSummaries = [];
             for (const chatId of chatIds) {
                 const chatMetadata = readCanonicalJson(chatMetadataPath(characterId, chatId));
+                if (chatMetadata.id && stableId(chatMetadata.id, 'chat') !== chatId) {
+                    throw new Error('Canonical chat directory does not match its stable ID');
+                }
                 const previousChat = previousCharacter?.chats?.find(chat => chat?.id === chatId);
                 const legacyMessagePresent = previousChat?.legacyMessagePresent !== false;
                 if (includeDatabase) {
@@ -430,7 +442,7 @@ function createUserDataRepository(options = {}) {
     }
 
     function draftPath(characterId, chatId) {
-        return path.join('characters', stableId(characterId, 'character'), 'chats', stableId(chatId, 'chat'), 'draft.json');
+        return path.join(directories.chatDirectory(stableId(characterId, 'character'), stableId(chatId, 'chat')), 'draft.json');
     }
 
     function saveAssistantDraft(characterId, chatId, message) {
@@ -452,6 +464,228 @@ function createUserDataRepository(options = {}) {
         appendMessage(characterId, chatId, draft);
         moveToTrash(dataRoot, relativePath);
         return draft;
+    }
+
+    function characterDirectoryStatus(characterId) {
+        const id = stableId(characterId, 'character');
+        directories.refresh();
+        const entry = directories.snapshot().characters.find(item => item.id === id);
+        return entry?.packageVersion === 1
+            ? { enabled: true, directory: entry.directory, chats: entry.chats.length }
+            : { enabled: false, directory: id, chats: 0 };
+    }
+
+    // Explicit single-character opt-in only. The authenticated server route is
+    // the product boundary; existing saves remain unchanged until it is called.
+    function publishCharacterDirectoryMapping(characterId) {
+        if (options.allowDirectoryMapping !== true) throw new Error('Directory mapping publication is disabled');
+        const id = stableId(characterId, 'character');
+        directories.refresh();
+        const previous = directories.snapshot();
+        if (previous.characters.some(entry => entry.id === id)) throw new Error('Character directory is already mapped');
+        const summary = loadSidebarIndex().characters.find(entry => entry.id === id);
+        if (!summary) throw new Error('Canonical character is unavailable');
+        const character = loadCharacter(id);
+        const sourceDirectory = directories.characterDirectory(id);
+        const source = directories.safePath(sourceDirectory);
+        const occupied = fs.readdirSync(directories.safePath('characters'));
+        for (const entry of previous.characters) occupied.push(entry.id, entry.directory);
+        const mapping = planDirectoryMapping({ ...character, chaId: id, chats: summary.chats }, occupied,
+            fs.existsSync(path.join(source, 'chats')) ? fs.readdirSync(path.join(source, 'chats')) : []);
+        delete mapping.active;
+        delete mapping.schemaVersion;
+        mapping.packageVersion = 1;
+        const next = validateDirectoryMapping({ schemaVersion: 1, characters: [...previous.characters, mapping] });
+        const operations = [];
+        function copyTree(relative, destination) {
+            const absolute = directories.safePath(relative);
+            for (const entry of fs.readdirSync(absolute, { withFileTypes: true })) {
+                if (entry.isSymbolicLink()) throw new Error('Character copy uses a symbolic link');
+                const child = path.join(relative, entry.name);
+                let targetName = entry.name;
+                if (relative === path.join(sourceDirectory, 'chats') && entry.isDirectory()) {
+                    const chat = mapping.chats.find(item => item.id === entry.name);
+                    if (!chat) throw new Error('Unindexed chat must be reconciled before directory mapping');
+                    targetName = chat.directory;
+                }
+                const target = path.join(destination, targetName);
+                if (entry.isDirectory()) copyTree(child, target);
+                else if (entry.isFile() && !entry.name.endsWith('.sha256')) {
+                    const sourcePath = directories.safePath(child);
+                    operations.push({ path: target, sourcePath });
+                    // Existing checksummed sources are also transaction preconditions.
+                    // Legacy backup sidecars can outlive their backup revision.
+                    // Preserve their bytes via verified staging, but enforce
+                    // canonical checksums only for the live files.
+                    if (!entry.name.endsWith('.bak') && fs.existsSync(`${sourcePath}.sha256`)) {
+                        readCanonicalBytes(child);
+                        operations.push({ path: child, sourcePath });
+                    }
+                } else if (!entry.isFile()) throw new Error('Unsupported character copy entry');
+            }
+        }
+        copyTree(sourceDirectory, path.join('characters', mapping.directory));
+        operations.push({
+            path: path.join('characters', mapping.directory, 'package.json'),
+            data: jsonBytes(createCharacterPackageManifest(mapping)),
+        });
+        // All copies are staged and verified before the journal publishes the mapping last.
+        operations.push({ path: DIRECTORY_INDEX, data: jsonBytes(next) });
+        try {
+            commitTransaction(dataRoot, operations, options.directoryMappingTransactionOptions || {});
+        } catch (error) {
+            // Do not leave a live repository discovering a half-published destination.
+            const recovery = recoverTransactions(dataRoot);
+            if (recovery.recovered > 0 && JSON.stringify(readVerifiedJson(dataRoot, DIRECTORY_INDEX)) === JSON.stringify(next)) {
+                error.canonicalTransitionRecovered = true;
+            }
+            throw error;
+        } finally {
+            directories.invalidate();
+        }
+        return mapping;
+    }
+
+    function refreshCharacterDirectoryMapping(characterId) {
+        if (options.allowDirectoryMapping !== true) throw new Error('Directory mapping publication is disabled');
+        const id = stableId(characterId, 'character');
+        directories.refresh();
+        const previous = directories.snapshot();
+        const current = previous.characters.find(entry => entry.id === id);
+        if (!current) throw new Error('Character directory is not mapped');
+        const summary = loadSidebarIndex().characters.find(entry => entry.id === id);
+        if (!summary) throw new Error('Canonical character is unavailable');
+        const character = loadCharacter(id);
+        const charactersRoot = directories.safePath('characters');
+        const occupiedCharacters = new Set(fs.readdirSync(charactersRoot));
+        occupiedCharacters.delete(current.directory);
+        for (const entry of previous.characters) {
+            if (entry.id === id) continue;
+            occupiedCharacters.add(entry.id);
+            occupiedCharacters.add(entry.directory);
+        }
+        const nextDirectory = allocateSegment(character.name, occupiedCharacters);
+        const currentRoot = path.join('characters', current.directory);
+        const nextRoot = path.join('characters', nextDirectory);
+        const currentChatsRoot = directories.safePath(path.join(currentRoot, 'chats'));
+        const occupiedChats = new Set(fs.existsSync(currentChatsRoot) ? fs.readdirSync(currentChatsRoot) : []);
+        const activeIds = new Set(summary.chats.map(chat => chat.id));
+        const retainedChats = current.chats.filter(chat => !activeIds.has(chat.id));
+        for (const chat of retainedChats) {
+            occupiedChats.add(chat.id);
+            occupiedChats.add(chat.directory);
+        }
+        const nextChats = [];
+        for (const chat of summary.chats) {
+            const old = current.chats.find(entry => entry.id === chat.id) || { id: chat.id, directory: chat.id };
+            occupiedChats.delete(old.directory);
+            const directory = allocateSegment(chat.name, occupiedChats);
+            occupiedChats.add(directory);
+            occupiedChats.add(chat.id);
+            nextChats.push({ id: chat.id, directory });
+        }
+        const nextEntry = { id, directory: nextDirectory, packageVersion: 1, chats: [...nextChats, ...retainedChats] };
+        const next = validateDirectoryMapping({
+            schemaVersion: 1,
+            characters: previous.characters.map(entry => entry.id === id ? nextEntry : entry),
+        });
+        const operations = [];
+        const characterMoved = current.directory !== nextDirectory;
+        if (characterMoved) operations.push({ path: currentRoot, moveTo: nextRoot });
+        for (const chat of nextChats) {
+            const old = current.chats.find(entry => entry.id === chat.id) || { id: chat.id, directory: chat.id };
+            if (old.directory === chat.directory) continue;
+            operations.push({
+                path: path.join(nextRoot, 'chats', old.directory),
+                moveTo: path.join(nextRoot, 'chats', chat.directory),
+                sourceCreatedByTransaction: characterMoved,
+            });
+        }
+        operations.push({
+            path: path.join(nextRoot, 'package.json'),
+            data: jsonBytes(createCharacterPackageManifest(nextEntry)),
+        });
+        operations.push({ path: DIRECTORY_INDEX, data: jsonBytes(next) });
+        try {
+            commitTransaction(dataRoot, operations, options.directoryMappingTransactionOptions || {});
+        } catch (error) {
+            const recovery = recoverTransactions(dataRoot);
+            if (recovery.recovered > 0 && JSON.stringify(readVerifiedJson(dataRoot, DIRECTORY_INDEX)) === JSON.stringify(next)) {
+                error.canonicalTransitionRecovered = true;
+            }
+            resetCharacterDirectoryMappings(dataRoot);
+            throw error;
+        }
+        resetCharacterDirectoryMappings(dataRoot);
+        directories.refresh();
+        return directories.snapshot().characters.find(entry => entry.id === id);
+    }
+
+    function rollbackCharacterDirectoryMapping(characterId) {
+        if (options.allowDirectoryMapping !== true) throw new Error('Directory mapping publication is disabled');
+        const id = stableId(characterId, 'character');
+        directories.refresh();
+        const previous = directories.snapshot();
+        const current = previous.characters.find(entry => entry.id === id);
+        if (!current || current.packageVersion !== 1) return characterDirectoryStatus(id);
+        const currentRoot = path.join('characters', current.directory);
+        const legacyRoot = path.join('characters', id);
+        const token = `${Date.now()}-${crypto.randomUUID()}`;
+        const operations = [];
+        if (current.directory !== id) {
+            if (fs.existsSync(directories.safePath(legacyRoot))) {
+                operations.push({ path: legacyRoot, moveTo: path.join('trash', token, legacyRoot) });
+            }
+            operations.push({
+                path: currentRoot,
+                moveTo: legacyRoot,
+                destinationClearedByTransaction: true,
+            });
+        }
+        for (const chat of current.chats) {
+            if (chat.directory === chat.id) continue;
+            const source = path.join(legacyRoot, 'chats', chat.directory);
+            if (!fs.existsSync(directories.safePath(path.join(currentRoot, 'chats', chat.directory)))) continue;
+            operations.push({
+                path: source,
+                moveTo: path.join(legacyRoot, 'chats', chat.id),
+                sourceCreatedByTransaction: current.directory !== id,
+                destinationClearedByTransaction: true,
+            });
+        }
+        for (const name of ['package.json', 'package.json.sha256']) {
+            if (!fs.existsSync(directories.safePath(path.join(currentRoot, name)))) continue;
+            operations.push({
+                path: path.join(legacyRoot, name),
+                moveTo: path.join('trash', token, 'v3-package', name),
+                sourceCreatedByTransaction: current.directory !== id,
+            });
+        }
+        const next = validateDirectoryMapping({
+            schemaVersion: 1,
+            characters: previous.characters.filter(entry => entry.id !== id),
+        });
+        operations.push({ path: DIRECTORY_INDEX, data: jsonBytes(next) });
+        try {
+            commitTransaction(dataRoot, operations, options.directoryMappingTransactionOptions || {});
+        } catch (error) {
+            const recovery = recoverTransactions(dataRoot);
+            if (recovery.recovered > 0 && JSON.stringify(readVerifiedJson(dataRoot, DIRECTORY_INDEX)) === JSON.stringify(next)) {
+                error.canonicalTransitionRecovered = true;
+            }
+            resetCharacterDirectoryMappings(dataRoot);
+            throw error;
+        }
+        resetCharacterDirectoryMappings(dataRoot);
+        directories.refresh();
+        return characterDirectoryStatus(id);
+    }
+
+    function maintainMappedDirectories(characterIds) {
+        if (options.maintainDirectoryNames !== true) return;
+        directories.refresh();
+        const active = new Set(directories.snapshot().characters.filter(entry => entry.packageVersion === 1).map(entry => entry.id));
+        for (const id of characterIds) if (active.has(id)) refreshCharacterDirectoryMapping(id);
     }
 
     function importLegacyDatabase(database, importOptions = {}) {
@@ -511,7 +745,7 @@ function createUserDataRepository(options = {}) {
             }
             const metadata = without(rawCharacter, new Set(['chats']));
             operations.push({
-                path: path.join('characters', characterId, 'metadata.json'),
+                path: path.join(directories.characterDirectory(characterId), 'metadata.json'),
                 data: jsonBytes({ ...metadata, chaId: characterId }),
             });
             const previousCharacter = previousIndex.characters.find(item => item.id === characterId);
@@ -526,6 +760,25 @@ function createUserDataRepository(options = {}) {
         const sidebarCharacters = mode === 'merge' ? mergeById(previousIndex.characters, characters) : characters;
         const sidebar = { schemaVersion: 1, updatedAt: Date.now(), characters: sidebarCharacters, collections };
         operations.push({ path: 'index/sidebar.json', data: jsonBytes(sidebar) });
+        // Ordinary saves permanently delete explicitly removed characters. Keep
+        // backup/import replacement recovery separate from user deletion.
+        const deletedAssetCandidates = new Set();
+        if (mode === 'sync') {
+            const retainedIds = new Set(characters.map(character => character.id));
+            for (const previous of previousIndex.characters) {
+                if (retainedIds.has(previous.id)) continue;
+                collectNestedAssetReferences(loadCharacter(previous.id), deletedAssetCandidates);
+                for (const chat of previous.chats || []) {
+                    collectNestedAssetReferences(loadChat(previous.id, chat.id), deletedAssetCandidates);
+                }
+                const current = directories.characterDirectory(previous.id);
+                const legacy = path.join('characters', previous.id);
+                for (const relativePath of new Set([current, legacy])) {
+                    directories.safePath(relativePath);
+                    operations.push({ path: relativePath, deleteCharacter: true });
+                }
+            }
+        }
         const transaction = commitTransaction(dataRoot, operations);
 
         if (mode !== 'merge') {
@@ -540,18 +793,20 @@ function createUserDataRepository(options = {}) {
             for (const previousCharacter of previousIndex.characters) {
                 const retained = retainedCharacters.get(previousCharacter.id);
                 if (!retained) {
-                    const relativePath = path.join('characters', previousCharacter.id);
+                    if (mode === 'sync') continue;
+                    const relativePath = directories.characterDirectory(previousCharacter.id);
                     if (fs.existsSync(resolveInside(dataRoot, relativePath))) moveToTrash(dataRoot, relativePath);
                     continue;
                 }
                 const retainedChats = new Set(retained.chats.map(chat => chat.id));
                 for (const previousChat of previousCharacter.chats || []) {
-                    const relativePath = path.join('characters', previousCharacter.id, 'chats', previousChat.id);
+                    const relativePath = directories.chatDirectory(previousCharacter.id, previousChat.id);
                     if (!retainedChats.has(previousChat.id) && fs.existsSync(resolveInside(dataRoot, relativePath))) moveToTrash(dataRoot, relativePath);
                 }
             }
         }
-        return { mode, characters: characters.length, files: operations.length, transaction };
+        maintainMappedDirectories(characters.map(character => character.id));
+        return { mode, characters: characters.length, files: operations.length, transaction, deletedAssetCandidates: [...deletedAssetCandidates] };
     }
 
     function syncLegacyCollection(legacyName, values) {
@@ -683,7 +938,7 @@ function createUserDataRepository(options = {}) {
         const sidebar = { ...previousIndex, updatedAt: Date.now(), characters: previousIndex.characters.map(character => ({ ...character, chats: [...character.chats] })) };
         for (const rawId of dirtyCharacters) {
             const { character, id, index } = byId.get(rawId);
-            operations.push({ path: path.join('characters', id, 'metadata.json'),
+            operations.push({ path: path.join(directories.characterDirectory(id), 'metadata.json'),
                 data: jsonBytes({ ...without(character, new Set(['chats'])), chaId: id }) });
             Object.assign(sidebar.characters[index], { name: character.name || '', updatedAt: characterUpdatedAt(character, Date.now()) });
         }
@@ -697,7 +952,9 @@ function createUserDataRepository(options = {}) {
             };
         }
         operations.push({ path: 'index/sidebar.json', data: jsonBytes(sidebar) });
-        return { files: operations.length, transaction: commitTransaction(dataRoot, operations) };
+        const transaction = commitTransaction(dataRoot, operations);
+        maintainMappedDirectories([...dirtyCharacters].map(rawId => byId.get(rawId).id));
+        return { files: operations.length, transaction };
     }
 
     function loadCollection(directory, ids, options = {}) {
@@ -720,7 +977,9 @@ function createUserDataRepository(options = {}) {
             return {
                 ...character,
                 chats: summary.chats.map(chat => {
-                    const loaded = loadChat(summary.id, chat.id, readOptions);
+                    const loaded = exportOptions.metadataOnly
+                        ? readJson(chatMetadataPath(summary.id, chat.id), readOptions)
+                        : loadChat(summary.id, chat.id, readOptions);
                     if (chat.legacyMessagePresent !== false) return loaded;
                     const { message: _message, ...withoutMessage } = loaded;
                     return withoutMessage;
@@ -728,6 +987,29 @@ function createUserDataRepository(options = {}) {
             };
         });
         return database;
+    }
+
+    function loadStartupDatabase() {
+        const database = exportLegacyDatabase({ metadataOnly: true });
+        for (const character of database.characters) {
+            if (!character.chaId || character.coldstorage) throw new Error('Legacy migration required');
+            character.chats = character.chats.map(chat => {
+                if (!chat.id) throw new Error('Legacy chat ID migration required');
+                const stub = { id: chat.id, name: chat.name ?? '', _stub: true };
+                for (const field of ['lastDate', 'folderId', 'modules']) {
+                    if (field in chat) stub[field] = chat[field];
+                }
+                return stub;
+            });
+        }
+        return database;
+    }
+
+    function loadIndexedChat(characterId, chatIndex) {
+        if (!Number.isInteger(chatIndex) || chatIndex < 0) return null;
+        const summary = loadSidebarIndex().characters.find(character => character.id === characterId);
+        const chat = summary?.chats?.[chatIndex];
+        return chat ? loadChat(summary.id, chat.id) : null;
     }
 
     if (collectCanonicalSourcePaths().length > 0) {
@@ -742,14 +1024,21 @@ function createUserDataRepository(options = {}) {
         finalizeAssistantDraft,
         getProjectionRevision,
         importLegacyDatabase,
+        inspectCharacterPackageOwnership: characterId => inspectCharacterPackageOwnership(exportLegacyDatabase(), stableId(characterId, 'character')),
+        characterDirectoryStatus,
         loadAssistantDraft,
         loadCharacter,
         loadChat,
+        loadIndexedChat,
+        loadStartupDatabase,
         loadMessages,
         loadSidebarIndex,
         reconcileCanonicalProjection,
         recoverPendingTransactions: () => recoverTransactions(dataRoot),
         saveAssistantDraft,
+        publishCharacterDirectoryMapping,
+        refreshCharacterDirectoryMapping,
+        rollbackCharacterDirectoryMapping,
         syncLegacyPresetState,
         syncLegacyChatState,
         syncLegacyCollection,

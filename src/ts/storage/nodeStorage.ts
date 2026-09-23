@@ -8,13 +8,14 @@
 import { language } from "src/lang"
 import { alertInput, waitAlert, notifyError } from "../alert"
 import { decodeRisuSave, encodeRisuSaveLegacy } from "./risuSave"
-import { normalizeChat, type Chat, type Message } from "./database.svelte"
+import { getDatabase, normalizeChat, type Chat, type Message } from "./database.svelte"
 import {
     assembleChatContentPages,
     getRemainingChatContentPageOffsets,
     type ChatContentPageEnvelope,
 } from './chatContentPage'
 import { isCanonicalFilesChangedResponse } from './canonicalConflict'
+import { uploadChatContent } from './chatContentUpload'
 
 const CHAT_CONTENT_TRANSFER_PAGE_SIZE = 200
 const CHAT_CONTENT_TRANSFER_CONCURRENCY = 4
@@ -563,16 +564,29 @@ export class NodeStorage{
         }
     }
 
-    async exportBackup(opts?: ExportBackupOptions): Promise<Response> {
+    // Let the browser own the network-to-disk transfer. A fetch/read/write loop
+    // keeps downloads dependent on the tab's background scheduling.
+    private async startBrowserDownload(url: string): Promise<void> {
+        // Refresh even in a long-lived tab: the cached session cookie can expire.
+        // Credentials stay in an HttpOnly cookie, never in the download URL.
+        const session = await this.authFetch('/api/session', { method: 'POST' })
+        if (!session.ok) throw new Error(`Download authentication failed: ${session.status}`)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = '' // Use the server's Content-Disposition filename.
+        document.body.appendChild(link)
+        try { link.click() }
+        finally { link.remove() }
+    }
+
+    async exportBackup(opts?: ExportBackupOptions): Promise<void> {
         const params = new URLSearchParams()
         if (opts?.target === 'upstream') params.set('target', 'upstream')
         if (opts?.mode === 'settings') params.set('mode', 'settings')
         if (opts?.moduleAssets === false) params.set('moduleAssets', '0')
         const query = params.toString()
         const url = query ? `/api/backup/export?${query}` : '/api/backup/export'
-        const da = await this.authFetch(url)
-        if (da.status < 200 || da.status >= 300) throw `backup export error: ${da.status}`
-        return da
+        await this.startBrowserDownload(url)
     }
 
     async settingsBackupEstimate(): Promise<SettingsBackupEstimate> {
@@ -674,6 +688,30 @@ export class NodeStorage{
 
             xhr.send(file)
         })
+    }
+
+    async characterAssetTransition(characterId: string, action: 'status' | 'migrate' | 'disable') {
+        const response = action === 'status'
+            ? await this.authFetch(`/api/character-assets/status?characterId=${encodeURIComponent(characterId)}`)
+            : await this.authFetch('/api/character-assets/transition', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ characterId, action }),
+            })
+        if (!response.ok) throw new Error(`Asset transition failed: ${response.status}`)
+        return response.json()
+    }
+
+    async characterPackageTransition(characterId: string, action: 'status' | 'migrate' | 'refresh' | 'rollback') {
+        const response = action === 'status'
+            ? await this.authFetch(`/api/character-packages/status?characterId=${encodeURIComponent(characterId)}`)
+            : await this.authFetch('/api/character-packages/transition', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ characterId, action }),
+            })
+        if (!response.ok) throw new Error(`Character package transition failed: ${response.status}`)
+        return response.json()
     }
 
     // ── Server-side backup ─────────────────────────────────────────────────────
@@ -782,11 +820,8 @@ export class NodeStorage{
         if (da.status < 200 || da.status >= 300) throw new Error(`server backup delete error: ${da.status}`)
     }
 
-    async downloadServerBackup(filename: string): Promise<Response> {
-        const da = await this.authFetch(`/api/backup/server/download/${encodeURIComponent(filename)}`)
-        if (da.status === 404) throw new Error('Backup file not found')
-        if (da.status < 200 || da.status >= 300) throw new Error(`server backup download error: ${da.status}`)
-        return da
+    async downloadServerBackup(filename: string): Promise<void> {
+        await this.startBrowserDownload(`/api/backup/server/download/${encodeURIComponent(filename)}`)
     }
 
     // ── Chat content (runtime lazy load) ────────────────────────────────────
@@ -849,14 +884,11 @@ export class NodeStorage{
 
     async saveChatContent(chaId: string, chatIndex: number, chatId: string, chat: any): Promise<void> {
         const encoded = encodeRisuSaveLegacy(chat)
-        const da = await this.authFetch(`/api/chat-content/${encodeURIComponent(chaId)}/${chatIndex}`, {
-            method: 'POST',
-            headers: {
-                'content-type': 'application/octet-stream',
-                'x-chat-id': chatId,
-            },
-            body: encoded,
-        })
+        const da = await uploadChatContent(
+            (url, init) => this.authFetch(url, init), chaId, chatIndex, chatId, encoded,
+            getDatabase().chatUploadChunkMiB,
+            getDatabase().chatUploadChunkEnabled === true,
+        )
         if (da.status === 409) {
             const data = await da.json()
             throw new ConflictError(

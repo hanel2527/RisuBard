@@ -1,3 +1,4 @@
+import { chunkWikiDocument, type WikiEmbeddingCatalog } from '../../src/ts/risubard/wikiEmbeddingChunks'
 import * as nodeFs from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
@@ -192,8 +193,8 @@ function normalizeMarkdown(value: string): { title: string; content: string } {
         .replace(/^<Thoughts>[\s\S]*?<\/Thoughts>\s*/i, '')
         .replace(/^---\s*\r?\n[\s\S]*?\r?\n---\s*/i, '')
         .trim()
-    if (content.length === 0 || content.length > 12_000) {
-        throw new Error('Markdown memory must contain 1-12000 characters')
+    if (content.length === 0) {
+        throw new Error('Markdown memory must not be empty')
     }
     if (/^#\s+\S+/m.test(content)) {
         content = content.replace(/^(#{1,5})(?=\s)/gm, '$1#')
@@ -656,6 +657,7 @@ export function createMarkdownNarrativeWiki(
     const workspaceFor = (characterId: string, chatId: string) =>
         resolveMarkdownWikiWorkspace(userDataDirectory, characterId, chatId)
     const documentCache = new Map<string, MarkdownWikiDocument[]>()
+    const embeddingCatalogCache = new WeakMap<MarkdownWikiDocument[], Omit<WikiEmbeddingCatalog, 'nextOffset'>>()
     type BardChatUndoFile = { relativePath: string; contents: string }
     type BardChatUndoSnapshot = {
         characterId: string
@@ -2094,6 +2096,34 @@ export function createMarkdownNarrativeWiki(
             }
         },
 
+        async embeddingCatalog(input: {
+            characterId: string; chatId: string; offset?: number; revision?: string
+        }): Promise<WikiEmbeddingCatalog> {
+            const snapshot = await loadDocuments(input.characterId, input.chatId)
+            let catalog = embeddingCatalogCache.get(snapshot)
+            if (!catalog) {
+                const documents = snapshot
+                    .filter(document => document.status === 'active'
+                        && document.contextMode !== 'never' && document.type !== 'scene')
+                    .sort((a, b) => a.id.localeCompare(b.id))
+                const revision = createHash('sha256').update(JSON.stringify(documents.map(
+                    document => [document.id, document.contentHash, document.contextMode],
+                ))).digest('base64url')
+                catalog = { revision, chunks: documents.flatMap(chunkWikiDocument) }
+                embeddingCatalogCache.set(snapshot, catalog)
+            }
+            const { revision, chunks } = catalog
+            if (input.revision !== undefined && input.revision !== revision) {
+                throw new Error('Embedding catalog revision changed')
+            }
+            const offset = input.offset ?? 0
+            if (!Number.isSafeInteger(offset) || offset < 0 || (offset > 0 && !input.revision)) {
+                throw new Error('Invalid embedding catalog offset')
+            }
+            return { revision, chunks: chunks.slice(offset, offset + 64),
+                nextOffset: offset + 64 < chunks.length ? offset + 64 : null }
+        },
+
         async inquire(input: {
             characterId: string
             chatId: string
@@ -2102,6 +2132,9 @@ export function createMarkdownNarrativeWiki(
             semanticMatches?: readonly {
                 documentId: string
                 score: number
+                contentHash?: string
+                start?: number
+                end?: number
             }[]
             sourceMatches?: readonly {
                 messageId: string

@@ -1,5 +1,6 @@
 import { safeStructuredClone } from './polyfill'
 import type { Database, character, Chat, folder } from './storage/database.svelte'
+import { hasDisplayNameCollision } from './displayName'
 
 export type CharacterVaultShortcut =
     | { kind: 'character'; id: string }
@@ -57,7 +58,7 @@ function nextCloneName(name: string, reserved: Set<string>): string {
     const base = name.trim() || 'Character'
     let suffix = 2
     let candidate = `${base}-${suffix}`
-    while (reserved.has(candidate)) {
+    while (hasDisplayNameCollision(candidate, reserved)) {
         suffix += 1
         candidate = `${base}-${suffix}`
     }
@@ -444,14 +445,11 @@ export function createCharacterVaultFolder(
 export function trashCharacterVaultCharacters(
     db: VaultDatabase,
     ids: string[],
-    trashedAt = Date.now()
 ): number {
     const selected = selectedIds(db, ids)
     if (selected.size === 0) return 0
 
-    for (const character of db.characters) {
-        if (selected.has(character.chaId)) character.trashTime = trashedAt
-    }
+    db.characters = db.characters.filter(character => !selected.has(character.chaId))
     db.characterOrder = deduplicateCharacterOrder(
         db.characterOrder.flatMap<string | folder>((entry) => {
             if (typeof entry === 'string') return selected.has(entry) ? [] : [entry]

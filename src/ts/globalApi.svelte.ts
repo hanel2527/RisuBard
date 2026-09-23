@@ -35,6 +35,7 @@ import { defaultRequestPurpose, type RequestPurpose } from './requestPurpose'
 import { collectDatabaseAssetReferences } from './storage/assetRefs'
 import { claimSaveDbRuntime } from './storage/saveDbRuntime'
 import { createCanonicalSaveConflict } from './storage/canonicalSaveConflict'
+import { hasDisplayNameCollision } from './displayName'
 
 export const forageStorage = new AutoStorage()
 
@@ -2889,7 +2890,7 @@ export function createChatCopyName(originalName: string,type:'Copy'|'Branch'): s
     let copyIndex = 1
     let newName = `${name} (${type})`
     const char = getCurrentCharacter()
-    while (char.chats.find((v) => v.name === newName)) {
+    while (hasDisplayNameCollision(newName, char.chats)) {
         copyIndex++
         newName = `${name} (${type} ${copyIndex})`
     }

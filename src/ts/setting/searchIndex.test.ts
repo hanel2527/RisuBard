@@ -1,6 +1,8 @@
-import { describe, expect, test } from 'vitest'
-import { searchSettings } from './searchIndex'
+import { describe, expect, test, vi } from 'vitest'
+import { navigateToSearchResult, searchSettings } from './searchIndex'
 import { SettingsRoute } from '../routing'
+import { get } from 'svelte/store'
+import { SettingsMenuIndex, OtherBotsSubmenuIndex } from '../stores.svelte'
 
 // A settings entry is reachable two ways and they cover different text: the
 // declarative items index each SETTING's label/keywords/help, while the manifest
@@ -14,6 +16,33 @@ import { SettingsRoute } from '../routing'
 const db: any = new Proxy({}, { get: (_t, key) => (key === 'then' ? undefined : '') })
 const modelInfo: any = new Proxy({}, { get: () => '' })
 const ctx = { db, modelInfo, subModelInfo: modelInfo } as any
+
+test('Hypa embedding deep link switches page and subtab then scrolls after mounting', () => {
+    let nextFrame: FrameRequestCallback | undefined
+    const frame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => { nextFrame = callback; return 1 })
+    const previousRoute = get(SettingsMenuIndex)
+    const previousTab = get(OtherBotsSubmenuIndex)
+    const anchor = document.createElement('div')
+    anchor.dataset.settingId = 'hypa.embedding'
+    const scroll = vi.spyOn(anchor, 'scrollIntoView').mockImplementation(() => {})
+    anchor.animate = vi.fn() as typeof anchor.animate
+    try {
+        OtherBotsSubmenuIndex.set(3)
+        navigateToSearchResult({ key: 'hypa.embedding', label: '', location: '', rank: 0,
+            route: SettingsRoute.OtherBots, subTab: 0, itemId: 'hypa.embedding' })
+        expect(get(SettingsMenuIndex)).toBe(SettingsRoute.OtherBots)
+        expect(get(OtherBotsSubmenuIndex)).toBe(0)
+        expect(nextFrame).toBeDefined()
+        document.body.appendChild(anchor)
+        nextFrame!(0)
+        expect(scroll).toHaveBeenCalledWith({ block: 'center' })
+    } finally {
+        anchor.remove()
+        frame.mockRestore()
+        SettingsMenuIndex.set(previousRoute)
+        OtherBotsSubmenuIndex.set(previousTab)
+    }
+})
 
 /** Sub-tab indices of every Model Preset hit. Locale-independent, unlike the
  * label — the test runtime has no locale set, so labels come back in English. */

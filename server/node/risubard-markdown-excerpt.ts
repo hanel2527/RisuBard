@@ -25,12 +25,14 @@ interface MarkdownSection {
 const CURRENT_HEADINGS = new RegExp(
     `^(?:${wikiHeadingLabelsPattern('currentState')}`
     + '|정체성|프로필|학력|직업|관계|지식|목표|소지품|제약'
+    + '|인물 핵심|관계와 신뢰|지식과 비밀|장비와 소지품|감정과 정신 상태'
+    + '|relationships and trust|knowledge and secrets|equipment and possessions|mental state'
     + '|identity|profile|education|occupation|relationships?|knowledge|goals?|inventory|constraints?)$',
     'iu'
 )
 const HISTORY_HEADINGS = new RegExp(
     `^(?:${wikiHeadingLabelsPattern('history')}|${wikiHeadingLabelsPattern('summary')}`
-    + '|history|timeline)$',
+    + '|주요 전환|주요 전환점|major transitions|major turning points|history|timeline)$',
     'iu'
 )
 

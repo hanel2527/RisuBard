@@ -16,6 +16,28 @@ afterEach(async () => {
 })
 
 describe('Markdown narrative wiki', () => {
+    test('paginates complete embedding catalog and rejects changed revisions', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        const wiki = createMarkdownNarrativeWiki(root)
+        const scope = { characterId: 'character', chatId: 'chat', sourceMessageIds: ['turn-1'] }
+        const content = '# Ledger\n\n' + Array.from({ length: 90 }, (_, i) => `Paragraph ${i} ${'record '.repeat(10)}`).join('\n\n')
+        const doc = await wiki.saveCanonicalDocument({ ...scope, type: 'other', title: 'Ledger', markdown: content })
+        const first = await wiki.embeddingCatalog(scope)
+        expect(first.chunks).toHaveLength(64)
+        expect((await wiki.embeddingCatalog(scope)).chunks[0]).toBe(first.chunks[0])
+        expect(first.nextOffset).toBe(64)
+        const second = await wiki.embeddingCatalog({ ...scope, offset: first.nextOffset!, revision: first.revision })
+        expect(second.nextOffset).toBeNull()
+        expect(second.chunks.at(-1)?.text).toContain('Paragraph 89')
+        for (const chunk of [...first.chunks, ...second.chunks]) {
+            expect(chunk.contentHash).toBe(doc.contentHash)
+            expect(chunk.text).toContain(doc.content.slice(chunk.start, chunk.end))
+        }
+        await wiki.saveCanonicalDocument({ ...scope, documentId: doc.id, type: 'other', title: 'Ledger', markdown: '# Ledger\n\nChanged' })
+        await expect(wiki.embeddingCatalog({ ...scope, offset: 64, revision: first.revision })).rejects.toThrow('Embedding catalog revision changed')
+    })
+
     test('round-trips bounded retrieval metadata and preserves canonical metadata when omitted', async () => {
         const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
         temporaryDirectories.push(root)

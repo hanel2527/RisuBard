@@ -303,7 +303,7 @@ export function buildRisuBardCanonicalWritingPolicy(
         buildRisuBardEventWritingPolicy(style, customStyle, language),
         'Treat each character document as a dynamic lorebook entry: keep durable identity, role, traits, capabilities and rules, relationships, knowledge boundaries, goals, possessions, constraints, and open continuity that help the character operate in the next scene.',
         `A compact self-contained \`### ${headings.currentState}\` snapshot near the top is recommended when useful, but no exact heading is required and its absence is valid.`,
-        `An optional \`### ${headings.history}\` or turning-point map should contain about 3-6 major irreversible or causally useful transitions, not a turn-by-turn action log.`,
+        `An optional \`### ${headings.history}\` or turning-point map should contain major irreversible or causally useful transitions, not a turn-by-turn action log.`,
         'Link exact [[event document titles]] from turning points. For every event link, copy its complete title character-for-character from confirmedEvent, storyArcEvents, or another supplied event document; never paraphrase, shorten, translate, inflect, reconstruct, or invent the target text inside [[...]].',
         'If surrounding prose needs different wording, preserve the exact target with [[exact title|display text]]. Retrieve exact chronology, actions, targets, locations, and evidence from event documents rather than copying those details into character canon.',
         'Do not update a character document merely because the character participated in an event. Update it only for a durable lorebook fact or a major transition.',
@@ -312,5 +312,7 @@ export function buildRisuBardCanonicalWritingPolicy(
         'Give a named sublocation its own location canon when it has independent persistent state, structure, people, secrets, or repeated scene use; keep only a short link summary in its parent.',
         'Do not create canon for every clue. Keep one compact investigation thread in other canon only when clues cross events or remain unresolved and affect future decisions.',
         'When new facts replace old ones, do not present both states as current. Preserve unrelated established facts.',
+        'Compress expression, never distinct established facts, relationship direction, knowledge boundaries, or consequences of change. Preserve durable relationships and trust, mental state, knowledge boundaries, promises, and meaningful possessions, equipment, injuries, or appearance unless confirmed evidence changes them.',
+        'The selected wiki preset defines section organization and compression pressure. Keep durable facts distinct from transient observations without requiring separate sections. Do not create empty sections or templates, and do not infer shared knowledge, ownership, or relationship meaning from structured state values alone.',
     ].join('\n')
 }

@@ -47,6 +47,7 @@ import { formatReasoningParts } from "src/ts/preset/adapter/reasoning";
 import { TOOL_CAPABLE_ADAPTER_KINDS, VISION_CAPABLE_ADAPTER_KINDS, type AdapterKind, type ModelPreset } from "src/ts/preset/types";
 import { pumpPresetStream } from "./presetStreamPump";
 import { preparePresetResponse, presetGenerationOverrides } from './presetResponse';
+import { preparePluginResponse } from './pluginResponse';
 import { filterResponseCharacters, isRetryableTransportError, normalizeRequestRetryLimit, presetFailureRetryPolicy } from './responseRetryPolicy';
 import { makeJobFetch, resolveModelJobRoute } from "./jobFetch";
 import { resolveChatModelBinding, resolveRequestModelBindingTarget, buildModelPresetCredential, applyPromptPresetParams, type ModelBindingTarget } from "./modelPresetBinding";
@@ -1835,11 +1836,7 @@ async function requestPlugin(arg:RequestDataArgumentExtended):Promise<requestDat
                 streaming: d.content instanceof ReadableStream,
                 errorMessage: String(errorText),
             })
-            return {
-                type: 'fail',
-                result: errorText,
-                model: responseModel
-            }
+            return preparePluginResponse(d, errorText, responseModel)
         }
         else if(d.content instanceof ReadableStream){
             const reader = d.content.getReader()
@@ -1901,11 +1898,7 @@ async function requestPlugin(arg:RequestDataArgumentExtended):Promise<requestDat
                     await reader.cancel(error).catch(() => {})
                     throw error
                 }
-                return {
-                    type: 'success',
-                    result: text,
-                    model: responseModel
-                }
+                return preparePluginResponse(d, text, responseModel)
             }
     
             return {
@@ -1925,11 +1918,7 @@ async function requestPlugin(arg:RequestDataArgumentExtended):Promise<requestDat
                 streaming: false,
                 output: content,
             })
-            return {
-                type: 'success',
-                result: content,
-                model: responseModel
-            }
+            return preparePluginResponse(d, content, responseModel)
         }
     } catch (error) {
         console.error(error)

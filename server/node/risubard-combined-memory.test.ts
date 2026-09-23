@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest'
 import { createMemoryAnalysisRunner, type MemoryAnalysisModelRequest } from './risubard-memory-analysis'
-import { combinedMemorySchema, parseCombinedMemory } from './risubard-combined-memory'
+import { combinedMemoryInstruction, combinedMemorySchema, parseCombinedMemory } from './risubard-combined-memory'
 
 const existing = {
     id: 'character.gilbert', type: 'character' as const, title: 'Gilbert', aliases: [],
@@ -23,7 +23,7 @@ function draft(action: 'create' | 'update' = 'update') {
     }
 }
 
-async function run(options: { supplied?: boolean; create?: boolean; malformed?: boolean; priorUnknown?: boolean; ungrounded?: boolean; partial?: boolean; reboot?: boolean } = {}) {
+async function run(options: { supplied?: boolean; create?: boolean; malformed?: boolean; priorUnknown?: boolean; ungrounded?: boolean; partial?: boolean; reboot?: boolean; guide?: boolean } = {}) {
     const saveCanonicalDocument = vi.fn(async (input) => ({
         ...existing, ...input, contentHash: 'new-hash',
     }))
@@ -75,6 +75,14 @@ async function run(options: { supplied?: boolean; create?: boolean; malformed?: 
     })
     await runner.run({
         characterId: 'character', chatId: 'chat', wikiWritingLanguage: 'en',
+        ...(options.guide ? { wikiPromptGuide: {
+            analysis: [
+                '## Intentional repeat\nRepeat marker.',
+                '## Intentional repeat\nRepeat marker.',
+                '## Character continuity contract\nShared policy marker.',
+            ].join('\n\n'),
+            canonicalRewrite: '## Character continuity contract\nShared policy marker.',
+        } } : {}),
         arcPlotterSettings: { enabled: false, checkpointSize: 8, maxArcs: 8, maxTurningPoints: 16, maxOpenThreads: 8, maxCharacters: 6000 },
         ...(options.reboot ? { rebootTurns: [
             { assistantMessageId: 'first', sourceMessageIds: ['first'] },
@@ -88,6 +96,20 @@ async function run(options: { supplied?: boolean; create?: boolean; malformed?: 
 }
 
 describe('combined semantic and canonical writing', () => {
+    test('instructs section rewrites to retain durable character state outside the current scene', () => {
+        expect(combinedMemoryInstruction).toContain('relationships, trust, mental state, knowledge boundaries')
+        expect(combinedMemoryInstruction).toContain('meaningful possessions, equipment, appearance, and constraints')
+        expect(combinedMemoryInstruction).toContain('Do not create empty sections')
+    })
+
+    test('injects shared analysis and rewrite guidance once into the combined memory request', async () => {
+        const result = await run({ guide: true })
+        expect(result.analyze.mock.calls[0][0].system
+            .match(/Shared policy marker/g)).toHaveLength(1)
+        expect(result.analyze.mock.calls[0][0].system
+            .match(/Repeat marker/g)).toHaveLength(2)
+    })
+
     test('saves event and supplied canonical patch in one model call, preserving unrelated sections', async () => {
         const result = await run()
         expect(result.analyze).toHaveBeenCalledTimes(1)

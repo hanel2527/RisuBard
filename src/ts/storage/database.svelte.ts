@@ -4,6 +4,7 @@ import { checkNullish, decryptBuffer, encryptBuffer, selectSingleFile } from '..
 import { changeLanguage, language } from '../../lang';
 import { DEFAULT_CHAT_LOAD_ADDITIONAL_PAGES, DEFAULT_CHAT_LOAD_INITIAL_PAGES, normalizeChatLoadPages } from '../chatLoadPages';
 import { normalizeChatPageSize } from '../chatPagination';
+import { normalizeChatUploadChunkMiB } from './chatUploadSettings';
 import { normalizeCollectionOrganizers, type CollectionOrganizers } from '../collectionOrganizer';
 import type { RisuPlugin } from '../plugins/plugins.svelte';
 import type {triggerscript as triggerscriptMain} from '../process/triggers';
@@ -59,6 +60,10 @@ import {
 } from '../risubard/risuBardSettings';
 import { normalizeWikiRebootJob } from '../risubard/wikiReboot';
 import { normalizeWikiWritingLanguage } from '../risubard/wikiWritingLanguage';
+import {
+    normalizeRisuBardEmbeddingSettings,
+    type RisuBardEmbeddingSettings,
+} from '../risubard/wikiEmbeddingSettings';
 import { createTogglePresetBaseline, type TogglePresetBaseline } from './togglePresetBaseline';
 import type { CanonicalTurnReceipt } from '../risubard/memoryWiki';
 import {
@@ -564,6 +569,7 @@ export function setDatabase(data:Database){
     data.colorSchemeName ??= 'dark'
     data.NAIsettings.starter ??= ""
     data.hypaModel ??= 'MiniLM'
+    data.risuBardEmbeddingSettings = normalizeRisuBardEmbeddingSettings(data.risuBardEmbeddingSettings)
     data.mancerHeader ??= ''
     data.emotionProcesser ??= 'submodel'
     data.translatorType ??= 'google'
@@ -903,6 +909,8 @@ export function setDatabase(data:Database){
             ? data.risuBardWikiMarkdownPreview
             : false
     data.showRisuBardSaveLoadShortcuts ??= true
+    data.chatUploadChunkMiB = normalizeChatUploadChunkMiB(data.chatUploadChunkMiB)
+    data.chatUploadChunkEnabled = data.chatUploadChunkEnabled === true
     data.risuBardAutosaveInterval = normalizeAutosaveInterval(
         data.risuBardAutosaveInterval
     )
@@ -1674,6 +1682,7 @@ export interface Database{
     promptBlockOverlayApplicationPresets?: PromptBlockOverlayApplicationPreset[]
     forceProxyAsOpenAI?:boolean
     hypaModel:HypaModel
+    risuBardEmbeddingSettings: RisuBardEmbeddingSettings
     saveTime?:number
     mancerHeader:string
     emotionProcesser:'submodel'|'embedding',
@@ -1759,6 +1768,8 @@ export interface Database{
     risuBardMemoryWorkspaceHeight?: number
     showRisuBardSaveLoadShortcuts?: boolean
     risuBardAutosaveInterval?: number
+    chatUploadChunkMiB?: number
+    chatUploadChunkEnabled?: boolean
     risuBardAutosaveRetention?: number
     risuBardArcaChatImageWidthPercent?: number
     risuBardArcaChatFontSizePx?: number

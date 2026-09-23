@@ -1,3 +1,5 @@
+import type { PluginResponseMetadata } from '../process/request/pluginResponse'
+
 export interface PluginProviderStructuredOutput {
     name: string
     strict: boolean
@@ -56,7 +58,7 @@ export function createPluginStructuredOutput(
     }
 }
 
-type PluginProviderResponse = {
+export type PluginProviderResponse = PluginResponseMetadata & {
     success: boolean
     content: string | ReadableStream<string>
 }

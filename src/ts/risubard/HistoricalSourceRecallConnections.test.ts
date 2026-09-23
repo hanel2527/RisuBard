@@ -12,7 +12,7 @@ describe('historical source recall connections', () => {
             /sourceMatches: findHistoricalSourceMatches\(\{[\s\S]{0,900}?\}\),/
         )?.[0] ?? ''
         const exactRecallCall = source.match(
-            /resolveSourceMatches: \(messageIds\) =>[\s\S]{0,900}?\}\),/
+            /resolveSourceMatches: \(messageIds, evidenceRequests\) =>[\s\S]{0,1600}?\}\),/
         )?.[0] ?? ''
 
         expect(source).toContain('findHistoricalSourceMatches,')

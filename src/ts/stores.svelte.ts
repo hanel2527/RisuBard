@@ -164,6 +164,7 @@ export const DBState = $state({
 
 export const LoadingStatusState = $state({
     text: '',
+    error: '',
 })
 
 export const loadingOverlayStore = writable<{

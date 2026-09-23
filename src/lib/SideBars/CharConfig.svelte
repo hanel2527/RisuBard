@@ -36,6 +36,7 @@ import ShButton from "../UI/GUI/ShButton.svelte";
     import { exportRegex, importRegex } from "src/ts/process/scripts";
     import SliderInput from "../UI/GUI/SliderInput.svelte";
     import FirstMessageStudioEditor from '../FirstMessageStudio/FirstMessageStudioEditor.svelte'
+    import { createUniqueDisplayName } from 'src/ts/displayName'
 
     interface Props {
         subMenuOverride?: number
@@ -44,6 +45,12 @@ import ShButton from "../UI/GUI/ShButton.svelte";
     let { subMenuOverride }: Props = $props()
     let activeSubMenu = $derived(subMenuOverride ?? $CharConfigSubMenu)
     let currentCharacter = $derived(DBState.db.characters[$selectedCharID])
+
+    function commitCharacterName(): void {
+        const character = DBState.db.characters[$selectedCharID]
+        if (!character) return
+        character.name = createUniqueDisplayName(character.name, DBState.db.characters, character.chaId)
+    }
 
     let iconRemoveMode = $state(false)
     let pkgIncludeCharacter = $state(true)
@@ -264,7 +271,7 @@ import ShButton from "../UI/GUI/ShButton.svelte";
     {#if licensed !== 'private'}
         <h2 class="mb-2 text-2xl font-bold">{language.characterInfo}</h2>
         <span class="text-textcolor">{language.characterName}</span>
-        <ShInput className="mt-2 mb-4" autocomplete="off" placeholder={language.characterName} bind:value={DBState.db.characters[$selectedCharID].name} />
+        <ShInput className="mt-2 mb-4" autocomplete="off" placeholder={language.characterName} bind:value={DBState.db.characters[$selectedCharID].name} onblur={commitCharacterName} />
         <span class="text-textcolor">{language.description} <Help key="charDesc"/></span>
         <TextAreaInput highlight margin="both" autocomplete="off" bind:value={(DBState.db.characters[$selectedCharID] as character).desc}></TextAreaInput>
         <span class="text-textcolor2 mb-6 text-sm">{tokens.desc} {language.tokens}</span>

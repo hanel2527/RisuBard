@@ -108,6 +108,22 @@ describe('chat file save slot connections', () => {
         }
     })
 
+    test('allows opening find/replace while generation or reboot blocks mutations', () => {
+        const expression = defaultChatSource.match(/findReplaceDisabled=\{([^}]+)\}/)?.[1]
+        expect(expression).toBeTruthy()
+        const disabled = new Function('$isWikiGenerating', '$isAnyGenerating', 'currentChatSlot', 'currentChatReady', `return (${expression})`)
+        for (const [wiki, chat, slot] of [
+            [false, false, { id: 'chat' }],
+            [true, false, { id: 'chat' }],
+            [false, true, { id: 'chat' }],
+            [false, false, { id: 'chat', isStreaming: true }],
+            [false, false, { id: 'chat', risuBardWikiReboot: { status: 'paused' } }],
+        ]) {
+            expect(disabled(wiki, chat, slot, true)).toBe(false)
+        }
+        expect(disabled(false, false, undefined, false)).toBe(true)
+    })
+
     test('can hide and restore the shortcut block from RisuBard common settings', () => {
         expect(shortcutsSource).not.toContain('DBState.db.showRisuBardSaveLoadShortcuts = false')
         expect(shortcutsSource).toContain('data-chat-find-replace')
