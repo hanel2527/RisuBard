@@ -27,6 +27,7 @@ afterEach(async () => {
     if (mounted) await unmount(mounted)
     mounted = undefined
     document.body.replaceChildren()
+    vi.restoreAllMocks()
 })
 
 describe('RisuBardWikiCommandTerminal', () => {
@@ -37,7 +38,7 @@ describe('RisuBardWikiCommandTerminal', () => {
         )
 
         expect(source).toContain('class:mobile-layout={mobileLayout}')
-        expect(source).toContain('.mobile-layout .context-menu label')
+        expect(source).toContain('.context-menu label')
         expect(source).not.toContain('ShieldAlertIcon')
         expect(source).not.toContain('DIRECT')
     })
@@ -98,6 +99,7 @@ describe('RisuBardWikiCommandTerminal', () => {
             target: document.body,
             props: { onExecute: vi.fn() },
         })
+        await tick()
         const open = document.querySelector<HTMLButtonElement>(
             '[data-bardchat-context-open]'
         )!
@@ -113,9 +115,60 @@ describe('RisuBardWikiCommandTerminal', () => {
         expect(menu.querySelectorAll('[data-bardchat-context]')).toHaveLength(7)
         expect(getComputedStyle(menu).gridTemplateColumns).not.toContain('repeat')
 
-        document.body.click()
+        // Let Bits UI finish its deferred opening and interaction-state reset.
+        await new Promise(resolve => setTimeout(resolve, 40))
+        const outside = document.createElement('button')
+        document.body.append(outside)
+        outside.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true, pointerType: 'mouse', clientX: 10, clientY: 10 }))
+        outside.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true, pointerType: 'mouse', clientX: 10, clientY: 10 }))
+        outside.click()
+        await vi.waitFor(() => expect(document.querySelector('[data-bardchat-context-menu]')).toBeNull())
+    })
+
+    test('opens outside the clipped terminal and returns focus on Escape', async () => {
+        mounted = mount(RisuBardWikiCommandTerminal, {
+            target: document.body,
+            props: { onExecute: vi.fn() },
+        })
         await tick()
-        expect(document.querySelector('[data-bardchat-context-menu]')).toBeNull()
+        const trigger = document.querySelector<HTMLButtonElement>('[data-bardchat-context-open]')!
+        trigger.focus()
+        trigger.click()
+        await tick()
+        const menu = document.querySelector<HTMLElement>('[data-bardchat-context-menu]')!
+        expect(menu.closest('[data-wiki-command-terminal]')).toBeNull()
+        menu.querySelector('input')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+        await vi.waitFor(() => {
+            expect(document.querySelector('[data-bardchat-context-menu]')).toBeNull()
+            expect(document.activeElement).toBe(trigger)
+        })
+    })
+
+    test.each([[20, 'bottom'], [550, 'top']] as const)('opens %s-px-high trigger toward %s within a small viewport', async (top, side) => {
+        const rect = (x: number, y: number, width: number, height: number) => new DOMRect(x, y, width, height)
+        vi.spyOn(document.documentElement, 'clientWidth', 'get').mockReturnValue(320)
+        vi.spyOn(document.documentElement, 'clientHeight', 'get').mockReturnValue(600)
+        vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) {
+            return this.hasAttribute('data-bits-floating-content-wrapper') ? 256 : this.clientWidth
+        })
+        vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+            return this.hasAttribute('data-bits-floating-content-wrapper') ? 344 : this.clientHeight
+        })
+        vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+            if (this.hasAttribute('data-bardchat-context-open')) return rect(250, top, 60, 32)
+            if (this.hasAttribute('data-bits-floating-content-wrapper')) return rect(0, 0, 256, 344)
+            if (this === document.documentElement || this === document.body) return rect(0, 0, 320, 600)
+            return rect(0, 0, 0, 0)
+        })
+        mounted = mount(RisuBardWikiCommandTerminal, {
+            target: document.body,
+            props: { onExecute: vi.fn() },
+        })
+        await tick()
+        document.querySelector<HTMLButtonElement>('[data-bardchat-context-open]')!.click()
+        await vi.waitFor(() => {
+            expect(document.querySelector('[data-popover-content]')?.getAttribute('data-side')).toBe(side)
+        })
     })
 
     test('exposes a tooltiped restore button and calls it once', async () => {
