@@ -1424,7 +1424,14 @@ describe('RisuBard memory routes', () => {
         })
     })
 
-    test('passes reboot recovery receipt recording to the runtime', async () => {
+    test.each([
+        undefined,
+        { inputHash: 'a'.repeat(64), deferred: [] },
+        { inputHash: 'a'.repeat(64), deferred: [{
+            documentId: 'character.person', type: 'character', title: '인물',
+            contentHash: 'b'.repeat(64), warning: '정본 문서 갱신 보류: 인물',
+        }] },
+    ])('passes reboot receipt recovery metadata %j to the runtime', async (recovery) => {
         const { registerRisuBardMemoryRoutes } = require(
             './risubard-memory-routes.cjs'
         )
@@ -1432,6 +1439,7 @@ describe('RisuBard memory routes', () => {
         const receipt = {
             sourceMessageIds: ['assistant-1'],
             eventIds: [], changes: [], warnings: [], recordedAt: 'now',
+            ...(recovery ? { recovery } : {}),
         }
         const service = {
             recordWikiRebootBatch: vi.fn(async () => receipt),
@@ -1446,11 +1454,38 @@ describe('RisuBard memory routes', () => {
             { body: record }, harness.response, vi.fn()
         )
         expect(service.recordWikiRebootBatch).toHaveBeenCalledWith(record)
+        expect(harness.response.statusCode).toBe(200)
+        expect(harness.response.body).toEqual(receipt)
         for (const removed of [
             '/api/risubard/memory/wiki/snapshot',
             '/api/risubard/memory/wiki/receipt',
             '/api/risubard/memory/wiki/receipt/undo',
         ]) expect(harness.routes.has(removed)).toBe(false)
+    })
+
+    test.each([
+        { recovery: { inputHash: 'invalid', deferred: [] } },
+        { recovery: { inputHash: 'a'.repeat(64), deferred: [{}] } },
+        { recovery: { inputHash: 'a'.repeat(64), deferred: [], extra: true } },
+        { recovery: null },
+        { sourceMessageIds: [''] },
+        { eventIds: ['x'.repeat(1025)] },
+        { extra: true },
+    ])('rejects malformed reboot receipt metadata %j', async (invalid) => {
+        const { registerRisuBardMemoryRoutes } = require('./risubard-memory-routes.cjs')
+        const harness = createHarness()
+        const service = { recordWikiRebootBatch: vi.fn() }
+        registerRisuBardMemoryRoutes(harness.app, { auth: async () => true, service })
+        const next = vi.fn()
+        await harness.routes.get('/api/risubard/memory/wiki/reboot/record')!({ body: {
+            characterId: 'character', chatId: 'reboot-job', receipt: {
+                sourceMessageIds: ['assistant-1'], eventIds: [], changes: [],
+                warnings: [], recordedAt: 'now', ...invalid,
+            },
+        } }, harness.response, next)
+        expect(harness.response.statusCode).toBe(400)
+        expect(service.recordWikiRebootBatch).not.toHaveBeenCalled()
+        expect(next).not.toHaveBeenCalled()
     })
 
     test.each([

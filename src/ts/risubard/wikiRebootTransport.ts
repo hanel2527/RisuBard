@@ -40,7 +40,12 @@ async function post(
         signal: input.signal,
     })
     if (!response.ok) {
-        throw new Error(`BardWiki reboot request failed with status ${response.status}`)
+        const failure: unknown = await response.json().catch(() => undefined)
+        const detail = failure && typeof failure === 'object'
+            && !Array.isArray(failure) && 'error' in failure
+            && typeof failure.error === 'string' && failure.error.length <= 1_000
+            ? `: ${failure.error}` : ''
+        throw new Error(`BardWiki reboot request failed with status ${response.status} (${url})${detail}`)
     }
     return response.json()
 }

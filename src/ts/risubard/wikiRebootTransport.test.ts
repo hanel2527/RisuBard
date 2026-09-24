@@ -13,6 +13,29 @@ const response = (value: unknown) => new Response(JSON.stringify(value), {
 })
 
 describe('BardWiki reboot transport', () => {
+    test.each([
+        { body: JSON.stringify({ error: 'Invalid Markdown wiki reboot receipt' }), detail: 'Invalid Markdown wiki reboot receipt' },
+        { body: '<html>Unavailable</html>', detail: undefined },
+        { body: JSON.stringify({ error: 'x'.repeat(1001) }), detail: undefined },
+        { body: JSON.stringify({ error: { private: 'data' } }), detail: undefined },
+    ])('identifies failed reboot endpoint and preserves bounded server details: $detail', async ({ body, detail }) => {
+        const fetchImpl = vi.fn(async () => new Response(body, { status: 400 })) as unknown as typeof fetch
+        const failure = await recordWikiRebootBatchReceipt({
+            characterId: 'character', stagingChatId: 'reboot-job',
+            receipt: { sourceMessageIds: ['a1'], eventIds: [], changes: [], warnings: [], recordedAt: 'now' },
+            fetchImpl, createAuth: async () => 'auth',
+        }).catch((error: Error) => error)
+        expect(failure).toBeInstanceOf(Error)
+        const message = (failure as Error).message
+        expect(message).toContain('400')
+        expect(message).toContain('/api/risubard/memory/wiki/reboot/record')
+        if (detail) expect(message).toContain(detail)
+        else {
+            expect(message).not.toContain(body)
+            expect(message.length).toBeLessThan(200)
+        }
+    })
+
     test('prepares an atomic staging replacement', async () => {
         const fetchImpl = vi.fn(async () => response({
             mode: 'copy', sourceExists: true, destinationChatId: 'chat',
