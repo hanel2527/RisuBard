@@ -7,6 +7,11 @@ on:
         description: SemVer version to release without the v prefix
         required: true
         type: string
+      prepare_only:
+        description: Verify and package only; publish separately with the release account
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: release-${{ inputs.version }}
@@ -393,6 +398,7 @@ jobs:
           retention-days: 1
 
   release:
+    if: ${{ !inputs.prepare_only }}
     needs:
       - build
       - portable
