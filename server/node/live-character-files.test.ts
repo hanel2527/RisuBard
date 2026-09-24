@@ -35,6 +35,19 @@ test.each(['clear', 'remove-field'])('external chat lore deletion is adopted and
     expect(createUserDataRepository({ dataRoot: root }).exportLegacyDatabase().characters[0].chats[0].localLore ?? []).toEqual([])
 })
 
+test('explicit metadata verification detects edits when watcher notifications are missed', () => {
+    const { root, repository, metadata } = fixture()
+    const live = createLiveCharacterFiles({ repository, watch: false, settleMs: 0, writeAsset: () => {} })
+    live.reconcile()
+    const original = JSON.parse(fs.readFileSync(metadata, 'utf8'))
+    fs.writeFileSync(metadata, '{')
+    expect(() => live.reconcile({ verifyMetadata: true })).toThrow()
+    expect(fs.readFileSync(metadata, 'utf8')).toBe('{')
+    fs.writeFileSync(metadata, JSON.stringify({ ...original, desc: 'Missed notification' }))
+    expect(live.reconcile({ verifyMetadata: true }).database.characters[0].desc).toBe('Missed notification')
+    expect(live.reconcile({ verifyMetadata: true })).toBeNull()
+})
+
 test('malformed chat lore or changed chat identity is rejected before checksum acceptance', () => {
     const { root, repository } = fixture()
     const target = path.join(root, 'characters/one/chats/chat/metadata.json')
@@ -130,6 +143,20 @@ function liveFixture() {
     const assets = path.join(base.root, 'characters/one/assets'); fs.mkdirSync(assets, { recursive: true })
     return { ...base, store, live, assets }
 }
+
+test('explicit metadata verification does not scan or read unchanged assets', () => {
+    const { live, assets } = liveFixture()
+    const target = path.join(assets, 'smile.png')
+    fs.writeFileSync(target, 'image')
+    live.reconcile()
+    const read = vi.spyOn(fs, 'readFileSync')
+    const list = vi.spyOn(fs, 'readdirSync')
+    try {
+        expect(live.reconcile({ verifyMetadata: true })).toBeNull()
+        expect(read.mock.calls.filter(([file]) => String(file) === target)).toHaveLength(0)
+        expect(list.mock.calls.filter(([directory]) => String(directory) === assets)).toHaveLength(0)
+    } finally { read.mockRestore(); list.mockRestore() }
+})
 
 test('persists verified asset fingerprints across restart and upgrades cacheless records once', () => {
     const { root, live, assets, store, repository } = liveFixture()

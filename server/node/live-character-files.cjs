@@ -254,8 +254,11 @@ function createLiveCharacterFiles({ repository, writeAsset, writeAssets, reloadA
         if (replicasChanged) operations.push({ path: 'index/character-asset-replicas.json', data: json(replicas) });
         return { metadata, originals, pending, operations, replicasChanged, cacheOnly: !contentChanged && !replicasChanged, assetIndex: next };
     }
-    function reconcile() {
+    function reconcile({ verifyMetadata = false } = {}) {
         if (fallback && Date.now() - lastScan >= 1000) { dirty = true; assetsDirty = true; }
+        // Watch events may be lost after atomic file replacement. Explicit UI
+        // polls still check canonical metadata without rescanning asset bodies.
+        if (!dirty && verifyMetadata && repository.getProjectionRevision() !== accepted) dirty = true;
         if (!dirty) return null;
         if (Date.now() - changedAt < settleMs) {
             const error = new Error('External files are being saved; retry in a moment');

@@ -1139,7 +1139,7 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
 function adoptExternallyChangedCanonicalProjection(liveOnly = false) {
     if (!canonicalProjectionReady) return null
     try {
-    const fresh = liveCharacterFiles.reconcile() || (!liveOnly && canonicalProjectionSync.loadExternalChanges())
+    const fresh = liveCharacterFiles.reconcile({ verifyMetadata: liveOnly }) || (!liveOnly && canonicalProjectionSync.loadExternalChanges())
     if (!fresh && !liveFilesAdoption) return null
     if (!liveFilesAdoption) {
         liveFilesAdoption = {
