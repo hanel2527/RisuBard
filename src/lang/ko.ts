@@ -1971,6 +1971,11 @@ export const languageKorean = {
     "현재 탭이 비활성화되었습니다. OK를 누르면 탭이 다시 활성화됩니다.",
   sessionHandoffReload:
     "다른 기기에서 사용되어 최신 상태로 새로고침했어요.",
+  sessionSavePausedTitle: "다른 탭이나 기기에서 사용되어 저장이 중단되었습니다",
+  sessionSavePausedDetail: "최근 대화와 편집이 이 창에만 남아 있을 수 있습니다. 자동으로 새로고침하지 않습니다. 먼저 미저장 편집을 JSON으로 내려받거나 필요한 대화를 복사해 주세요. 내려받는 파일은 전체 백업이 아닙니다. 취소하면 이 창을 유지하며, 다시 불러오기 전까지 변경 사항은 서버에 저장되지 않습니다.",
+  sessionReloadLatest: "서버의 최신 내용으로 다시 불러오기",
+  sessionReloadConfirm: "이 창의 미저장 대화와 편집을 버리고 다시 불러올까요? 필요한 내용을 내려받거나 복사했는지 확인해 주세요.",
+  sessionReloadBusy: "응답 생성이나 저장이 진행 중입니다. 완료되거나 중단된 뒤 이 창으로 돌아와 다시 불러오기를 선택해 주세요.",
   canonicalFilesChangedReload:
     "외부 파일 편집을 감지해 더 최신인 파일을 유지하고 새로고침했어요.",
   canonicalSaveConflictTitle: "편집 중 외부 파일이 변경되었습니다",

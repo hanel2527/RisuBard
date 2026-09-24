@@ -7,7 +7,7 @@ import { setDatabase, type Database, defaultSdDataFunc, getDatabase, appVer, nod
 import { checkRisuUpdate } from "./update";
 import { MobileGUI, botMakerMode, selectedCharID, loadedStore, DBState, LoadingStatusState, selIdState, ReloadGUIPointer, bodyIntercepterStore, loadingOverlayStore, chatDeselected } from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
-import { alertConfirm, alertConfirmMulti, alertError, alertMd, alertNormalWait, alertSelect, alertTOS, waitAlert, notifySuccess, notifyError, notifyInfo } from "./alert";
+import { alertConfirm, alertConfirmMulti, alertError, alertMd, alertSelect, alertTOS, waitAlert, notifySuccess, notifyError, notifyInfo } from "./alert";
 import { hasher } from "./parser/parser.svelte";
 import { characterURLImport, hubURL } from "./characterCards";
 import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
@@ -35,6 +35,7 @@ import { defaultRequestPurpose, type RequestPurpose } from './requestPurpose'
 import { collectDatabaseAssetReferences } from './storage/assetRefs'
 import { claimSaveDbRuntime } from './storage/saveDbRuntime'
 import { createCanonicalSaveConflict } from './storage/canonicalSaveConflict'
+import { createSessionHandoff } from './storage/sessionHandoff'
 import { hasDisplayNameCollision } from './displayName'
 import { applyLiveFileSnapshot, createLiveFileRefresh, type LiveFileConflict, type LiveChatMetadataBaseline } from './storage/liveFileSync'
 
@@ -433,59 +434,74 @@ export async function saveDb() {
         channel = new BroadcastChannel('risu-db')
         saveRuntime.addCleanup(() => channel?.close())
     }
+    const sessionHandoff = createSessionHandoff({
+        isActive: () => saveRuntime.isActive(),
+        isVisible: () => document.visibilityState === 'visible',
+        choose: async () => {
+            const choice = await alertConfirmMulti(language.sessionSavePausedTitle, [
+                language.canonicalSaveConflictDownload,
+                { label: language.sessionReloadLatest, variant: 'destructive' },
+            ], language.sessionSavePausedDetail)
+            return choice === 0 ? 'download' : choice === 1 ? 'reload' : 'cancel'
+        },
+        download: async () => {
+            await downloadFile(`risubard-unsaved-edits-${Date.now()}.json`,
+                JSON.stringify(getDatabase({ snapshot: true }), null, 2))
+        },
+        confirmReload: () => alertConfirm(language.sessionReloadConfirm),
+        canReload: async () => {
+            // This module is also imported by process/index.svelte.
+            const { doingChat } = await import("./process/index.svelte")
+            await tick()
+            return !get(doingChat) && !saveInFlight
+        },
+        reload: () => {
+            try { sessionStorage.setItem('risu-session-handoff-reload', '1') } catch {}
+            location.reload()
+        },
+        notifyPaused: () => notifyError(language.sessionSavePausedTitle, {
+            description: language.sessionSavePausedDetail, source: 'session-handoff',
+        }),
+        notifyBusy: () => notifyError(language.sessionReloadBusy),
+        onError: error => notifyError(error),
+    })
+    const handleSessionDeactivated = () => {
+        if (!saveRuntime.isActive()) return
+        gotChannel = true
+        void sessionHandoff.deactivate()
+    }
     if (channel) {
         channel.onmessage = (ev) => {
-            if (ev.data === sessionID) {
-                return
-            }
-            if (!gotChannel) {
-                gotChannel = true
-                alertNormalWait(language.activeTabChange).then(() => {
-                    location.reload()
-                })
-            }
-        }
-    }
-    // Cross-device single-writer lock: mirrors BroadcastChannel behavior
-    // across devices via server-side session check (423 → deactivate).
-    // With reload-on-return below, a write actually reaching 423 means TRUE
-    // simultaneous use of two devices — rare, and the attempted change cannot
-    // be saved — so it stays an explicit blocking modal, never an automatic
-    // reload that would eat the user's action without a word.
-    const handleSessionDeactivated = () => {
-        if (!gotChannel) {
-            gotChannel = true
-            alertNormalWait(language.activeTabChange).then(() => {
-                location.reload()
-            })
+            if (ev.data !== sessionID) handleSessionDeactivated()
         }
     }
     window.addEventListener('risu-session-deactivated', handleSessionDeactivated)
+    const protectSessionEdits = (event: BeforeUnloadEvent) => {
+        if (!sessionHandoff.shouldBlockUnload()) return
+        event.preventDefault()
+        event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', protectSessionEdits)
     saveRuntime.addCleanup(() => {
         window.removeEventListener('risu-session-deactivated', handleSessionDeactivated)
+        window.removeEventListener('beforeunload', protectSessionEdits)
     })
 
-    // Reload-on-return: while this tab was hidden, another device may have
-    // taken the writer lock and changed data. Check the moment the user comes
-    // BACK — right then nothing is in progress, so a refresh costs nothing —
-    // instead of at the next write, where a 423 would eat the very change
-    // being saved. Only 'stale' reloads (the other device actually wrote);
-    // 'fresh' means our copy is still current and the next user action simply
-    // takes the lock back with no reload at all.
+    // Returning to a page does not imply its edits have reached the server.
+    // All stale-session paths pause and offer recovery instead of reloading.
     let lastLockReturnCheck = 0
     const checkWriterLockOnReturn = () => {
+        if (sessionHandoff.isPaused()) {
+            void sessionHandoff.show()
+            return
+        }
         const nowMs = Date.now()
         if (nowMs - lastLockReturnCheck < 5000) return
         lastLockReturnCheck = nowMs
         void (async () => {
-            // Dynamic import: process/index.svelte imports this module, so a
-            // static import here would be circular. Already loaded → instant.
-            const { doingChat } = await import("./process/index.svelte")
-            if (get(doingChat)) return // never yank a running generation
             const state = await forageStorage.getWriterLockState()
             if (state !== 'stale') return
-            try { sessionStorage.setItem('risu-session-handoff-reload', '1') } catch { /* toast is best-effort */ }
-            location.reload()
+            handleSessionDeactivated()
         })().catch(() => { /* status check failed — do nothing, write path 423 still guards */ })
     }
     window.addEventListener('focus', checkWriterLockOnReturn)
@@ -498,7 +514,7 @@ export async function saveDb() {
         document.removeEventListener('visibilitychange', handleVisibilityReturn)
     })
 
-    // Post-handoff notice from a reload-on-return in the previous page life.
+    // Post-handoff notice from a confirmed reload in the previous page life.
     // Delayed so the toast container is mounted before it fires.
     try {
         if (sessionStorage.getItem('risu-session-handoff-reload')) {
@@ -549,7 +565,10 @@ export async function saveDb() {
     // a patch acknowledgement, and never replaces hydrated chat objects.
     async function syncLiveFilesNow() {
         if (!supportsPatchSync || !saveRuntime.isActive()) return
+        if (gotChannel) throw new Error(language.sessionSavePausedTitle)
         const result = await forageStorage.syncLiveFiles(liveRevision)
+        if (!saveRuntime.isActive()) return
+        if (gotChannel) throw new Error(language.sessionSavePausedTitle)
         if (result.snapshot) {
             if (result.recovery?.conflicts) {
                 notifyInfo(`외부 파일 변경을 반영했습니다. 겹친 앱 편집 ${result.recovery.conflicts}건은 서버 데이터 폴더의 ${result.recovery.path}에 보관했습니다.`)
@@ -589,16 +608,21 @@ export async function saveDb() {
     }
 
     const refreshThisRuntime = createLiveFileRefresh({
-        isActive: () => supportsPatchSync && saveRuntime.isActive(),
+        isActive: () => supportsPatchSync && saveRuntime.isActive() && !gotChannel,
         getInFlight: () => saveInFlight,
         setInFlight: operation => { saveInFlight = operation },
         sync: syncLiveFilesNow,
     })
-    refreshLiveFilesImpl = refreshThisRuntime
+    const refreshWithSessionCheck = async () => {
+        if (gotChannel) throw new Error(language.sessionSavePausedTitle)
+        await refreshThisRuntime()
+        if (gotChannel) throw new Error(language.sessionSavePausedTitle)
+    }
+    refreshLiveFilesImpl = refreshWithSessionCheck
     let pollPending = false
     let lastPollError = ''
     const livePoll = supportsPatchSync ? setInterval(() => {
-        if (pollPending || !saveRuntime.isActive() || document.hidden) return
+        if (pollPending || !saveRuntime.isActive() || document.hidden || gotChannel) return
         pollPending = true
         void refreshThisRuntime().then(() => { lastPollError = '' }).catch(error => {
             if (error?.code === 'LIVE_FILES_INACTIVE') return
@@ -609,7 +633,7 @@ export async function saveDb() {
     }, 750) : null
     saveRuntime.addCleanup(() => {
         if (livePoll) clearInterval(livePoll)
-        if (refreshLiveFilesImpl === refreshThisRuntime) refreshLiveFilesImpl = null
+        if (refreshLiveFilesImpl === refreshWithSessionCheck) refreshLiveFilesImpl = null
     })
 
     function hasTrackedChanges(toSave: toSaveType) {
@@ -1029,10 +1053,6 @@ export async function saveDb() {
             await sleep(1000)
             return 'noop'
         }
-        if (channel && !options?.skipBroadcast) {
-            channel.postMessage(sessionID)
-        }
-
         const db = getDatabase()
         if (!db.characters) {
             await sleep(1000)
@@ -1347,6 +1367,11 @@ export async function saveDb() {
         }
         if (!saveRuntime.isActive()) return
 
+        if (gotChannel) {
+            if (options?.rejectOnFailure) throw new Error(language.sessionSavePausedTitle)
+            return
+        }
+
         if (!hasTrackedChanges(changeTracker) && !options?.forceFullWrite && !forceFullWriteOnRetry) {
             return
         }
@@ -1364,6 +1389,11 @@ export async function saveDb() {
                 if (result === 'saved') {
                     forceFullWriteOnRetry = false
                     savetrys = 0
+                    // Node clients use the server lock. A failed/passive save
+                    // must not kick another tab through a second authority.
+                    if (!supportsPatchSync && channel && !options?.skipBroadcast) {
+                        channel.postMessage(sessionID)
+                    }
                 } else {
                     forceFullWriteOnRetry ||= supportsPatchSync
                     if (result === 'noop' && hasTrackedChanges(toSave)) {
@@ -1379,6 +1409,12 @@ export async function saveDb() {
                     ))
                 }
             } catch (error) {
+                if (gotChannel) {
+                    if (toSave) requeueTrackedChanges(toSave)
+                    changed = true
+                    if (options?.rejectOnFailure) throw error
+                    return
+                }
                 if (!toSave && (lastLiveError || error?.code === 'LIVE_FILES_INACTIVE')) {
                     changed = true
                     if (options?.rejectOnFailure) throw error
@@ -1411,6 +1447,10 @@ export async function saveDb() {
     }
 
     requestImmediateSaveImpl = async (options) => {
+        if (gotChannel) {
+            void sessionHandoff.show()
+            throw new Error(language.sessionSavePausedTitle)
+        }
         changed = true
         await tick()
         await refreshThisRuntime()
@@ -1425,7 +1465,7 @@ export async function saveDb() {
 
     let savetrys = 0
     while (saveRuntime.isActive()) {
-        if (!changed) {
+        if (!changed || gotChannel) {
             await sleep(200)
             continue
         }
