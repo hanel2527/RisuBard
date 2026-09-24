@@ -743,12 +743,14 @@ describe('memory analysis runner', () => {
             onError: vi.fn(), analyze,
         })
         const result = await runner.run({ characterId: 'character', chatId: 'chat', messages: [{ messageId: 'assistant-1', role: 'assistant', content: 'A and B arrived.' }] })
-        expect(batchSizes).toEqual(failure === 'provider' ? [2] : [2, 1, 1])
+        expect(batchSizes).toEqual(failure === 'provider' ? [2]
+            : failure === 'incomplete' ? [2, 1]
+            : failure === 'incomplete-single' ? [2, 1, 1, 1, 1] : [2, 1, 1])
         expect(saveConfirmedTurn).toHaveBeenCalledOnce()
         const failed = failure === 'provider' || failure === 'incomplete-single'
         expect(saveCanonicalDocument).toHaveBeenCalledTimes(failed ? 0 : 2)
         expect(recordRebootBatchReceipt).not.toHaveBeenCalled()
-        expect(result.canonicalReceipt?.warnings).toHaveLength(failed ? 1 : 0)
+        expect(result.canonicalReceipt?.warnings).toHaveLength(failed ? 2 : 0)
     })
 
     test('recovers a malformed single canonical target with Markdown sections', async () => {
@@ -1182,7 +1184,7 @@ describe('memory analysis runner', () => {
             .not.toContain('대학원 재학 중')
     })
 
-    test('generates and applies only changed canonical sections', async () => {
+    test.each([false, true])('generates and applies changed canonical sections with duplicate state = %s', async (duplicateState) => {
         const saveCanonicalDocument = vi.fn(async (input) => input)
         const analyze = vi.fn(async (request: MemoryAnalysisModelRequest) => {
             if (request.format === 'memory-draft') {
@@ -1223,6 +1225,7 @@ describe('memory analysis runner', () => {
                     title: '루치아', relativePath: 'characters/루치아.md',
                     content: [
                         '## 루치아', '', '### 현재 상태', '',
+                        ...(duplicateState ? ['- 이전 상태', '', '### 현재 상태', ''] : []),
                         '- 대학원 재학 중', '', '### 정체성', '', '- 수의사',
                     ].join('\n'),
                     contentHash: 'lucia-old', sourceMessageIds: [],
@@ -1247,6 +1250,7 @@ describe('memory analysis runner', () => {
                 '- 석사 학위 취득 완료', '', '### 정체성', '', '- 수의사',
             ].join('\n'),
         }))
+        expect(analyze).toHaveBeenCalledTimes(2)
     })
 
     test('skips canonical persistence when verification returns no changed sections', async () => {

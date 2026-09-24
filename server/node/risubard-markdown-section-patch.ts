@@ -77,7 +77,7 @@ function headingsOutsideFences(value: string): MarkdownHeading[] {
     return headings
 }
 
-function parseCanonicalMarkdown(markdown: string): ParsedCanonicalMarkdown {
+function parseCanonicalMarkdown(markdown: string, allowDuplicates = false): ParsedCanonicalMarkdown {
     if (!markdown) throw new Error('Canonical Markdown is empty')
     const headings = headingsOutsideFences(markdown)
     const title = headings[0]
@@ -94,7 +94,7 @@ function parseCanonicalMarkdown(markdown: string): ParsedCanonicalMarkdown {
     const seen = new Set<string>()
     const sections = sectionHeadings.map((heading, index) => {
         const key = normalizeCanonicalSectionHeading(heading.text)
-        if (seen.has(key)) {
+        if (!allowDuplicates && seen.has(key)) {
             throw new Error(`Canonical Markdown has a duplicate section heading: ${heading.text}`)
         }
         seen.add(key)
@@ -109,6 +109,42 @@ function parseCanonicalMarkdown(markdown: string): ParsedCanonicalMarkdown {
         title,
         sections,
     }
+}
+
+// Older documents can contain repeated sections. Repair their structure locally
+// before applying model patches so retries cannot get stuck on the same input.
+// Keep every body in document order; choosing which facts supersede others is
+// still the writer's job, not a side effect of format recovery.
+export function prepareCanonicalMarkdown(value: string): string {
+    const markdown = value.replace(/^\uFEFF/u, '').replace(/^(?:[ \t]*\r?\n)+/u, '')
+    const parsed = parseCanonicalMarkdown(markdown, true)
+    const groups = new Map<string, CanonicalSection[]>()
+    for (const section of parsed.sections) {
+        const key = normalizeCanonicalSectionHeading(section.text)
+        const group = groups.get(key)
+        if (group) group.push(section)
+        else groups.set(key, [section])
+    }
+    if (groups.size === parsed.sections.length) return markdown
+
+    const separator = parsed.newline + parsed.newline
+    const repaired = markdown.slice(0, parsed.sections[0].line.start)
+        + [...groups.values()].map((sections, index) => {
+            const first = sections[0]
+            if (sections.length === 1) return markdown.slice(first.line.start, first.end)
+            const bodies = sections.map((section) =>
+                markdown.slice(section.line.end, section.end)
+                    .replace(/^[\r\n]+|[\r\n]+$/gu, ''))
+                .filter((body) => body.length > 0)
+            return first.line.text + separator + bodies.join(separator)
+                + (index < groups.size - 1 ? separator : '')
+        }).join('')
+    const repairedKeys = parseCanonicalMarkdown(repaired).sections.map((section) =>
+        normalizeCanonicalSectionHeading(section.text))
+    if (JSON.stringify(repairedKeys) !== JSON.stringify([...groups.keys()])) {
+        throw new Error('Canonical Markdown repair would change section boundaries')
+    }
+    return repaired
 }
 
 export function parseCanonicalSectionPatchMarkdown(
@@ -145,7 +181,7 @@ export function hasCanonicalSection(
     headings: readonly string[],
 ): boolean {
     const expected = new Set(headings.map(normalizeCanonicalSectionHeading))
-    return parseCanonicalMarkdown(markdown).sections.some((section) =>
+    return parseCanonicalMarkdown(markdown, true).sections.some((section) =>
         expected.has(normalizeCanonicalSectionHeading(section.text)))
 }
 
@@ -194,7 +230,7 @@ export function applyCanonicalSectionPatches(input: {
     if (!title || /[\r\n]/u.test(title)) {
         throw new Error('Canonical title is invalid')
     }
-    let markdown = input.markdown ?? `## ${title}`
+    let markdown = prepareCanonicalMarkdown(input.markdown ?? `## ${title}`)
 
     for (const patch of input.patches) {
         const parsed = parseCanonicalMarkdown(markdown)

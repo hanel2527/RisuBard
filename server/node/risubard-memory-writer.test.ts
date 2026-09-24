@@ -9,6 +9,7 @@ import {
     hasMemoryWriterContent,
     parseMemoryWriterDraft,
     parseCanonicalBatch,
+    parseCanonicalBatchIsolated,
     parseCanonicalSingle,
     parseRebootBatchDraft,
     serializeMemoryWriterDraft,
@@ -16,6 +17,25 @@ import {
 } from './risubard-memory-writer'
 
 describe('BardWiki memory writer skill', () => {
+    test('isolates invalid and missing entries while retaining validated batch entries', () => {
+        const valid = { candidateIndex: 1, sections: [{ heading: 'State', operation: 'upsert', content: 'Arrived.' }] }
+        const result = parseCanonicalBatchIsolated(JSON.stringify({ documents: [
+            { candidateIndex: 0, sections: [{ heading: 'State', operation: 'delete', content: 'Not empty' }] }, valid,
+        ] }), 3)
+        expect(result.documents).toEqual([valid])
+        expect(result.failures.map((failure) => failure.candidateIndex)).toEqual([0, 2])
+        expect(result.failures[0].error.message).toContain('operation')
+        expect(result.failures[1].error.message).toContain('Missing')
+    })
+
+    test.each([
+        [{ candidateIndex: 0, sections: [] }, { candidateIndex: 0, sections: [] }],
+        [{ candidateIndex: 2, sections: [] }],
+        [{ sections: [] }],
+    ].map((documents) => [documents]))('rejects ambiguous batch routing before accepting any entries: %j', (documents) => {
+        expect(() => parseCanonicalBatchIsolated(JSON.stringify({ documents }), 2)).toThrow(/candidateIndex/)
+    })
+
     test('provides an English recording contract and deterministic English headings', () => {
         const prompt = buildMemoryWriterSystemPrompt('en')
         expect(prompt).toContain('canonicalUpdateCandidates')

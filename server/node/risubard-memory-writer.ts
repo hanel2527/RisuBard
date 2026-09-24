@@ -716,6 +716,39 @@ export function parseCanonicalBatch(
     return { schemaVersion: 1, documents }
 }
 
+// Only isolate content failures after the entire envelope has unambiguous routing.
+// Each surviving entry still goes through the same strict parser as a full batch.
+export function parseCanonicalBatchIsolated(output: string, candidateCount: number): CanonicalBatch & {
+    failures: Array<{ candidateIndex: number; error: Error }>
+} {
+    const value = parseSingleJsonObjectMatching(output, (candidate) => Array.isArray(candidate.documents))
+    if (!isRecord(value)) throw new Error('Canonical batch must be an object')
+    const raw = withoutModelSchemaVersion(value)
+    exactKeys(raw, ['documents'], 'canonical batch')
+    const items = boundedArray(raw.documents, 'canonical batch documents', candidateCount)
+    parseCanonicalBatch(JSON.stringify({ documents: items.map((item) => ({
+        candidateIndex: isRecord(item) ? item.candidateIndex : undefined,
+        sections: [],
+    })) }), candidateCount)
+    const documents: CanonicalBatch['documents'] = []
+    const failures: Array<{ candidateIndex: number; error: Error }> = []
+    const seen = new Set<number>()
+    for (const item of items) {
+        const candidateIndex = (item as { candidateIndex: number }).candidateIndex
+        seen.add(candidateIndex)
+        try {
+            documents.push(parseCanonicalBatch(JSON.stringify({ documents: [item] }), candidateCount).documents[0])
+        }
+        catch (error) {
+            failures.push({ candidateIndex, error: error instanceof Error ? error : new Error('Invalid canonical document') })
+        }
+    }
+    for (let candidateIndex = 0; candidateIndex < candidateCount; candidateIndex++) {
+        if (!seen.has(candidateIndex)) failures.push({ candidateIndex, error: new Error('Missing canonical target; return its complete changed sections.') })
+    }
+    return { schemaVersion: 1, documents, failures }
+}
+
 export function parseCanonicalSingle(output: string): CanonicalBatch['documents'][number] {
     const parsed = parseSingleJsonObjectMatching(output, (candidate) =>
         Array.isArray(candidate.sections)

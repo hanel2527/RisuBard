@@ -2,9 +2,61 @@ import { describe, expect, test } from 'vitest'
 import {
     applyCanonicalSectionPatches,
     parseCanonicalSectionPatchMarkdown,
+    prepareCanonicalMarkdown,
 } from './risubard-markdown-section-patch'
 
 describe('canonical Markdown section patches', () => {
+    test('preflights BOM and leading blank lines without changing body whitespace', () => {
+        expect(prepareCanonicalMarkdown('\uFEFF\r\n\r\n## Alice\r\n\r\n### State\r\n\r\n  Indented.  \r\n'))
+            .toBe('## Alice\r\n\r\n### State\r\n\r\n  Indented.  \r\n')
+    })
+
+    test('does not repair ambiguous titles or move an unclosed fence across sections', () => {
+        expect(() => prepareCanonicalMarkdown('## Alice\n\n## Bob\n\nText'))
+            .toThrow(/title-level/)
+        expect(() => prepareCanonicalMarkdown('## Alice\n\n### State\nOld\n\n### Identity\nRanger\n\n### State\n```md\nUnclosed'))
+            .toThrow(/boundaries/)
+    })
+
+    test.each(['\n', '\r\n'])('repairs duplicate sections without discarding omitted facts (%j)', (newline) => {
+        const markdown = [
+            '## Alice', '', '### Current State', '', '- At the gate.', '',
+            '### Identity', '', 'A ranger.  ', '',
+            '### Ｃｕｒｒｅｎｔ Ｓｔａｔｅ', '', '- Carries a key.', '',
+            '#### Details', '', '```md', '### Current State', 'Example', '```', '',
+            '### Goals', '', 'Find shelter.',
+        ].join(newline)
+        const result = applyCanonicalSectionPatches({
+            markdown, title: 'Alice',
+            patches: [{ heading: 'Goals', operation: 'upsert', content: 'Reach the inn.' }],
+        })
+        expect(result).toBe([
+            '## Alice', '', '### Current State', '', '- At the gate.', '',
+            '- Carries a key.', '', '#### Details', '', '```md',
+            '### Current State', 'Example', '```', '',
+            '### Identity', '', 'A ranger.  ', '',
+            '### Goals', '', 'Reach the inn.',
+        ].join(newline))
+        expect(applyCanonicalSectionPatches({ markdown: result, title: 'Alice', patches: [] }))
+            .toBe(result)
+    })
+
+    test('replaces all duplicate occurrences with the complete updated section', () => {
+        expect(applyCanonicalSectionPatches({
+            title: 'Alice',
+            markdown: '## Alice\n\n### Current State\n\nOld.\n\n### Identity\n\nRanger.\n\n### current state\n\nOlder.',
+            patches: [{ heading: 'Current State', operation: 'upsert', content: 'At the inn with a key.' }],
+        })).toBe('## Alice\n\n### Current State\n\nAt the inn with a key.\n\n### Identity\n\nRanger.\n\n')
+    })
+
+    test('deletes all duplicate legacy sections when explicitly requested', () => {
+        expect(applyCanonicalSectionPatches({
+            title: 'Alice',
+            markdown: '# Alice\n\n## State\n\nOld.\n\n## Identity\n\nRanger.\n\n## STATE\n\nOlder.',
+            patches: [{ heading: 'State', operation: 'delete', content: '' }],
+        })).toBe('# Alice\n\n## Identity\n\nRanger.\n\n')
+    })
+
     test('consolidates legacy sections without losing facts or untouched relationships', () => {
         const markdown = [
             '## 쿠루미',

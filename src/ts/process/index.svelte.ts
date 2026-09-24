@@ -99,7 +99,7 @@ import { mergeWikiSemanticMatches, type WikiSemanticMatch } from '../risubard/wi
 import { normalizeArcPlotterRuntimeSettings } from '../risubard/arcPlotterSettings';
 import {
     canonicalTurnNeedsRetry,
-    canonicalTurnRetryWarning,
+    canonicalTurnFailureWarning,
     mergeCanonicalTurnReceipts,
 } from '../risubard/canonicalTurnReceipt';
 import { saveChatToServer } from '../storage/chatStorage';
@@ -237,6 +237,9 @@ async function confirmProjectedNarrativeTurn(input: {
             (item) => item.id === input.chatId
         )
         const settings = resolvedRisuBardSettings(chat)
+        const previousCanonicalReceipt = chat?.message.find(
+            (item) => item.chatId === input.targetMessageId
+        )?.risubardCanonicalReceipt
         if (settings.risuBardIgnoreOocTurns && input.messages.some((message) =>
             message.role === 'assistant' && isOocAssistantTurn({ role: 'char', data: message.content })
         )) return false
@@ -307,6 +310,8 @@ async function confirmProjectedNarrativeTurn(input: {
                 },
             } : {}),
             ...(input.additionalAnalysis ? { additionalAnalysis: true } : {}),
+            ...(!input.additionalAnalysis && !input.historicalReanalysis && previousCanonicalReceipt
+                ? { previousCanonicalReceipt } : {}),
             ...(input.historicalReanalysis ? { historicalReanalysis: true } : {}),
             ...(input.excludeCanonicalDocumentIds ? {
                 excludeCanonicalDocumentIds:
@@ -315,7 +320,7 @@ async function confirmProjectedNarrativeTurn(input: {
             ...(chat ? { contextMessages } : {}),
         }, generationSignal)
         const retryWarning = receipt
-            ? canonicalTurnRetryWarning(receipt)
+            ? canonicalTurnFailureWarning(receipt)
             : undefined
         if (retryWarning) {
             publishRisuBardMemoryActivity({

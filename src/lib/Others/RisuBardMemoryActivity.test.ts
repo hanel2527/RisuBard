@@ -125,7 +125,10 @@ describe('RisuBardMemoryActivity', () => {
         )
     })
 
-    it('interleaves provider responses and canonical results without inventing retries', async () => {
+    it.each([
+        '정본 문서 갱신 실패 (응답 형식 오류). 다음 턴에 자동으로 다시 시도합니다.',
+        '정본 문서 갱신 보류: Alice (응답 복구 횟수 소진). 추가 분석을 실행할 수 있습니다.',
+    ])('interleaves provider responses and failed canonical results: %s', async (warning) => {
         mocks.loadChatRequestEvidence.mockResolvedValue({
             schemaVersion: 1,
             generatedAt: '2026-09-01T04:08:00.000Z',
@@ -160,7 +163,7 @@ describe('RisuBardMemoryActivity', () => {
                         sourceMessageIds: ['assistant-1'],
                         eventIds: ['event-1'],
                         changes: [],
-                        warnings: ['정본 문서 갱신 실패 (응답 형식 오류). 다음 턴에 자동으로 다시 시도합니다.'],
+                        warnings: [warning],
                         recordedAt: '2026-09-01T04:07:45.000Z',
                     },
                 }],

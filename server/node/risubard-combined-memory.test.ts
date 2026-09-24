@@ -96,6 +96,15 @@ async function run(options: { supplied?: boolean; create?: boolean; malformed?: 
 }
 
 describe('combined semantic and canonical writing', () => {
+    test('keeps a valid inline patch when a different candidate has malformed sections', () => {
+        const value = draft()
+        value.canonicalUpdateCandidates.push({ ...value.canonicalUpdateCandidates[0], title: 'Mara', targetDocumentId: 'character.mara' })
+        value.canonicalPatches.push({ candidateIndex: 1, sections: [{ heading: 'State', operation: 'delete', content: 'Invalid deletion' }] })
+        const result = parseCombinedMemory(JSON.stringify(value))
+        expect(result.patches.get(result.draft.canonicalUpdateCandidates[0])).toEqual(sections)
+        expect(result.patches.has(result.draft.canonicalUpdateCandidates[1])).toBe(false)
+    })
+
     test('instructs section rewrites to retain durable character state outside the current scene', () => {
         expect(combinedMemoryInstruction).toContain('relationships, trust, mental state, knowledge boundaries')
         expect(combinedMemoryInstruction).toContain('meaningful possessions, equipment, appearance, and constraints')

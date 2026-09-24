@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'vitest'
 import {
     canonicalTurnRetryWarning,
+    canonicalTurnFailureWarning,
+    formatCanonicalDeferredWarning,
+    parseCanonicalTurnReceipt,
     canonicalTurnNeedsRetry,
     formatCanonicalUpdateFailureWarning,
     mergeCanonicalTurnReceipts,
@@ -59,6 +62,31 @@ describe('cumulative canonical turn receipt', () => {
 })
 
 describe('canonical turn retry receipt', () => {
+    test('round-trips optional recovery metadata while accepting legacy receipts', () => {
+        const legacy = { sourceMessageIds: ['a'], eventIds: [], changes: [], warnings: [], recordedAt: 'now' }
+        expect(parseCanonicalTurnReceipt(legacy)).toEqual(legacy)
+        const receipt = { ...legacy, recovery: { inputHash: 'a'.repeat(64), deferred: [{
+            documentId: 'character.alice', type: 'character' as const, title: 'Alice', contentHash: 'old-hash',
+            warning: formatCanonicalDeferredWarning('Alice', '형식 오류'),
+        }] } }
+        const restored = parseCanonicalTurnReceipt(JSON.parse(JSON.stringify(receipt)))
+        expect(restored).toEqual(receipt)
+        expect(() => parseCanonicalTurnReceipt({ ...receipt, recovery: { ...receipt.recovery, inputHash: 'invalid' } })).toThrow()
+        expect(() => parseCanonicalTurnReceipt({ ...receipt, recovery: { ...receipt.recovery, deferred: [{ ...receipt.recovery.deferred[0], type: 'event' }] } })).toThrow()
+        expect(() => parseCanonicalTurnReceipt({ ...receipt, unexpected: true })).toThrow()
+    })
+
+    test('keeps exhausted recovery visible as a failure without automatically replaying the turn', () => {
+        const warning = formatCanonicalDeferredWarning('Alice', '기존 문서 구조 오류')
+        const receipt = { sourceMessageIds: ['a'], eventIds: ['e'], changes: [], warnings: [warning], recordedAt: 'now' }
+        expect(canonicalTurnNeedsRetry(receipt)).toBe(false)
+        expect(canonicalTurnFailureWarning(receipt)).toBe(warning)
+        expect(warning).toContain('Alice')
+        expect(warning).toContain('추가 분석')
+        const transient = formatCanonicalUpdateFailureWarning(new Error('timeout'))
+        expect(canonicalTurnNeedsRetry({ ...receipt, warnings: [warning, transient] })).toBe(true)
+    })
+
     test('retries a partial document save failure from an existing receipt', () => {
         const warning = '정본 문서 저장 실패: 마을'
         const receipt = {
