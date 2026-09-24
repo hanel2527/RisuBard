@@ -86,6 +86,7 @@ import { isMobile } from 'src/ts/platform'
     import PluginFloatingActionButtons from '../Others/PluginFloatingActionButtons.svelte';
     import SolarAssetIcon from '../UI/Icons/SolarAssetIcon.svelte';
     import RisuBardMemoryWiki from '../Others/RisuBardMemoryWiki.svelte';
+    import BardPainterSelection from './BardPainterSelection.svelte';
     import ArcaChatLogDialog from './ArcaChatLogDialog.svelte'
     import RisuBardSaveLoadShortcuts from './RisuBardSaveLoadShortcuts.svelte';
     import RisuBardChatFindReplaceDialog from './RisuBardChatFindReplaceDialog.svelte';
@@ -1853,6 +1854,7 @@ import { isMobile } from 'src/ts/platform'
         />
     </main>
     {#if currentCharacter?.chaId && currentChatSlot?.id}
+        <BardPainterSelection characterId={currentCharacter.chaId} chatId={currentChatSlot.id} />
         {#key currentCharacter.chaId + currentChatSlot.id}
             <RisuBardChatFindReplaceDialog bind:open={findReplaceOpen} characterId={currentCharacter.chaId} chatId={currentChatSlot.id} blocked={!!currentChatSlot.isStreaming || !!currentChatSlot.risuBardWikiReboot} />
         {/key}

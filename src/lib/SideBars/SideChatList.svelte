@@ -39,6 +39,8 @@
     import ShDropdownMenuItem from '../UI/GUI/ShDropdownMenuItem.svelte';
     import SidebarResizeHandle from './SidebarResizeHandle.svelte';
     import { normalizeChatListHeight } from 'src/ts/gui/sidebarLayout';
+    import { rebindPainterChatScope } from 'src/ts/bardPainter/chatScope';
+    import { preservePainterChatGallery } from 'src/ts/bardPainter/gallery';
 
     interface Props {
         chara: character;
@@ -132,19 +134,42 @@
 
     async function deleteCurrentChat(): Promise<void> {
         if(!activeChat) return
-        if(chara.chats.length === 1){
+        const targetCharacter = chara, targetChatId = activeChat.id, targetChatName = activeChat.name
+        if(!targetChatId) return
+        if(targetCharacter.chats.length === 1){
             notifyError(language.errors.onlyOneChat)
             return
         }
         const confirmed = await alertConfirm(
-            `${language.removeConfirm}${activeChat.name}`
+            `${language.removeConfirm}${targetChatName}`
         )
         if(!confirmed) return
-        const index = chara.chats.indexOf(activeChat)
-        if(index < 0) return
-        chara.chats.splice(index, 1)
-        chara.chats = chara.chats
-        changeChatTo(0)
+        try {
+            const { isPainterChatBusy } = await import('src/ts/bardPainter/runtime.svelte')
+            const index = targetCharacter.chats.findIndex(chat => chat.id === targetChatId)
+            if(index < 0) return
+            const chat = await ensureChatHydrated(targetCharacter.chats, index, targetCharacter.chaId)
+            if (!chat || chat._placeholder || chat.id !== targetChatId) throw new Error('챗 데이터를 불러오지 못했습니다.')
+            if (isPainterChatBusy(targetCharacter.chaId, targetChatId) || chat.bardPainter?.results?.some(result => result.compressionPending)) {
+                notifyError('바드페인터 작업이나 이미지 저장을 마친 뒤 챗을 삭제해 주세요.')
+                return
+            }
+            await preservePainterChatGallery(chat)
+            if (isPainterChatBusy(targetCharacter.chaId, targetChatId)) {
+                notifyError('바드페인터 작업이나 이미지 저장을 마친 뒤 챗을 삭제해 주세요.')
+                return
+            }
+        } catch (error) {
+            notifyError(`그림의 생성 기록을 보존하지 못해 챗 삭제를 중단했습니다: ${String(error)}`)
+            return
+        }
+        const deletionIndex = targetCharacter.chats.findIndex(chat => chat.id === targetChatId)
+        if (deletionIndex < 0) return
+        if (targetCharacter.chats.length === 1) { notifyError(language.errors.onlyOneChat); return }
+        targetCharacter.chats.splice(deletionIndex, 1)
+        targetCharacter.chats = targetCharacter.chats
+        if (chara.chaId === targetCharacter.chaId) changeChatTo(0)
+        else targetCharacter.chatPage = Math.max(0, Math.min(targetCharacter.chatPage, targetCharacter.chats.length - 1))
         $ReloadGUIPointer += 1
         void requestImmediateSave()
     }
@@ -174,6 +199,7 @@
         const newChat = $state.snapshot(sourceChat)
         newChat.name = createChatCopyName(newChat.name, 'Copy')
         newChat.id = v4()
+        rebindPainterChatScope(newChat, (chara as character).chaId)
         try {
             const forkReceipt = await forkMemoryWiki({
                 characterId: (chara as character).chaId,

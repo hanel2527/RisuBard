@@ -74,6 +74,9 @@ export function scanCharacterInlayIds(char: character): Set<string> {
     const ids = new Set<string>()
     if (!Array.isArray(char?.chats)) return ids
     for (const chat of char.chats) {
+        for (const result of Array.isArray(chat?.bardPainter?.results) ? chat.bardPainter.results : []) {
+            if (typeof result?.assetId === 'string' && result.assetId) ids.add(result.assetId)
+        }
         if (!Array.isArray(chat?.message)) continue
         for (const msg of chat.message) {
             if (typeof msg?.data !== 'string') continue
@@ -194,6 +197,12 @@ function buildImportSummary(manifest: PackageManifest): string {
 
 type ProgressFn = (msg: string, subPct?: number) => void
 
+type ImportedReferences = {
+    inlays: Map<string, string>
+    chats: Map<string, string>
+    painterOwners: Map<string, string>
+}
+
 async function importPersonas(
     manifest: PackageManifest,
     unzipped: fflate.Unzipped,
@@ -275,23 +284,75 @@ function importChatsToCharacter(
     personaIdMap: Record<string, string>,
     progress: ProgressFn,
     mode: 'replace' | 'append' = 'replace'
-): void {
-    if (!manifest.chats) return
+): ImportedReferences {
+    const references: ImportedReferences = { inlays: new Map(), chats: new Map(), painterOwners: new Map() }
+    if (!manifest.chats) return references
 
     progress(language.characterPackageProgressImportChats)
     const chatsBytes = unzipped[manifest.chats.file]
-    if (!chatsBytes) return
+    if (!chatsBytes) return references
 
     const chatsJson = JSON.parse(new TextDecoder().decode(chatsBytes))
-    if (chatsJson.type !== 'risuAllChats' || chatsJson.ver !== 2 || !Array.isArray(chatsJson.data)) return
+    if (chatsJson.type !== 'risuAllChats' || chatsJson.ver !== 2 || !Array.isArray(chatsJson.data)) return references
 
     const importedChats: Chat[] = chatsJson.data
+    const packagedInlays = new Set((manifest.inlays?.files ?? []).filter(file => unzipped[file]).map(file => {
+        const name = file.split('/').pop() || ''
+        const dot = name.lastIndexOf('.')
+        return dot > 0 ? name.slice(0, dot) : name
+    }))
+    // Painter galleries own their candidates even before insertion. A cloned package
+    // gets independent image IDs so a later compression retry cannot overwrite the source.
+    for (const chat of importedChats) {
+        for (const result of Array.isArray(chat.bardPainter?.results) ? chat.bardPainter.results : []) {
+            if (packagedInlays.has(result?.assetId) && !references.inlays.has(result.assetId)) references.inlays.set(result.assetId, v4())
+        }
+    }
 
     for (const chat of importedChats) {
         if (chat.bindedPersona && personaIdMap[chat.bindedPersona]) {
             chat.bindedPersona = personaIdMap[chat.bindedPersona]
         }
+        const sourceChatId = chat.id
         chat.id = v4()
+        if (sourceChatId) references.chats.set(sourceChatId, chat.id)
+        const painter = chat.bardPainter
+        const results = Array.isArray(painter?.results) ? painter.results : []
+        const anchors = [painter?.anchor, ...results.map(result => result?.anchor)].flatMap(anchor => anchor ? [anchor] : [])
+        for (const anchor of anchors) {
+            anchor.characterId = targetChar.chaId
+            anchor.chatId = chat.id
+            // Message chatId values are retained by package imports, so messageId stays valid.
+        }
+        for (const result of results) {
+            const mappedId = references.inlays.get(result?.assetId)
+            if (mappedId) {
+                result.assetId = mappedId
+                references.painterOwners.set(mappedId, chat.id)
+            }
+        }
+        for (const message of Array.isArray(chat.message) ? chat.message : []) {
+            const remapTokens = (source: string, shiftAnchors: boolean) => {
+                let shift = 0
+                return source.replace(new RegExp(INLAY_REF_REGEX.source, 'g'), (token, id: string, offset: number) => {
+                    const mapped = references.inlays.get(id)
+                    if (!mapped) return token
+                    const next = token.replace(`::${id}}}`, `::${mapped}}}`)
+                    const delta = next.length - token.length
+                    if (shiftAnchors && delta) {
+                        for (const anchor of anchors) {
+                            if (anchor.messageId !== message.chatId) continue
+                            if (anchor.start >= offset + shift) anchor.start += delta
+                            if (anchor.end > offset + shift) anchor.end += delta
+                        }
+                    }
+                    shift += delta
+                    return next
+                })
+            }
+            if (typeof message.data === 'string') message.data = remapTokens(message.data, true)
+            if (Array.isArray(message.swipes)) message.swipes = message.swipes.map(swipe => typeof swipe === 'string' ? remapTokens(swipe, false) : swipe)
+        }
     }
 
     if (mode === 'append') {
@@ -330,6 +391,7 @@ function importChatsToCharacter(
         }
         targetChar.chatPage = 0
     }
+    return references
 }
 
 function importGalleryToCharacter(
@@ -357,7 +419,8 @@ async function importInlays(
     targetCharId: string,
     importCurrentStep: number,
     importTotalSteps: number,
-    progressLabel: string
+    progressLabel: string,
+    references: ImportedReferences,
 ): Promise<void> {
     if (!manifest.inlays || manifest.inlays.files.length === 0) return
 
@@ -372,7 +435,8 @@ async function importInlays(
     const allInlayIds = manifest.inlays.files.map(fp => {
         const fn = fp.split('/').pop() || ''
         const dot = fn.lastIndexOf('.')
-        return dot > 0 ? fn.substring(0, dot) : fn
+        const id = dot > 0 ? fn.substring(0, dot) : fn
+        return references.inlays.get(id) ?? id
     })
     const existingInfos = await getInlayInfosBatch(allInlayIds)
 
@@ -386,7 +450,8 @@ async function importInlays(
 
         const fileName = filePath.split('/').pop() || ''
         const lastDot = fileName.lastIndexOf('.')
-        const id = lastDot > 0 ? fileName.substring(0, lastDot) : fileName
+        const sourceId = lastDot > 0 ? fileName.substring(0, lastDot) : fileName
+        const id = references.inlays.get(sourceId) ?? sourceId
         const ext = lastDot > 0 ? fileName.substring(lastDot + 1) : 'png'
 
         if (existingInfos[id]) {
@@ -400,8 +465,9 @@ async function importInlays(
             submsg: String(((importCurrentStep + (processed - skipped) / (manifest.inlays.files.length - skipped || 1)) / importTotalSteps * 100).toFixed(0))
         })
 
-        const meta = metaMap[id]
-        const blob = new Blob([fileBytes.buffer as ArrayBuffer], { type: `image/${ext}` })
+        const meta = metaMap[sourceId]
+        const chatId = references.painterOwners.get(id) ?? references.chats.get(meta?.chatId) ?? meta?.chatId
+        const blob = new Blob([new Uint8Array(fileBytes)], { type: `image/${ext}` })
 
         await setInlayAsset(id, {
             data: blob,
@@ -410,14 +476,14 @@ async function importInlays(
             type: (meta?.type as InlayAsset['type']) || 'image',
             width: meta?.width,
             height: meta?.height,
-        })
+        }, { charId: targetCharId, chatId })
 
         if (meta?.createdAt) {
             await setInlayMeta(id, {
                 createdAt: meta.createdAt,
                 updatedAt: meta.updatedAt || Date.now(),
                 charId: targetCharId,
-                chatId: meta.chatId,
+                chatId,
             })
         }
     }
@@ -735,9 +801,9 @@ export async function importCharacterPackage(): Promise<void> {
             const newChar = db.characters[newCharIndex] as character
 
             const personaIdMap = await importPersonas(manifest, unzipped, importProgress)
-            importChatsToCharacter(manifest, unzipped, newChar, personaIdMap, importProgress)
+            const references = importChatsToCharacter(manifest, unzipped, newChar, personaIdMap, importProgress)
             importGalleryToCharacter(manifest, unzipped, newChar, importProgress)
-            await importInlays(manifest, unzipped, newChar.chaId, importCurrentStep, importTotalSteps, progressLabel)
+            await importInlays(manifest, unzipped, newChar.chaId, importCurrentStep, importTotalSteps, progressLabel, references)
 
             setDatabase(db)
             checkCharOrder()
@@ -802,9 +868,9 @@ export async function importPackageToCharacter(charIndex: number): Promise<void>
         }
 
         const personaIdMap = await importPersonas(manifest, unzipped, importProgress)
-        importChatsToCharacter(manifest, unzipped, targetChar, personaIdMap, importProgress, 'append')
+        const references = importChatsToCharacter(manifest, unzipped, targetChar, personaIdMap, importProgress, 'append')
         importGalleryToCharacter(manifest, unzipped, targetChar, importProgress)
-        await importInlays(manifest, unzipped, targetChar.chaId, importCurrentStep, importTotalSteps, progressLabel)
+        await importInlays(manifest, unzipped, targetChar.chaId, importCurrentStep, importTotalSteps, progressLabel, references)
 
         setDatabase(db)
         notifySuccess(language.characterPackageImportSuccess)

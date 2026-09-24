@@ -572,10 +572,11 @@
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <span class="text chat-width chattext prose minw-0"
+            data-painter-message={!readOnly && idx >= 0 && !isOptimizedStreamingMessage && !translated && !editMode ? idx : undefined}
             class:prose-invert={$ColorSchemeTypeStore === 'dark'}
             bind:this={bodyRoot}
             onclick={() => {
-            if(!readOnly && DBState.db.clickToEdit && idx > -1 && !isOptimizedStreamingMessage){
+            if(!readOnly && DBState.db.clickToEdit && idx > -1 && !isOptimizedStreamingMessage && !window.getSelection()?.toString()){
                 editMode = true
             }
         }}

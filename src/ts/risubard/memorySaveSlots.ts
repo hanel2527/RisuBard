@@ -1,6 +1,7 @@
 import type { Chat, Message } from '../storage/database.svelte'
 import { Packr, Unpackr } from 'msgpackr/index-no-eval'
 import { invokeBrowserFetch } from './browserFetch'
+import { rebindPainterChatScope } from '../bardPainter/chatScope'
 
 const chatPacker = new Packr({ useRecords: false })
 const chatUnpacker = new Unpackr({
@@ -479,5 +480,8 @@ export async function prepareMemorySaveLoad(input: {
     applyMemorySavePromptSettings(chat, input.currentChat)
     if (typeof chat.note !== 'string') chat.note = ''
     if (!Array.isArray(chat.localLore)) chat.localLore = []
+    // The caller assigns the destination chat ID after preparation; bind painter
+    // scenes to that same destination without changing the decoded snapshot's ID.
+    rebindPainterChatScope({ id: input.destinationChatId, bardPainter: chat.bardPainter }, input.characterId)
     return { chat, forkToken }
 }

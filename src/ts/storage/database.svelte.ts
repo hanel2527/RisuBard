@@ -1558,6 +1558,7 @@ export interface Database{
     togglePresets?:TogglePreset[]
     personaBuilderPromptPresets?:PersonaBuilderPromptPreset[]
     loreBuilderPromptPresets?:LoreBuilderPromptPreset[]
+    bardPainterStyles?: import('../bardPainter/types').PainterStyle[]
     personaBuilderStylePromptPresetId?:string
     loreBuilderStylePromptPresetId?:string
     sdProvider: string
@@ -2201,6 +2202,7 @@ export interface RisuBardGallery {
 }
 
 export interface character{
+    bardPainter?: import('../bardPainter/types').PainterBotData
     type?:"character"
     name:string
     image?:string
@@ -2725,6 +2727,7 @@ export function normalizeChat(chat: Partial<Chat>): Chat {
 }
 
 export interface Chat{
+    bardPainter?: import('../bardPainter/types').PainterChatData
     message: Message[]
     note:string
     name:string

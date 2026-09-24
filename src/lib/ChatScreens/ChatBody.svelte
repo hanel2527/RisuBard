@@ -264,7 +264,7 @@
 {#if shouldRenderRawStreaming}
     <span class="whitespace-pre-wrap">{rawStreamingText}</span>
 {:else}
-    <span style="display: contents" use:retainedChatHtml={{
+    <span data-painter-body style="display: contents" use:retainedChatHtml={{
         content: markParsingResult,
         format: (html) => addMetadataToElement(trimMarkdown(html), modelShortName),
         onRender: onHtmlRendered,

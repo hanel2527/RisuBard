@@ -231,12 +231,9 @@ class NodeInlayStorage {
     }
 
     async removeItem(id: string): Promise<void> {
-        try {
-            await this.nodeStorage.removeItem(this.serverKey(id))
-            lruDelete(id)
-        } catch {
-            // ignore if not found
-        }
+        // A failed deletion must remain visible to the gallery and its caller.
+        await this.nodeStorage.removeItem(this.serverKey(id))
+        lruDelete(id)
     }
 
     async keys(): Promise<string[]> {
@@ -597,9 +594,9 @@ export async function listInlayExplorerItems(forceRefresh = false): Promise<Inla
     return items
 }
 
-export async function setInlayAsset(id: string, img: InlayAsset) {
+export async function setInlayAsset(id: string, img: InlayAsset, owner?: Pick<InlayAssetMeta, 'charId' | 'chatId'>) {
     const existingMeta = await getInlayMeta(id)
-    const nextMeta = buildInlayMeta(existingMeta)
+    const nextMeta = { ...buildInlayMeta(existingMeta), ...owner }
     await getInlayStorage().setItem(id, toCoreInlayAsset(img))
     await getInlayInfoStorage().setItem(id, buildInlayExplorerInfo(toCoreInlayAsset(img)))
     await setInlayMeta(id, nextMeta)
@@ -610,6 +607,7 @@ export async function removeInlayAsset(id: string) {
     await getInlayStorage().removeItem(id)
     await getInlayInfoStorage().removeItem(id)
     await removeInlayMeta(id)
+    await new NodeStorage().removeItem('inlay_generation/' + id)
     _explorerItemsCache = null // invalidate gallery cache
 }
 
@@ -676,6 +674,9 @@ export function scanInlayReferences(): InlayScanResult {
     for (const char of characters) {
         if (!Array.isArray(char?.chats)) continue
         for (const chat of char.chats) {
+            for (const result of chat.bardPainter?.results ?? []) {
+                if (typeof result.assetId === 'string') refCounts[result.assetId] = (refCounts[result.assetId] ?? 0) + 1
+            }
             if (!Array.isArray(chat?.message)) continue
             for (const msg of chat.message) {
                 if (typeof msg?.data !== 'string') continue

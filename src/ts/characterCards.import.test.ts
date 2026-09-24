@@ -238,6 +238,44 @@ describe('public character-card lifecycle round-trips', () => {
     test.each([
         ['v2', createBaseV2],
         ['v3', createBaseV3],
+    ] as const)('preserves bot painter identities and outfits through %s without exporting chat state', async (_spec, createCard) => {
+        const painter = {
+            identities: [{ id: 'aria', name: 'Aria', aliases: ['Captain'], appearance: 'black hair, blue eyes' }],
+            outfits: [{ id: 'travel', subjectId: 'aria', name: 'Travel clothes', clothing: 'white shirt, dark trousers', state: '' }],
+        }
+        const card = createCard({
+            name: 'Painter test', globalLore: [], loreExt: {}, bardPainter: painter,
+            chats: [{ bardPainter: { outfits: [{ id: 'private-outfit', clothing: 'private-chat-clothing' }], results: [{ assetId: 'private-chat-image' }] } }],
+        } as any)
+        expect((card.data.extensions as any).risubard?.bardPainter).toEqual(painter)
+        expect(JSON.stringify(card)).not.toContain('private-chat')
+        const imported = await importFixture(card as any)
+        expect(imported.bardPainter).toEqual(painter)
+        expect(imported.bardPainter).not.toBe(painter)
+        imported.bardPainter.identities[0].aliases.push('New alias')
+        expect(painter.identities[0].aliases).toEqual(['Captain'])
+    })
+
+    test('validates painter card data and excludes orphan outfits and unexpected fields at import', async () => {
+        const card = cardFixture('chara_card_v3', undefined)
+        ;(card.data.extensions as any).risubard = { bardPainter: {
+            identities: [null, { id: 'aria', name: 'Aria', appearance: 'black hair', aliases: ['Captain', 7] }],
+            outfits: [
+                { id: 'valid', subjectId: 'aria', name: 'Travel', clothing: 'cape', state: 'wet' },
+                { id: 'orphan', subjectId: 'missing', name: 'Lost', clothing: 'dress', state: '' },
+            ],
+            results: [{ assetId: 'private-image' }], settings: { apiKey: 'secret' },
+        } }
+        const imported = await importFixture(card)
+        expect(imported.bardPainter).toEqual({
+            identities: [{ id: 'aria', name: 'Aria', appearance: 'black hair', aliases: ['Captain'] }],
+            outfits: [{ id: 'valid', subjectId: 'aria', name: 'Travel', clothing: 'cape', state: 'wet' }],
+        })
+    })
+
+    test.each([
+        ['v2', createBaseV2],
+        ['v3', createBaseV3],
     ] as const)('migrates namespaced Bard Lore without losing one-sided edits through %s', async (_spec, createCard) => {
         const legacyLore = [{
             id: 'legacy',

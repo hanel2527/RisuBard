@@ -1,4 +1,5 @@
 import fc from 'fast-check'
+import { NodeStorage } from 'src/ts/storage/nodeStorage'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 import type { InlayAsset } from '../inlays'
 import {
@@ -12,6 +13,7 @@ import {
     setInlayAsset,
     writeInlayImage,
     __resetInlayStorageForTest,
+    scanInlayReferences,
 } from '../inlays'
 
 //#region module mocks
@@ -109,6 +111,16 @@ vi.mock(
 )
 
 //#endregion
+
+test('pins an asynchronously generated asset to its requested owner', async () => {
+    await setInlayAsset('painter-owner', { name: 'picture.webp', ext: 'webp', type: 'image', data: new Blob(['webp'], { type: 'image/webp' }) }, { charId: 'original-bot', chatId: 'original-chat' })
+    expect(inlayMetaMap.get('painter-owner')).toMatchObject({ charId: 'original-bot', chatId: 'original-chat' })
+})
+
+test('counts uninserted painter results as owned images', () => {
+    getDatabaseMock.mockReturnValueOnce({ characters: [{ chats: [{ message: [], bardPainter: { results: [{ assetId: 'candidate' }] } }] }] })
+    expect(scanInlayReferences().refCounts.candidate).toBe(1)
+})
 
 const supportedAudioExts = ['wav', 'mp3', 'ogg', 'flac'] as const
 const supportedVideoExts = ['webm', 'mp4', 'mkv'] as const
@@ -401,6 +413,16 @@ describe('listInlayExplorerItems', () => {
 describe('removeInlayAsset', () => {
     test('does not throw when removing a non-existent id', async () => {
         await expect(removeInlayAsset('nope')).resolves.not.toThrow()
+    })
+    test('removes independent painter generation metadata with the image', async () => {
+        nodeStorageMap.set('inlay_generation/example', new TextEncoder().encode('{}'))
+        await removeInlayAsset('example')
+        expect(nodeStorageMap.has('inlay_generation/example')).toBe(false)
+    })
+    test('reports failed image deletion instead of hiding a retained asset', async () => {
+        const failure = vi.spyOn(NodeStorage.prototype, 'removeItem').mockRejectedValueOnce(new Error('storage failed'))
+        await expect(removeInlayAsset('example')).rejects.toThrow('storage failed')
+        failure.mockRestore()
     })
 })
 

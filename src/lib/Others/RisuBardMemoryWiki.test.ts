@@ -158,8 +158,8 @@ describe('RisuBardMemoryWiki', () => {
         })
         await tick()
         const tabs = [...document.querySelectorAll('[data-memory-view]')]
-        expect(tabs[0]?.getAttribute('data-memory-view')).toBe('ooc')
-        ;(tabs[0] as HTMLButtonElement).click()
+        expect(tabs.slice(0, 3).map((tab) => tab.getAttribute('data-memory-view'))).toEqual(['painter', 'ooc', 'workspace'])
+        ;(tabs[1] as HTMLButtonElement).click()
         await tick()
         const memo = document.querySelector('[data-ooc-notepad]')
         expect(memo?.textContent).toContain('Plan a twist')

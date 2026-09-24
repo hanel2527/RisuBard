@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest'
 import type { Chat } from '../storage/database.svelte'
+import { createPainterChatData, createPainterSettings, type PainterResult } from '../bardPainter/types'
 import {
     countChatTurns,
     createMemorySaveSlot,
@@ -196,6 +197,45 @@ describe('memory save slot client', () => {
         expect(loaded.chat.message.map((message) => message.chatId)).toEqual([
             'user-1', 'assistant-1', 'comment-1', 'disabled-1',
         ])
+    })
+
+    test.each(['new-chat', 'existing-other-chat'])('rebinds saved painter scenes to %s without changing the saved source', async (destinationChatId) => {
+        const painter = createPainterChatData()
+        const anchor = { characterId: 'saved-bot', chatId: 'chat-1', messageId: 'assistant-1', start: 0, end: 7, text: '문이 열렸다.' }
+        painter.anchor = { ...anchor }
+        painter.draft = { rendering: 'watercolor', scene: 'gate', negative: '', subjects: [] }
+        painter.outfits = [{ id: 'travel', subjectId: 'guard', name: 'Uniform', clothing: 'blue coat', state: '' }]
+        const complete: PainterResult = {
+            id: 'complete', assetId: 'saved-webp', createdAt: 1, anchor: { ...anchor },
+            draft: { ...painter.draft }, settings: createPainterSettings(), seed: 42,
+            style: { id: 'custom', name: 'Style', artist: '', rendering: 'watercolor', negative: '', steps: 28, scale: 6, cfgRescale: 0, sampler: 'k_euler' },
+        }
+        painter.results = [complete, { ...complete, id: 'pending', assetId: 'saved-png', compressionPending: true, anchor: { ...anchor } }]
+        painter.settings.context.referenceId = 'pending'
+        const savedChat: Chat = { ...structuredClone(chat), bardPainter: painter }
+        const before = structuredClone(savedChat)
+        const savedBytes = encodeMemorySaveChat(savedChat)
+        const currentChat = structuredClone(chat)
+        currentChat.id = destinationChatId
+        const currentBefore = structuredClone(currentChat)
+        const fetchImpl = vi.fn(async () => new Response(Uint8Array.from(savedBytes).buffer, {
+            headers: { 'content-type': 'application/octet-stream', 'x-risubard-fork-token': 'load-token' },
+        })) as unknown as typeof fetch
+
+        const loaded = await prepareMemorySaveLoad({
+            characterId: 'destination-bot', saveId: 'save-1', destinationChatId,
+            currentChat, fetchImpl, createAuth: async () => 'auth',
+        })
+
+        const restored = loaded.chat.bardPainter!
+        expect(restored.anchor).toEqual({ ...anchor, characterId: 'destination-bot', chatId: destinationChatId })
+        expect(restored.results).toEqual([{ ...complete, anchor: restored.anchor }])
+        expect(restored.settings.context.referenceId).toBe('')
+        expect(restored.draft).toEqual(painter.draft)
+        expect(restored.outfits).toEqual(painter.outfits)
+        expect(decodeMemorySaveChat(savedBytes)).toEqual(before)
+        expect(savedChat).toEqual(before)
+        expect(currentChat).toEqual(currentBefore)
     })
 
     test('rejects a prepared load without its fork token', async () => {
