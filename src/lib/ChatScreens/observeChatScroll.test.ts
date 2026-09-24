@@ -40,6 +40,7 @@ test('coalesces streaming mutations and corrects late image resize before paint 
 
 test.each(['wheel', 'touchmove', 'pointerdown', 'keydown'])('uses the position after %s as baseline and never pulls it back later', (input) => {
     const s = setup(); s.frame()
+    s.controller.markProgrammaticScroll()
     s.grow(); s.mutate()
     s.container.dispatchEvent(input === 'keydown' ? new KeyboardEvent(input, { key: 'PageDown' }) : new Event(input))
     s.container.scrollTop = 30
@@ -58,4 +59,15 @@ test('ignores its own scroll event and disconnects pending work', () => {
     expect(s.restore).toHaveBeenCalledTimes(1)
     expect(s.disconnect).toHaveBeenCalledTimes(2)
     expect(s.container.style.overflowAnchor).toBe('')
+})
+
+test('still captures another programmatic navigation after a marked jump', () => {
+    const s = setup()
+    s.controller.markProgrammaticScroll()
+    s.capture.mockClear()
+    s.container.scrollTop = 30
+    s.container.dispatchEvent(new Event('scroll'))
+    expect(s.capture).toHaveBeenCalledOnce()
+    s.grow(); s.resize()
+    expect(s.container.scrollTop).toBe(80)
 })

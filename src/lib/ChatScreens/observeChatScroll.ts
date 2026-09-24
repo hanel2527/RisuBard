@@ -65,6 +65,11 @@ export function observeChatScroll(container: HTMLElement, capture: () => void, r
     capture()
 
     return {
+        markProgrammaticScroll() {
+            // An explicit jump also queues a scroll event. Its target must survive
+            // async message layout until ResizeObserver can restore that anchor.
+            ownScrollTop = container.scrollTop
+        },
         reset() {
             cancelCorrection()
             if (userFrame !== null) cancelAnimationFrame(userFrame)

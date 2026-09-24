@@ -544,12 +544,14 @@ import { isMobile } from 'src/ts/platform'
             if(element){
                 scrollAnchorObserver?.reset()
                 scrollWithinContainer(element, chatContainer, { block: 'start', behavior: 'instant' })
+                scrollAnchorObserver?.markProgrammaticScroll()
                 // Existing media-load/DOM observers correct later layout shifts without blocking the jump.
                 currentScrollAnchor = DBState.db.preserveChatScrollPosition ? {
                     contextKey,
                     messageIndex: index,
                     messageCount: currentChat.length,
-                    offsetTop: element.getBoundingClientRect().top - chatContainer.getBoundingClientRect().top,
+                    // The initial scroll can be clamped while markdown is still loading.
+                    offsetTop: 0,
                     atLatest: false,
                 } : null
                 element.classList.add('ring-2', 'ring-info')
