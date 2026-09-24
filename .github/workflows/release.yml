@@ -84,6 +84,7 @@ jobs:
             package.json
             pnpm-lock.yaml
             pnpm-workspace.yaml
+            patches/
             update.sh
             LICENSE
             NOTICE.md
