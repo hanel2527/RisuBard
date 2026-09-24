@@ -50,10 +50,17 @@ function fsyncDirectory(directory) {
 }
 
 function writeSynced(filePath, data) {
+    writeChunksSynced(filePath, [data]);
+}
+
+function writeChunksSynced(filePath, chunks) {
     const fd = fs.openSync(filePath, 'wx', 0o600);
     try {
-        let offset = 0;
-        while (offset < data.length) offset += fs.writeSync(fd, data, offset, data.length - offset);
+        for (const chunk of chunks) {
+            const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            let offset = 0;
+            while (offset < data.length) offset += fs.writeSync(fd, data, offset, data.length - offset);
+        }
         fs.fsyncSync(fd);
     } finally {
         fs.closeSync(fd);
@@ -280,11 +287,11 @@ function commitTransaction(root, operations, options = {}) {
     const prepared = operations.map((operation, operationIndex) => {
         if (operation.deleteCharacter === true) {
             characterDeletionPath(root, operation.path);
-            if (operation.moveTo || operation.sourcePath || operation.data !== undefined) throw new Error('Deletion cannot include file data');
+            if (operation.moveTo || operation.sourcePath || operation.chunks || operation.data !== undefined) throw new Error('Deletion cannot include file data');
             return { action: 'delete-character', path: operation.path, unchanged: false };
         }
         if (operation.moveTo) {
-            if (operation.data !== undefined || operation.sourcePath) {
+            if (operation.data !== undefined || operation.sourcePath || operation.chunks) {
                 throw new Error(`Transaction move cannot include file data: ${operation.path}`);
             }
             const source = resolveInside(root, operation.path);
@@ -309,7 +316,18 @@ function commitTransaction(root, operations, options = {}) {
         let data;
         let digest;
         let sourcePath;
-        if (operation.sourcePath) {
+        let chunks;
+        if (operation.chunks) {
+            // Repeatable byte source: hash first, then stage without retaining a
+            // whole chat's serialized strings or buffers in memory.
+            if (typeof operation.chunks !== 'function' || operation.data !== undefined || operation.sourcePath || operation.validate) {
+                throw new Error(`Invalid chunked transaction data: ${operation.path}`);
+            }
+            chunks = operation.chunks;
+            const hash = crypto.createHash('sha256');
+            for (const chunk of chunks()) hash.update(chunk);
+            digest = hash.digest('hex');
+        } else if (operation.sourcePath) {
             sourcePath = resolveInside(root, path.relative(root, operation.sourcePath));
             if (operation.validate) {
                 throw new Error(`Transaction file validation is unsupported: ${operation.path}`);
@@ -322,7 +340,7 @@ function commitTransaction(root, operations, options = {}) {
             }
             digest = checksum(data);
         }
-        return { action: 'replace', path: operation.path, data, sourcePath, checksum: digest, unchanged: matchesStoredChecksum(target, digest) };
+        return { action: 'replace', path: operation.path, data, sourcePath, chunks, checksum: digest, unchanged: matchesStoredChecksum(target, digest) };
     });
     const unchanged = prepared.filter(entry => entry.unchanged);
     const pending = prepared.filter(entry => !entry.unchanged);
@@ -340,20 +358,31 @@ function commitTransaction(root, operations, options = {}) {
     const id = crypto.randomUUID();
     const stageDir = path.join(journalDir, `${id}.stage`);
     fs.mkdirSync(stageDir, { recursive: true });
-    const entries = pending.map((operation, index) => {
-        if (operation.action === 'delete-character') return { action: operation.action, path: operation.path };
-        if (operation.action === 'move') {
-            return { action: 'move', path: operation.path, destination: operation.destination };
-        }
-        const staged = path.join(stageDir, `${index}.data`);
-        if (operation.sourcePath) {
-            copySynced(operation.sourcePath, staged);
-        } else {
-            writeSynced(staged, operation.data);
-        }
-        if (checksumFile(staged) !== operation.checksum) throw new Error(`Transaction checksum failed: ${operation.path}`);
-        return { action: 'replace', path: operation.path, staged, checksum: operation.checksum };
-    });
+    let entries;
+    try {
+        entries = pending.map((operation, index) => {
+            if (operation.action === 'delete-character') return { action: operation.action, path: operation.path };
+            if (operation.action === 'move') {
+                return { action: 'move', path: operation.path, destination: operation.destination };
+            }
+            const staged = path.join(stageDir, `${index}.data`);
+            if (operation.sourcePath) {
+                copySynced(operation.sourcePath, staged);
+            } else if (operation.chunks) {
+                writeChunksSynced(staged, operation.chunks());
+            } else {
+                writeSynced(staged, operation.data);
+            }
+            if (checksumFile(staged) !== operation.checksum) throw new Error(`Transaction checksum failed: ${operation.path}`);
+            return { action: 'replace', path: operation.path, staged, checksum: operation.checksum };
+        });
+    } catch (error) {
+        // No journal has been published, so these partial staged files cannot
+        // be recovered and must never replace the current canonical files.
+        fs.rmSync(stageDir, { recursive: true, force: true });
+        fsyncDirectory(journalDir);
+        throw error;
+    }
     fsyncDirectory(stageDir);
     try {
         assertUnchangedPreconditions(root, unchanged.filter(entry => entry.action !== 'move'));

@@ -42,6 +42,29 @@ describe('resolveDataRoot', () => {
 })
 
 describe('crash-safe canonical writes', () => {
+    it('recovers chunked writes after interrupted publication and skips unchanged bytes', () => {
+        const root = tempRoot()
+        const chunks = function* () { yield Buffer.from('한글'); yield Buffer.from('😀\n'); }
+        const operations = [{ path: 'messages.jsonl', chunks }, { path: 'metadata.json', data: Buffer.from('{}') }]
+        expect(() => commitTransaction(root, operations, { failAfterPublish: 1 })).toThrow(/simulated crash/)
+        recoverTransactions(root)
+        expect(fs.readFileSync(path.join(root, 'messages.jsonl'), 'utf8')).toBe('한글😀\n')
+        expect(commitTransaction(root, operations)).toMatchObject({ published: 0, skipped: 2, stagedBytes: 0 })
+    })
+
+    it('keeps the original files if chunk production fails during staging', () => {
+        const root = tempRoot()
+        atomicWriteFile(root, 'messages.jsonl', Buffer.from('original'))
+        let pass = 0
+        const chunks = function* () {
+            yield Buffer.from('replacement')
+            if (++pass === 2) throw new Error('serialization failed')
+        }
+        expect(() => commitTransaction(root, [{ path: 'messages.jsonl', chunks }])).toThrow('serialization failed')
+        expect(fs.readFileSync(path.join(root, 'messages.jsonl'), 'utf8')).toBe('original')
+        expect(fs.readdirSync(path.join(root, '.journal'))).toEqual([])
+    })
+
     it('does not attach a stale sidecar to a newly preserved backup', () => {
         const root = tempRoot()
         atomicWriteJson(root, 'settings/app.json', { revision: 1 })

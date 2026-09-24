@@ -76,6 +76,30 @@ function jsonBytes(value) {
     return Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
+function* messageChunks(messages) {
+    for (const message of messages) yield Buffer.from(`${JSON.stringify(message) ?? ''}\n`, 'utf8');
+}
+
+function parseMessageBytes(bytes, relativePath, errorCode) {
+    const messages = [];
+    let start = 0;
+    while (start < bytes.length) {
+        const newline = bytes.indexOf(10, start);
+        const end = newline === -1 ? bytes.length : newline;
+        const contentEnd = newline !== -1 && bytes[end - 1] === 13 ? end - 1 : end;
+        if (contentEnd > start) {
+            try { messages.push(JSON.parse(bytes.toString('utf8', start, contentEnd))); }
+            catch {
+                const error = new Error(`Invalid chat JSONL at ${relativePath}:${messages.length + 1}`);
+                if (errorCode) error.code = errorCode;
+                throw error;
+            }
+        }
+        start = end + 1;
+    }
+    return messages;
+}
+
 function stableId(value, prefix) {
     const raw = typeof value === 'string' ? value.trim() : '';
     if (/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(raw)) return raw;
@@ -285,24 +309,12 @@ function createUserDataRepository(options = {}) {
         const relativePath = messagesPath(characterId, chatId);
         const target = resolveInside(dataRoot, relativePath);
         if (!fs.existsSync(target)) return [];
-        const text = fs.readFileSync(target, 'utf8');
-        return text.split(/\r?\n/).filter(Boolean).map((line, index) => {
-            try { return JSON.parse(line); }
-            catch { throw new Error(`Invalid chat JSONL at ${relativePath}:${index + 1}`); }
-        });
+        return parseMessageBytes(fs.readFileSync(target), relativePath);
     }
 
     function parseCanonicalMessages(characterId, chatId) {
         const relativePath = messagesPath(characterId, chatId);
-        const text = readCanonicalBytes(relativePath).toString('utf8');
-        return text.split(/\r?\n/).filter(Boolean).map((line, index) => {
-            try { return JSON.parse(line); }
-            catch {
-                const error = new Error(`Invalid chat JSONL at ${relativePath}:${index + 1}`);
-                error.code = 'CANONICAL_FILES_CHANGED';
-                throw error;
-            }
-        });
+        return parseMessageBytes(readCanonicalBytes(relativePath), relativePath, 'CANONICAL_FILES_CHANGED');
     }
 
     function reconcileCanonicalProjection(options = {}) {
@@ -836,7 +848,7 @@ function createUserDataRepository(options = {}) {
                 const messages = Array.isArray(rawChat?.message) ? rawChat.message : [];
                 operations.push({
                     path: path.join(chatDirectory, 'messages.jsonl'),
-                    data: Buffer.from(messages.map(message => JSON.stringify(message)).join('\n') + (messages.length ? '\n' : ''), 'utf8'),
+                    chunks: () => messageChunks(messages),
                 });
                 chats.push({
                     id: chatId,
@@ -1050,7 +1062,7 @@ function createUserDataRepository(options = {}) {
         for (const { character, chat, id, index } of selected.values()) {
             operations.push(
                 { path: chatMetadataPath(character.id, id), data: jsonBytes(without(chat, new Set(['message']))) },
-                { path: messagesPath(character.id, id), data: Buffer.from(chat.message.map(message => JSON.stringify(message)).join('\n') + (chat.message.length ? '\n' : ''), 'utf8') },
+                { path: messagesPath(character.id, id), chunks: () => messageChunks(chat.message) },
             );
             sidebar.characters[character.index].chats[index] = {
                 id, name: chat.name || '', lastDate: chat.lastDate ?? 0, legacyMessagePresent: true,
