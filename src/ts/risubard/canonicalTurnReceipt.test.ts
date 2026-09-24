@@ -3,7 +3,60 @@ import {
     canonicalTurnRetryWarning,
     canonicalTurnNeedsRetry,
     formatCanonicalUpdateFailureWarning,
+    mergeCanonicalTurnReceipts,
+    type CanonicalTurnReceipt,
 } from './canonicalTurnReceipt'
+
+describe('cumulative canonical turn receipt', () => {
+    const saved: CanonicalTurnReceipt = {
+        sourceMessageIds: ['user-1', 'assistant-1'],
+        eventIds: ['event-1'],
+        changes: [{ documentId: 'character-1', type: 'character',
+            title: '인물', relativePath: 'characters/person.md',
+            action: 'create', afterHash: 'first-hash' }],
+        warnings: ['정본 문서 저장 실패: 마을'],
+        recordedAt: '2026-09-23T00:00:00.000Z',
+    }
+    const latest: CanonicalTurnReceipt = {
+        sourceMessageIds: ['assistant-1'], eventIds: ['event-1'],
+        changes: [], warnings: [], recordedAt: '2026-09-24T00:00:00.000Z',
+    }
+
+    test('retains saved documents when additional analysis finds no new changes', () => {
+        const result = mergeCanonicalTurnReceipts(saved, latest)
+        expect(result.changes).toEqual(saved.changes)
+        expect(result.sourceMessageIds).toEqual(saved.sourceMessageIds)
+        expect(result.eventIds).toEqual(['event-1'])
+        expect(result.recordedAt).toBe(latest.recordedAt)
+        expect(result.warnings).toEqual([])
+        expect(canonicalTurnNeedsRetry(result)).toBe(false)
+    })
+
+    test('combines new documents with previous changes without mutating either result', () => {
+        const next: CanonicalTurnReceipt = { ...latest,
+            changes: [{ ...saved.changes[0], documentId: 'character-2' }],
+            eventIds: ['event-2'], warnings: ['정본 문서 저장 실패: 마을'],
+        }
+        const before = structuredClone([saved, next])
+        const result = mergeCanonicalTurnReceipts(saved, next)
+        expect(result.changes.map(change => change.documentId))
+            .toEqual(['character-1', 'character-2'])
+        expect(result.eventIds).toEqual(['event-1', 'event-2'])
+        expect(canonicalTurnNeedsRetry(result)).toBe(true)
+        expect([saved, next]).toEqual(before)
+    })
+
+    test('keeps one entry with the newest hash and the original create action', () => {
+        const updated = { ...saved.changes[0], action: 'update' as const,
+            title: '새 이름', afterHash: 'latest-hash' }
+        const result = mergeCanonicalTurnReceipts(saved, { ...latest, changes: [updated] })
+        expect(result.changes).toEqual([{ ...updated, action: 'create' }])
+    })
+
+    test('accepts a first receipt including a genuine no-change result', () => {
+        expect(mergeCanonicalTurnReceipts(undefined, latest)).toEqual(latest)
+    })
+})
 
 describe('canonical turn retry receipt', () => {
     test('retries a partial document save failure from an existing receipt', () => {

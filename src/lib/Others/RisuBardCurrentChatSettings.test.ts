@@ -5,7 +5,7 @@ import { mount, tick, unmount } from 'svelte'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type { Chat } from 'src/ts/storage/database.svelte'
-import type { RisuBardChatSettings } from 'src/ts/risubard/risuBardSettings'
+import { resolveRisuBardChatSettings, type RisuBardChatSettings } from 'src/ts/risubard/risuBardSettings'
 import RisuBardCurrentChatSettings from './RisuBardCurrentChatSettings.svelte'
 
 let mounted: ReturnType<typeof mount> | undefined
@@ -34,6 +34,45 @@ function chatWithLongMessages(): Chat {
 }
 
 describe('RisuBardCurrentChatSettings', () => {
+    test('pins current values across existing and new chats, persists edits, and unpins locally', async () => {
+        const chat = chatWithLongMessages()
+        const character: { risuBardPinnedSettings?: RisuBardChatSettings } = {}
+        const global: RisuBardChatSettings = { risuBardResponseMessageCount: 12 }
+        mounted = mount(RisuBardCurrentChatSettings, {
+            target: document.body,
+            props: { chat, global, character },
+        })
+        const pin = document.querySelector<HTMLInputElement>('[data-pin-chat-settings-character]')
+        expect(pin).not.toBeNull()
+        pin!.click()
+        await tick()
+        expect(character.risuBardPinnedSettings?.risuBardResponseMessageCount).toBe(4)
+        const count = document.querySelector<HTMLInputElement>('#bardwiki-response-messages')!
+        count.value = '7'
+        count.dispatchEvent(new Event('change', { bubbles: true }))
+        await tick()
+        const saved = JSON.parse(JSON.stringify(character))
+        expect(resolveRisuBardChatSettings(global, undefined, saved.risuBardPinnedSettings).risuBardResponseMessageCount).toBe(7)
+        expect(resolveRisuBardChatSettings(global, { risuBardResponseMessageCount: 2 }, saved.risuBardPinnedSettings).risuBardResponseMessageCount).toBe(7)
+        expect(resolveRisuBardChatSettings(global).risuBardResponseMessageCount).toBe(12)
+
+        await unmount(mounted)
+        mounted = undefined
+        const newChat: Chat = { ...chatWithLongMessages(), id: 'new-chat', risuBardSettings: undefined }
+        mounted = mount(RisuBardCurrentChatSettings, {
+            target: document.body,
+            props: { chat: newChat, global, character: saved },
+        })
+        const restoredPin = document.querySelector<HTMLInputElement>('[data-pin-chat-settings-character]')!
+        expect(restoredPin.checked).toBe(true)
+        expect(document.querySelector<HTMLInputElement>('#bardwiki-response-messages')!.value).toBe('7')
+        restoredPin.click()
+        await tick()
+        expect(saved.risuBardPinnedSettings).toBeUndefined()
+        expect(newChat.risuBardSettings?.risuBardResponseMessageCount).toBe(7)
+        expect(resolveRisuBardChatSettings(global, { risuBardResponseMessageCount: 2 }, saved.risuBardPinnedSettings).risuBardResponseMessageCount).toBe(2)
+    })
+
     test('promotes the current chat values to global settings', async () => {
         const chat = chatWithLongMessages()
         const global: RisuBardChatSettings = {

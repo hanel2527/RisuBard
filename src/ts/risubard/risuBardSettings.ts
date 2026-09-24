@@ -100,9 +100,11 @@ function boundedInteger(
 export function resolveRisuBardChatSettings(
     global: RisuBardChatSettings,
     chat?: RisuBardChatSettings,
+    pinned?: RisuBardChatSettings,
 ): ResolvedRisuBardChatSettings {
+    const overrides = pinned ?? chat
     const value = <K extends keyof RisuBardChatSettings>(key: K) =>
-        chat?.[key] ?? global[key]
+        overrides?.[key] ?? global[key]
     const inquiry = normalizeRisuBardInquiryTokenBudget(
         value('risuBardInquiryTargetTokenBudget'),
         value('risuBardInquiryMaximumTokenBudget'),

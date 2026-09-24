@@ -3,12 +3,15 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { resolveInside, readVerifiedJson, atomicWriteJson } = require('./file-store.cjs');
+const { resolveInside, readVerifiedJson, atomicWriteJson, commitTransaction, recoverTransactions } = require('./file-store.cjs');
 const { createCharacterDirectoryResolver } = require('./character-directories.cjs');
 const INDEX = 'index/live-character-assets.json';
 const IGNORED_FILES = /\.(?:sha256|bak|tmp|part|swp|crdownload)$/i;
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const json = value => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
+// This is a change hint, not an integrity proof: reuse only a previously hashed
+// file with the same identity and timestamps. Content checks remain SHA-256.
+const fileStamp = stat => `${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
 
 function createLiveFileRecovery(root) {
     const active = 'trash/live-files-recovery/pending.json';
@@ -35,6 +38,10 @@ function metadataSnapshot(database) {
     return {
         characters: (database?.characters || []).map(({ chats, chatPage, ...metadata }) => structuredClone(metadata)),
         loreBook: structuredClone(database?.loreBook || []),
+        chatMetadata: (database?.characters || []).flatMap(character => (character.chats || []).map(chat => {
+            const { message, id, _stub, _placeholder, isStreaming, activeStreamingDisplayOptimizationMode, ...metadata } = chat;
+            return { characterId: character.chaId, chatId: id, metadata: structuredClone(metadata) };
+        })),
     };
 }
 
@@ -54,6 +61,21 @@ function mergePendingLiveDatabase(pending, baseline, external, conflicts = []) {
             if (Object.hasOwn(after, key)) result[key] = after[key];
             else delete result[key];
         }
+        result.chats = (local.chats || []).map(chat => {
+            const prior = baseline.chatMetadata?.find(entry => entry.characterId === local.chaId && entry.chatId === chat.id)?.metadata;
+            const incoming = after.chats?.find(value => value.id === chat.id);
+            if (!prior || !incoming) return chat;
+            const mergedChat = { ...chat };
+            for (const key of new Set([...Object.keys(prior), ...Object.keys(incoming)])) {
+                if (['message', 'id', '_stub', '_placeholder', 'isStreaming', 'activeStreamingDisplayOptimizationMode'].includes(key) || equal(prior[key], incoming[key])) continue;
+                if (!equal(chat[key], prior[key]) && !equal(chat[key], incoming[key])) {
+                    conflicts.push({ characterId: local.chaId, chatId: chat.id, field: key, local: chat[key], external: incoming[key], baseline: prior[key] });
+                }
+                if (Object.hasOwn(incoming, key)) mergedChat[key] = incoming[key];
+                else delete mergedChat[key];
+            }
+            return mergedChat;
+        });
         return result;
     });
     if (!equal(baseline.loreBook, external.loreBook)) {
@@ -100,6 +122,7 @@ function createLiveCharacterFiles({ repository, writeAsset, writeAssets, reloadA
             watcher = fs.watch(root, { recursive: true }, (_event, filename) => {
                 const name = String(filename || '').replaceAll('\\', '/');
                 if (!name || /^characters\/[^/]+(?:\/metadata\.json|\/assets(?:\/[^/]+)?)?$/.test(name)
+                    || /^characters\/[^/]+\/chats\/[^/]+\/metadata\.json$/.test(name)
                     || /^lorebooks(?:\/[^/]+\.json)?$/.test(name)
                     || /^index\/(?:character-directories|character-asset-replicas)\.json$/.test(name)) {
                     invalidate(!name || name.includes('/assets') || name.startsWith('index/') || /^characters\/[^/]+$/.test(name));
@@ -119,14 +142,28 @@ function createLiveCharacterFiles({ repository, writeAsset, writeAssets, reloadA
         const metadata = new Map();
         const originals = new Map();
         const pending = [];
+        let contentChanged = false;
+        const scannedDirectories = [];
+        function assetStat(target) {
+            const stat = fs.lstatSync(target, { bigint: true });
+            if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Asset must be a regular file: ${path.basename(target)}`);
+            return stat;
+        }
         for (const id of directories.characterIds()) {
             const relative = directories.characterDirectory(id).replaceAll('\\', '/');
             const assetRoot = safe(`${relative}/assets`);
+            const directoryStat = fs.existsSync(assetRoot) ? fs.lstatSync(assetRoot, { bigint: true }) : null;
+            if (directoryStat && (!directoryStat.isDirectory() || directoryStat.isSymbolicLink())) throw new Error(`Asset directory must be a regular directory: ${relative}`);
+            scannedDirectories.push({ relative: `${relative}/assets`, stamp: directoryStat && fileStamp(directoryStat) });
             const old = { ...previous.characters[id], ...Object.fromEntries(
                 (replicas.characters?.[id]?.enabled ? replicas.characters[id].entries || [] : [])
-                    .map(entry => [entry.filename || entry.hash, { key: entry.key, hash: entry.hash }]),
+                    .map(entry => {
+                        const filename = entry.filename || entry.hash;
+                        const prior = previous.characters[id]?.[filename];
+                        return [filename, { ...(prior?.key === entry.key && prior?.hash === entry.hash ? prior : {}), key: entry.key, hash: entry.hash }];
+                    }),
             ) };
-            const entries = fs.existsSync(assetRoot) ? fs.readdirSync(assetRoot, { withFileTypes: true }) : [];
+            const entries = directoryStat ? fs.readdirSync(assetRoot, { withFileTypes: true }) : [];
             if (!entries.length && !Object.keys(old).length) continue;
             const filenameSet = new Set();
             const values = Object.create(null);
@@ -158,36 +195,41 @@ function createLiveCharacterFiles({ repository, writeAsset, writeAssets, reloadA
             for (const entry of entries) {
                 if (entry.name.startsWith('.') || IGNORED_FILES.test(entry.name)) continue;
                 if (!entry.isFile() || entry.isSymbolicLink()) throw new Error(`Asset must be a regular file: ${entry.name}`);
-                const target = safe(`${relative}/assets/${entry.name}`);
-                const stat = fs.statSync(target, { bigint: true });
+                // readdir names are single path components. Validate ancestry once
+                // per directory and lstat each file, then recheck ancestry below.
+                const target = path.join(assetRoot, entry.name);
+                const stat = assetStat(target);
                 if (stat.size > 64n * 1024n * 1024n) throw new Error(`Asset exceeds 64 MiB: ${entry.name}`);
                 if (!stat.size) throw new Error(`Asset is still empty: ${entry.name}`);
-                const stamp = `${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
-                const cached = fingerprints.get(target);
+                const stamp = fileStamp(stat);
+                const prior = old[entry.name];
+                const cached = fingerprints.get(target) || prior;
                 let bytes;
-                const digest = cached?.stamp === stamp ? cached.hash : hash(bytes = fs.readFileSync(target));
+                const digest = cached?.stamp === stamp && /^[a-f0-9]{64}$/.test(cached.hash)
+                    ? cached.hash : hash(bytes = fs.readFileSync(target));
+                if (bytes && fileStamp(assetStat(target)) !== stamp) throw new Error(`Asset changed while reading: ${entry.name}`);
                 fingerprints.set(target, { stamp, hash: digest });
                 filenameSet.add(entry.name);
-                const prior = old[entry.name];
-                if (prior?.hash === digest) { values[entry.name] = prior; continue; }
+                if (prior?.hash === digest) { values[entry.name] = { ...prior, stamp }; continue; }
+                contentChanged = true;
                 // A1 leaves unregistered historical copies behind. Their valid
                 // sidecars identify app-created files, not newly dropped input.
                 // Remember them without importing; a later external edit has a
                 // different hash and will enter the ordinary import path.
                 if (!prior && fs.existsSync(`${target}.sha256`)
                     && fs.readFileSync(`${target}.sha256`, 'utf8').trim() === digest) {
-                    values[entry.name] = { hash: digest, ignored: true };
+                    values[entry.name] = { hash: digest, ignored: true, stamp };
                     continue;
                 }
                 retireReplica(entry.name);
                 bytes ||= fs.readFileSync(target);
-                const after = fs.statSync(target, { bigint: true });
-                if (`${after.size}:${after.mtimeNs}:${after.ctimeNs}` !== stamp || hash(bytes) !== digest) throw new Error(`Asset changed while reading: ${entry.name}`);
+                const after = assetStat(target);
+                if (fileStamp(after) !== stamp || hash(bytes) !== digest) throw new Error(`Asset changed while reading: ${entry.name}`);
                 const suffix = path.extname(entry.name).slice(1).toLowerCase();
                 const extension = /^[a-z0-9]{1,16}$/.test(suffix) ? suffix : 'bin';
                 const key = `assets/live-${hash(Buffer.from(`${id}\0${entry.name}`)).slice(0, 16)}-${digest}.${extension}`;
                 pending.push({ key, bytes });
-                values[entry.name] = { key, hash: digest };
+                values[entry.name] = { key, hash: digest, stamp };
                 if (prior?.key) replaceReference(prior.key, key);
                 else {
                     character.additionalAssets ||= [];
@@ -196,14 +238,21 @@ function createLiveCharacterFiles({ repository, writeAsset, writeAssets, reloadA
                 }
             }
             for (const [filename, entry] of Object.entries(old)) {
-                if (!filenameSet.has(filename)) { if (entry.key) replaceReference(entry.key, null); retireReplica(filename); }
+                if (!filenameSet.has(filename)) { contentChanged = true; if (entry.key) replaceReference(entry.key, null); retireReplica(filename); }
             }
             next.characters[id] = values;
             if (changed) { metadata.set(metadataPath, json(character)); originals.set(metadataPath, original); }
         }
+        // Reject directory/ancestor swaps and concurrent directory changes before
+        // publishing fingerprints, immutable objects, or reference changes.
+        for (const { relative, stamp } of scannedDirectories) {
+            const target = safe(relative);
+            const after = fs.existsSync(target) ? fs.lstatSync(target, { bigint: true }) : null;
+            if ((after && (!after.isDirectory() || after.isSymbolicLink())) || (after && fileStamp(after)) !== stamp) throw new Error(`Asset directory changed while scanning: ${relative}`);
+        }
         const operations = JSON.stringify(previous) === JSON.stringify(next) ? [] : [{ path: INDEX, data: json(next) }];
         if (replicasChanged) operations.push({ path: 'index/character-asset-replicas.json', data: json(replicas) });
-        return { metadata, originals, pending, operations, replicasChanged };
+        return { metadata, originals, pending, operations, replicasChanged, cacheOnly: !contentChanged && !replicasChanged, assetIndex: next };
     }
     function reconcile() {
         if (fallback && Date.now() - lastScan >= 1000) { dirty = true; assetsDirty = true; }
@@ -216,7 +265,15 @@ function createLiveCharacterFiles({ repository, writeAsset, writeAssets, reloadA
         lastScan = Date.now();
         const plan = assetsDirty ? planAssets() : { metadata: new Map(), pending: [], operations: [] };
         const revision = repository.getProjectionRevision();
-        if (!needsInitialReconcile && revision === accepted && !plan.metadata.size && !plan.operations.length) { dirty = false; assetsDirty = false; return null; }
+        if (!needsInitialReconcile && revision === accepted && !plan.metadata.size && (!plan.operations.length || plan.cacheOnly)) {
+            // Fingerprint maintenance is not a database edit. Avoid rebuilding the
+            // sidebar and compatibility save just to upgrade an old cache entry.
+            if (plan.operations.length) {
+                try { commitTransaction(root, plan.operations); }
+                catch (error) { recoverTransactions(root); throw error; }
+            }
+            dirty = false; assetsDirty = false; return null;
+        }
         // Immutable keys can be staged first: interruption leaves only an unused
         // KV object. Metadata and filename ownership are published in one journal.
         if (plan.pending.length && writeAssets) writeAssets(plan.pending.map(asset => ({ key: asset.key, value: asset.bytes })));

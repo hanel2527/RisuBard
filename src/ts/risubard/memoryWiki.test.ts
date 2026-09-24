@@ -15,6 +15,14 @@ import {
 } from './memoryWiki'
 
 describe('loadNarrativeMemoryWiki', () => {
+    it('explains a manual save conflict without replacing the draft', async () => {
+        await expect(saveManualWikiDocument({
+            characterId: 'character', chatId: 'chat', type: 'character',
+            title: '츠구', markdown: '## 츠구', expectedContentHash: 'old',
+            createAuth: async () => 'token',
+            fetchImpl: vi.fn(async () => new Response('{}', { status: 409 })) as typeof fetch,
+        })).rejects.toThrow('다른 변경이 저장되었습니다')
+    })
     it('uses authenticated BARDCHAT undo lifecycle routes', async () => {
         const replies = [
             { started: true }, { available: true },

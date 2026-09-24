@@ -51,6 +51,54 @@ it('syncs V3 app replacement and removal, preserves shared KV, and skips unchang
     const live = JSON.parse(fs.readFileSync(path.join(root, 'index/live-character-assets.json'), 'utf8'))
     expect(live.characters.one).toEqual({})
 })
+it('does not read asset bytes or rewrite indices after restart and reload with unchanged V3 assets', () => {
+    const { root, store, db } = mappedFixture()
+    store.characterAssets.sync(db)
+    const reopened = createFileKv({ dataRoot: root })
+    for (const assets of [reopened.characterAssets, store.characterAssets]) {
+        assets.reload()
+        const read = vi.spyOn(fs, 'readFileSync')
+        const write = vi.spyOn(fs, 'renameSync')
+        try {
+            expect(assets.sync(db)).toEqual({ changed: false })
+            expect(read.mock.calls.filter(([name]) => /[\\/]assets[\\/]|[\\/]kv[\\/]objects[\\/]/.test(String(name)))).toHaveLength(0)
+            expect(write).not.toHaveBeenCalled()
+        } finally { read.mockRestore(); write.mockRestore() }
+    }
+})
+it('reads only added assets and retired copies when one reference changes in a large V3 character', () => {
+    const { root, store, db, directory } = mappedFixture()
+    for (let i = 0; i < 40; i++) {
+        const key = `assets/keep-${i}.png`
+        store.kvSet(key, Buffer.from(`keep-${i}`))
+        db.characters[0].additionalAssets.push([`keep-${i}`, key, 'png'])
+    }
+    store.characterAssets.sync(db)
+    store.characterAssets.reload()
+    store.kvSet('assets/new.png', Buffer.from('new portrait'))
+    db.characters[0].image = 'assets/new.png'
+    const keepHashes = new Set(Array.from({ length: 40 }, (_, i) => crypto.createHash('sha256').update(`keep-${i}`).digest('hex')))
+    const read = vi.spyOn(fs, 'readFileSync')
+    try {
+        store.characterAssets.sync(db)
+        const unrelated = read.mock.calls.filter(([name]) => {
+            const file = String(name)
+            return file.startsWith(directory + path.sep) && /^keep-/.test(path.basename(file))
+                || file.startsWith(path.join(root, 'kv/objects') + path.sep) && keepHashes.has(path.basename(file))
+        })
+        expect(unrelated).toHaveLength(0)
+    } finally { read.mockRestore() }
+    expect(fs.readFileSync(path.join(directory, 'new.png')).toString()).toBe('new portrait')
+})
+it('still verifies immutable KV content on use after the restarted delta fast path', () => {
+    const { root, store, db } = mappedFixture()
+    store.characterAssets.sync(db)
+    const reopened = createFileKv({ dataRoot: root })
+    expect(reopened.characterAssets.sync(db).changed).toBe(false)
+    const digest = crypto.createHash('sha256').update('portrait').digest('hex')
+    fs.writeFileSync(path.join(root, 'kv/objects', digest), 'tampered')
+    expect(() => reopened.kvGet('assets/portrait.png')).toThrow('checksum mismatch')
+})
 it('preserves external asset bytes when app removal races with an unadopted edit and retries', () => {
     const { store, db, directory } = mappedFixture()
     store.characterAssets.sync(db)

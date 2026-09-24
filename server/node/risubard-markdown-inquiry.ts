@@ -681,7 +681,7 @@ export function inquireMarkdownDocuments(
         const passage = semanticPassages.get(candidate.document.id)
         const preferSemantic = passage && !requiredIds.has(candidate.document.id)
             && !(currentStateIntent && candidate.document.type === 'character')
-        const content = preferSemantic ? truncateToTokenBudget(
+        let content = preferSemantic ? truncateToTokenBudget(
             semanticExcerpt(candidate.document, passage.start, passage.end),
             tokenBudget.perSource,
         ) : selectTokenBoundedExcerpt({
@@ -690,6 +690,25 @@ export function inquireMarkdownDocuments(
             query: retrievalInput,
             chronologyIntent,
         }, tokenBudget.perSource)
+        if (preferSemantic && candidate.document.type === 'character'
+            && !pastIntent && !chronologyIntent) {
+            // Supplement current facts without shortening the selected evidence.
+            // Spare capacity, not a recency quota, owns the extra context.
+            const currentBudget = Math.min(Math.floor(tokenBudget.perSource / 2),
+                tokenBudget.perSource - countInquiryTokens(content) - countInquiryTokens('\n\n'))
+            if (currentBudget > 0) {
+                const current = selectTokenBoundedExcerpt({
+                    content: candidate.document.content,
+                    documentType: 'character', query: retrievalInput, chronologyIntent: false,
+                }, currentBudget)
+                if (current.includes(content)) {
+                    content = current
+                } else if (current.trim()) {
+                    const combined = `${current}\n\n${content}`
+                    if (countInquiryTokens(combined) <= tokenBudget.perSource) content = combined
+                }
+            }
+        }
         const boundedContent = truncateToTokenBudget(
             candidate.document.type === 'event' && candidate.document.retrievalMetadata?.storyTime
                 ? `[Story day relative to first recorded event: ${candidate.document.retrievalMetadata.storyTime.day ?? 'unknown'}; calendar date unspecified]\n${content}`

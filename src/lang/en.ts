@@ -2707,6 +2707,7 @@ export const languageEnglish = {
     confirmInstallPluginViaPlugin: "You are trying to install a plugin via another plugin. This can be dangerous if the source plugin is not trustworthy. Do you want to continue?",
     nodeOnlyScrollButtonType: "Scroll Button Type",
     pinChatScrollNavigator: "Pin Side Navigator",
+    chatScrollNavigatorOffset: "Navigator Position Offset (px)",
     scrollButtonTypeFour: "4 Buttons",
     scrollButtonTypeTwo: "2 Buttons",
     scrollButtonTypeOff: "Off",

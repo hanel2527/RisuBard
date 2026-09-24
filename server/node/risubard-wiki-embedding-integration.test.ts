@@ -24,6 +24,27 @@ async function indexDocuments(documents: MarkdownWikiDocument[]) {
 }
 
 describe('BardWiki semantic retrieval integration (deterministic vectors)', () => {
+    test('returns actual evidence instead of a higher scoring bare title without extra embedding requests', async () => {
+        const body = '츠구는 역에 가려던 길인지 물었고, 상대는 그렇다고 답하지 않았다.'
+        const content = '## 기록\n\n### 대화\n\n' + body
+        const embed = vi.fn(async (texts: string[], purpose: string) => texts.map(text =>
+            purpose === 'query' || !text.includes(body) ? [1, 0] : [0.9, 0.1]))
+        const index = new WikiEmbeddingIndex({ identity: 'evidence-test', embed }, {
+            read: async () => undefined, write: async () => {},
+        })
+        await index.refresh(async () => ({ revision: 'v1', nextOffset: null,
+            chunks: chunkWikiDocument({ id: 'record', title: '기록', contentHash: 'hash', content }),
+        }))
+        const result = await index.search('역에 가겠다고 했나?', '')
+        expect(result.matches).toHaveLength(1)
+        expect(content.slice(result.matches[0].start, result.matches[0].end)).toBe(body)
+        expect(result.evidenceHints.record).toContain('그렇다고 답하지 않았다.')
+        expect(embed.mock.calls).toEqual([
+            [['기록\n### 대화\n\n' + body], 'document'],
+            [['역에 가겠다고 했나?'], 'query'],
+        ].map(([texts, purpose]) => [texts, purpose, expect.any(AbortSignal)]))
+    })
+
     test('uses recent context for an implicit promise and retains lexical fallback without embeddings', async () => {
         const documents = [document('reunion', 'We promised to reunite at the bridge.'), document('payment', 'We promised to settle our debt at the store.')]
         const index = await indexDocuments(documents)

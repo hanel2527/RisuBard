@@ -678,13 +678,14 @@ function describeModelPresetError(err: unknown): Record<string, unknown> {
 function statusEnabled(chatId?: string): boolean {
     try {
         const db = getDatabase()
-        const chat = chatId
-            ? db.characters.flatMap((character) => character.chats)
-                .find((item) => item.id === chatId)
+        const character = chatId
+            ? db.characters.find((item) => item.chats.some((chat) => chat.id === chatId))
             : undefined
+        const chat = character?.chats.find((item) => item.id === chatId)
         return resolveRisuBardChatSettings(
             db,
             chat?.risuBardSettings,
+            character?.risuBardPinnedSettings,
         ).showRequestStatus
     } catch {
         return false

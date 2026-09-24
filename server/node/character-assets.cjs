@@ -139,13 +139,38 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
     }
     // Called inside the canonical writer queue, after external edits have been adopted.
     // Copies and both ownership indices publish together; retired bytes remain recoverable.
+    // This is delta publication, not a whole-store integrity scrub. Immutable KV
+    // objects are verified on read; retained copies are inspected by live-file
+    // reconciliation. Files we replace/retire still require content preconditions.
+    function reusableEntry(entry, key) {
+        const version = sourceVersion?.(key);
+        return entry?.readFromKv === true && entry.key === key
+            && validFilename(entry.filename) && /^[a-f0-9]{64}$/.test(version || '')
+            && entry.hash === version && Number.isSafeInteger(entry.size)
+            && entry.size > 0 && entry.size <= 64 * 1024 * 1024
+            && entry.size === sourceSize(key);
+    }
     function sync(database) {
         const mapping = directories.snapshot();
         const mapped = new Set(mapping.characters.filter(entry => entry.packageVersion === 1).map(entry => entry.id));
         const changed = (database.characters || []).filter(character => {
             if (!mapped.has(character.chaId) || character.type === 'group') return false;
-            const signature = JSON.stringify([...candidateNames(character)].map(([key, name]) => [key, name, sourceVersion?.(key)]));
-            return synced.get(character.chaId) !== signature;
+            const candidates = [...candidateNames(character)];
+            const signature = JSON.stringify(candidates.map(([key, name]) => [key, name, sourceVersion?.(key)]));
+            if (synced.get(character.chaId) === signature) return false;
+            const record = state.characters[character.chaId];
+            const entries = new Map((record?.entries || []).map(entry => [entry.key, entry]));
+            // The checksummed, journal-published index survives process/cache restarts.
+            // Never seed this from unverified file timestamps or a missing source version.
+            if (record?.enabled && record.failed === 0 && record.entries.length === candidates.length
+                && entries.size === candidates.length && candidates.every(([key, name]) => {
+                    const entry = entries.get(key);
+                    return reusableEntry(entry, key) && entry.sourceName === allocateSegment(name, new Set(), true);
+                })) {
+                synced.set(character.chaId, signature);
+                return false;
+            }
+            return true;
         });
         if (!changed.length) return { changed: false };
         const livePath = 'index/live-character-assets.json';
@@ -165,12 +190,27 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
             const tracked = { ...(live.characters[id] || {}) };
             for (const entry of state.characters[id]?.entries || []) {
                 const filename = entry.filename || entry.hash;
-                tracked[filename] = { key: entry.key, hash: entry.hash };
+                if (tracked[filename]?.key !== entry.key || tracked[filename]?.hash !== entry.hash) {
+                    tracked[filename] = { key: entry.key, hash: entry.hash };
+                }
             }
+            const byKey = new Map();
+            for (const [filename, entry] of Object.entries(tracked)) {
+                if (!byKey.has(entry.key)) byKey.set(entry.key, [filename, entry]);
+            }
+            const previousEntries = new Map((state.characters[id]?.entries || []).map(entry => [entry.key, entry]));
             const record = { enabled: true, copied: 0, skipped: 0, failed: 0, entries: [] };
             const kept = new Set();
             for (const [key, sourceName] of candidates) {
-                const existing = Object.entries(tracked).find(([, entry]) => entry.key === key);
+                const existing = byKey.get(key);
+                const previous = previousEntries.get(key);
+                if (reusableEntry(previous, key) && existing?.[0] === previous.filename
+                    && existing[1].hash === previous.hash) {
+                    kept.add(previous.filename);
+                    record.entries.push({ ...previous, sourceName: allocateSegment(sourceName, new Set(), true) });
+                    record.copied++;
+                    continue;
+                }
                 // A copy belongs to this folder; even shared KV originals remain untouched.
                 if (sourceSize(key) > 64 * 1024 * 1024) throw new Error('Oversized source');
                 const bytes = readOriginal(key);
@@ -195,7 +235,9 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
                     for (const name of [filename, `${filename}.sha256`, `${filename}.bak`]) occupied.add(name);
                 }
                 kept.add(filename);
-                tracked[filename] = { key, hash: digest };
+                if (tracked[filename]?.key !== key || tracked[filename]?.hash !== digest) {
+                    tracked[filename] = { key, hash: digest };
+                }
                 record.entries.push({ key, filename, sourceName: allocateSegment(sourceName, new Set(), true), hash: digest, size: bytes.length, readFromKv: true });
                 record.copied++;
             }

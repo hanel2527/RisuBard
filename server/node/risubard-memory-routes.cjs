@@ -851,6 +851,10 @@ function registerRisuBardMemoryRoutes(app, options) {
                 ))
             }
             catch (error) {
+                if (error?.message === 'Wiki document changed since the draft was created') {
+                    res.status(409).send({ error: 'Wiki document changed since the draft was created' })
+                    return
+                }
                 next(error)
             }
         }

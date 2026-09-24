@@ -59,6 +59,9 @@
             isOptimizedStreamingMessage: boolean
             streamingOptimizationMode: StreamingDisplayOptimizationMode
             rawStreamingText: string
+            messageGenerationInfo?: Message['generationInfo']
+            memoryConfirmed?: boolean
+            canonicalReceipt?: Message['risubardCanonicalReceipt']
         }) => void
     }
     let mountInstances: Map<number, ChatInstance> = new Map();
@@ -124,8 +127,15 @@
             const isRerollTarget = i === lastRealCharIdx;
             const activeStreamingMessage = i === activeStreamingIndex && message.role === 'char';
             const turnNumber = turnNavigation.turnByMessageIndex.get(i)
-            const hashMessageData = activeStreamingMessage ? '' : message.data;
-            let hashd = hashMessageData + (message.chatId ?? '') + i.toString() + messageLargePortrait.toString() + message.disabled?.toString() + reloadPointer.toString() + (message.swipeId ?? 0).toString() + (message.swipes?.length ?? 0).toString() + isRerollTarget.toString() + (turnNumber ?? 0).toString() + (message.risubardMemoryConfirmed ?? false).toString() + JSON.stringify(message.risubardCanonicalReceipt ?? null);
+            // Keep the reading DOM alive through final text and receipt updates.
+            // Reloads, swipes and structural changes still replace the message.
+            const preserveReadingPosition = DBState.db.preserveChatScrollPosition === true;
+            const hashMessageData = activeStreamingMessage || preserveReadingPosition ? '' : message.data;
+            const hashMemoryState = preserveReadingPosition ? '' : (message.risubardMemoryConfirmed ?? false).toString() + JSON.stringify(message.risubardCanonicalReceipt ?? null);
+            const hashRenderContext = preserveReadingPosition
+                ? JSON.stringify([currentCharacter.chaId, currentCharacter.chatPage, currentChat?.id, message.role, message.isComment])
+                : '';
+            let hashd = hashRenderContext + hashMessageData + (message.chatId ?? '') + i.toString() + messageLargePortrait.toString() + message.disabled?.toString() + reloadPointer.toString() + (message.swipeId ?? 0).toString() + (message.swipes?.length ?? 0).toString() + isRerollTarget.toString() + (turnNumber ?? 0).toString() + hashMemoryState;
             const currentHash = hashCode(hashd);
             currentHashes.add(currentHash);
             if(!hashes.has(currentHash)){
@@ -184,6 +194,9 @@
                     isOptimizedStreamingMessage: activeStreamingMessage,
                     streamingOptimizationMode: performanceMode,
                     rawStreamingText: message.data,
+                    messageGenerationInfo: message.generationInfo,
+                    memoryConfirmed: message.risubardMemoryConfirmed === true,
+                    canonicalReceipt: message.risubardCanonicalReceipt,
                 })
             }
             nextHash = currentHash;

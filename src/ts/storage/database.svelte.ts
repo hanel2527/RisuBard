@@ -872,6 +872,8 @@ export function setDatabase(data:Database){
     data.alwaysScrollToNewMessage ??= false
     data.preserveChatScrollPosition ??= true
     data.pinChatScrollNavigator ??= false
+    data.chatScrollNavigatorOffset = Number.isFinite(data.chatScrollNavigatorOffset)
+        ? Math.max(-1000, Math.min(1000, Math.round(data.chatScrollNavigatorOffset))) : 0
     data.newMessageButtonStyle ??= 'bottom-center'
     data.echoMessage ??= "Echo Message"
     data.echoDelay ??= 0
@@ -2090,6 +2092,7 @@ export interface Database{
     alwaysScrollToNewMessage?: boolean
     preserveChatScrollPosition?: boolean
     pinChatScrollNavigator?: boolean
+    chatScrollNavigatorOffset?: number
     newMessageButtonStyle?: string
     pluginDevelopMode?: boolean
     echoMessage?:string
@@ -2216,6 +2219,7 @@ export interface character{
     globalLore: loreBook[]
     bardLore?: BardLoreState
     risuBardWikiGuide?: string
+    risuBardPinnedSettings?: import('../risubard/risuBardSettings').RisuBardChatSettings
     chaId: string
     sdData: [string, string][]
     newGenData?: {

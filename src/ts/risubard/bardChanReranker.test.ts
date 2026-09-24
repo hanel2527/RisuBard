@@ -14,6 +14,41 @@ const candidates: BardChanCandidate[] = [{
 }]
 
 describe('Bard-chan reranker', () => {
+    test('rejects IDs outside the eight cards actually shown to the model', async () => {
+        const many = Array.from({ length: 10 }, (_, index) => ({
+            ...candidates[0], documentId: `doc-${index}`, score: 10 - index / 10,
+        })).reverse()
+        const requestModel = vi.fn(async () => ({ type: 'success' as const,
+            result: JSON.stringify({ ids: ['doc-9', 'doc-0', 'doc-1'] }) }))
+        const result = await rerankWithBardChan({ enabled: true, modelMode: 'memory',
+            currentInput: 'Recall', candidates: many, requestModel })
+        expect(result.map(item => item.documentId)).toEqual(['doc-0', 'doc-1'])
+    })
+
+    test('bounds recent context and keeps it distinct from the current query', async () => {
+        const requestModel = vi.fn(async (_request: { formated: { content: string }[] }) => ({
+            type: 'success' as const, result: '{"ids":["chapel"]}',
+        }))
+        await rerankWithBardChan({ enabled: true, modelMode: 'memory',
+            currentInput: '그 약속 말이야.', recentContext: 'older'.repeat(1000) + '성당에서 만났다.',
+            candidates, requestModel })
+        const payload = JSON.parse(requestModel.mock.calls[0][0].formated[1].content)
+        expect(payload.query).toBe('그 약속 말이야.')
+        expect(payload.recentContext).toHaveLength(1024)
+        expect(payload.recentContext).toMatch(/성당에서 만났다\.$/)
+        expect(requestModel).toHaveBeenCalledOnce()
+    })
+
+    test('does not call the model just because recent context was supplied', async () => {
+        const requestModel = vi.fn(async () => ({ type: 'fail' as const, result: '' }))
+        for (const enabled of [false, true]) {
+            expect(await rerankWithBardChan({ enabled, modelMode: 'memory',
+                currentInput: 'Continue', recentContext: 'The last scene',
+                candidates: candidates.slice(0, 1), requestModel })).toEqual([])
+        }
+        expect(requestModel).not.toHaveBeenCalled()
+    })
+
     test('runs only when enabled candidates are meaningfully ambiguous', () => {
         expect(shouldRunBardChan(false, candidates)).toBe(false)
         expect(shouldRunBardChan(true, candidates.slice(0, 1))).toBe(false)

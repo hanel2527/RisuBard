@@ -36,7 +36,7 @@ import { collectDatabaseAssetReferences } from './storage/assetRefs'
 import { claimSaveDbRuntime } from './storage/saveDbRuntime'
 import { createCanonicalSaveConflict } from './storage/canonicalSaveConflict'
 import { hasDisplayNameCollision } from './displayName'
-import { applyLiveFileSnapshot, createLiveFileRefresh, type LiveFileConflict } from './storage/liveFileSync'
+import { applyLiveFileSnapshot, createLiveFileRefresh, type LiveFileConflict, type LiveChatMetadataBaseline } from './storage/liveFileSync'
 
 export const forageStorage = new AutoStorage()
 
@@ -541,6 +541,7 @@ export async function saveDb() {
     }
 
     let acknowledgedDb = supportsPatchSync ? patcher.snapshot() : null
+    const liveChatMetadataBaseline: LiveChatMetadataBaseline = new Map()
     let liveRevision: string | undefined
     let lastLiveError = ''
 
@@ -553,7 +554,7 @@ export async function saveDb() {
             if (result.recovery?.conflicts) {
                 notifyInfo(`외부 파일 변경을 반영했습니다. 겹친 앱 편집 ${result.recovery.conflicts}건은 서버 데이터 폴더의 ${result.recovery.path}에 보관했습니다.`)
             }
-            const recovery = applyLiveFileSnapshot(getDatabase(), acknowledgedDb, result.snapshot)
+            const recovery = applyLiveFileSnapshot(getDatabase(), acknowledgedDb, result.snapshot, liveChatMetadataBaseline)
             if (recovery.conflicts.length) {
                 const entry = { time: new Date().toISOString(), conflicts: recovery.conflicts }
                 liveFileConflictRecovery.push(entry)

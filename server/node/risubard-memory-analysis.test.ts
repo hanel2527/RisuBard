@@ -86,6 +86,47 @@ afterEach(async () => {
 })
 
 describe('memory analysis runner', () => {
+    test.each(['missing', 'alias', 'unconfirmed', 'excluded', 'substring', 'pronoun'] as const)(
+        'checks first registration of a named knowledge holder: %s', async (mode) => {
+        const saveCanonicalDocument = vi.fn(async () => undefined)
+        const analyze = vi.fn(async (request: MemoryAnalysisModelRequest) =>
+            request.format === 'canonical-batch'
+                ? canonicalBatch('## 사토\n\n### 지식과 비밀\n\n츠구의 귀가 경위를 들었다.')
+                : JSON.stringify({ schemaVersion: 1, title: '만남',
+                    establishedEvents: ['사토가 츠구의 귀가 경위를 들었다.'],
+                    stateChanges: [], persistentFacts: [], openContinuity: [],
+                    characterKnowledge: [
+                        { character: mode === 'pronoun' ? '당신' : '사토', fact: '츠구의 귀가 경위', stance: 'knows' },
+                        { character: mode === 'pronoun' ? '당신' : '사토', fact: '츠구의 방황', stance: 'knows' },
+                    ],
+                    canonicalUpdateCandidates: [],
+                }))
+        const existing = { id: 'character.sato', type: 'character' as const,
+            title: '사토 렌', aliases: ['사토'], relativePath: 'characters/sato.md',
+            content: '## 사토 렌', contentHash: 'old', sourceMessageIds: [] }
+        const runner = createMemoryAnalysisRunner({
+            memoryService: { loadState: vi.fn(), applyDelta: vi.fn() }, nativeV2Analysis: true,
+            markdownWikiService: {
+                inquire: vi.fn(async () => ({ graphRevision: 0, sources: [] })),
+                loadDocuments: vi.fn(async () => mode === 'alias' || mode === 'excluded' ? [existing] : []),
+                saveConfirmedTurn: vi.fn(async () => undefined), saveCanonicalDocument,
+            }, onError: vi.fn(), analyze,
+        })
+        await runner.run({ characterId: 'character', chatId: 'chat',
+            ...(mode === 'excluded' ? { excludeCanonicalDocumentIds: ['character.sato'] } : {}),
+            messages: [{ messageId: 'assistant-1', role: 'assistant',
+                content: mode === 'unconfirmed' ? '소녀가 이야기를 했다.'
+                    : mode === 'substring' ? '사토리가 츠구의 귀가 경위를 들었다.'
+                    : mode === 'pronoun' ? '당신은 츠구의 귀가 경위를 들었다.'
+                    : '사토가 츠구의 귀가 경위를 들었다.' }],
+        })
+        if (mode === 'missing') {
+            expect(saveCanonicalDocument).toHaveBeenCalledTimes(1)
+            expect(saveCanonicalDocument).toHaveBeenCalledWith(expect.objectContaining({ type: 'character', title: '사토' }))
+        } else {
+            expect(saveCanonicalDocument).not.toHaveBeenCalled()
+        }
+    })
     test('replaces a historical event while preserving a character current-state section', async () => {
         const saveConfirmedTurn = vi.fn(async (input) => ({
             ...input, id: 'event.old', type: 'event' as const, status: 'active' as const,
@@ -395,9 +436,9 @@ describe('memory analysis runner', () => {
                     const id = `event.${input.sourceMessageIds.at(-1)}`
                     return {
                         id, type: 'event' as const, status: 'active' as const,
-                        title: '사건', relativePath: `${id}.md`,
+                        title: input.markdown.split('\n')[0].replace(/^## /u, ''), relativePath: `${id}.md`,
                         sourceMessageIds: input.sourceMessageIds, updated: 'now',
-                        content: '## 사건', links: [], contextMode: 'auto' as const,
+                        content: input.markdown, links: [], contextMode: 'auto' as const,
                         contentHash: id,
                     }
                 }),
@@ -411,7 +452,11 @@ describe('memory analysis runner', () => {
                 systems.push(request.system)
                 responseSchemas.push(request.responseSchema)
                 if (request.format === 'canonical-batch') {
-                    return canonicalBatch('## 라비안\n\n### 현재 상태\n\n- 검을 소유한다.')
+                    const input = JSON.parse(request.input)
+                    expect(input.confirmedEvent).toContain('[[분실]]')
+                    expect(input.confirmedEvent).toContain('[[회수]]')
+                    expect(input.confirmedEvent).not.toContain('## 분실 \u00b7 회수')
+                    return canonicalBatch('## 라비안\n\n### 현재 상태\n\n- 검을 소유한다.\n- [[분실 \u00b7 회수]]: 검을 되찾았다.')
                 }
                 rebootAttempts += 1
                 if (rebootAttempts === 1) {
@@ -459,6 +504,9 @@ describe('memory analysis runner', () => {
         expect(formats).toEqual([
             'reboot-batch', 'reboot-batch', 'canonical-batch',
         ])
+        expect(saveCanonicalDocument).toHaveBeenCalledWith(expect.objectContaining({
+            markdown: expect.stringContaining('[[분실]], [[회수]]: 검을 되찾았다.'),
+        }))
         expect(sessions).toEqual([
             'original-chat', 'original-chat', 'original-chat',
         ])

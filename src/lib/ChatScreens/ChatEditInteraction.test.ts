@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { mount, tick, unmount } from 'svelte'
 import { writable } from 'svelte/store'
+import { SvelteMap } from 'svelte/reactivity'
 import Chat from './Chat.svelte'
 import Chats from './Chats.svelte'
 import { DBState, selIdState } from 'src/ts/stores.svelte'
@@ -97,6 +98,63 @@ afterEach(async () => {
 })
 
 describe('message edit button', () => {
+    test.each([
+        ['balanced', true], ['strong', true], ['off', true], ['balanced', false],
+    ] as const)('finishes %s streaming with preserveReadingPosition=%s', async (mode, preserve) => {
+        DBState.db.preserveChatScrollPosition = preserve
+        DBState.db.streamingDisplayOptimizationMode = mode
+        const character = DBState.db.characters[0]
+        const state = new SvelteMap<string, any>([
+            ['streaming', true], ['text', '<p>Reading here</p><p>Partial</p>'],
+        ])
+        const message = {
+            role: 'char', chatId: 'reply',
+            get data() { return state.get('text') },
+            get risubardMemoryConfirmed() { return state.get('confirmed') ?? false },
+        }
+        const chat = { get id() { return state.get('room') ?? 'room' }, get isStreaming() { return state.get('streaming') }, message: [message] }
+        character.chats = [chat] as any
+        mounted = mount(Chats, {
+            target: document.body,
+            props: {
+                messages: chat.message as any, currentCharacter: character,
+                onReroll: vi.fn(), unReroll: vi.fn(), currentUsername: 'User', userIcon: '',
+                pageStart: 0, pageEnd: 1,
+            },
+        })
+        await tick(); await tick(); await tick()
+        const messageElement = document.querySelector('[data-chat-index="0"]')
+        const readingParagraph = messageElement?.querySelector('.chattext p')
+        expect(messageElement).not.toBeNull()
+        state.set('text', '<p>Reading here</p><p>Completed response</p>')
+        state.set('streaming', false)
+        await tick(); await tick(); await tick()
+        const completedElement = document.querySelector('[data-chat-index="0"]')
+        if (preserve) {
+            expect(completedElement).toBe(messageElement)
+            if (mode !== 'strong') expect(completedElement?.querySelector('.chattext p')).toBe(readingParagraph)
+            // Output post-processing and memory status can arrive after the last token.
+            state.set('confirmed', true)
+            state.set('text', '<p>Reading here</p><p>Post-processed response</p>')
+            await tick(); await tick(); await tick()
+            expect(document.querySelector('[data-chat-index="0"]')).toBe(messageElement)
+            expect(messageElement?.textContent).toContain('Post-processed response')
+        } else {
+            expect(completedElement).not.toBe(messageElement)
+            expect(completedElement?.textContent).toContain('Completed response')
+        }
+        document.querySelector<HTMLButtonElement>('.button-icon-edit')!.click()
+        await tick()
+        expect(document.querySelector<HTMLTextAreaElement>('.message-edit-area')?.value)
+            .toBe(preserve ? '<p>Reading here</p><p>Post-processed response</p>' : '<p>Reading here</p><p>Completed response</p>')
+        if (preserve) {
+            state.set('room', 'another-room')
+            await tick(); await tick(); await tick()
+            expect(document.querySelector('[data-chat-index="0"]')).not.toBe(messageElement)
+            expect(document.querySelector('.message-edit-area')).toBeNull()
+        }
+    })
+
     test('opens the message textarea when the pencil button is clicked', async () => {
         mounted = mount(Chat, {
             target: document.body,
@@ -117,6 +175,17 @@ describe('message edit button', () => {
         expect(editor).not.toBeNull()
         expect(editor?.value).toBe('editable message')
         expect(document.activeElement).toBe(editor)
+
+        editor!.value = 'Unsaved draft'
+        editor!.dispatchEvent(new Event('input', { bubbles: true }))
+        await tick()
+        ;(mounted as any).updateStreamingDisplay({
+            isOptimizedStreamingMessage: false,
+            streamingOptimizationMode: 'off',
+            rawStreamingText: 'editable message',
+        })
+        await tick()
+        expect(editor?.value).toBe('Unsaved draft')
     })
 
     test('keeps the editor open inside the live message list', async () => {

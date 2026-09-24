@@ -8,15 +8,18 @@ const { createUserDataRepository } = require('./user-data-repository.cjs')
 const { createFileKv } = require('./file-kv.cjs')
 const { encodeRisuSaveLegacyBuffer, decodeRisuSave } = require('./utils.cjs')
 
-test('running server adopts editor saves and asset changes through authenticated sync without reloading', async () => {
+test.each(['legacy', 'v3'])('running server adopts editor saves, chat lore deletion and assets without reloading: %s', async (layout) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bard-live-http-'))
     const dataRoot = path.join(root, 'save')
-    const repository = createUserDataRepository({ dataRoot })
+    const repository = createUserDataRepository({ dataRoot, allowDirectoryMapping: true, newCharacterPackages: layout === 'v3' })
     const database = { language: 'en', botPresets: [], modules: [], personas: [], loreBook: [], characters: [{
         chaId: 'one', type: 'character', name: 'One', desc: 'Before', globalLore: [{ key: 'world', content: 'Before' }], additionalAssets: [], emotionImages: [],
-        chats: [{ id: 'chat', name: 'Chat', message: [{ role: 'user', data: 'Original message' }] }],
+        chats: [{ id: 'chat', name: 'Chat', localLore: [{ key: 'local', content: 'Delete this' }], message: [{ role: 'user', data: 'Original message' }] }],
     }] }
     repository.importLegacyDatabase(database, { mode: 'sync' })
+    const resolver = require('./character-directories.cjs').createCharacterDirectoryResolver(dataRoot)
+    const characterPath = resolver.characterDirectory('one')
+    const chatPath = resolver.chatDirectory('one', 'chat')
     const store = createFileKv({ dataRoot })
     store.kvSet('database/database.bin', encodeRisuSaveLegacyBuffer(database))
     store.kvSet('database/canonical-projection-revision', Buffer.from(repository.getProjectionRevision()))
@@ -52,13 +55,13 @@ test('running server adopts editor saves and asset changes through authenticated
         expect(initial.snapshot.characters[0].desc).toBe('Before')
         const saved = await fetch(`${base}/api/chat-content/one/0`, {
             method: 'POST', headers: { ...headers, 'x-chat-id': 'chat' },
-            body: JSON.stringify({ id: 'chat', name: 'Chat', message: [{ role: 'user', data: 'Acknowledged pending message' }] }),
+            body: JSON.stringify({ id: 'chat', name: 'Chat', localLore: database.characters[0].chats[0].localLore, message: [{ role: 'user', data: 'Acknowledged pending message' }] }),
         })
         expect(saved.ok, await saved.clone().text()).toBe(true)
-        const metadata = path.join(dataRoot, 'characters/one/metadata.json')
+        const metadata = path.join(dataRoot, characterPath, 'metadata.json')
         const value = JSON.parse(fs.readFileSync(metadata, 'utf8')); value.desc = 'Edited'; value.globalLore = []
         fs.writeFileSync(metadata, JSON.stringify(value))
-        const assets = path.join(dataRoot, 'characters/one/assets'); fs.mkdirSync(assets)
+        const assets = path.join(dataRoot, characterPath, 'assets'); fs.mkdirSync(assets, { recursive: true })
         fs.writeFileSync(path.join(assets, 'smile.png'), 'image one')
         // Let the 5s debounce fail against the edited canonical file and remove
         // its timer. Acknowledged data must still be merged on the next sync.
@@ -85,6 +88,23 @@ test('running server adopts editor saves and asset changes through authenticated
         expect(chatResponse.ok).toBe(true)
         const chat = await decodeRisuSave(Buffer.from(await chatResponse.arrayBuffer()))
         expect(chat.message[0].data).toBe('Acknowledged pending message')
+        const chatFile = path.join(dataRoot, chatPath, 'metadata.json')
+        const chatMetadata = JSON.parse(fs.readFileSync(chatFile, 'utf8'))
+        delete chatMetadata.localLore
+        fs.writeFileSync(chatFile, JSON.stringify(chatMetadata))
+        await new Promise(resolve => setTimeout(resolve, 300))
+        const loreRemoved = await sync(final.revision)
+        expect(loreRemoved.error).toBeUndefined()
+        const entry = loreRemoved.snapshot.chatMetadata.find((entry: any) => entry.chatId === 'chat')
+        expect(entry.metadata.localLore).toBeUndefined()
+        expect(entry.previous.localLore).toHaveLength(1)
+        const editedChat = await fetch(`${base}/api/chat-content/one/0`, { headers: { ...headers, 'x-chat-id': 'chat' } })
+        const editedValue = await decodeRisuSave(Buffer.from(await editedChat.arrayBuffer()))
+        expect(editedValue.localLore ?? []).toEqual([])
+        expect(editedValue.message[0].data).toBe('Acknowledged pending message')
+        fs.writeFileSync(chatFile, JSON.stringify({ ...chatMetadata, note: 'External note' }))
+        const read = await fetch(`${base}/api/read`, { headers: { ...headers, 'file-path': Buffer.from('database/database.bin').toString('hex') } })
+        expect(read.status, await read.clone().text()).toBe(200)
     } finally {
         child.kill()
         if (child.exitCode === null) await new Promise(resolve => child.once('exit', resolve))

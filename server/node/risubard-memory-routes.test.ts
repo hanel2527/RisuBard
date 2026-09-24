@@ -1185,6 +1185,25 @@ describe('RisuBard memory routes', () => {
         expect(harness.response.body).toEqual(document)
     })
 
+    test('returns a conflict when a manual wiki edit has a stale hash', async () => {
+        const { registerRisuBardMemoryRoutes } = require('./risubard-memory-routes.cjs')
+        const harness = createHarness()
+        registerRisuBardMemoryRoutes(harness.app, {
+            auth: async () => true,
+            service: { saveManualWikiDocument: vi.fn(async () => {
+                throw new Error('Wiki document changed since the draft was created')
+            }) },
+        })
+        const next = vi.fn()
+        await harness.routes.get('/api/risubard/memory/wiki/document/manual-save')!(
+            { body: { characterId: 'character', chatId: 'chat', type: 'character',
+                title: '츠구', markdown: '## 츠구', expectedContentHash: 'old' } },
+            harness.response, next
+        )
+        expect(harness.response.statusCode).toBe(409)
+        expect(next).not.toHaveBeenCalled()
+    })
+
     test('passes an existing event manual edit to persistence', async () => {
         const { registerRisuBardMemoryRoutes } = require(
             './risubard-memory-routes.cjs'

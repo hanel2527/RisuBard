@@ -2979,6 +2979,7 @@ export const languageKorean = {
   nanoGPTManualModelSelect: "수동 모델 선택",
   nodeOnlyScrollButtonType: "스크롤 버튼 타입",
   pinChatScrollNavigator: "사이드 네비게이터를 고정",
+  chatScrollNavigatorOffset: "네비게이터 위치 오프셋 (px)",
   scrollButtonTypeFour: "4버튼",
   scrollButtonTypeTwo: "2버튼",
   scrollButtonTypeOff: "사용 안 함",

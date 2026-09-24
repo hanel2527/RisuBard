@@ -30,7 +30,7 @@ function screen(present = true) {
         scrollWithinContainer: vi.fn(),
         sleep: (ms: number) => new Promise(resolve => setTimeout(resolve, ms)),
         setTimeout, clearTimeout,
-        scrollAnchorMutationToken: 0, scrollAnchorFreezeUntil: 0,
+        scrollAnchorObserver: { reset: vi.fn() },
         currentScrollAnchor: null, clearScrollAnchorTimers: vi.fn(),
         captureCurrentScrollAnchor: vi.fn(),
     }

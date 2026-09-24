@@ -15,6 +15,7 @@ export interface MarkdownExcerptInput {
 }
 
 interface MarkdownSection {
+    ancestors: string[]
     heading: string
     headingText: string
     level: number
@@ -50,10 +51,16 @@ function queryTerms(value: string): string[] {
 function sectionsOf(content: string): MarkdownSection[] {
     const matches = [...content.matchAll(/^(#{1,6})\s+(.+?)\s*$/gm)]
     if (matches.length === 0) return []
+    const parents: { level: number; heading: string }[] = []
     return matches.map((match, order) => {
         const start = match.index ?? 0
         const end = matches[order + 1]?.index ?? content.length
+        const level = match[1].length
+        while (parents.length && parents[parents.length - 1].level >= level) parents.pop()
+        const ancestors = parents.map(parent => parent.heading)
+        parents.push({ level, heading: match[0].trim() })
         return {
+            ancestors,
             heading: match[0].trim(),
             headingText: normalized(match[2]),
             level: match[1].length,
@@ -77,15 +84,19 @@ function matchScore(section: MarkdownSection, query: string): number {
 function centeredBody(
     content: string,
     query: string,
-    maximumCharacters: number
+    maximumCharacters: number,
+    enclosingHeadings: readonly string[] = [],
 ): string {
-    if (content.length <= maximumCharacters) return content
+    const qualified = [...enclosingHeadings, content].join('\n\n')
+    if (qualified.length <= maximumCharacters) return qualified
     const firstBreak = content.indexOf('\n')
+    if (firstBreak < 0 && enclosingHeadings.length > 0) return ''
     const heading = firstBreak >= 0 ? content.slice(0, firstBreak).trim() : ''
     const body = firstBreak >= 0 ? content.slice(firstBreak + 1).trim() : content
-    const prefix = heading ? `${heading}\n\n` : ''
+    const prefix = heading ? `${[...enclosingHeadings, heading].join('\n\n')}\n\n` : ''
     const bodyBudget = Math.max(0, maximumCharacters - prefix.length)
-    if (bodyBudget === 0) return prefix.slice(0, maximumCharacters)
+    // Never deliver a claim with a truncated or missing qualification.
+    if (bodyBudget === 0) return ''
     const searchable = normalized(body)
     const match = queryTerms(query)
         .map((term) => searchable.indexOf(term))
@@ -117,11 +128,13 @@ function joinBounded(
         const fairShare = Math.max(1, Math.floor(
             remaining / remainingSections
         ))
-        result += separator + centeredBody(
+        const excerpt = centeredBody(
             section.content,
             query,
-            fairShare
+            fairShare,
+            section.ancestors,
         )
+        if (excerpt) result += separator + excerpt
     }
     return result.slice(0, maximumCharacters).trim()
 }
@@ -172,16 +185,19 @@ export function selectMarkdownExcerpt(
     }
 
     if (input.documentType === 'character') {
+        const inLane = (section: MarkdownSection, pattern: RegExp) =>
+            pattern.test(section.headingText) || section.ancestors.some(heading =>
+                pattern.test(normalized(heading.replace(/^#{1,6}\s+/, ''))))
         if (input.chronologyIntent) {
             for (const section of sections) {
-                if (HISTORY_HEADINGS.test(section.headingText)) add(section)
+                if (inLane(section, HISTORY_HEADINGS)) add(section)
             }
         }
         for (const section of sections) {
-            if (CURRENT_HEADINGS.test(section.headingText)) add(section)
+            if (inLane(section, CURRENT_HEADINGS) && !inLane(section, HISTORY_HEADINGS)) add(section)
         }
         const matching = sections.filter((section) =>
-            !HISTORY_HEADINGS.test(section.headingText)
+            !inLane(section, HISTORY_HEADINGS)
             && matchScore(section, input.query) > 0)
             .sort((left, right) =>
                 matchScore(right, input.query) - matchScore(left, input.query)

@@ -23,6 +23,67 @@ const longCharacter = [
 ].join('\n')
 
 describe('bounded Markdown excerpts', () => {
+    test('keeps a matched allegation under its enclosing disproof heading', () => {
+        const excerpt = selectMarkdownExcerpt({
+            content: ['## Archive', '### Background', 'Unrelated scenery. '.repeat(400),
+                '### Disproven rumors', '#### Courier', 'The courier stole the ledger.',
+                '### Confirmed events', '#### Gate', 'The gate opened.'].join('\n\n'),
+            documentType: 'event', query: 'courier ledger', maximumCharacters: 250,
+            chronologyIntent: false,
+        })
+        expect(excerpt).toContain('### Disproven rumors');
+        expect(excerpt).toContain('#### Courier');
+        expect(excerpt).toContain('The courier stole the ledger.');
+        expect(excerpt).not.toContain('Confirmed events');
+        expect(excerpt.length).toBeLessThanOrEqual(250);
+    })
+
+    test('does not leak matching subsections of character history into current state', () => {
+        const excerpt = selectMarkdownExcerpt({
+            content: ['## Alice', '### Story History', '#### Fortress',
+                'Alice lives in the fortress. '.repeat(200),
+                '### Current State', '#### Home', 'Alice now lives in the village.'].join('\n\n'),
+            documentType: 'character', query: 'Alice fortress', maximumCharacters: 250,
+            chronologyIntent: false,
+        })
+        expect(excerpt).toContain('Alice now lives in the village.');
+        expect(excerpt).not.toContain('fortress');
+    })
+
+    test.each([40, 80, 120, 240])('never emits a nested claim without its qualifier at budget %i', maximumCharacters => {
+        const excerpt = selectMarkdownExcerpt({
+            content: ['## Archive', '### Background', 'Scenery. '.repeat(300),
+                '### Disproven rumors', '#### Courier', 'The courier stole the ledger.'].join('\n\n'),
+            documentType: 'event', query: 'courier ledger', maximumCharacters,
+            chronologyIntent: false,
+        })
+        if (excerpt.includes('stole')) expect(excerpt).toContain('### Disproven rumors')
+        expect(excerpt.length).toBeLessThanOrEqual(maximumCharacters)
+    })
+
+    test.each([65, 75])('keeps qualifications even when the claim is itself a heading at budget %i', maximumCharacters => {
+        const excerpt = selectMarkdownExcerpt({
+            content: ['## Archive', '### Background', 'Scenery. '.repeat(300),
+                '### Disproven rumors', '#### The courier stole the ledger.', '### Other', 'Unrelated'].join('\n\n'),
+            documentType: 'event', query: 'courier ledger', maximumCharacters,
+            chronologyIntent: false,
+        })
+        if (excerpt.includes('stole')) expect(excerpt).toContain('### Disproven rumors')
+        expect(excerpt.length).toBeLessThanOrEqual(maximumCharacters)
+    })
+
+    test('restores a parent heading when ranked siblings belong to different scopes', () => {
+        const excerpt = selectMarkdownExcerpt({
+            content: ['## Archive', '### Background', 'Scenery. '.repeat(300),
+                '### Beliefs', '#### Alice', 'Alice suspects the courier.',
+                '### Facts', '#### Bob', 'Bob helped the courier.'].join('\n\n'),
+            documentType: 'event', query: 'Bob courier', maximumCharacters: 400,
+            chronologyIntent: false,
+        })
+        expect(excerpt).toContain('### Facts\n\n#### Bob')
+        expect(excerpt).toContain('### Beliefs\n\n#### Alice')
+    })
+
     test('keeps character current-state lanes ahead of long history', () => {
         const excerpt = selectMarkdownExcerpt({
             content: longCharacter,

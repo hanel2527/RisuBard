@@ -470,8 +470,12 @@
                 fetchImpl: fetch,
                 createAuth: () => forageStorage.createAuth(),
             })
-            selectedId = saved.id
-            creating = false
+            // Adopt the server-normalized title, aliases and hash together.
+            // The parent refresh may be delayed or fail after a successful save.
+            documents = documents.some((document) => document.id === saved.id)
+                ? documents.map((document) => document.id === saved.id ? saved : document)
+                : [...documents, saved]
+            loadDocument(saved)
             notice = '저장했습니다.'
             publishRisuBardMemoryActivity({
                 characterId,

@@ -40,6 +40,93 @@ function createChatLayout(
 }
 
 describe('chat scroll anchor', () => {
+    function longMessage() {
+        const layout = createChatLayout([{ index: 0, top: -400, bottom: 900 }])
+        const message = layout.elements.get(0)!
+        message.innerHTML = '<div class="chattext"><blockquote><p>Earlier text</p><img src="scene.png"><p>Reading here</p><p>Streaming tail</p></blockquote></div>'
+        const blocks = message.querySelectorAll<HTMLElement>('p, img')
+        blocks[0].getBoundingClientRect = () => rect(-400, -300)
+        blocks[1].getBoundingClientRect = () => rect(-300, -20)
+        blocks[2].getBoundingClientRect = () => rect(-10, 150)
+        blocks[3].getBoundingClientRect = () => rect(160, 900)
+        message.querySelector('blockquote')!.getBoundingClientRect = () => rect(-400, 900)
+        return { ...layout, message, reading: blocks[2], tail: blocks[3] }
+    }
+
+    test('keeps the visible paragraph in place when an image above it grows inside the same message', () => {
+        const { container, reading } = longMessage()
+        const anchor = captureChatScrollAnchor(container, 'chat', 1)!
+        reading.getBoundingClientRect = () => rect(90, 250)
+
+        expect(restoreChatScrollAnchor(container, anchor, 'chat', 1)).toBe('restored')
+        expect(container.scrollTo).toHaveBeenCalledWith({ top: -100, behavior: 'instant' })
+    })
+
+    test('does not correct scrolling when only the streaming tail grows', () => {
+        const { container, message, tail } = longMessage()
+        const anchor = captureChatScrollAnchor(container, 'chat', 1)!
+        message.getBoundingClientRect = () => rect(-400, 1200)
+        tail.getBoundingClientRect = () => rect(160, 1200)
+
+        expect(restoreChatScrollAnchor(container, anchor, 'chat', 1)).toBe('stable')
+        expect(container.scrollTo).not.toHaveBeenCalled()
+    })
+
+    test('finds the same paragraph after HTML replacement', () => {
+        const { container, reading } = longMessage()
+        const anchor = captureChatScrollAnchor(container, 'chat', 1)!
+        const replacement = reading.cloneNode(true) as HTMLElement
+        replacement.getBoundingClientRect = () => rect(50, 210)
+        reading.replaceWith(replacement)
+
+        expect(restoreChatScrollAnchor(container, anchor, 'chat', 1)).toBe('restored')
+        expect(container.scrollTo).toHaveBeenCalledWith({ top: -140, behavior: 'instant' })
+    })
+
+    test('retains the actual reading paragraph when content is inserted before it', () => {
+        const { container, reading } = longMessage()
+        const anchor = captureChatScrollAnchor(container, 'chat', 1)!
+        const inserted = document.createElement('p')
+        inserted.textContent = 'New content above the reader'
+        reading.before(inserted)
+        reading.getBoundingClientRect = () => rect(30, 190)
+
+        expect(restoreChatScrollAnchor(container, anchor, 'chat', 1)).toBe('restored')
+        expect(container.scrollTo).toHaveBeenCalledWith({ top: -160, behavior: 'instant' })
+    })
+
+    test('anchors a visible image instead of its surrounding growing blockquote', () => {
+        const { container, message, reading } = longMessage()
+        const image = message.querySelector('img')!
+        image.getBoundingClientRect = () => rect(-20, 280)
+        reading.getBoundingClientRect = () => rect(290, 450)
+        const anchor = captureChatScrollAnchor(container, 'chat', 1)!
+        image.getBoundingClientRect = () => rect(20, 320)
+
+        expect(restoreChatScrollAnchor(container, anchor, 'chat', 1)).toBe('restored')
+        expect(container.scrollTo).toHaveBeenCalledWith({ top: -160, behavior: 'instant' })
+    })
+
+    test('falls back to the message when the reading paragraph was removed', () => {
+        const { container, message, reading } = longMessage()
+        const anchor = captureChatScrollAnchor(container, 'chat', 1)!
+        reading.remove()
+        message.getBoundingClientRect = () => rect(-350, 700)
+
+        expect(restoreChatScrollAnchor(container, anchor, 'chat', 1)).toBe('restored')
+        expect(container.scrollTo).toHaveBeenCalledWith({ top: -150, behavior: 'instant' })
+    })
+
+    test('does not reuse a paragraph anchor in another chat or across a new latest reply', () => {
+        const { container, reading } = longMessage()
+        const anchor = captureChatScrollAnchor(container, 'chat', 1)!
+        reading.getBoundingClientRect = () => rect(90, 250)
+
+        expect(restoreChatScrollAnchor(container, anchor, 'other-chat', 1)).toBe('context-changed')
+        expect(restoreChatScrollAnchor(container, anchor, 'chat', 2)).toBe('new-message')
+        expect(container.scrollTo).not.toHaveBeenCalled()
+    })
+
     test('captures the message crossing the viewport top and its relative offset', () => {
         const { container } = createChatLayout([
             { index: 4, top: -80, bottom: 100 },

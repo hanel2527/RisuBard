@@ -100,6 +100,7 @@ import { normalizeArcPlotterRuntimeSettings } from '../risubard/arcPlotterSettin
 import {
     canonicalTurnNeedsRetry,
     canonicalTurnRetryWarning,
+    mergeCanonicalTurnReceipts,
 } from '../risubard/canonicalTurnReceipt';
 import { saveChatToServer } from '../storage/chatStorage';
 import {
@@ -128,7 +129,9 @@ import {
 } from '../chatScriptstateCheckpoint';
 
 function resolvedRisuBardSettings(chat?: Chat) {
-    return resolveRisuBardChatSettings(DBState.db, chat?.risuBardSettings)
+    const character = chat && DBState.db.characters.find((item) =>
+        item.chats.some((candidate) => candidate === chat || (!!chat.id && candidate.id === chat.id)))
+    return resolveRisuBardChatSettings(DBState.db, chat?.risuBardSettings, character?.risuBardPinnedSettings)
 }
 
 function resolvedArcPlotterSettings() {
@@ -336,7 +339,12 @@ async function confirmProjectedNarrativeTurn(input: {
             else {
                 message.risubardMemoryConfirmed = true
             }
-            if (receipt) message.risubardCanonicalReceipt = receipt
+            if (receipt) {
+                message.risubardCanonicalReceipt = mergeCanonicalTurnReceipts(
+                    message.risubardCanonicalReceipt,
+                    receipt
+                )
+            }
         }
         return true
     }
@@ -1609,16 +1617,14 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                 try {
                     const inquirySettings = resolvedRisuBardSettings(currentChat)
                     activateWikiEmbeddings(currentChar.chaId, narrativeSessionChatId, DBState.db)
-                    const embedded = await wikiEmbeddingRuntime.search(
-                        currentInput,
-                        buildBoundedNarrativeInquiryFallback(projectRecentMemoryMessages(
+                    const retrievalRecentContext = buildBoundedNarrativeInquiryFallback(projectRecentMemoryMessages(
                             currentChat.message.slice(currentChat.message.findLastIndex(
                                 message => message.disabled === 'allBefore',
                             ) + 1), 4, undefined, undefined,
                             !inquirySettings.risuBardResponseExcludeUserMessages,
                             inquirySettings.risuBardIgnoreOocTurns,
-                        )),
-                    )
+                        ))
+                    const embedded = await wikiEmbeddingRuntime.search(currentInput, retrievalRecentContext)
                     // Refresh does not delay this response; inquiry verifies old ranges against live hashes.
                     wikiEmbeddingRuntime.refresh()
                     const loadInquiry = (semanticMatches?: readonly WikiSemanticMatch[]) => loadNarrativeInquiry({
@@ -1676,6 +1682,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                         enabled: inquirySettings.risuBardBardChanEnabled,
                         modelMode: inquirySettings.risuBardBardChanModelMode,
                         currentInput,
+                        recentContext: retrievalRecentContext,
                         candidates: initialInquiry.rerankCandidates,
                         realChatId: narrativeSessionChatId,
                         requestModel: (request, mode) =>

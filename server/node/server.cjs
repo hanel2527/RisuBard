@@ -268,7 +268,7 @@ function flushPendingDb() {
 
 // Call only from an operation that already owns the storage queue.
 async function flushPendingDbWithinQueue(options = {}) {
-    if (adoptExternallyChangedCanonicalProjection()) return;
+    if (await adoptSettledExternalProjection()) return;
     if (saveTimers[DB_HEX_KEY]) {
         clearTimeout(saveTimers[DB_HEX_KEY]);
         delete saveTimers[DB_HEX_KEY];
@@ -286,6 +286,7 @@ async function flushPendingDbWithinQueue(options = {}) {
 }
 
 function invalidateDbCache() {
+    liveFilesChatPrevious = [];
     liveFileRecovery.complete();
     liveFilesAdoption = null;
     liveFilesRecovery = null;
@@ -1010,6 +1011,7 @@ let externalEditSession
 let canonicalProjectionReady = existsSync(path.join(savePath, 'index', 'sidebar.json'))
 const liveCharacterFiles = createLiveCharacterFiles({ repository: userDataRepository, writeAsset: kvSet, writeAssets: kvSetMany, reloadAssets: () => characterAssets.reload() });
 let liveFilesRevision = nodeCrypto.randomUUID();
+let liveFilesChatPrevious = [];
 let liveFilesPendingWrites = false;
 let liveFilesAdoption = null;
 let liveFilesRecovery = null;
@@ -1078,6 +1080,8 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
         phaseStartedAt = performance.now()
         errorStage = 'character-assets'
         characterAssets.sync(databaseObject)
+        phaseMetrics.assetSyncMs = elapsedMs(phaseStartedAt)
+        phaseStartedAt = performance.now()
         errorStage = 'revision-accept'
         canonicalProjectionSync.accept()
         if (!observationContext.adoptingLiveFiles) {
@@ -1182,20 +1186,31 @@ function adoptExternallyChangedCanonicalProjection(liveOnly = false) {
     liveFilesPendingWrites = false
     liveFilesAdoption = null
     liveFilesRevision = nodeCrypto.randomUUID()
+    liveFilesChatPrevious = changed.previous?.chatMetadata || []
     logger.info('[CanonicalProjection] Adopted externally edited canonical entity files')
     return { etag: dbEtag, revision: changed.revision }
     } catch (error) {
         // A canonical journal may already have published before a later stage
         // failed. Re-read it even if the OS watcher misses that publication.
-        liveCharacterFiles.invalidate()
+        if (error?.code !== 'LIVE_FILES_SETTLING') liveCharacterFiles.invalidate()
         throw error
+    }
+}
+
+async function adoptSettledExternalProjection(liveOnly = false) {
+    for (let attempt = 0; ; attempt++) {
+        try { return adoptExternallyChangedCanonicalProjection(liveOnly) }
+        catch (error) {
+            if (error?.code !== 'LIVE_FILES_SETTLING' || attempt >= 7) throw error
+            await new Promise(resolve => setTimeout(resolve, 275))
+        }
     }
 }
 
 externalEditSession = createExternalEditSession({
     flush: flushPendingDbWithinQueue,
     getRevision: () => userDataRepository.getProjectionRevision(),
-    adopt: adoptExternallyChangedCanonicalProjection,
+    adopt: adoptSettledExternalProjection,
 })
 
 // Server-side backup directory (outside save/ to avoid bloating updater copies).
@@ -3489,12 +3504,7 @@ app.post('/api/live-files/sync', async (req, res, next) => {
         await queueStorageOperation(async () => {
             let errorMessage
             try {
-                try { adoptExternallyChangedCanonicalProjection(true) }
-                catch (error) {
-                    if (error?.code !== 'LIVE_FILES_SETTLING') throw error
-                    await new Promise(resolve => setTimeout(resolve, 275))
-                    adoptExternallyChangedCanonicalProjection(true)
-                }
+                await adoptSettledExternalProjection(true)
                 if (externalEditSession.isActive()) await externalEditSession.finish()
             } catch (error) { errorMessage = String(error?.message || error) }
             // Do not expose partial data or advance the client's acknowledgement
@@ -3502,6 +3512,10 @@ app.post('/api/live-files/sync', async (req, res, next) => {
             const payload = { revision: liveFilesRevision, etag: dbEtag, ...(errorMessage ? { error: errorMessage } : {}) }
             if (!errorMessage && req.body?.revision !== liveFilesRevision) {
                 payload.snapshot = metadataSnapshot(dbCache[DB_HEX_KEY] || userDataRepository.loadStartupDatabase())
+                payload.snapshot.chatMetadata = metadataSnapshot(userDataRepository.exportLegacyDatabase({ metadataOnly: true })).chatMetadata.map(entry => ({
+                    ...entry, revision: liveFilesRevision,
+                    previous: liveFilesChatPrevious.find(previous => previous.characterId === entry.characterId && previous.chatId === entry.chatId)?.metadata ?? entry.metadata,
+                }))
                 if (liveFilesRecovery?.conflicts) payload.recovery = liveFilesRecovery
             }
             res.json(payload)
@@ -4148,7 +4162,7 @@ app.post('/api/write', async (req, res, next) => {
                     sendExternalEditModeLocked(res);
                     return;
                 }
-                const adopted = adoptExternallyChangedCanonicalProjection();
+                const adopted = await adoptSettledExternalProjection();
                 if (adopted) {
                     sendCanonicalProjectionConflict(res, adopted);
                     return;
@@ -4372,7 +4386,7 @@ app.post('/api/patch', async (req, res, next) => {
                     sendExternalEditModeLocked(res);
                     return;
                 }
-                const adopted = adoptExternallyChangedCanonicalProjection();
+                const adopted = await adoptSettledExternalProjection();
                 if (adopted) {
                     sendCanonicalProjectionConflict(res, adopted);
                     return;
@@ -5544,7 +5558,7 @@ async function saveChatContentHandler(req, res, next) {
                 sendExternalEditModeLocked(res);
                 return;
             }
-            const adopted = adoptExternallyChangedCanonicalProjection();
+            const adopted = await adoptSettledExternalProjection();
             if (adopted) {
                 sendCanonicalProjectionConflict(res, adopted);
                 return;

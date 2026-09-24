@@ -60,6 +60,7 @@ import { isMobile } from 'src/ts/platform'
     import MainMenu from '../UI/MainMenu.svelte';
     import AssetInput from './AssetInput.svelte';
     import { scrollWithinContainer } from './scrollWithin';
+    import { observeChatScroll } from './observeChatScroll';
     import {
         captureChatScrollAnchor,
         restoreChatScrollAnchor,
@@ -148,6 +149,21 @@ import { isMobile } from 'src/ts/platform'
     let showScrollNav = $state(false)
     let scrollNavFocused = $state(false)
     let scrollNavTimer: ReturnType<typeof setTimeout> | null = null
+    let scrollNavCenter = $state(0)
+
+    function trackNavigatorViewport(node: HTMLElement) {
+        const update = () => {
+            scrollNavCenter = window.innerHeight / 2 - node.getBoundingClientRect().top
+        }
+        update()
+        const observer = new ResizeObserver(update)
+        observer.observe(node)
+        window.addEventListener('resize', update)
+        return { destroy() {
+            observer.disconnect()
+            window.removeEventListener('resize', update)
+        } }
+    }
     let pageJumpInput = $state<number | undefined>(1)
     let turnJumpInput = $state<number | undefined>(1)
     let jumpDisplayKey = ''
@@ -157,12 +173,7 @@ import { isMobile } from 'src/ts/platform'
     let scrollJumpRequest = 0
     onDestroy(() => { scrollJumpRequest += 1 })
     let currentScrollAnchor: ChatScrollAnchor | null = null
-    let scrollAnchorCaptureTimer: ReturnType<typeof setTimeout> | null = null
-    let scrollAnchorRestoreTimers: ReturnType<typeof setTimeout>[] = []
-    let scrollAnchorMutationToken = 0
-    let scrollAnchorFreezeUntil = 0
-    let restoringScrollAnchor = false
-    const SCROLL_ANCHOR_RESTORE_DELAYS = [0, 80, 180, 350, 700, 1300, 2100]
+    let scrollAnchorObserver: ReturnType<typeof observeChatScroll> | null = null
     let {
         openModuleList = $bindable(false),
         openChatList = $bindable(false),
@@ -206,118 +217,34 @@ import { isMobile } from 'src/ts/platform'
         })
     })
 
-    function clearScrollAnchorTimers() {
-        if (scrollAnchorCaptureTimer) clearTimeout(scrollAnchorCaptureTimer)
-        scrollAnchorCaptureTimer = null
-        for (const timer of scrollAnchorRestoreTimers) clearTimeout(timer)
-        scrollAnchorRestoreTimers = []
-    }
-
     function captureCurrentScrollAnchor() {
-        if (
-            !DBState.db.preserveChatScrollPosition
-            || !chatScrollContainer
-            || restoringScrollAnchor
-            || Date.now() < scrollAnchorFreezeUntil
-        ) return
-        currentScrollAnchor = captureChatScrollAnchor(
-            chatScrollContainer,
-            paginationKey,
-            currentChat.length,
-        )
-    }
-
-    function scheduleScrollAnchorCapture(delay = 55) {
-        if (!DBState.db.preserveChatScrollPosition) return
-        if (scrollAnchorCaptureTimer) clearTimeout(scrollAnchorCaptureTimer)
-        scrollAnchorCaptureTimer = setTimeout(() => {
-            scrollAnchorCaptureTimer = null
-            captureCurrentScrollAnchor()
-        }, delay)
-    }
-
-    function queueScrollAnchorRestore() {
-        if (!DBState.db.preserveChatScrollPosition || !currentScrollAnchor) {
-            scheduleScrollAnchorCapture(80)
-            return
-        }
-
-        const snapshot = { ...currentScrollAnchor }
-        const token = ++scrollAnchorMutationToken
-        for (const timer of scrollAnchorRestoreTimers) clearTimeout(timer)
-        scrollAnchorFreezeUntil = Date.now() + SCROLL_ANCHOR_RESTORE_DELAYS.at(-1)! + 50
-        scrollAnchorRestoreTimers = SCROLL_ANCHOR_RESTORE_DELAYS.map((delay, index) =>
-            setTimeout(() => {
-                if (
-                    token !== scrollAnchorMutationToken
-                    || !DBState.db.preserveChatScrollPosition
-                    || !chatScrollContainer
-                ) return
-
-                restoringScrollAnchor = true
-                const result = restoreChatScrollAnchor(
-                    chatScrollContainer,
-                    snapshot,
-                    paginationKey,
-                    currentChat.length,
-                )
-                restoringScrollAnchor = false
-
-                if (result === 'context-changed') {
-                    scrollAnchorMutationToken += 1
-                    return
-                }
-                if (index === SCROLL_ANCHOR_RESTORE_DELAYS.length - 1) {
-                    scrollAnchorFreezeUntil = 0
-                    scheduleScrollAnchorCapture(55)
-                }
-            }, delay),
-        )
-    }
-
-    function handleDirectScrollInteraction() {
-        scrollAnchorMutationToken += 1
-        for (const timer of scrollAnchorRestoreTimers) clearTimeout(timer)
-        scrollAnchorRestoreTimers = []
-        scrollAnchorFreezeUntil = 0
-        captureCurrentScrollAnchor()
+        if (!DBState.db.preserveChatScrollPosition || !chatScrollContainer) return
+        currentScrollAnchor = captureChatScrollAnchor(chatScrollContainer, paginationKey, currentChat.length)
     }
 
     $effect(() => {
         const container = chatScrollContainer
         const enabled = DBState.db.preserveChatScrollPosition
         const contextKey = paginationKey
-        if (!container || !enabled || !contextKey) {
-            currentScrollAnchor = null
-            clearScrollAnchorTimers()
-            return
-        }
+        void chatBounds.page
+        if (!container || !enabled || !contextKey) return
 
-        const observer = new MutationObserver(() => queueScrollAnchorRestore())
-        const handleMediaLoad = (event: Event) => {
-            if (event.target instanceof HTMLImageElement || event.target instanceof HTMLVideoElement) {
-                queueScrollAnchorRestore()
+        // Keep streaming changes out of this effect's dependencies.
+        const observer = untrack(() => observeChatScroll(container, captureCurrentScrollAnchor, () => {
+            if (!currentScrollAnchor) {
+                captureCurrentScrollAnchor()
+                return
             }
-        }
-        observer.observe(container, { childList: true, subtree: true })
-        container.addEventListener('load', handleMediaLoad, true)
-        container.addEventListener('pointerdown', handleDirectScrollInteraction)
-        container.addEventListener('wheel', handleDirectScrollInteraction)
-        container.addEventListener('touchstart', handleDirectScrollInteraction)
-        container.addEventListener('keydown', handleDirectScrollInteraction)
-        scheduleScrollAnchorCapture(0)
-
+            const result = restoreChatScrollAnchor(container, currentScrollAnchor, paginationKey, currentChat.length)
+            if (result === 'context-changed' || result === 'missing' || result === 'new-message') {
+                captureCurrentScrollAnchor()
+            }
+        }))
+        scrollAnchorObserver = observer
         return () => {
-            observer.disconnect()
-            container.removeEventListener('load', handleMediaLoad, true)
-            container.removeEventListener('pointerdown', handleDirectScrollInteraction)
-            container.removeEventListener('wheel', handleDirectScrollInteraction)
-            container.removeEventListener('touchstart', handleDirectScrollInteraction)
-            container.removeEventListener('keydown', handleDirectScrollInteraction)
-            scrollAnchorMutationToken += 1
+            observer.destroy()
+            scrollAnchorObserver = null
             currentScrollAnchor = null
-            clearScrollAnchorTimers()
-            scrollAnchorFreezeUntil = 0
         }
     })
 
@@ -325,6 +252,7 @@ import { isMobile } from 'src/ts/platform'
         await tick()
         if (paginationKey !== key || !chatScrollContainer) return
         chatScrollContainer.scrollTop = savedView.scrollTop
+        captureCurrentScrollAnchor()
     }
 
     $effect(() => {
@@ -592,10 +520,8 @@ import { isMobile } from 'src/ts/platform'
         const contextKey = paginationKey
         const isCurrent = () => request === scrollJumpRequest && contextKey === paginationKey
         isScrollingToMessage = false
-        scrollAnchorMutationToken += 1
-        clearScrollAnchorTimers()
+        scrollAnchorObserver?.reset()
         currentScrollAnchor = null
-        scrollAnchorFreezeUntil = 0
         // Explicit source/turn navigation must reveal its target before mounting the page.
         if (oocTurnIndices(currentChat, DBState.db.risuBardHideOocTurns === true, true).has(index)) {
             DBState.db.risuBardHideOocTurns = false
@@ -616,9 +542,7 @@ import { isMobile } from 'src/ts/platform'
                 element = chatContainer.querySelector<HTMLElement>(`[data-chat-index="${index}"]`)
             }
             if(element){
-                scrollAnchorMutationToken += 1
-                clearScrollAnchorTimers()
-                scrollAnchorFreezeUntil = 0
+                scrollAnchorObserver?.reset()
                 scrollWithinContainer(element, chatContainer, { block: 'start', behavior: 'instant' })
                 // Existing media-load/DOM observers correct later layout shifts without blocking the jump.
                 currentScrollAnchor = DBState.db.preserveChatScrollPosition ? {
@@ -1221,11 +1145,13 @@ import { isMobile } from 'src/ts/platform'
 
 
 <div class="w-full h-full relative flex overflow-hidden" data-chat-wiki-workspace style={customStyle}>
-    <main class="relative z-0 h-full min-w-0 flex-1" data-chat-pane>
+    <main class="relative z-0 h-full min-w-0 flex-1" data-chat-pane use:trackNavigatorViewport>
     
     {#if DBState.db.nodeOnlyScrollButtonType !== 'off' && currentChat.length > 0}
         <div
-            class="absolute right-3 bottom-16 z-40 flex min-w-16 flex-col overflow-hidden rounded-lg border border-darkborderc border-opacity-30 bg-bgcolor/90 shadow-lg backdrop-blur-sm transition-opacity duration-300"
+            data-chat-scroll-navigator
+            class="absolute right-3 z-40 flex w-8 -translate-y-1/2 flex-col overflow-hidden rounded-lg border border-darkborderc border-opacity-30 bg-bgcolor/90 shadow-lg backdrop-blur-sm transition-opacity duration-300"
+            style:top={`clamp(5rem, calc(${scrollNavCenter}px + ${DBState.db.chatScrollNavigatorOffset ?? 0}px), calc(100% - 5rem))`}
             class:opacity-0={!DBState.db.pinChatScrollNavigator && !showScrollNav && !scrollNavFocused}
             class:pointer-events-none={!DBState.db.pinChatScrollNavigator && !showScrollNav && !scrollNavFocused}
             onfocusin={holdScrollNav}
@@ -1750,9 +1676,6 @@ import { isMobile } from 'src/ts/platform'
                 bumpScrollNav()
             }
             const chatTarget = e.target as HTMLElement;
-            if (!restoringScrollAnchor && Date.now() >= scrollAnchorFreezeUntil) {
-                scheduleScrollAnchorCapture()
-            }
             if (paginationKey) {
                 saveChatViewSession(paginationKey, {
                     page: chatBounds.page,

@@ -1,7 +1,7 @@
 <script lang="ts">
     import { language } from 'src/lang'
     import { tooltip } from 'src/ts/gui/tooltip'
-    import type { Chat } from 'src/ts/storage/database.svelte'
+    import type { Chat, character as Character } from 'src/ts/storage/database.svelte'
     import type { RisuBardChatSettings } from 'src/ts/risubard/risuBardSettings'
     import { resolveRisuBardChatSettings } from 'src/ts/risubard/risuBardSettings'
     import {
@@ -19,19 +19,24 @@
 
     interface Props {
         chat?: Chat
+        character?: Pick<Character, 'risuBardPinnedSettings'>
         global: RisuBardChatSettings
     }
 
-    let { chat, global }: Props = $props()
+    let { chat, global, character }: Props = $props()
     let revision = $state(0)
     let globalFeedback = $state('')
     let settings = $derived.by(() => {
         revision
-        return resolveRisuBardChatSettings(global, chat?.risuBardSettings)
+        return resolveRisuBardChatSettings(global, chat?.risuBardSettings, character?.risuBardPinnedSettings)
+    })
+    let pinned = $derived.by(() => {
+        revision
+        return character?.risuBardPinnedSettings !== undefined
     })
     let hasOverrides = $derived.by(() => {
         revision
-        return Boolean(chat?.risuBardSettings
+        return pinned || Boolean(chat?.risuBardSettings
             && Object.keys(chat.risuBardSettings).length > 0)
     })
     let profile = $derived(measureRisuBardChat(chat?.message ?? []))
@@ -45,14 +50,26 @@
         value: RisuBardChatSettings[K],
     ) {
         if (!chat) return
-        chat.risuBardSettings ??= {}
-        chat.risuBardSettings[key] = value
+        const target = character?.risuBardPinnedSettings ?? (chat.risuBardSettings ??= {})
+        target[key] = value
         globalFeedback = ''
         revision++
     }
 
     function setNumber(key: keyof RisuBardChatSettings, event: Event) {
         setValue(key, Number((event.currentTarget as HTMLInputElement).value))
+    }
+
+    function setPinned(event: Event) {
+        if (!chat || !character) return
+        if ((event.currentTarget as HTMLInputElement).checked) {
+            character.risuBardPinnedSettings = { ...settings }
+        } else {
+            chat.risuBardSettings = { ...settings }
+            delete character.risuBardPinnedSettings
+        }
+        globalFeedback = ''
+        revision++
     }
 
     function applyToGlobal() {
@@ -65,6 +82,7 @@
 
     function resetToGlobal() {
         if (!chat) return
+        if (pinned && character) character.risuBardPinnedSettings = resolveRisuBardChatSettings(global)
         delete chat.risuBardSettings
         globalFeedback = ''
         revision++
@@ -96,11 +114,16 @@
             <small>{formatRisuBardChatProfile(profile)}</small>
         </div>
         <div class="settings-actions">
+            <label class="toggle-control" use:tooltip={'현재 설정을 이 봇의 기존 챗과 새 챗에 공통 적용합니다. 고정 중 변경한 옵션도 함께 반영됩니다. 해제하면 현재 챗은 값을 유지하고 다른 챗은 기존 개별 설정으로 돌아갑니다.'}>
+                <input type="checkbox" data-pin-chat-settings-character checked={pinned}
+                    disabled={!chat || !character} onchange={setPinned} />
+                <span>이 봇에 고정</span>
+            </label>
             <button type="button" class="primary-action" data-apply-chat-settings-global
-                disabled={!hasOverrides} use:tooltip={'이 챗의 현재 BardWiki 값을 전역 기본값으로 저장합니다.'}
+                disabled={!hasOverrides} use:tooltip={'현재 BardWiki 값을 전역 기본값으로 저장합니다. 봇 고정 상태는 유지합니다.'}
                 onclick={applyToGlobal}>전역값으로 적용</button>
             <button type="button" data-reset-chat-settings-global disabled={!hasOverrides}
-                use:tooltip={'이 챗의 개별 설정을 지우고 전역 기본값을 사용합니다.'}
+                use:tooltip={pinned ? '이 봇의 고정 설정을 현재 전역 기본값으로 바꿉니다.' : '이 챗의 개별 설정을 지우고 전역 기본값을 사용합니다.'}
                 onclick={resetToGlobal}>전역값 사용</button>
         </div>
         {#if globalFeedback}<small class="global-feedback" role="status">{globalFeedback}</small>{/if}
@@ -235,7 +258,7 @@
             </div>
             <div class="setting-field" data-chat-setting-field="risuBardWikiWritingLanguage">
                 {@render settingTitle('risuBardWikiWritingLanguage', language.risuBardWikiWritingLanguage, 'bardwiki-writing-language')}
-                <select id="bardwiki-writing-language" value={chat?.risuBardSettings?.risuBardWikiWritingLanguage ?? ''}
+                <select id="bardwiki-writing-language" value={(character?.risuBardPinnedSettings ?? chat?.risuBardSettings)?.risuBardWikiWritingLanguage ?? ''}
                     onchange={(event) => setValue('risuBardWikiWritingLanguage',
                         (event.currentTarget.value || undefined) as RisuBardChatSettings['risuBardWikiWritingLanguage'])}>
                     <option value="">{language.risuBardWikiLanguageGlobal} ({wikiWritingLocales[normalizeWikiWritingLanguage(global.risuBardWikiWritingLanguage)].label})</option>

@@ -1,10 +1,49 @@
-import { afterEach, expect, test } from 'vitest'
+import { afterEach, expect, test, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 const { createUserDataRepository } = require('./user-data-repository.cjs')
 const { createFileKv } = require('./file-kv.cjs')
 const { atomicWriteFile } = require('./file-store.cjs')
+const { metadataSnapshot, mergePendingLiveDatabase } = require('./live-character-files.cjs')
+
+test.each(['clear', 'remove-field'])('external chat lore deletion is adopted and preserves pending messages: %s', (operation) => {
+    const { root, repository } = fixture()
+    const db = repository.exportLegacyDatabase()
+    db.characters[0].chats[0].localLore = [{ key: 'old', content: 'chat lore' }]
+    repository.importLegacyDatabase(db, { mode: 'sync' })
+    const live = createLiveCharacterFiles({ repository, watch: false, settleMs: 0, writeAsset: () => {} })
+    const file = path.join(root, 'characters/one/chats/chat/metadata.json')
+    const metadata = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (operation === 'clear') metadata.localLore = []
+    else delete metadata.localLore
+    fs.writeFileSync(file, JSON.stringify(metadata))
+    const result = live.reconcile()
+    const pending = structuredClone(db)
+    pending.characters[0].chats[0].message.push({ role: 'user', data: 'acknowledged message' })
+    pending.characters[0].chats[0].note = 'unsaved note'
+    pending.characters[0].chats[0].localLore = [{ key: 'app', content: 'acknowledged lore edit' }]
+    const conflicts: any[] = []
+    const merged = mergePendingLiveDatabase(pending, result.previous, result.database, conflicts)
+    expect(conflicts).toContainEqual(expect.objectContaining({ characterId: 'one', chatId: 'chat', field: 'localLore', local: pending.characters[0].chats[0].localLore }))
+    expect(merged.characters[0].chats[0].localLore ?? []).toEqual([])
+    expect(merged.characters[0].chats[0].note).toBe('unsaved note')
+    expect(merged.characters[0].chats[0].message).toHaveLength(2)
+    expect(metadataSnapshot(merged).chatMetadata[0].metadata.message).toBeUndefined()
+    expect(metadataSnapshot(merged).chatMetadata[0].metadata.localLore ?? []).toEqual([])
+    repository.importLegacyDatabase(merged, { mode: 'sync' })
+    expect(createUserDataRepository({ dataRoot: root }).exportLegacyDatabase().characters[0].chats[0].localLore ?? []).toEqual([])
+})
+
+test('malformed chat lore or changed chat identity is rejected before checksum acceptance', () => {
+    const { root, repository } = fixture()
+    const target = path.join(root, 'characters/one/chats/chat/metadata.json')
+    const original = JSON.parse(fs.readFileSync(target, 'utf8'))
+    for (const edit of [{ localLore: 'bad' }, { localLore: [{ content: 42 }] }, { id: 'other' }, { message: [] }]) {
+        fs.writeFileSync(target, JSON.stringify({ ...original, ...edit }))
+        expect(() => repository.reconcileCanonicalProjection({ externalEditing: true })).toThrow()
+    }
+})
 const createLiveCharacterFiles = fs.existsSync(path.join(import.meta.dirname, 'live-character-files.cjs'))
     ? require('./live-character-files.cjs').createLiveCharacterFiles : undefined
 const roots: string[] = []
@@ -91,6 +130,176 @@ function liveFixture() {
     const assets = path.join(base.root, 'characters/one/assets'); fs.mkdirSync(assets, { recursive: true })
     return { ...base, store, live, assets }
 }
+
+test('persists verified asset fingerprints across restart and upgrades cacheless records once', () => {
+    const { root, live, assets, store, repository } = liveFixture()
+    const target = path.join(assets, 'smile.png')
+    fs.writeFileSync(target, 'first')
+    live.reconcile()
+    const persisted = JSON.parse(fs.readFileSync(path.join(root, 'index/live-character-assets.json'), 'utf8')).characters.one['smile.png']
+    require('./file-store.cjs').atomicWriteJson(root, 'index/character-asset-replicas.json', {
+        schemaVersion: 1, characters: { one: { enabled: true, entries: [{ filename: 'smile.png', key: persisted.key, hash: persisted.hash }] } },
+    })
+    const restart = () => createLiveCharacterFiles({ repository, writeAsset: store.kvSet, watch: false, settleMs: 0 })
+    const reads = vi.spyOn(fs, 'readFileSync')
+    try {
+        expect(restart().reconcile()).toBeNull()
+        expect(reads.mock.calls.filter(([file]) => String(file) === target)).toHaveLength(0)
+        const indexPath = path.join(root, 'index/live-character-assets.json')
+        const index = JSON.parse(fs.readFileSync(indexPath, 'utf8'))
+        delete index.characters.one['smile.png'].stamp
+        require('./file-store.cjs').atomicWriteJson(root, 'index/live-character-assets.json', index)
+        reads.mockClear()
+        expect(restart().reconcile()).toBeNull()
+        expect(reads.mock.calls.filter(([file]) => String(file) === target)).toHaveLength(1)
+        reads.mockClear()
+        restart().reconcile()
+        expect(reads.mock.calls.filter(([file]) => String(file) === target)).toHaveLength(0)
+    } finally { reads.mockRestore() }
+})
+
+test('does not persist a verified stamp if an asset changes during its checksum read', () => {
+    const { root, live, assets } = liveFixture()
+    const target = path.join(assets, 'smile.png')
+    fs.writeFileSync(target, 'first')
+    const read = fs.readFileSync
+    let changed = false
+    const spy = vi.spyOn(fs, 'readFileSync').mockImplementation(((file: any, ...args: any[]) => {
+        const result = (read as any)(file, ...args)
+        if (String(file) === target && !changed) {
+            changed = true
+            fs.writeFileSync(target, 'different size')
+        }
+        return result
+    }) as typeof fs.readFileSync)
+    try { expect(() => live.reconcile()).toThrow('Asset changed while reading') }
+    finally { spy.mockRestore() }
+    expect(fs.existsSync(path.join(root, 'index/live-character-assets.json'))).toBe(false)
+})
+
+test('cached scans check each file once without repeating directory ancestry checks', () => {
+    const { live, assets } = liveFixture()
+    const count = 64
+    for (let i = 0; i < count; i++) fs.writeFileSync(path.join(assets, `${i}.png`), 'image')
+    live.reconcile()
+    live.invalidate()
+    const lstat = vi.spyOn(fs, 'lstatSync')
+    const exists = vi.spyOn(fs, 'existsSync')
+    try {
+        expect(live.reconcile()).toBeNull()
+        expect(lstat.mock.calls.length).toBeLessThan(count + 50)
+        expect(exists.mock.calls.length).toBeLessThan(50)
+    } finally { lstat.mockRestore(); exists.mockRestore() }
+})
+
+test('rejects an asset directory exchanged for a junction while scanning before publishing', () => {
+    const { root, live, assets } = liveFixture()
+    const target = path.join(assets, 'smile.png')
+    fs.writeFileSync(target, 'first')
+    live.reconcile()
+    live.invalidate()
+    const indexPath = path.join(root, 'index/live-character-assets.json')
+    const before = fs.readFileSync(indexPath)
+    const external = path.join(root, 'outside-assets')
+    fs.mkdirSync(external)
+    fs.writeFileSync(path.join(external, 'smile.png'), 'first')
+    const lstat = fs.lstatSync
+    let swapped = false
+    const spy = vi.spyOn(fs, 'lstatSync').mockImplementation(((file: any, ...args: any[]) => {
+        const result = (lstat as any)(file, ...args)
+        if (String(file) === target && !swapped) {
+            swapped = true
+            fs.renameSync(assets, `${assets}-original`)
+            fs.symlinkSync(external, assets, 'junction')
+        }
+        return result
+    }) as typeof fs.lstatSync)
+    try { expect(() => live.reconcile()).toThrow() }
+    finally { spy.mockRestore() }
+    expect(fs.readFileSync(indexPath)).toEqual(before)
+})
+
+test('rejects a file exchanged for a directory junction after enumeration', () => {
+    const { root, live, assets } = liveFixture()
+    const target = path.join(assets, 'smile.png')
+    fs.writeFileSync(target, 'first')
+    const external = path.join(root, 'external-dir')
+    fs.mkdirSync(external)
+    const readdir = fs.readdirSync
+    let swapped = false
+    const spy = vi.spyOn(fs, 'readdirSync').mockImplementation(((directory: any, ...args: any[]) => {
+        const result = (readdir as any)(directory, ...args)
+        if (String(directory) === assets && !swapped) {
+            swapped = true
+            fs.unlinkSync(target)
+            fs.symlinkSync(external, target, 'junction')
+        }
+        return result
+    }) as typeof fs.readdirSync)
+    try { expect(() => live.reconcile()).toThrow() }
+    finally { spy.mockRestore() }
+    expect(fs.existsSync(path.join(root, 'index/live-character-assets.json'))).toBe(false)
+})
+
+test('rejects a corrupt persisted fingerprint index instead of trusting its stamps', () => {
+    const { root, live, assets, store, repository } = liveFixture()
+    fs.writeFileSync(path.join(assets, 'smile.png'), 'first')
+    live.reconcile()
+    fs.writeFileSync(path.join(root, 'index/live-character-assets.json'), '{}')
+    const restarted = createLiveCharacterFiles({ repository, writeAsset: store.kvSet, watch: false, settleMs: 0 })
+    expect(() => restarted.reconcile()).toThrow()
+})
+
+test.each(['same-size', 'replacement', 'deletion'])('persisted fingerprints detect external %s after restart', operation => {
+    const { live, assets, store, repository } = liveFixture()
+    const target = path.join(assets, 'smile.png')
+    fs.writeFileSync(target, 'first')
+    const initial = live.reconcile().database.characters[0].additionalAssets[0][1]
+    const original = fs.statSync(target)
+    if (operation === 'deletion') fs.unlinkSync(target)
+    else {
+        if (operation === 'replacement') {
+            const replacement = path.join(assets, 'replacement.tmp')
+            fs.writeFileSync(replacement, 'other')
+            fs.renameSync(replacement, target)
+        } else fs.writeFileSync(target, 'other')
+        fs.utimesSync(target, original.atime, original.mtime)
+    }
+    const restarted = createLiveCharacterFiles({ repository, writeAsset: store.kvSet, watch: false, settleMs: 0 })
+    const entries = restarted.reconcile().database.characters[0].additionalAssets
+    if (operation === 'deletion') expect(entries).toEqual([])
+    else {
+        expect(entries[0][1]).not.toBe(initial)
+        expect(store.kvGet(entries[0][1]).toString()).toBe('other')
+    }
+})
+test('recovers a fingerprint-only publication interrupted between the index and checksum', () => {
+    const { root, live, assets, store, repository } = liveFixture()
+    fs.writeFileSync(path.join(assets, 'smile.png'), 'first')
+    live.reconcile()
+    const { atomicWriteJson } = require('./file-store.cjs')
+    const relative = 'index/live-character-assets.json'
+    const index = JSON.parse(fs.readFileSync(path.join(root, relative), 'utf8'))
+    delete index.characters.one['smile.png'].stamp
+    atomicWriteJson(root, relative, index)
+    const restart = () => createLiveCharacterFiles({ repository, writeAsset: store.kvSet, watch: false, settleMs: 0 })
+    const reopened = restart()
+    const rename = fs.renameSync
+    let interrupted = false
+    const spy = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+        if (!interrupted && String(to) === path.join(root, `${relative}.sha256`)) {
+            interrupted = true
+            throw new Error('interrupted fingerprint publication')
+        }
+        return rename(from, to)
+    })
+    try { expect(() => reopened.reconcile()).toThrow('interrupted fingerprint publication') }
+    finally { spy.mockRestore() }
+    expect(interrupted).toBe(true)
+    expect(restart().reconcile()).toBeNull()
+    expect(store.kvGet(index.characters.one['smile.png'].key).toString()).toBe('first')
+})
+
 test('a dropped asset becomes available, same-size replacement changes its URL, and removal removes the reference', () => {
     const { live, assets, store } = liveFixture()
     fs.writeFileSync(path.join(assets, 'smile.png'), 'first')

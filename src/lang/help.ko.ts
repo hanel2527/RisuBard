@@ -168,6 +168,7 @@ export const helpKo = {
         "hypaV3EmbeddingMaxConcurrent": "유사도 검색 시 최대 동시 임베딩 모델 요청 수입니다.",
         "nodeOnlyScrollButtonType": "채팅 스크롤 버튼 표시 방식입니다. 4버튼은 맨 위·맨 아래로 이동 버튼을 추가하고, 2버튼은 이전/다음 메시지 이동만, 사용 안 함은 버튼을 숨깁니다.",
         "pinChatScrollNavigator": "채팅 사이드 네비게이터가 자동으로 사라지지 않고 항상 보이게 고정합니다.",
+        "chatScrollNavigatorOffset": "화면 중앙을 기준으로 사이드 네비게이터의 세로 위치를 조절합니다. 기본값은 0이며 음수는 위로, 양수는 아래로 이동합니다. 단위는 픽셀(px)이며 버튼이 화면 밖으로 나가지 않도록 이동 범위를 제한합니다.",
         "nodeOnlyServerSideRequests": "요청을 서버가 대신 보내고 응답을 보존합니다. 화면이 꺼지거나 연결이 끊겨도 생성이 계속되며, 돌아오면 응답이 자동으로 복구됩니다. 모델 프리셋 요청에만 적용되며, 끄면 기존처럼 브라우저가 직접 요청합니다.",
         "confirmReroll": "메시지를 재생성(reroll)할 때 확인 다이얼로그를 띄웁니다. 실수로 응답을 날리는 것을 막고 싶을 때 켜세요.",
         "sendWithEnter": "Enter 키로 메시지를 전송합니다.",

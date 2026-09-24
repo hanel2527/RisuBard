@@ -5,12 +5,11 @@ import { describe, expect, test } from 'vitest'
 const read = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf8')
 
 describe('chat scroll anchor integration', () => {
-    test('connects bounded DOM stabilization to the default chat screen', () => {
+    test('connects layout stabilization to the default chat screen', () => {
         const source = read('src/lib/ChatScreens/DefaultChatScreen.svelte')
 
         expect(source).toContain("from './chatScrollAnchor'")
-        expect(source).toContain('new MutationObserver')
-        expect(source).toContain("container.addEventListener('load'")
+        expect(source).toContain('observeChatScroll(container, captureCurrentScrollAnchor')
         expect(source).toContain('DBState.db.preserveChatScrollPosition')
     })
 

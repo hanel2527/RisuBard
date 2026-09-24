@@ -1,4 +1,5 @@
 const MIN_CORRECTION_PX = 1.25
+const READING_BLOCK_SELECTOR = 'p, li, pre, blockquote, h1, h2, h3, h4, h5, h6, img, video, iframe, table, hr'
 
 export interface ChatScrollAnchor {
     contextKey: string
@@ -6,6 +7,13 @@ export interface ChatScrollAnchor {
     messageCount: number
     offsetTop: number
     atLatest: boolean
+    readingBlock?: {
+        element: HTMLElement
+        path: number[]
+        tagName: string
+        identity: string
+        offsetTop: number
+    }
 }
 
 export type ChatScrollRestoreResult =
@@ -23,6 +31,41 @@ function getIndexedMessages(container: HTMLElement) {
             rect: element.getBoundingClientRect(),
         }))
         .filter((message) => Number.isInteger(message.index) && message.index >= 0)
+}
+
+function blockIdentity(element: HTMLElement) {
+    return element.getAttribute('src') ?? (element.textContent ?? '').trim().slice(0, 64)
+}
+
+function captureReadingBlock(message: HTMLElement, viewport: DOMRect): ChatScrollAnchor['readingBlock'] {
+    const content = message.querySelector('.chattext')
+    if (!content) return undefined
+    let selected: HTMLElement | undefined
+    let bestScore = Number.POSITIVE_INFINITY
+    for (const element of content.querySelectorAll<HTMLElement>(READING_BLOCK_SELECTOR)) {
+        const rect = element.getBoundingClientRect()
+        if (rect.height <= 0 || rect.bottom <= viewport.top + 1 || rect.top >= viewport.bottom - 1) continue
+        const score = rect.top <= viewport.top + 1
+            ? Math.abs(rect.top - viewport.top - 1) * 0.001
+            : rect.top - viewport.top + 10
+        // Prefer the inner paragraph/media over a surrounding quote or list item.
+        if (score < bestScore || (score === bestScore && selected?.contains(element))) {
+            selected = element
+            bestScore = score
+        }
+    }
+    if (!selected) return undefined
+    const path: number[] = []
+    for (let element: Element = selected; element !== message && element.parentElement; element = element.parentElement) {
+        path.unshift(Array.prototype.indexOf.call(element.parentElement.children, element))
+    }
+    return {
+        element: selected,
+        path,
+        tagName: selected.tagName,
+        identity: blockIdentity(selected),
+        offsetTop: selected.getBoundingClientRect().top - viewport.top,
+    }
 }
 
 export function captureChatScrollAnchor(
@@ -57,12 +100,14 @@ export function captureChatScrollAnchor(
         null,
     )
 
+    const readingBlock = captureReadingBlock(selected.element, containerRect)
     return {
         contextKey,
         messageIndex: selected.index,
         messageCount,
         offsetTop: selected.rect.top - containerRect.top,
         atLatest: Boolean(newest && newest.rect.top <= containerRect.bottom + 100),
+        ...(readingBlock ? { readingBlock } : {}),
     }
 }
 
@@ -81,9 +126,26 @@ export function restoreChatScrollAnchor(
     )
     if (!target) return 'missing'
 
-    const currentOffset = target.getBoundingClientRect().top
+    let readingTarget = target
+    let offsetTop = anchor.offsetTop
+    if (anchor.readingBlock) {
+        const block = anchor.readingBlock
+        let candidate: Element | undefined = block.element
+        if (!target.contains(candidate)) {
+            candidate = target
+            for (const index of block.path) candidate = candidate?.children[index]
+            // A removed block can leave another paragraph at the same path.
+            if (candidate?.tagName !== block.tagName
+                || blockIdentity(candidate as HTMLElement) !== block.identity) candidate = undefined
+        }
+        if (candidate && candidate.getBoundingClientRect().height > 0) {
+            readingTarget = candidate as HTMLElement
+            offsetTop = block.offsetTop
+        }
+    }
+    const currentOffset = readingTarget.getBoundingClientRect().top
         - container.getBoundingClientRect().top
-    const delta = currentOffset - anchor.offsetTop
+    const delta = currentOffset - offsetTop
     if (Math.abs(delta) < MIN_CORRECTION_PX) return 'stable'
 
     container.scrollTo({

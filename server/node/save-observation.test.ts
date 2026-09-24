@@ -30,10 +30,10 @@ describe('save observation log', () => {
         const dataRoot = tempRoot()
         const observation = createSaveObservation({ dataRoot })
         observation.record({ kind: 'canonical-sync', externalCheckMs: 10, compatibilityInvalidateMs: 20,
-            transactionMs: 30, revisionAcceptMs: 40, revisionPaths: ['private-file'] })
+            transactionMs: 30, assetSyncMs: 5, revisionAcceptMs: 40, revisionPaths: ['private-file'] })
         await observation.flush()
         const row = JSON.parse(fs.readFileSync(path.join(dataRoot, 'logs/storage-observation.jsonl'), 'utf8'))
-        expect(row).toMatchObject({ externalCheckMs: 10, compatibilityInvalidateMs: 20, transactionMs: 30, revisionAcceptMs: 40 })
+        expect(row).toMatchObject({ externalCheckMs: 10, compatibilityInvalidateMs: 20, transactionMs: 30, assetSyncMs: 5, revisionAcceptMs: 40 })
         expect(row).not.toHaveProperty('revisionPaths')
     })
     it('persists only bounded content-free fields', async () => {

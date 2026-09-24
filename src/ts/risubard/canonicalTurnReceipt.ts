@@ -18,6 +18,28 @@ export interface CanonicalTurnReceipt {
     recordedAt: string
 }
 
+// Repeated analysis belongs to the same turn; an empty pass must not erase saves.
+export function mergeCanonicalTurnReceipts(
+    previous: CanonicalTurnReceipt | undefined,
+    latest: CanonicalTurnReceipt
+): CanonicalTurnReceipt {
+    if (!previous) return latest
+    const changes = new Map(previous.changes.map(change => [change.documentId, change]))
+    for (const change of latest.changes) {
+        const earlier = changes.get(change.documentId)
+        changes.set(change.documentId, {
+            ...change,
+            action: earlier?.action === 'create' ? 'create' : change.action,
+        })
+    }
+    return {
+        ...latest,
+        sourceMessageIds: [...new Set([...previous.sourceMessageIds, ...latest.sourceMessageIds])],
+        eventIds: [...new Set([...previous.eventIds, ...latest.eventIds])],
+        changes: [...changes.values()],
+    }
+}
+
 const CANONICAL_UPDATE_RETRY_PREFIX = '정본 문서 갱신 실패'
 
 function canonicalValidationHint(error: unknown): string | undefined {

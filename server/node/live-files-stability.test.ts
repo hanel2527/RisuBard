@@ -107,7 +107,7 @@ test.each(['before-publication', 'after-publication'])('failed adoption retries 
     let invalidated = false, published = false
     const cache: any = { db: pending }
     const archives: any[] = []
-    const run = new Function('deps', `with (deps) { let liveFilesAdoption = null, liveFilesRecovery = null; let liveFilesPendingWrites = true; let liveFilesRevision = 'old'; let dbEtag, externallyAdoptedDbEtag; ${body}; return adoptExternallyChangedCanonicalProjection; }`)({
+    const run = new Function('deps', `with (deps) { let liveFilesAdoption = null, liveFilesRecovery = null, liveFilesChatPrevious = []; let liveFilesPendingWrites = true; let liveFilesRevision = 'old'; let dbEtag, externallyAdoptedDbEtag; ${body}; return adoptExternallyChangedCanonicalProjection; }`)({
         canonicalProjectionReady: true,
         liveCharacterFiles: {
             reconcile: () => reconciles++ === 0 ? { database: external, previous: before, revision: 'revision' }

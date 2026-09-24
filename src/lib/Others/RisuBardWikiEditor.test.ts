@@ -78,6 +78,32 @@ afterEach(async () => {
 })
 
 describe('RisuBardWikiEditor', () => {
+    it('adopts normalized rename receipts before another save without a parent refresh', async () => {
+        const saved = { ...documents[0], title: '츠구', aliases: ['소녀'],
+            content: '## 츠구\n\n기사.', contentHash: 'renamed-hash' }
+        mocks.saveManualWikiDocument.mockResolvedValue(saved)
+        mounted = mount(RisuBardWikiEditor, {
+            target: document.body,
+            props: { characterId: 'character', chatId: 'chat', documents },
+        })
+        await tick()
+        const title = document.querySelector<HTMLInputElement>('[aria-label="항목 이름"]')!
+        title.value = '츠구'
+        title.dispatchEvent(new Event('input', { bubbles: true }))
+        await tick()
+        const save = document.querySelector<HTMLButtonElement>('[aria-label="저장"]')!
+        save.click()
+        await vi.waitFor(() => expect(save.disabled).toBe(true))
+        const editor = document.querySelector<HTMLTextAreaElement>('[aria-label="Markdown"]')!
+        await vi.waitFor(() => expect(editor.value).toBe(saved.content))
+        editor.value += '\n추가 기록.'
+        editor.dispatchEvent(new Event('input', { bubbles: true }))
+        await tick()
+        save.click()
+        await vi.waitFor(() => expect(mocks.saveManualWikiDocument).toHaveBeenLastCalledWith(
+            expect.objectContaining({ expectedContentHash: 'renamed-hash' })
+        ))
+    })
     it('shows read-only retrieval keywords and story time including day zero', async () => {
         mounted = mount(RisuBardWikiEditor, {
             target: document.body,

@@ -3,13 +3,13 @@
     import { DBState } from 'src/ts/stores.svelte'
     import { sleep } from "src/ts/util"
     import { alertError } from "../../ts/alert"
-    import { tick } from 'svelte'
     import { addMetadataToElement, getDistance, ParseMarkdown, postTranslationParse, resolveInlayPlaceholders, trimMarkdown, type CbsConditions, type simpleCharacterArgument } from "../../ts/parser/parser.svelte"
     import { getLLMCache, translateHTML } from "../../ts/translator/translator"
     import { getModuleAssets } from "src/ts/process/modules";
     import { getCurrentCharacter } from "src/ts/storage/database.svelte";
     import { getFileSrc } from "src/ts/globalApi.svelte";
     import { clearGenericChatImageStyles, isFirstMessageStudioManagedImage } from './chatImageHandling'
+    import { retainedChatHtml } from './retainedChatHtml'
 
     interface Props {
         character?: simpleCharacterArgument|string|null
@@ -255,26 +255,19 @@
 
     let markParsingResult = $derived.by(() => markParsing(msgDisplay, character, idx))
 
-    $effect(() => {
-        if(shouldRenderRawStreaming){
-            return
-        }
-        markParsingResult
+    function onHtmlRendered() {
         checkImg()
-        markParsingResult.then(async () => {
-            checkImg()
-            await tick() // Wait for Svelte to re-render the {:then} block into DOM
-            if (bodyRoot) resolveInlayPlaceholders(bodyRoot)
-        })
-    })
+        if (bodyRoot) resolveInlayPlaceholders(bodyRoot)
+    }
 </script>
 
 {#if shouldRenderRawStreaming}
     <span class="whitespace-pre-wrap">{rawStreamingText}</span>
 {:else}
-    {#await markParsingResult}
-        {@html addMetadataToElement(trimMarkdown(lastParsed), modelShortName)}
-    {:then md}
-        {@html addMetadataToElement(trimMarkdown(md), modelShortName)}
-    {/await}
+    <span style="display: contents" use:retainedChatHtml={{
+        content: markParsingResult,
+        format: (html) => addMetadataToElement(trimMarkdown(html), modelShortName),
+        onRender: onHtmlRendered,
+        pendingHtml: (translated || retranslate) && DBState.db.showTranslationLoading ? lastParsed : undefined,
+    }}></span>
 {/if}

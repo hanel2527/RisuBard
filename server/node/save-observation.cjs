@@ -13,7 +13,7 @@ const NUMBER_FIELDS = new Set([
     'kvWriteMs', 'canonicalSyncMs', 'refreshMs', 'databaseBytes', 'characterCount',
     'chatCount', 'messageCount', 'plannedFiles', 'publishedFiles', 'skippedFiles',
     'stagedBytes', 'overlappingPersists', 'queuedOperations',
-    'externalCheckMs', 'compatibilityInvalidateMs', 'transactionMs', 'revisionAcceptMs',
+    'externalCheckMs', 'compatibilityInvalidateMs', 'transactionMs', 'assetSyncMs', 'revisionAcceptMs',
 ]);
 const BOOLEAN_FIELDS = new Set(['sameAsPreviousPersist', 'semanticMatch', 'fallbackUsed', 'projectionDeferred']);
 const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;

@@ -211,14 +211,16 @@
             character.chaId === characterId
         )?.chats.find((chat) => chat.id === chatId)?.message ?? []
     )
-    let currentChat = $derived(
+    let currentCharacter = $derived(
         DBState.db.characters?.find((character) =>
             character.chaId === characterId
-        )?.chats.find((chat) => chat.id === chatId)
+        )
     )
+    let currentChat = $derived(currentCharacter?.chats.find((chat) => chat.id === chatId))
     let resolvedChatSettings = $derived(resolveRisuBardChatSettings(
         DBState.db,
-        currentChat?.risuBardSettings
+        currentChat?.risuBardSettings,
+        currentCharacter?.risuBardPinnedSettings,
     ))
     let transferBlocked = $derived(loading || forceUpdating || transferBusy || $isWikiGenerating || $isAnyGenerating || !!rebootJob || !!currentChat?.isStreaming || wiki?.mode !== 'markdown')
     let arcPlotterSettings = $derived(normalizeArcPlotterRuntimeSettings({
@@ -249,7 +251,8 @@
     let rebootAnalysisTokenLimit = $derived(
         resolveRisuBardChatSettings(
             DBState.db,
-            currentChat?.risuBardSettings
+            currentChat?.risuBardSettings,
+            currentCharacter?.risuBardPinnedSettings,
         ).risuBardAnalysisTokenLimit
     )
     let empty = $derived(
@@ -511,8 +514,8 @@
         selection: DirectWikiContextSelection
     ) {
         if (!currentChat) return
-        currentChat.risuBardSettings ??= {}
-        Object.assign(currentChat.risuBardSettings, {
+        const target = currentCharacter?.risuBardPinnedSettings ?? (currentChat.risuBardSettings ??= {})
+        Object.assign(target, {
             bardChatIncludeWiki: selection.wiki,
             bardChatIncludeChat: selection.chat,
             bardChatIncludeSystemPrompt: selection.systemPrompt,
@@ -849,7 +852,7 @@
                 hidden={!settingsOpen}
                 bind:this={settingsPopoverElement}
             >
-                <RisuBardCurrentChatSettings chat={currentChat} global={DBState.db} />
+                <RisuBardCurrentChatSettings chat={currentChat} character={currentCharacter} global={DBState.db} />
                 <ManagerResizeHandles
                     target={settingsPopoverElement}
                     rightAnchored

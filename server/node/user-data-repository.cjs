@@ -354,6 +354,13 @@ function createUserDataRepository(options = {}) {
                 for (const entry of [...(value.additionalAssets || []), ...(value.emotionImages || [])]) {
                     if (!Array.isArray(entry) || typeof entry[0] !== 'string' || typeof entry[1] !== 'string') fail();
                 }
+            } else if (kind === 'chat') {
+                if (typeof value.id !== 'string' || !value.id || 'message' in value || '_stub' in value) fail();
+                if ('name' in value && typeof value.name !== 'string') fail();
+                if ('localLore' in value && !Array.isArray(value.localLore)) fail();
+                for (const entry of value.localLore || []) {
+                    if (!isPlainObject(entry) || ('content' in entry && typeof entry.content !== 'string')) fail();
+                }
             } else {
                 if ('name' in value && typeof value.name !== 'string') fail();
                 if ('data' in value && !Array.isArray(value.data)) fail();
@@ -405,7 +412,7 @@ function createUserDataRepository(options = {}) {
             const chats = [];
             const chatSummaries = [];
             for (const chatId of chatIds) {
-                const chatMetadata = readCanonicalJson(chatMetadataPath(characterId, chatId));
+                const chatMetadata = readEditableJson(chatMetadataPath(characterId, chatId), 'chat');
                 if (chatMetadata.id && stableId(chatMetadata.id, 'chat') !== chatId) {
                     throw new Error('Canonical chat directory does not match its stable ID');
                 }
@@ -620,6 +627,7 @@ function createUserDataRepository(options = {}) {
         const charactersRoot = directories.safePath('characters');
         const occupiedCharacters = new Set(fs.readdirSync(charactersRoot));
         occupiedCharacters.delete(current.directory);
+        occupiedCharacters.add(id);
         for (const entry of previous.characters) {
             if (entry.id === id) continue;
             occupiedCharacters.add(entry.id);
@@ -640,6 +648,7 @@ function createUserDataRepository(options = {}) {
         for (const chat of summary.chats) {
             const old = current.chats.find(entry => entry.id === chat.id) || { id: chat.id, directory: chat.id };
             occupiedChats.delete(old.directory);
+            occupiedChats.add(chat.id);
             const directory = allocateSegment(chat.name, occupiedChats);
             occupiedChats.add(directory);
             occupiedChats.add(chat.id);

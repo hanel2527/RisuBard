@@ -286,6 +286,7 @@ export const helpEn = {
             "Higher values use more chat context to determine similarity.",
         nodeOnlyScrollButtonType: "How the chat scroll buttons are shown. 4 Buttons adds jump-to-top and jump-to-bottom controls; 2 Buttons keeps only previous/next message navigation; Off hides them.",
         pinChatScrollNavigator: "Keeps the chat side navigator visible instead of hiding it automatically.",
+        chatScrollNavigatorOffset: "Adjusts the side navigator vertically from the center of the screen. The default is 0. Negative values move it up and positive values move it down, in pixels (px). Movement is constrained to keep the buttons on screen.",
         nodeOnlyServerSideRequests: "The server sends requests on your behalf and preserves the response. Generation continues even if the screen turns off or the connection drops, and the response is recovered automatically when you return. This only applies to model preset requests; turning it off restores the previous direct-request behavior.",
         confirmReroll: "Ask for confirmation before regenerating a message.",
         sendWithEnter: "Send the message with Enter.",
