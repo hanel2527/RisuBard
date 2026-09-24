@@ -1,0 +1,68 @@
+name: Dependency change check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'package.json'
+      - 'pnpm-*.yaml'
+      - 'patches/**'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.npmrc'
+      - 'scripts/check-release-inputs*'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/dependency-change-check.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'package.json'
+      - 'pnpm-*.yaml'
+      - 'patches/**'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.npmrc'
+      - 'scripts/check-release-inputs*'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/dependency-change-check.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-change-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable-dependencies:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.34.1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Test missing release inputs
+        run: node --test scripts/check-release-inputs.node-test.cjs
+      - name: Stage and install portable production dependencies
+        shell: bash
+        run: |
+          node scripts/check-release-inputs.cjs "$RUNNER_TEMP/portable-dependency-check"
+          cd "$RUNNER_TEMP/portable-dependency-check"
+          pnpm install --prod --frozen-lockfile
+
+  docker-dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Docker production dependencies without building or publishing the app
+        run: docker build --target deps --tag risubard-dependency-check .

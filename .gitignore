@@ -56,6 +56,8 @@ dist.zip
 !/scripts/check-public-boundary.mjs
 !/scripts/check-public-boundary.test.ts
 !/scripts/check-brand-boundary.test.ts
+!/scripts/check-release-inputs.cjs
+!/scripts/check-release-inputs.node-test.cjs
 !/scripts/dev-launcher.mjs
 !/scripts/dev-launcher.test.ts
 !/scripts/launch-risubard-dev.cmd
