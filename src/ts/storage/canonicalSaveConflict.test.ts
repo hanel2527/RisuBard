@@ -95,9 +95,9 @@ test('chat endpoint rejects external changes before accepting a message into its
     const next = vi.fn()
     const res: any = { status: vi.fn(() => res), json: vi.fn(), send: vi.fn() }
     const handler = new Function('checkAuth', 'checkActiveSession', 'queueStorageOperation', 'externalEditSession',
-        'adoptExternallyChangedCanonicalProjection', 'sendCanonicalProjectionConflict', `${route.getText(ast)}; return saveChatContentHandler`)(
+        'adoptSettledExternalProjection', 'sendCanonicalProjectionConflict', `${route.getText(ast)}; return saveChatContentHandler`)(
         async () => true, () => true,
-        async (fn: any) => fn(), { isActive: () => false }, () => ({ etag: 'external' }),
+        async (fn: any) => fn(), { isActive: () => false }, async () => ({ etag: 'external' }),
         (response: any) => response.status(409).json({ code: 'CANONICAL_FILES_CHANGED' }),
     )
     await handler({}, res, next)
