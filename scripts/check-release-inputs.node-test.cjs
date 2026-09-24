@@ -27,10 +27,11 @@ test('stages the dependency inputs from the actual portable artifact contract', 
     assert.throws(() => checkReleaseInputs(root, stage), /exist/i);
 });
 
-test('rejects a patch omitted from the portable upload', t => {
+for (const newline of ['\n', '\r\n']) test(`rejects a patch omitted from the portable upload (${JSON.stringify(newline)})`, t => {
     const root = fixture(t);
     const file = path.join(root, '.github/workflows/release.yml');
-    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^\s+patches\/\r?\n/m, ''));
+    const source = fs.readFileSync(file, 'utf8').replace(/\r?\n/g, newline);
+    fs.writeFileSync(file, source.replace(/^[ \t]+patches\/\r?\n/m, ''));
     assert.throws(() => checkReleaseInputs(root), /portable.*patches/i);
 });
 
