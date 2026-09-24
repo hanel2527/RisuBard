@@ -48,6 +48,21 @@ test('explicit metadata verification detects edits when watcher notifications ar
     expect(live.reconcile({ verifyMetadata: true })).toBeNull()
 })
 
+test('watches the native real path when the data root uses a directory alias', () => {
+    const { root, repository } = fixture()
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'bard-watch-alias-')); roots.push(parent)
+    const alias = path.join(parent, 'data')
+    fs.symlinkSync(root, alias, 'junction')
+    const watcher = { on: vi.fn(), unref: vi.fn(), close: vi.fn() }
+    const watch = vi.spyOn(fs, 'watch').mockReturnValue(watcher as any)
+    try {
+        const live = createLiveCharacterFiles({ repository: { ...repository, dataRoot: alias }, writeAsset: () => {} })
+        expect(watch.mock.calls[0][0]).toBe(fs.realpathSync.native(root))
+        live.close()
+        expect(watcher.close).toHaveBeenCalledOnce()
+    } finally { watch.mockRestore() }
+})
+
 test('malformed chat lore or changed chat identity is rejected before checksum acceptance', () => {
     const { root, repository } = fixture()
     const target = path.join(root, 'characters/one/chats/chat/metadata.json')

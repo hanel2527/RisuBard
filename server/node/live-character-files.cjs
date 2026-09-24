@@ -119,7 +119,8 @@ function createLiveCharacterFiles({ repository, writeAsset, writeAssets, reloadA
     function invalidate(includeAssets = true) { dirty = true; assetsDirty ||= includeAssets; changedAt = Date.now(); }
     if (watch) {
         try {
-            watcher = fs.watch(root, { recursive: true }, (_event, filename) => {
+            // libuv can abort on Windows 8.3 aliases; use its native long path.
+            watcher = fs.watch(fs.realpathSync.native(root), { recursive: true }, (_event, filename) => {
                 const name = String(filename || '').replaceAll('\\', '/');
                 if (!name || /^characters\/[^/]+(?:\/metadata\.json|\/assets(?:\/[^/]+)?)?$/.test(name)
                     || /^characters\/[^/]+\/chats\/[^/]+\/metadata\.json$/.test(name)
