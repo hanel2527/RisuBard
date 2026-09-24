@@ -27,7 +27,7 @@ describe('BardWiki additional analysis control', () => {
         )
         expect(processSource).toContain("operation: 'error'")
         expect(processSource).toContain('위키 갱신 실패:')
-        expect(processSource).toContain('canonicalTurnRetryWarning(receipt)')
+        expect(processSource).toContain('canonicalTurnFailureWarning(receipt)')
         expect(processSource).toContain('message: retryWarning')
         expect(processSource).toContain('boundedMemoryAnalysisError(error)')
         expect(processSource).toContain('console.warn(`[RisuBard memory analysis] ${reason}`)')

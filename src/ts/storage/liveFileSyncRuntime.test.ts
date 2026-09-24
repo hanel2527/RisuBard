@@ -13,7 +13,7 @@ test('an error with a newer revision cannot consume the unseen snapshot revision
     const response = { revision: 'new', etag: 'etag', error: 'External files are being saved; retry in a moment' }
     const syncLiveFiles = vi.fn(async () => response)
     const create = new Function('forageStorage', `
-        let liveRevision = 'old', lastLiveError = '';
+        let liveRevision = 'old', lastLiveError = '', gotChannel = false;
         const supportsPatchSync = true, saveRuntime = { isActive: () => true }, notifyError = () => {};
         ${handler}
         return { sync: syncLiveFilesNow, revision: () => liveRevision };
