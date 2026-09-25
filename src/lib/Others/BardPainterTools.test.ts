@@ -31,6 +31,10 @@ beforeEach(() => {
     const data = createPainterChatData()
     session = painterTestState({
         data, styles: [style], style,
+        get settings() { return this.data.settings },
+        generationSettingsPinned: false, hasGenerationOverrides: true,
+        updateGenerationSettings: vi.fn(() => session.persist()), pinGenerationSettings: vi.fn(),
+        applyGenerationSettingsToGlobal: vi.fn(), useGlobalGenerationSettings: vi.fn(),
         bot: { identities: [{ id: 'example', name: '예시 인물', aliases: [], appearance: '' }], outfits: [] },
         state: { status: 'idle', error: '', notice: '', loadingWiki: false, wikiDocs: [{ id: 'place', title: '예시 장소' }] },
         persist: vi.fn().mockResolvedValue(undefined), saveStyle: vi.fn().mockResolvedValue('saved-copy'), loadWiki: vi.fn(),
@@ -40,6 +44,34 @@ beforeEach(() => {
 afterEach(() => { component?.$destroy(); component = undefined; document.body.replaceChildren() })
 
 describe('BardPainter tools', () => {
+    test('exposes pin/global controls and disables global actions when already inheriting', async () => {
+        await mount('settings')
+        const scope = document.querySelector('[aria-label="생성 설정 적용 범위"]')!
+        const pin = scope.querySelector('input')!
+        pin.checked = true; pin.dispatchEvent(new Event('change', { bubbles: true }))
+        expect(session.pinGenerationSettings).toHaveBeenCalledWith(true)
+        button('전역값으로 설정').click(); button('전역값 사용').click()
+        expect(session.applyGenerationSettingsToGlobal).toHaveBeenCalledOnce()
+        expect(session.useGlobalGenerationSettings).toHaveBeenCalledOnce()
+        session.hasGenerationOverrides = false; await tick()
+        expect(button('전역값으로 설정').disabled).toBe(true)
+        expect(button('전역값 사용').disabled).toBe(true)
+    })
+    test('saves changed generation values without sharing wiki selections', async () => {
+        await mount('settings')
+        const model = [...document.querySelectorAll('select')].find(select => select.value === 'nai-diffusion-5-full')!
+        model.value = 'nai-diffusion-5-curated'; model.dispatchEvent(new Event('change', { bubbles: true }))
+        expect(session.updateGenerationSettings).toHaveBeenLastCalledWith(expect.objectContaining({ model: 'nai-diffusion-5-curated' }))
+        const persona = [...document.querySelectorAll('label')].find(label => label.textContent?.trim() === '페르소나')!.querySelector('input')!
+        persona.checked = true; persona.dispatchEvent(new Event('change', { bubbles: true }))
+        expect(session.updateGenerationSettings).toHaveBeenLastCalledWith(expect.objectContaining({ context: expect.objectContaining({ persona: true }) }))
+        session.updateGenerationSettings.mockClear(); session.persist.mockClear()
+        const wiki = [...document.querySelectorAll('label')].find(label => label.textContent?.trim() === '예시 장소')!.querySelector('input')!
+        wiki.checked = true; wiki.dispatchEvent(new Event('change', { bubbles: true }))
+        expect(session.persist).toHaveBeenCalledOnce()
+        expect(session.updateGenerationSettings).not.toHaveBeenCalled()
+        expect(session.data.settings.context.wikiIds).toEqual(['place'])
+    })
     test('dismisses generation settings on an outside click and shows only the reference slot', async () => {
         await mount('settings')
         expect(document.querySelector('[data-painter-reference]')).not.toBeNull()

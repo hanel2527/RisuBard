@@ -1,4 +1,5 @@
 <script lang="ts">
+    import BardPainterPromptInput from './BardPainterPromptInput.svelte'
     import { untrack } from 'svelte'
     import { ArrowUp, ArrowDown, Plus, Trash2 } from '@lucide/svelte'
     import type { getPainterSession } from 'src/ts/bardPainter/runtime.svelte'
@@ -104,9 +105,9 @@
             <fieldset disabled={locked}>
                 <label>프리셋 이름<input aria-label="화풍 프리셋 이름" bind:value={draft.name} placeholder="새 화풍 이름" /></label>
                 {#if builtIn}<p class="hint">기본 프리셋에는 화풍 태그가 없습니다. 이름을 바꾸고 새 프리셋으로 저장하세요.</p>{/if}
-                <label>그림체와 작가 태그<textarea aria-label="화풍 작가 태그" rows="3" spellcheck="false" bind:value={draft.artist}></textarea></label>
-                <label>그림 스타일<textarea aria-label="화풍 그림 스타일" rows="3" spellcheck="false" bind:value={draft.rendering}></textarea></label>
-                <label>네거티브 프롬프트<textarea rows="2" spellcheck="false" bind:value={draft.negative}></textarea></label>
+                <label>그림체와 작가 태그<BardPainterPromptInput aria-label="화풍 작가 태그" rows={3} spellcheck="false" bind:value={draft.artist}></BardPainterPromptInput></label>
+                <label>그림 스타일<BardPainterPromptInput aria-label="화풍 그림 스타일" rows={3} spellcheck="false" bind:value={draft.rendering}></BardPainterPromptInput></label>
+                <label>네거티브 프롬프트<BardPainterPromptInput rows={2} spellcheck="false" bind:value={draft.negative}></BardPainterPromptInput></label>
                 <details><summary>생성 값</summary><div class="grid">
                     <label>스텝<input type="number" min="1" max="50" step="1" bind:value={draft.steps} /></label>
                     <label>프롬프트 강도<input type="number" min="0" max="10" step="0.1" bind:value={draft.scale} /></label>
@@ -144,13 +145,12 @@
     .editor-heading .hint { margin-left: auto; }
     fieldset { display: flex; flex-direction: column; gap: .65rem; border: 0; padding: 0; min-width: 0; }
     label { display: flex; flex-direction: column; gap: .3rem; font-size: .8rem; min-width: 0; }
-    input, select, textarea { width: 100%; min-width: 0; border: 1px solid var(--color-darkborderc); background: var(--color-bgcolor); color: var(--color-textcolor); border-radius: .35rem; padding: .4rem .5rem; font: inherit; font-size: .85rem; }
-    textarea { resize: vertical; line-height: 1.55; min-height: 3.5rem; }
+    input, select { width: 100%; min-width: 0; border: 1px solid var(--color-darkborderc); background: var(--color-bgcolor); color: var(--color-textcolor); border-radius: .35rem; padding: .4rem .5rem; font: inherit; font-size: .85rem; }
     button { display: inline-flex; align-items: center; justify-content: center; min-height: 2rem; padding: .3rem .55rem; border: 1px solid var(--color-darkborderc); border-radius: .35rem; font-size: .8rem; }
     .icon { width: 2rem; flex: 0 0 2rem; padding: .25rem; }
     button:hover:not(:disabled) { background: var(--color-darkbutton); }
     button:disabled { opacity: .45; cursor: not-allowed; }
-    button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+    button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
     .primary { background: var(--color-primary); color: var(--color-accenttext); border-color: var(--color-primary); }
     .danger, .error { color: var(--color-danger); }
     .hint { color: var(--color-textcolor2); font-size: .75rem; line-height: 1.5; }

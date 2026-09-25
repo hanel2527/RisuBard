@@ -47,7 +47,7 @@ import { formatReasoningParts } from "src/ts/preset/adapter/reasoning";
 import { TOOL_CAPABLE_ADAPTER_KINDS, VISION_CAPABLE_ADAPTER_KINDS, type AdapterKind, type ModelPreset } from "src/ts/preset/types";
 import { pumpPresetStream } from "./presetStreamPump";
 import { preparePresetResponse, presetGenerationOverrides } from './presetResponse';
-import { preparePluginResponse } from './pluginResponse';
+import { normalizePluginJsonStream, preparePluginResponse } from './pluginResponse';
 import { filterResponseCharacters, isRetryableTransportError, normalizeRequestRetryLimit, presetFailureRetryPolicy } from './responseRetryPolicy';
 import { makeJobFetch, resolveModelJobRoute } from "./jobFetch";
 import { resolveChatModelBinding, resolveRequestModelBindingTarget, buildModelPresetCredential, applyPromptPresetParams, type ModelBindingTarget } from "./modelPresetBinding";
@@ -1904,7 +1904,7 @@ async function requestPlugin(arg:RequestDataArgumentExtended):Promise<requestDat
     
             return {
                 type: 'streaming',
-                result: statusStream,
+                result: normalizePluginJsonStream(statusStream),
                 model: responseModel
             }
         }

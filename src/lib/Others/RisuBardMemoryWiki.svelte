@@ -223,6 +223,7 @@
         )
     )
     let currentChat = $derived(currentCharacter?.chats.find((chat) => chat.id === chatId))
+    let painterChatReady = $derived(!!currentChat && !currentChat._placeholder && Array.isArray(currentChat.message))
     let resolvedChatSettings = $derived(resolveRisuBardChatSettings(
         DBState.db,
         currentChat?.risuBardSettings,
@@ -969,7 +970,9 @@
 
         {#if activeView === 'painter'}
             {#if painterLoadError}<p role="alert">{painterLoadError}</p>{/if}
-            {#if open}
+            {#if open && !painterChatReady}
+                <div class="ledger-state" role="status"><LoaderCircleIcon class="animate-spin" size={24} /><span>채팅을 불러오는 중...</span></div>
+            {:else if open}
                 {#await import('./BardPainter.svelte')}
                     <div class="ledger-state"><LoaderCircleIcon class="animate-spin" size={24} /><span>바드페인터를 여는 중...</span></div>
                 {:then painter}

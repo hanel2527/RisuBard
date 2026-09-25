@@ -1,5 +1,6 @@
 import { get } from 'svelte/store';
 import type { ChatScriptstateCheckpoint } from '../chatScriptstateCheckpoint';
+import type { TagAutocompleteSettings } from '../tagAutocomplete/settings';
 import { checkNullish, decryptBuffer, encryptBuffer, selectSingleFile } from '../util';
 import { changeLanguage, language } from '../../lang';
 import { DEFAULT_CHAT_LOAD_ADDITIONAL_PAGES, DEFAULT_CHAT_LOAD_INITIAL_PAGES, normalizeChatLoadPages } from '../chatLoadPages';
@@ -1559,6 +1560,7 @@ export interface Database{
     personaBuilderPromptPresets?:PersonaBuilderPromptPreset[]
     loreBuilderPromptPresets?:LoreBuilderPromptPreset[]
     bardPainterStyles?: import('../bardPainter/types').PainterStyle[]
+    bardPainterSettings?: import('../bardPainter/types').PainterGenerationSettings
     personaBuilderStylePromptPresetId?:string
     loreBuilderStylePromptPresetId?:string
     sdProvider: string
@@ -1966,6 +1968,7 @@ export interface Database{
     doNotChangeSeperateModels:boolean
     modelTools: string[]
     hotkeys:Hotkey[]
+    tagAutocomplete?: TagAutocompleteSettings
     fallbackModels: {
         memory: string[],
         emotion: string[],

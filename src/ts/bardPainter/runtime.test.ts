@@ -1,8 +1,10 @@
 import { beforeEach, expect, it, vi } from 'vitest'
 import { createPainterChatData } from './types'
+import type { PainterGenerationSettings } from './types'
 import { zipSync } from 'fflate'
 import { get } from 'svelte/store'
-import { painterSelection } from './selectionState'
+import { painterSelection, painterInsertionRequest } from './selectionState'
+import { savePainterGalleryRecord } from './gallery'
 const mocks = vi.hoisted(() => ({ db: { characters: [] as any[], bardPainterStyles: [], NAIApiKey: 'test-key', NAIImgUrl: 'https://image.novelai.net/ai/generate-image' }, save: vi.fn(), request: vi.fn(), fetch: vi.fn(), asset: vi.fn(), readAsset: vi.fn(), compress: vi.fn(), wiki: vi.fn(), hydrate: vi.fn() }))
 vi.mock('../stores.svelte', () => ({ DBState: { db: mocks.db }, ReloadChatPointer: { update: vi.fn() } }))
 vi.mock('../globalApi.svelte', () => ({ requestImmediateSave: mocks.save, globalFetch: mocks.fetch, forageStorage: { createAuth: vi.fn() } }))
@@ -17,6 +19,56 @@ import { loadPainterReference } from './reference'
 vi.mock('../storage/chatStorage', () => ({ ensureChatHydrated: mocks.hydrate }))
 import { getPainterSession, PainterSession } from './runtime.svelte'
 let serial = 0
+it('shares generation defaults, keeps scene inputs local, and persists bot pinning across sessions', async () => {
+    const db = mocks.db as typeof mocks.db & { bardPainterSettings?: PainterGenerationSettings }
+    const { session } = setup()
+    const other = new PainterSession('bot', 'other')
+    session.data.settings.instruction = 'local request'
+    session.data.settings.context.wikiIds = ['local wiki']
+    session.data.settings.context.referenceAssetId = 'local image'
+    try {
+        await session.updateGenerationSettings({ ...session.settings, width: 1024, height: 1024 })
+        await session.applyGenerationSettingsToGlobal()
+        expect(other.settings.width).toBe(1024)
+        expect(other.settings.instruction).toBe('')
+        expect(other.settings.context.wikiIds).toEqual([])
+        expect(other.settings.context.referenceAssetId).toBeUndefined()
+        await session.pinGenerationSettings(true)
+        await other.updateGenerationSettings({ ...other.settings, width: 1216, height: 832 })
+        expect(new PainterSession('bot', session.chatId).settings.width).toBe(1216)
+        expect(db.bardPainterSettings?.width).toBe(1024)
+        await session.useGlobalGenerationSettings()
+        expect(session.generationSettingsPinned).toBe(true)
+        expect(other.settings.width).toBe(1024)
+        await session.pinGenerationSettings(false)
+        await session.updateGenerationSettings({ ...session.settings, width: 832, height: 1216 })
+        expect(other.settings.width).toBe(1024)
+        expect(session.settings.width).toBe(832)
+        await session.useGlobalGenerationSettings()
+        expect(session.settings.width).toBe(1024)
+        expect(session.settings.instruction).toBe('local request')
+        expect(session.settings.context.wikiIds).toEqual(['local wiki'])
+        expect(session.settings.context.referenceAssetId).toBe('local image')
+        expect(mocks.save).toHaveBeenCalled()
+        const restored = JSON.parse(JSON.stringify(db))
+        expect(restored.bardPainterSettings.width).toBe(1024)
+        expect(restored.characters[0].chats[0].bardPainter.settingsScope).toBe('global')
+    } finally { delete db.bardPainterSettings }
+})
+
+it('preserves legacy chat settings until global inheritance is explicitly selected', async () => {
+    const { session } = setup()
+    delete session.data.settingsScope
+    session.data.settings.width = 1216
+    const db = mocks.db as typeof mocks.db & { bardPainterSettings?: PainterGenerationSettings }
+    db.bardPainterSettings = { ...session.settings, width: 1024 }
+    try {
+        expect(session.settings.width).toBe(1216)
+        await session.useGlobalGenerationSettings()
+        expect(session.settings.width).toBe(1024)
+    } finally { delete db.bardPainterSettings }
+})
+
 function setup() {
     const id = `chat-${++serial}`
     const data = createPainterChatData()
@@ -26,7 +78,76 @@ function setup() {
     mocks.db.characters = [{ chaId: 'bot', chatPage: 0, chats: [chat, { id: 'other', message: [{ chatId: 'm1', data: '다른 챗' }] }] }]
     return { session: getPainterSession('bot', id), chat }
 }
-beforeEach(() => { vi.resetAllMocks(); mocks.save.mockResolvedValue(undefined); mocks.hydrate.mockImplementation(async (chats, index) => chats[index]); mocks.db.bardPainterStyles = []; painterSelection.set(null) })
+beforeEach(() => { vi.resetAllMocks(); mocks.save.mockResolvedValue(undefined); mocks.hydrate.mockImplementation(async (chats, index) => chats[index]); mocks.db.bardPainterStyles = []; painterSelection.set(null); painterInsertionRequest.set(null) })
+
+it('resets only current painter work after preserving gallery records, retaining settings and presets', async () => {
+    const { session, chat } = setup()
+    const prior = session.data
+    prior.previousDraft = { ...prior.draft! }
+    prior.conversation = [{ id: 'old', role: 'user', text: 'request' }]
+    prior.settings.instruction = 'unsent request'
+    prior.settings.context.referenceId = 'legacy'
+    prior.settings.context.referenceAssetId = 'reference'
+    prior.outfits = [{ id: 'coat', subjectId: 'person', name: 'Coat', clothing: 'blue coat', state: '' }]
+    prior.results.push({ id: 'r', assetId: 'asset', createdAt: 1, anchor: prior.anchor!, draft: prior.draft!, settings: prior.settings, style: session.style, seed: 1 })
+    session.bot.identities.push({ id: 'person', name: 'Person', aliases: [], appearance: 'black hair' })
+    session.state.sources = [{ name: 'old', content: 'old reference' }]
+    painterSelection.set({ characterId: 'bot', chatId: chat.id, anchor: prior.anchor })
+    painterInsertionRequest.set({ characterId: 'bot', chatId: chat.id, resultId: 'r', insert: async () => true })
+    vi.mocked(savePainterGalleryRecord).mockImplementationOnce(async () => { expect(session.data.results).toHaveLength(1); expect(mocks.save).not.toHaveBeenCalled() })
+    expect(await session.resetWorkspace()).toBe(true)
+    expect(savePainterGalleryRecord).toHaveBeenCalledWith(prior.results[0], '')
+    expect(session.data).toEqual({ ...prior, anchor: undefined, draft: undefined, previousDraft: undefined, conversation: [], results: [], settings: { ...prior.settings, instruction: '', context: { ...prior.settings.context, referenceId: '', referenceAssetId: '' } } })
+    expect(session.bot.identities).toHaveLength(1)
+    expect(session.state.sources).toEqual([])
+    expect(get(painterSelection)).toBeNull()
+    expect(get(painterInsertionRequest)).toBeNull()
+    expect(mocks.db.characters[0].chats[1].bardPainter).toBeUndefined()
+    expect(new PainterSession('bot', chat.id).data.results).toEqual([])
+})
+
+it.each(['gallery', 'save'])('retains all work and placement when reset %s persistence fails', async failure => {
+    const { session, chat } = setup()
+    session.data.results.push({ id: 'r', assetId: 'asset', createdAt: 1, anchor: session.data.anchor!, draft: session.data.draft!, settings: session.data.settings, style: session.style, seed: 1 })
+    const prior = JSON.parse(JSON.stringify(session.data))
+    painterSelection.set({ characterId: 'bot', chatId: chat.id, anchor: session.data.anchor })
+    painterInsertionRequest.set({ characterId: 'bot', chatId: chat.id, resultId: 'r', insert: async () => true })
+    if (failure === 'gallery') vi.mocked(savePainterGalleryRecord).mockRejectedValueOnce(new Error('disk full'))
+    else mocks.save.mockRejectedValueOnce(new Error('disk full'))
+    expect(await session.resetWorkspace()).toBe(false)
+    expect(session.data).toEqual(prior)
+    expect(get(painterSelection)?.chatId).toBe(chat.id)
+    expect(get(painterInsertionRequest)?.resultId).toBe('r')
+    expect(session.state.error).toContain('disk full')
+    expect(session.state.status).toBe('idle')
+})
+
+it.each(['prompt', 'image', 'saving', 'pending', 'streaming'])('does not reset while %s work is active', async mode => {
+    const { session, chat } = setup()
+    if (mode === 'pending') session.state.pendingImage = true
+    else if (mode === 'streaming') Object.assign(chat, { isStreaming: true })
+    else session.state.status = mode as 'prompt' | 'image' | 'saving'
+    expect(await session.resetWorkspace()).toBe(false)
+    expect(session.data.draft).toBeDefined()
+    expect(mocks.save).not.toHaveBeenCalled()
+})
+
+it('keeps a pending reset bound to its chat and preserves another chats selection', async () => {
+    const { session } = setup()
+    let finish!: () => void
+    mocks.save.mockImplementationOnce(() => new Promise<void>(resolve => finish = resolve))
+    const pending = session.resetWorkspace()
+    await vi.waitFor(() => expect(mocks.save).toHaveBeenCalledOnce())
+    expect(await session.resetWorkspace()).toBe(false)
+    painterSelection.set({ characterId: 'bot', chatId: 'other' })
+    painterInsertionRequest.set({ characterId: 'bot', chatId: 'other', resultId: 'other', insert: async () => true })
+    mocks.db.characters[0].chatPage = 1
+    finish()
+    expect(await pending).toBe(true)
+    expect(get(painterSelection)?.chatId).toBe('other')
+    expect(get(painterInsertionRequest)?.chatId).toBe('other')
+    expect(mocks.db.characters[0].chats[1].bardPainter).toBeUndefined()
+})
 
 it('sets a validated gallery reference on the captured chat and clears its legacy selection', async () => {
     const { session, chat } = setup()
@@ -391,6 +512,61 @@ it('does not shift a fresh selection captured from the changed message while sav
     completeSave()
     await inserting
     expect(get(painterSelection)).toEqual(fresh)
+})
+it('clears only the current painter conversation and excludes it from the next prompt request', async () => {
+    const { session, chat } = setup()
+    session.data.conversation = [{ id: 'old', role: 'user', text: 'earlier composition request' }]
+    session.data.previousDraft = { ...session.data.draft!, scene: 'previous scene' }
+    session.data.settings.instruction = 'unsent instruction'
+    session.data.results.push({ id: 'r', assetId: 'asset', createdAt: 1, anchor: session.data.anchor!, draft: session.data.draft!, settings: session.data.settings, style: session.style, seed: 1 })
+    const before = JSON.parse(JSON.stringify(session.data))
+    const other = createPainterChatData()
+    other.conversation = [{ id: 'other', role: 'user', text: 'other chat request' }]
+    mocks.db.characters[0].chats[1].bardPainter = other
+    expect(await session.clearConversation()).toBe(true)
+    expect(session.data).toEqual({ ...before, conversation: [] })
+    expect(other.conversation).toHaveLength(1)
+    expect(mocks.save).toHaveBeenCalledWith({ flushServer: true, rejectOnFailure: true })
+    expect(mocks.request).not.toHaveBeenCalled()
+    expect(new PainterSession('bot', chat.id).data.conversation).toEqual([])
+    mocks.request.mockResolvedValue({ type: 'success', result: JSON.stringify({ rendering: '', scene: 'new scene', negative: '', subjects: [] }) })
+    await session.prepare()
+    expect(JSON.parse(mocks.request.mock.calls[0][0].formated[1].content).conversation).toEqual([])
+})
+it('restores the painter conversation when clearing cannot be saved', async () => {
+    const { session } = setup()
+    session.data.conversation = [{ id: 'old', role: 'user', text: 'keep this request' }]
+    const before = JSON.parse(JSON.stringify(session.data))
+    mocks.save.mockRejectedValueOnce(new Error('disk full'))
+    expect(await session.clearConversation()).toBe(false)
+    expect(session.data).toEqual(before)
+    expect(session.state.error).toContain('disk full')
+    expect(session.state.status).toBe('idle')
+})
+it('locks a pending conversation clear to the captured chat', async () => {
+    const { session } = setup()
+    session.data.conversation = [{ id: 'old', role: 'user', text: 'old request' }]
+    let finish!: () => void
+    mocks.save.mockImplementationOnce(() => new Promise<void>(resolve => finish = resolve))
+    const pending = session.clearConversation()
+    expect(session.state.status).toBe('saving')
+    expect(await session.clearConversation()).toBe(false)
+    mocks.db.characters[0].chatPage = 1
+    finish()
+    expect(await pending).toBe(true)
+    expect(session.data.conversation).toEqual([])
+    expect(mocks.db.characters[0].chats[1].bardPainter).toBeUndefined()
+    expect(mocks.save).toHaveBeenCalledOnce()
+})
+it.each(['prompt', 'image', 'pending', 'streaming'])('keeps the conversation while %s work is active', async mode => {
+    const { session, chat } = setup()
+    session.data.conversation = [{ id: 'old', role: 'user', text: 'old request' }]
+    if (mode === 'pending') session.state.pendingImage = true
+    else if (mode === 'streaming') Object.assign(chat, { isStreaming: true })
+    else session.state.status = mode as 'prompt' | 'image'
+    expect(await session.clearConversation()).toBe(false)
+    expect(session.data.conversation).toHaveLength(1)
+    expect(mocks.save).not.toHaveBeenCalled()
 })
 it('refines the pinned scene through prompt conversation and can restore the prior draft', async () => {
     const { session } = setup()

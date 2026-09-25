@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildPainterImageRequest, buildPainterMessages, composePainterPrompts, parsePainterDraft } from './prompt'
+import { buildPainterImageRequest, buildPainterMessages, composePainterPrompts, formatPainterPromptText, parsePainterDraft } from './prompt'
 import { createPainterSettings, type PainterDraft, type PainterStyle } from './types'
 
 const style: PainterStyle = {
@@ -15,6 +15,17 @@ const draft: PainterDraft = {
 const anchor = { characterId: 'bot', chatId: 'chat', messageId: 'message', start: 10, end: 17, text: '아리아가 돌아봤다.' }
 
 describe('BardPainter prompt preparation', () => {
+    it('copies generated prompt blocks with custom subject text and all negatives last, without metadata', () => {
+        const edited = structuredClone(draft)
+        edited.rendering = 'soft edges'
+        edited.negative = 'rain'
+        edited.subjects[0].prompt = 'custom hair\n\nblue coat'
+        edited.subjects[0].negative = 'hat'
+        expect(formatPainterPromptText(edited, style)).toBe('1girl, night, garden\n\n1.3::artist:test::,\n\nflat colors,\nsoft edges\n\ncustom hair\n\nblue coat\n\nbad hands, duplicate,\n\nrain\n\nhat')
+    })
+    it('omits empty prompt blocks while retaining structured subject details', () => {
+        expect(formatPainterPromptText(draft, { ...style, artist: '', rendering: '', negative: '' })).toBe('1girl, night, garden\n\ngirl, black hair\n\nwhite shirt, wet clothes\n\nlooking back, smile')
+    })
     it('sends the exact manually edited subject block to the image request', () => {
         const edited = structuredClone(draft)
         edited.subjects[0].prompt = '  custom appearance\n\nblue coat\n\n  looking left  '

@@ -87,6 +87,7 @@ import { isMobile } from 'src/ts/platform'
     import SolarAssetIcon from '../UI/Icons/SolarAssetIcon.svelte';
     import RisuBardMemoryWiki from '../Others/RisuBardMemoryWiki.svelte';
     import BardPainterSelection from './BardPainterSelection.svelte';
+    import { chooseExternalImageForPlacement } from 'src/ts/bardPainter/externalImage';
     import ArcaChatLogDialog from './ArcaChatLogDialog.svelte'
     import RisuBardSaveLoadShortcuts from './RisuBardSaveLoadShortcuts.svelte';
     import RisuBardChatFindReplaceDialog from './RisuBardChatFindReplaceDialog.svelte';
@@ -192,6 +193,19 @@ import { isMobile } from 'src/ts/platform'
         blocksChatGeneration(currentChatSlot?.risuBardWikiReboot)
     )
     let currentChatReady = $derived(!!currentChatSlot && !currentChatSlot._placeholder)
+    let choosingImage = $state(false)
+    let imageInsertionVersion = 0
+    $effect(() => { currentCharacter?.chaId; currentChatSlot?.id; imageInsertionVersion += 1 })
+    onDestroy(() => { imageInsertionVersion += 1 })
+    async function insertExternalImage() {
+        if (choosingImage || !currentChatReady || currentChatSlot.isStreaming || wikiRebootBlocksGeneration) return
+        const characterId = currentCharacter.chaId, chatId = currentChatSlot.id, version = imageInsertionVersion
+        const isCurrent = () => imageInsertionVersion === version && currentCharacter?.chaId === characterId && currentChatSlot?.id === chatId
+        choosingImage = true
+        try { await chooseExternalImageForPlacement(characterId, chatId, isCurrent) }
+        catch (cause) { if (isCurrent()) alertError(cause instanceof Error ? cause.message : String(cause)) }
+        finally { choosingImage = false }
+    }
     let currentChat = $derived(currentChatReady ? currentChatSlot.message : [])
     let currentChatFmIndex = $derived(currentChatReady ? (currentChatSlot.fmIndex ?? -1) : -1)
     let chatPageSize = $derived(normalizeChatPageSize(DBState.db.chatPageSize))
@@ -1376,6 +1390,10 @@ import { isMobile } from 'src/ts/platform'
                                 updateInputSizeAll()
                             }}>
                                 <ImagePlusIcon /><span>{language.postFile}</span>
+                            </ShDropdownMenuItem>
+                            <ShDropdownMenuItem data-composer-insert-image disabled={choosingImage || !currentChatReady || !!currentChatSlot?.isStreaming || wikiRebootBlocksGeneration}
+                                onSelect={() => void insertExternalImage()}>
+                                <ImagePlusIcon /><span>{choosingImage ? '이미지를 여는 중...' : '이미지 삽입'}</span>
                             </ShDropdownMenuItem>
                             <ShDropdownMenuItem class={DBState.db.useAutoSuggestions ? 'text-success' : ''} onSelect={() => { DBState.db.useAutoSuggestions = !DBState.db.useAutoSuggestions }}>
                                 <ReplyIcon /><span>{language.autoSuggest}</span>

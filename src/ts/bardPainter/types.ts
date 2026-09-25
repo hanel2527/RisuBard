@@ -75,6 +75,18 @@ export interface PainterIdentity {
     appearance: string
 }
 
+/** Reusable generation options; scene-specific instructions and references stay in the chat. */
+export type PainterGenerationSettings = Pick<PainterSettings, 'model' | 'modelSlot' | 'width' | 'height' | 'seed'> & {
+    context: Omit<PainterContext, 'wikiIds' | 'referenceId' | 'referenceAssetId'>
+}
+
+export function painterGenerationSettings(settings: PainterSettings): PainterGenerationSettings {
+    const { model, modelSlot, width, height, seed } = settings
+    const { before, after, surrounding, systemPrompt, characterDescription, persona, characterLorebook, moduleLorebook } = settings.context
+    return { model, modelSlot, width, height, seed,
+        context: { before, after, surrounding, systemPrompt, characterDescription, persona, characterLorebook, moduleLorebook } }
+}
+
 export interface PainterOutfit {
     id: string
     subjectId: string
@@ -98,6 +110,8 @@ export interface PainterResult {
 
 export interface PainterChatData {
     settings: PainterSettings
+    /** Missing on legacy chats: preserve their existing local generation options. */
+    settingsScope?: 'global' | 'chat'
     anchor?: PainterAnchor
     draft?: PainterDraft
     outfits: PainterOutfit[]
@@ -109,6 +123,7 @@ export interface PainterChatData {
 export interface PainterBotData {
     identities: PainterIdentity[]
     outfits: PainterOutfit[]
+    settings?: PainterGenerationSettings
 }
 
 export interface PainterContextSource { name: string; content: string }
@@ -126,5 +141,5 @@ export function createPainterSettings(): PainterSettings {
 }
 
 export function createPainterChatData(): PainterChatData {
-    return { settings: createPainterSettings(), outfits: [], results: [] }
+    return { settings: createPainterSettings(), settingsScope: 'global', outfits: [], results: [] }
 }

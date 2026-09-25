@@ -27,7 +27,7 @@ async function mount(items: any[], props: Record<string, unknown> = {}) {
     await settle()
 }
 beforeEach(() => {
-    vi.clearAllMocks()
+    vi.resetAllMocks()
     bot = painterTestState({ chaId: 'bot', chatPage: 0, chats: [{ id: 'chat', name: '예시 챗', message: [] }, { id: 'empty', name: '빈 챗', message: [] }] })
     mocks.load.mockResolvedValue(null); mocks.blob.mockResolvedValue(null); mocks.confirm.mockResolvedValue(true); mocks.remove.mockResolvedValue(undefined)
     mocks.busy.mockReturnValue(false); mocks.save.mockResolvedValue(undefined)
@@ -49,6 +49,82 @@ beforeEach(() => {
 afterEach(() => { referenceComponent?.$destroy(); referenceComponent = undefined; component?.$destroy(); component = undefined; document.body.replaceChildren() })
 
 describe('BardPainter gallery UI', () => {
+    it('deletes one card in one click without opening the viewer or confirmation and clears its saved references', async () => {
+        const data = createPainterChatData()
+        data.results = [{ id: 'old', assetId: 'image-1' }, { id: 'keep', assetId: 'image-2' }] as any
+        data.settings.context.referenceId = 'old'
+        bot.chats[0].bardPainter = data
+        bot.chats[1].bardPainter = createPainterChatData()
+        bot.chats[1].bardPainter.settings.context.referenceAssetId = 'image-1'
+        await mount([item(1), item(2)])
+        const button = document.querySelector<HTMLButtonElement>('[data-gallery-delete="image-1"]')
+        expect(button).not.toBeNull()
+        button!.click()
+        await vi.waitFor(() => expect(mocks.save).toHaveBeenCalledOnce())
+        expect(mocks.remove).toHaveBeenCalledExactlyOnceWith('image-1')
+        expect(mocks.confirm).not.toHaveBeenCalled()
+        expect(document.querySelector('[role="dialog"]')).toBeNull()
+        expect(document.querySelector('[data-gallery-image="image-1"]')).toBeNull()
+        expect(document.querySelector('[data-gallery-image="image-2"]')).not.toBeNull()
+        expect(bot.chats[0].bardPainter.results.map((result: any) => result.assetId)).toEqual(['image-2'])
+        expect(bot.chats[0].bardPainter.settings.context.referenceId).toBe('')
+        expect(bot.chats[1].bardPainter.settings.context.referenceAssetId).toBe('')
+    })
+    it('retains a card and its record after deletion fails', async () => {
+        bot.chats[0].bardPainter = createPainterChatData()
+        bot.chats[0].bardPainter.results = [{ id: 'old', assetId: 'image-1' }]
+        mocks.remove.mockRejectedValueOnce(new Error('disk unavailable'))
+        await mount([item(1)])
+        const button = document.querySelector<HTMLButtonElement>('[data-gallery-delete="image-1"]')
+        expect(button).not.toBeNull()
+        button!.click()
+        await vi.waitFor(() => expect(mocks.error).toHaveBeenCalled())
+        expect(document.querySelector('[data-gallery-image="image-1"]')).not.toBeNull()
+        expect(bot.chats[0].bardPainter.results).toHaveLength(1)
+        expect(mocks.save).not.toHaveBeenCalled()
+        expect(mocks.success).not.toHaveBeenCalled()
+    })
+    it('prevents repeated deletion while the selected image is being removed', async () => {
+        let finish!: () => void
+        mocks.remove.mockImplementationOnce(() => new Promise<void>(resolve => finish = resolve))
+        await mount([item(1), item(2)])
+        const button = document.querySelector<HTMLButtonElement>('[data-gallery-delete="image-1"]')
+        expect(button).not.toBeNull()
+        button!.click(); button!.click()
+        await vi.waitFor(() => expect(mocks.remove).toHaveBeenCalledOnce())
+        expect(document.querySelector<HTMLButtonElement>('[data-gallery-delete="image-2"]')!.disabled).toBe(true)
+        expect(document.querySelector<HTMLButtonElement>('[aria-label="갤러리 새로고침"]')!.disabled).toBe(true)
+        finish()
+        await vi.waitFor(() => expect(mocks.save).toHaveBeenCalledOnce())
+        expect(mocks.remove).toHaveBeenCalledOnce()
+    })
+    it('returns to the preceding page when its last image is deleted', async () => {
+        await mount(Array.from({ length: 25 }, (_, n) => item(n)))
+        document.querySelector<HTMLButtonElement>('[aria-label="다음 그림 페이지"]')!.click(); await settle()
+        const button = document.querySelector<HTMLButtonElement>('[data-gallery-delete="image-0"]')
+        expect(button).not.toBeNull()
+        button!.click()
+        await vi.waitFor(() => expect(mocks.save).toHaveBeenCalledOnce())
+        await settle()
+        expect(document.querySelectorAll('[data-gallery-image]')).toHaveLength(24)
+        expect(document.querySelector('[aria-label="그림 갤러리 페이지"]')?.textContent).toContain('1 / 1')
+    })
+    it.each(['source', 'reference', 'compression'])('keeps an image while %s work depends on it', async mode => {
+        if (mode === 'reference') {
+            bot.chats[1].bardPainter = createPainterChatData()
+            bot.chats[1].bardPainter.settings.context.referenceAssetId = 'image-1'
+            mocks.busy.mockImplementation((_bot, chatId) => chatId === 'empty')
+        } else if (mode === 'compression') {
+            bot.chats[0].bardPainter = createPainterChatData()
+            bot.chats[0].bardPainter.results = [{ id: 'old', assetId: 'image-1', compressionPending: true }]
+        } else mocks.busy.mockReturnValue(true)
+        await mount([item(1)])
+        const button = document.querySelector<HTMLButtonElement>('[data-gallery-delete="image-1"]')
+        expect(button).not.toBeNull()
+        button!.click()
+        await vi.waitFor(() => expect(mocks.error).toHaveBeenCalled())
+        expect(mocks.remove).not.toHaveBeenCalled()
+    })
     it('assigns an enlarged image to the current chat, independently of its source and gallery filter', async () => {
         mocks.load.mockResolvedValue(record())
         bot.chatPage = 1

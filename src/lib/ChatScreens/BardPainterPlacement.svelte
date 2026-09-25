@@ -36,7 +36,7 @@
                     if (sizes.has(entry.target) && sizes.get(entry.target) !== size) changed = true
                     sizes.set(entry.target, size)
                 }
-                if (changed) { cache = new WeakMap(); marker = undefined; candidate = undefined }
+                if (changed) invalidate()
             })
             const previousFocus = document.activeElement as HTMLElement | null
             saving = false; error = ''; marker = undefined
@@ -45,7 +45,7 @@
                 const chat = character?.chats.find(item => item.id === chatId)
                 return { character, chat }
             }
-            const position = (root: HTMLElement, clientY?: number, refresh = false) => {
+            const position = (root: HTMLElement, clientY?: number, refresh = false, preferredOffset = request.preferredOffset ?? 0) => {
                 const { character, chat } = current()
                 const message = chat?.message?.[Number(root.dataset.painterMessage)]
                 if (!character || !chat || !message || chat.isStreaming) return
@@ -59,7 +59,7 @@
                     cache.set(root, cached)
                 }
                 const stop = clientY === undefined
-                    ? cached.stops.filter(item => item.offset !== null).reduce<PainterParagraphStop | undefined>((best, item) => !best || Math.abs(item.offset! - (request.preferredOffset ?? 0)) < Math.abs(best.offset! - (request.preferredOffset ?? 0)) ? item : best, undefined)
+                    ? cached.stops.filter(item => item.offset !== null).reduce<PainterParagraphStop | undefined>((best, item) => !best || Math.abs(item.offset! - preferredOffset) < Math.abs(best.offset! - preferredOffset) ? item : best, undefined)
                     : nearestPainterParagraphStop(cached.stops, clientY)
                 return stop ? { root, message, source: message.data, stop, stops: cached.stops } : undefined
             }
@@ -114,6 +114,7 @@
                 if (saving || event.repeat || event.isComposing || !rootOf(event)) return
                 if (!['ArrowUp', 'ArrowDown', 'Enter'].includes(event.key)) return
                 event.preventDefault(); event.stopImmediatePropagation()
+                if (event.key === 'Enter' && !candidate) return
                 const root = candidate?.root ?? rootOf(event)!
                 const point = position(root, candidate?.stop.top ?? marker?.top, true)
                 if (!point) return
@@ -122,11 +123,27 @@
                 const stop = point.stops[Math.max(0, Math.min(point.stops.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)))]
                 candidate = { ...point, stop }; marker = stop.offset !== null ? stop : undefined
             }
-            const invalidate = () => { cache = new WeakMap(); marker = undefined; candidate = undefined }
+            const invalidate = () => {
+                cache = new WeakMap()
+                const previous = candidate
+                candidate = undefined; marker = undefined
+                // scrollIntoView, image loads and dock resizing change client geometry,
+                // not the selected source boundary. Keep the line at that boundary.
+                if (previous?.root.isConnected && previous.stop.offset !== null) {
+                    const updated = position(previous.root, undefined, true, previous.stop.offset)
+                    if (updated?.source === previous.source && updated.stop.offset === previous.stop.offset) {
+                        candidate = updated; marker = updated.stop
+                    }
+                }
+            }
+            const contextmenu = (event: MouseEvent) => {
+                event.preventDefault(); event.stopImmediatePropagation(); cancel()
+            }
             document.addEventListener('pointermove', move)
             document.addEventListener('pointerdown', pointerdown, true)
             document.addEventListener('click', click, true)
             document.addEventListener('keydown', keydown, true)
+            document.addEventListener('contextmenu', contextmenu, true)
             document.addEventListener('scroll', invalidate, true)
             document.addEventListener('load', invalidate, true)
             window.addEventListener('resize', invalidate)
@@ -152,6 +169,7 @@
                 document.removeEventListener('pointerdown', pointerdown, true)
                 document.removeEventListener('click', click, true)
                 document.removeEventListener('keydown', keydown, true)
+                document.removeEventListener('contextmenu', contextmenu, true)
                 document.removeEventListener('scroll', invalidate, true)
                 document.removeEventListener('load', invalidate, true)
                 resizeObserver.disconnect()
@@ -163,7 +181,7 @@
 
 {#if $painterInsertionRequest?.characterId === characterId && $painterInsertionRequest?.chatId === chatId}
     <div class="placement-notice" role="status" data-painter-placement use:portal>
-        <div><strong>{saving ? '선택한 위치에 삽입하고 저장하는 중입니다.' : '본문에서 삽화를 넣을 위치를 클릭하세요.'}</strong><small>{saving ? '저장이 끝나면 본문에 반영됩니다.' : '파란 선의 위치에 삽입 / Esc로 취소'}</small>{#if error}<p role="alert">{error}</p>{/if}</div>
+        <div><strong>{saving ? '선택한 위치에 삽입하고 저장하는 중입니다.' : '본문에서 삽화를 넣을 위치를 클릭하세요.'}</strong><small>{saving ? '저장이 끝나면 본문에 반영됩니다.' : '파란 선의 위치에 왼클릭으로 삽입 / Esc 또는 우클릭으로 취소'}</small>{#if error}<p role="alert">{error}</p>{/if}</div>
         <button type="button" disabled={saving} onclick={() => painterInsertionRequest.set(null)}>취소</button>
     </div>
     {#if marker}<div class="placement-marker" style:top="{marker.top}px" style:left="{marker.left}px" style:width="{marker.width}px" aria-hidden="true" use:portal><span>삽입 위치</span></div>{/if}

@@ -125,6 +125,13 @@ export function composePainterPrompts(draft: PainterDraft, style: PainterStyle):
     }
 }
 
+export function formatPainterPromptText(draft: PainterDraft, style: PainterStyle): string {
+    const { negative, characters } = composePainterPrompts(draft, style)
+    return paragraphs(draft.scene.trim(), style.artist,
+        [style.rendering, draft.rendering.trim()].filter(value => value.trim()).join('\n'),
+        ...characters.map(subject => subject.prompt), negative, ...characters.map(subject => subject.negative))
+}
+
 export function buildPainterImageRequest(draft: PainterDraft, style: PainterStyle, settings: PainterSettings, seed: number) {
     if (settings.model !== 'nai-diffusion-5-full' && settings.model !== 'nai-diffusion-5-curated') {
         throw new Error('NovelAI V5 모델을 선택해 주세요.')

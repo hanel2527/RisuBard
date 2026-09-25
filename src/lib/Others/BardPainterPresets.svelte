@@ -1,4 +1,5 @@
 <script lang="ts">
+    import BardPainterPromptInput from './BardPainterPromptInput.svelte'
     import { tick, untrack } from 'svelte'
     import type { getPainterSession } from 'src/ts/bardPainter/runtime.svelte'
     import type { PainterIdentity, PainterOutfit } from 'src/ts/bardPainter/types'
@@ -208,12 +209,12 @@
                         {#if draft.kind === 'identity'}
                             <label>이름<input aria-label="인물 이름" maxlength="160" bind:value={draft.name} /></label>
                             <label>별칭 <span class="hint">쉼표로 구분</span><input aria-label="인물 별칭" bind:value={draft.aliases} /></label>
-                            <label>기본 외형<textarea aria-label="기본 외형" rows="6" bind:value={draft.appearance} placeholder="머리색, 눈색, 체형 등"></textarea></label>
+                            <label>기본 외형<BardPainterPromptInput aria-label="기본 외형" rows={6} bind:value={draft.appearance} placeholder="머리색, 눈색, 체형 등"></BardPainterPromptInput></label>
                             <p class="hint">같은 봇의 모든 챗에서 사용할 수 있습니다. 새 이름으로 저장하면 외형과 별칭만 복사하며, 의상은 원래 인물에 남습니다.</p>
                         {:else}
                             <label>이름<input aria-label="의상 이름" maxlength="160" bind:value={draft.name} /></label>
-                            <label>의상 프롬프트<textarea aria-label="의상 프롬프트" rows="6" bind:value={draft.clothing} placeholder="의상, 색상, 소재, 장신구 등"></textarea></label>
-                            <label>의상 상태 <span class="hint">선택 사항</span><textarea aria-label="의상 상태" rows="2" bind:value={draft.state} placeholder="젖음, 찢어짐 등"></textarea></label>
+                            <label>의상 프롬프트<BardPainterPromptInput aria-label="의상 프롬프트" rows={6} bind:value={draft.clothing} placeholder="의상, 색상, 소재, 장신구 등"></BardPainterPromptInput></label>
+                            <label>의상 상태 <span class="hint">선택 사항</span><BardPainterPromptInput aria-label="의상 상태" rows={2} bind:value={draft.state} placeholder="젖음, 찢어짐 등"></BardPainterPromptInput></label>
                             <label>{draft.exists ? '복사할 저장 범위' : '저장 범위'}<select aria-label={draft.exists ? '복사할 저장 범위' : '새 의상 저장 범위'} value={draft.targetShared ? 'shared' : 'local'} onchange={event => { if (draft) draft.targetShared = event.currentTarget.value === 'shared' }}><option value="local">현재 챗</option><option value="shared">봇 공용</option></select></label>
                             <p class="hint">{draft.exists ? `덮어쓰기는 원본(${draft.shared ? '봇 공용' : '현재 챗'})을 수정합니다. 이름이나 저장 범위를 바꾸면 별도 프리셋으로 저장할 수 있습니다.` : '현재 챗에서만 쓰거나, 같은 봇의 모든 챗에서 사용할 수 있습니다.'}</p>
                         {/if}
@@ -246,14 +247,13 @@
     .toolbar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; }
     .toolbar .search { flex: 1; min-width: 10rem; }
     label { display: flex; flex-direction: column; gap: .25rem; font-size: .82rem; min-width: 0; }
-    input, select, textarea { width: 100%; min-width: 0; border: 1px solid var(--color-darkborderc); background: var(--color-bgcolor); color: var(--color-textcolor); border-radius: .3rem; padding: .45rem .55rem; }
+    input, select { width: 100%; min-width: 0; border: 1px solid var(--color-darkborderc); background: var(--color-bgcolor); color: var(--color-textcolor); border-radius: .3rem; padding: .45rem .55rem; }
     input, select { min-height: 2.15rem; }
-    textarea { font: inherit; line-height: 1.5; resize: vertical; }
     button { min-height: 2.1rem; border: 1px solid var(--color-darkborderc); border-radius: .3rem; padding: .35rem .65rem; font-size: .82rem; overflow-wrap: anywhere; }
     button:hover:not(:disabled) { background: var(--color-darkbutton); }
     button:disabled, fieldset:disabled { opacity: .55; }
     button:disabled { cursor: default; }
-    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+    button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
     .workspace { display: grid; grid-template-columns: minmax(15rem, .8fr) minmax(0, 1.4fr); min-height: 23rem; gap: 1rem; }
     .embedded .workspace { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); }
     .library { overflow: auto; max-height: min(62vh, 40rem); min-width: 0; padding: .15rem .35rem .15rem .15rem; scrollbar-gutter: stable; border-right: 1px solid var(--color-darkborderc); }

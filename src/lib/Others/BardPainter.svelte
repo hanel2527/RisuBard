@@ -1,7 +1,9 @@
 <script lang="ts">
+    import BardPainterPromptInput from './BardPainterPromptInput.svelte'
     import { Buffer } from 'buffer'
     import { untrack } from 'svelte'
     import { getPainterSession } from 'src/ts/bardPainter/runtime.svelte'
+    import { formatPainterPromptText } from 'src/ts/bardPainter/prompt'
     import { painterSelection, painterInsertionRequest } from 'src/ts/bardPainter/selectionState'
     import { painterGalleryRequested } from 'src/ts/bardPainter/gallery'
     import { botMakerMode, CharConfigSubMenu, risuBardGalleryOpen, MobileSideBar } from 'src/ts/stores.svelte'
@@ -19,18 +21,42 @@
     let insertionTarget = $derived(selection?.issue ? undefined : selection?.anchor ?? data.anchor ?? latest?.anchor)
     let busy = $derived(session.state.status !== 'idle')
     let blocked = $derived(busy || session.state.pendingImage)
+    let resetBlocked = $derived(blocked || session.chat.isStreaming)
     let toolMode = $state<'style' | 'characters' | 'settings' | null>(null)
     let confirmScene = $state(false)
     let confirmFresh = $state(false)
     let confirmDiscard = $state(false)
+    let confirmClear = $state(false)
+    let confirmReset = $state(false)
+    let copying = $state(false)
     let expanded = $state(false)
     let broken = $state(false)
     let conversationLog: HTMLDivElement | undefined = $state()
     $effect(() => { data.conversation?.at(-1)?.id; if (conversationLog) conversationLog.scrollTop = conversationLog.scrollHeight })
     let status = $derived(session.state.status === 'prompt' ? '프롬프트를 작성하고 있습니다.' : session.state.status === 'image' ? 'NovelAI에서 이미지를 생성하고 있습니다.' : session.state.status === 'saving' ? '저장하고 있습니다.' : '')
-    $effect(() => { characterId; chatId; toolMode = null; confirmScene = false; confirmFresh = false; confirmDiscard = false })
+    $effect(() => { characterId; chatId; toolMode = null; confirmScene = false; confirmFresh = false; confirmDiscard = false; confirmClear = false; confirmReset = false })
     $effect(() => { latest?.assetId; expanded = false; broken = false })
     function save() { void session.persist() }
+    async function resetWorkspace() {
+        if (resetBlocked) return
+        const current = session
+        if (await current.resetWorkspace() && current === session) {
+            window.getSelection()?.removeAllRanges()
+            confirmReset = false; confirmScene = false; confirmFresh = false; confirmClear = false; toolMode = null
+        }
+    }
+    async function copyPrompt() {
+        if (!data.draft || copying) return
+        const current = session
+        copying = true
+        current.state.error = ''; current.state.notice = ''
+        try {
+            await navigator.clipboard.writeText(formatPainterPromptText(data.draft, current.style))
+            current.state.notice = '프롬프트 원문을 복사했습니다.'
+        } catch (cause) {
+            current.state.error = `프롬프트를 복사하지 못했습니다. ${cause instanceof Error ? cause.message : String(cause)}`
+        } finally { copying = false }
+    }
     function specifyInsertion() {
         if (!latest || busy || latest.compressionPending) return
         const current = session, result = latest
@@ -49,8 +75,19 @@
         const success = await current.prepare(scene, { instruction, fresh })
         if (success && current === session && data.settings.instruction === instruction) { data.settings.instruction = ''; save() }
     }
+    async function clearConversation() {
+        if (blocked || !data.conversation?.length) return
+        const current = session
+        if (await current.clearConversation() && current === session) confirmClear = false
+    }
+    function selectScene() {
+        if (!selection?.anchor || blocked || session.chat.isStreaming) return
+        if (newScene) { confirmScene = true; return }
+        data.anchor = JSON.parse(JSON.stringify(selection.anchor))
+        save()
+    }
     function changeScene() {
-        if (!selection?.anchor || blocked) return
+        if (!selection?.anchor || blocked || session.chat.isStreaming) return
         data.anchor = JSON.parse(JSON.stringify(selection.anchor))
         data.draft = undefined; data.previousDraft = undefined; data.conversation = []
         confirmScene = false; save()
@@ -84,30 +121,30 @@
 {#if visible}
 <section class="painter" aria-label="바드페인터" data-bard-painter>
     <header>
-        <div class="title-row"><h2>바드페인터</h2><nav aria-label="바드페인터 도구"><button type="button" onclick={() => toolMode = 'style'}>화풍</button><button type="button" onclick={() => toolMode = 'characters'}>캐릭터</button><button type="button" onclick={() => toolMode = 'settings'}>생성 설정</button></nav></div>
-        <p class="hint">{session.style.name} / {data.settings.width} × {data.settings.height} / {data.settings.model.includes('curated') ? 'V5 Curated' : 'V5 Full'}</p>
+        <div class="title-row"><h2>바드페인터</h2><nav aria-label="바드페인터 도구"><button type="button" disabled={resetBlocked} aria-expanded={confirmReset} onclick={() => confirmReset = !confirmReset}>리셋</button><button type="button" class="primary" onclick={() => toolMode = 'style'}>화풍</button><button type="button" class="primary" onclick={() => toolMode = 'characters'}>캐릭터</button><button type="button" class="primary" onclick={() => toolMode = 'settings'}>생성 설정</button></nav></div>
+        <p class="hint">{session.style.name} / {session.settings.width} × {session.settings.height} / {session.settings.model.includes('curated') ? 'V5 Curated' : 'V5 Full'}</p>
+        {#if confirmReset}<p class="hint">그릴 장면, 초안, 프롬프트 대화, 입력한 요청, 참고 그림과 현재 그림 표시를 비울까요? 생성 설정과 프리셋, 갤러리 이미지와 본문에 삽입한 이미지는 유지됩니다.</p><div class="actions"><button type="button" disabled={resetBlocked} onclick={() => void resetWorkspace()}>리셋 확인</button><button type="button" onclick={() => confirmReset = false}>취소</button></div>{/if}
     </header>
     <BardPainterTools {session} mode={toolMode} onClose={() => toolMode = null} disabled={blocked} />
 
     <section class="card scene" aria-label="그릴 장면">
-        <div class="section-title"><h3><span class="step">1</span>그릴 장면</h3>{#if data.draft}<span class="hint">확정됨</span>{/if}</div>
+        <div class="section-title"><h3><span class="step">1</span>그릴 장면</h3><div class="actions">{#if data.draft}<span class="hint">확정됨</span>{/if}<button type="button" class="primary" disabled={!selection?.anchor || blocked || session.chat.isStreaming} aria-expanded={confirmScene} onclick={selectScene}>그릴 장면 선택</button></div></div>
         {#if scene}<blockquote>{scene.text}</blockquote>
         {:else}<p class="empty">본문에서 그리고 싶은 부분을 드래그해 주세요. 선택한 내용으로 프롬프트를 작성합니다.</p>{/if}
         {#if selection?.issue && !scene}<p class="hint">{selection.issue}</p>{/if}
-        {#if newScene}
-            {#if confirmScene}<p class="hint">현재 초안을 비우고 새로 선택한 부분을 그릴 장면으로 바꿉니다.</p><div class="actions"><button type="button" disabled={blocked} onclick={changeScene}>장면 변경 확인</button><button type="button" onclick={() => confirmScene = false}>취소</button></div>
-            {:else}<button type="button" class="quiet" disabled={blocked} onclick={() => confirmScene = true}>이 선택으로 장면 바꾸기</button>{/if}
+        {#if newScene && confirmScene}
+            <p class="hint">현재 초안을 비우고 새로 선택한 부분을 그릴 장면으로 바꿉니다.</p><div class="actions"><button type="button" disabled={blocked || session.chat.isStreaming} onclick={changeScene}>장면 변경 확인</button><button type="button" onclick={() => confirmScene = false}>취소</button></div>
         {/if}
     </section>
 
     <section class="draft" aria-label="프롬프트 초안">
-        <div class="section-title"><h3><span class="step">2</span>프롬프트 초안</h3>{#if data.previousDraft}<button type="button" disabled={blocked} onclick={() => session.restoreDraft()}>이전 초안으로</button>{/if}</div>
+        <div class="section-title"><h3><span class="step">2</span>프롬프트 초안</h3><div class="actions"><button type="button" disabled={blocked || copying || !data.draft} onclick={() => void copyPrompt()}>원문 카피</button>{#if data.previousDraft}<button type="button" disabled={blocked} onclick={() => session.restoreDraft()}>이전 초안으로</button>{/if}</div></div>
         {#if data.draft}
             <section class="card" aria-label="메인 프롬프트">
                 <fieldset disabled={blocked}>
-                    <label>메인 블록<textarea rows="4" spellcheck="false" bind:value={data.draft.scene} onblur={save} aria-label="메인 프롬프트"></textarea></label>
-                    <details><summary>화풍과 추가 표현</summary><p class="hint">화풍은 상단의 화풍 프리셋에서 설정합니다.</p><pre>{[session.style.artist, session.style.rendering].filter(Boolean).join('\n')}</pre><label>장면 표현 보완<textarea rows="2" bind:value={data.draft.rendering} onblur={save}></textarea></label></details>
-                    <details><summary>네거티브 프롬프트</summary><label>이번 장면에서 제외할 요소<textarea rows="2" bind:value={data.draft.negative} onblur={save}></textarea></label></details>
+                    <label>메인 블록<BardPainterPromptInput rows={4} spellcheck="false" bind:value={data.draft.scene} onblur={save} aria-label="메인 프롬프트"></BardPainterPromptInput></label>
+                    <details><summary>화풍과 추가 표현</summary><p class="hint">화풍은 상단의 화풍 프리셋에서 설정합니다.</p><pre>{[session.style.artist, session.style.rendering].filter(Boolean).join('\n')}</pre><label>장면 표현 보완<BardPainterPromptInput rows={2} bind:value={data.draft.rendering} onblur={save}></BardPainterPromptInput></label></details>
+                    <details><summary>네거티브 프롬프트</summary><label>이번 장면에서 제외할 요소<BardPainterPromptInput rows={2} bind:value={data.draft.negative} onblur={save}></BardPainterPromptInput></label></details>
                 </fieldset>
             </section>
             <div class="subjects" aria-label="인물과 사물 블록">
@@ -120,9 +157,10 @@
     </section>
 
     <section class="card conversation" aria-label="프롬프트 대화">
-        <h3>프롬프트 대화</h3>
+        <div class="section-title"><h3>프롬프트 대화</h3><button type="button" disabled={blocked || !data.conversation?.length} aria-expanded={confirmClear} onclick={() => confirmClear = !confirmClear}>대화 비우기</button></div>
+        {#if confirmClear}<p class="hint">이 챗의 프롬프트 대화 기록을 비울까요? 초안과 생성한 삽화는 유지됩니다.</p><div class="actions"><button type="button" disabled={blocked} onclick={() => void clearConversation()}>비우기 확인</button><button type="button" onclick={() => confirmClear = false}>취소</button></div>{/if}
         {#if data.conversation?.length}<div class="conversation-log" bind:this={conversationLog} role="log" aria-label="프롬프트 대화 기록">{#each data.conversation.slice(-6) as message (message.id)}<p class:user={message.role === 'user'}><span class="hint">{message.role === 'user' ? '나' : '바드페인터'}</span>{message.text}</p>{/each}</div>{/if}
-        <label class="composer-label">{data.draft ? '어떻게 다듬을까요?' : '어떤 그림을 원하시나요?'}<textarea aria-label="프롬프트 대화 입력" rows="3" maxlength="6000" placeholder={data.draft ? '예: 인물을 더 가까이, 배경은 흐리게 바꿔 줘' : '예: 창가에 앉은 인물의 옆모습을 그려 줘'} bind:value={data.settings.instruction} onblur={save} disabled={blocked} onkeydown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void prepare() } }}></textarea></label>
+        <label class="composer-label">{data.draft ? '어떻게 다듬을까요?' : '어떤 그림을 원하시나요?'}<BardPainterPromptInput aria-label="프롬프트 대화 입력" rows={3} maxlength={6000} placeholder={data.draft ? '예: 인물을 더 가까이, 배경은 흐리게 바꿔 줘' : '예: 창가에 앉은 인물의 옆모습을 그려 줘'} bind:value={data.settings.instruction} onblur={save} disabled={blocked} onkeydown={event => { if (!event.defaultPrevented && !event.isComposing && event.keyCode !== 229 && event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); event.stopImmediatePropagation(); void prepare() } }}></BardPainterPromptInput></label>
         <div class="actions"><button type="button" class="primary" disabled={blocked || !scene} onclick={() => prepare()}>{data.draft ? '초안 개선' : '프롬프트 작성'}</button>{#if data.draft}<button type="button" disabled={blocked} onclick={() => confirmFresh = true}>새로 작성</button>{/if}<span class="hint">Ctrl+Enter로 보내기</span></div>
         {#if confirmFresh}<p class="hint">현재 초안 대신 확정한 장면에서 다시 작성합니다. 실패하면 기존 초안은 유지됩니다.</p><div class="actions"><button type="button" disabled={blocked} onclick={() => prepare(true)}>새로 작성 확인</button><button type="button" onclick={() => confirmFresh = false}>취소</button></div>{/if}
     </section>
@@ -134,7 +172,7 @@
     {/if}
     <section class="output" aria-label="현재 삽화">
         <div class="section-title"><h3><span class="step">3</span>그림 만들기</h3><button type="button" onclick={openGallery}>갤러리 열기</button></div>
-        <div class="actions generation-actions"><button type="button" class="primary" disabled={blocked || !data.anchor || !data.draft?.scene.trim()} onclick={() => session.generate()}>이미지 생성</button><button type="button" onclick={() => toolMode = 'settings'}>생성 설정</button></div>
+        <div class="actions generation-actions"><button type="button" class="primary" disabled={blocked || !data.anchor || !data.draft?.scene.trim()} onclick={() => session.generate()}>이미지 생성</button><button type="button" class="primary" onclick={() => toolMode = 'settings'}>생성 설정</button></div>
         <p class="hint">프롬프트를 확인한 뒤 생성하세요. NovelAI 사용량이 차감될 수 있습니다.</p>
         {#if latest}
             <article class="card result" data-painter-result={latest.id}>
@@ -165,7 +203,6 @@
     fieldset { display: flex; flex-direction: column; gap: .7rem; padding: 0; border: 0; margin: 0; min-width: 0; }
     fieldset:disabled { opacity: .65; }
     label { display: flex; flex-direction: column; gap: .4rem; min-width: 0; font-size: .85rem; }
-    textarea { border: 1px solid var(--color-darkborderc); background: var(--color-bgcolor); color: var(--color-textcolor); border-radius: .4rem; padding: .65rem; min-width: 0; width: 100%; resize: vertical; min-height: 4rem; line-height: 1.6; font-family: inherit; }
     summary { cursor: pointer; min-height: 2.75rem; padding: .65rem 0; color: var(--color-textcolor2); }
     details { border-top: 1px solid var(--color-darkborderc); }
     button { min-height: 2.75rem; border: 1px solid var(--color-darkborderc); border-radius: .4rem; padding: .5rem .75rem; font-size: .85rem; overflow-wrap: anywhere; }
@@ -173,7 +210,7 @@
     button:disabled { opacity: .5; cursor: not-allowed; }
     .primary { background: var(--color-primary); color: var(--color-accenttext); border-color: var(--color-primary); font-weight: 600; }
     .primary:hover:not(:disabled) { background: var(--color-primary); filter: brightness(1.08); }
-    button:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+    button:focus-visible, summary:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
     .quiet { align-self: flex-start; }
     blockquote { max-height: 9rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border-left: 3px solid var(--color-primary); padding-left: .75rem; margin-bottom: .7rem; line-height: 1.6; }
     .conversation-log { max-height: 13rem; overflow: auto; display: flex; flex-direction: column; gap: .55rem; }

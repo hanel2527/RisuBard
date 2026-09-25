@@ -4,6 +4,7 @@
     import SettingTabs from "src/lib/UI/GUI/SettingTabs.svelte";
     import PresetHeader from "src/lib/UI/GUI/PresetHeader.svelte";
     import SettingRenderer from "../SettingRenderer.svelte";
+    import TagAutocompleteSettings from './TagAutocompleteSettings.svelte';
     import { DBState, openThemePresetList, DisplaySubmenuIndex } from "src/ts/stores.svelte";
     import {
         displayOtherHomeItems,
@@ -53,5 +54,6 @@
 
     <h3 class="text-base font-bold mt-8 mb-1">{language.sectionAdvanced}</h3>
     <SettingRenderer items={displayOtherAdvancedItems} layout="row" />
+    <TagAutocompleteSettings />
 {/if}
 </SettingPage>

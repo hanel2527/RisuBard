@@ -3,6 +3,8 @@
 @plugin '@tailwindcss/typography';
 
 @theme static {
+  --color-prompt-strong: #ef4444;
+  --color-prompt-weak: #3b82f6;
   --breakpoint-xs: 25rem;
 
   --color-bgcolor: var(--risu-theme-bgcolor);

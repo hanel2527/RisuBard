@@ -3,6 +3,7 @@
     import type { Hotkey } from "src/ts/defaulthotkeys";
     import { DBState } from "src/ts/stores.svelte";
     import SettingPage from "src/lib/UI/GUI/SettingPage.svelte";
+    import TagAutocompleteSettings from './TagAutocompleteSettings.svelte';
 
     function displayKey(key: string): string {
         if (key === ' ') return 'SPACE';
@@ -73,6 +74,7 @@
     </div>
 
     <p class="capture-hint">{language.settingsWorkspace.hotkeyWorkspace.captureHint}</p>
+    <TagAutocompleteSettings />
 </SettingPage>
 
 <style>

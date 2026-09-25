@@ -1,7 +1,7 @@
 <script lang="ts">
     import { Buffer } from 'buffer'
     import { untrack } from 'svelte'
-    import { Check, ChevronLeft, ChevronRight, Copy, Images, RefreshCw, Trash2 } from '@lucide/svelte'
+    import { Check, ChevronLeft, ChevronRight, Copy, Images, LoaderCircle, RefreshCw, Trash2 } from '@lucide/svelte'
     import ShButton from '../UI/GUI/ShButton.svelte'
     import ShDialog from '../UI/GUI/ShDialog.svelte'
     import { alertConfirm, notifyError, notifySuccess } from 'src/ts/alert'
@@ -15,6 +15,7 @@
     const pageSize = 24
     let items = $state<InlayExplorerItem[]>([])
     let loading = $state(false), deleting = $state(false), loadError = $state('')
+    let deletingImageId = $state('')
     let chatFilter = $state(''), oldestFirst = $state(false), page = $state(0)
     let viewer = $state<InlayExplorerItem | null>(null), viewerOpen = $state(false)
     let info = $state<GalleryGenerationInfo | null>(null), infoLoading = $state(false), infoError = $state(''), originalChatName = $state('')
@@ -33,6 +34,7 @@
         if (currentChat.isStreaming) return '메시지 생성을 마친 뒤 참고 삽화를 지정해 주세요.'
         if (disabled) return '진행 중인 작업을 마친 뒤 참고 삽화를 지정해 주세요.'
         if (referenceBusy) return '참고 설정을 저장 중입니다.'
+        if (deleting) return '그림을 삭제 중입니다.'
         if (infoLoading) return '그림의 생성 정보를 확인하고 있습니다.'
         if (infoError) return '생성 정보를 불러오지 못해 참고 삽화를 지정할 수 없습니다.'
         if (!info?.blocks.some(block => block.text.trim())) return '생성 정보가 없는 그림은 참고 삽화로 지정할 수 없습니다.'
@@ -121,17 +123,27 @@
     }
 
     async function deleteChatImages() {
-        if (!chatFilter || !filtered.length || deleting) return
+        if (!chatFilter || !filtered.length || disabled || deleting || loading || referenceBusy) return
         const targets = [...filtered], targetBot = bot
         const label = chatFilter === PAINTER_GALLERY_DELETED_CHAT ? '삭제한 챗' : chatFilter === PAINTER_GALLERY_UNASSIGNED ? '미분류' : chatName(chatFilter)
         if (!await alertConfirm(`「${label}」의 그림 ${targets.length}장을 모두 삭제할까요? 이미지 파일과 생성 기록을 삭제합니다. 본문에 삽입한 그림도 더 이상 표시되지 않으며 되돌릴 수 없습니다.`)) return
-        deleting = true
+        await deleteImages(targets, targetBot)
+    }
+
+    async function deleteImages(targets: InlayExplorerItem[], targetBot: character) {
+        if (disabled || deleting || loading || referenceBusy || !targets.length) return
+        deleting = true; deletingImageId = targets.length === 1 ? targets[0].id : ''
         const removed = new Set<string>()
         try {
             const { isPainterChatBusy } = await import('src/ts/bardPainter/runtime.svelte')
             const targetIds = new Set(targets.map(item => item.id))
+            const ownerIds = new Set(targets.map(item => item.meta?.chatId))
+            const affectedChats = targetBot.chats.filter(chat => ownerIds.has(chat.id)
+                || targetIds.has(chat.bardPainter?.settings.context.referenceAssetId ?? '')
+                || chat.bardPainter?.results?.some(result => targetIds.has(result.assetId)))
             if (targets.some(item => item.meta?.chatId && isPainterChatBusy(targetBot.chaId, item.meta.chatId))
-                || targetBot.chats.some(chat => chat.bardPainter?.results?.some(result => targetIds.has(result.assetId) && result.compressionPending))) {
+                || affectedChats.some(chat => chat.isStreaming || (chat.id && isPainterChatBusy(targetBot.chaId, chat.id))
+                    || chat.bardPainter?.results?.some(result => targetIds.has(result.assetId) && result.compressionPending))) {
                 notifyError('바드페인터 작업이나 이미지 저장을 마친 뒤 그림을 삭제해 주세요.')
                 return
             }
@@ -139,14 +151,21 @@
                 try { await removeInlayAsset(item.id); removed.add(item.id) } catch { /* Report partial failure below. */ }
             }
             // Retire loaded legacy records so entering the gallery cannot recreate deleted sidecars.
-            for (const chat of targetBot.chats) if (chat.bardPainter) chat.bardPainter.results = (chat.bardPainter.results ?? []).filter(result => !removed.has(result.assetId))
-            items = items.filter(item => !removed.has(item.id))
-            if (viewer && removed.has(viewer.id)) { viewerOpen = false; viewer = null; viewerVersion++ }
+            for (const chat of targetBot.chats) if (chat.bardPainter) {
+                const data = chat.bardPainter, context = data.settings.context
+                if (removed.has(context.referenceAssetId ?? '')) context.referenceAssetId = ''
+                if (data.results?.some(result => result.id === context.referenceId && removed.has(result.assetId))) context.referenceId = ''
+                data.results = (data.results ?? []).filter(result => !removed.has(result.assetId))
+            }
+            if (bot.chaId === targetBot.chaId) {
+                items = items.filter(item => !removed.has(item.id))
+                if (viewer && removed.has(viewer.id)) { viewerOpen = false; viewer = null; viewerVersion++ }
+            }
+            if (removed.size) await requestImmediateSave({ flushServer: true, rejectOnFailure: true })
             if (removed.size !== targets.length) notifyError(`${removed.size}장 삭제, ${targets.length - removed.size}장 실패했습니다. 새로고침 후 다시 시도해 주세요.`)
             else notifySuccess(`${removed.size}장을 삭제했습니다.`)
-            if (removed.size) await requestImmediateSave()
         } catch (error) { notifyError(`그림 정리를 마치지 못했습니다: ${String(error)}`) }
-        finally { deleting = false }
+        finally { deleting = false; deletingImageId = '' }
     }
 </script>
 
@@ -168,7 +187,7 @@
         <select aria-label="그림 생성 순서" value={oldestFirst ? 'oldest' : 'newest'} onchange={(event) => oldestFirst = event.currentTarget.value === 'oldest'} class="min-h-9 rounded-md border border-darkborderc bg-darkbg px-2 text-sm text-textcolor">
             <option value="newest">최근 생성순</option><option value="oldest">오래된 생성순</option>
         </select>
-        {#if chatFilter}<ShButton variant="ghost" size="sm" className="text-draculared" disabled={disabled || deleting || loading || !filtered.length} onclick={() => void deleteChatImages()}><Trash2 size={14}/>{deleting ? '삭제 중...' : '이 분류 모두 삭제'}</ShButton>{/if}
+        {#if chatFilter}<ShButton variant="ghost" size="sm" className="text-draculared" disabled={disabled || deleting || loading || referenceBusy || !filtered.length} onclick={() => void deleteChatImages()}><Trash2 size={14}/>{deleting ? '삭제 중...' : '이 분류 모두 삭제'}</ShButton>{/if}
     </div>
     {#if loadError}<p role="alert" class="text-sm text-draculared">그림 목록을 불러오지 못했습니다. 새로고침으로 다시 시도해 주세요.</p>{/if}
     {#if loading && !items.length}<p role="status" class="py-8 text-center text-sm text-textcolor2">그림 목록을 불러오는 중...</p>
@@ -176,11 +195,14 @@
     {:else}
         <div class="grid grid-cols-2 gap-2">
             {#each shown as item (item.id)}
-                <div class="min-w-0">
+                <div class="relative min-w-0">
                     <button data-gallery-image={item.id} class="w-full overflow-hidden rounded-md border border-darkborderc bg-darkbg text-left text-textcolor focus-visible:outline-2 focus-visible:outline-primary disabled:opacity-50" disabled={disabled} onclick={() => void openImage(item)} aria-label={`${chatName(item.meta?.chatId)}, ${date(item.meta?.createdAt)} 그림 확대`}>
                         <img src={url(item.id, true)} alt="" loading="lazy" class="aspect-square w-full object-cover"/>
                         <span class="block truncate px-2 pt-1 text-xs">{chatName(item.meta?.chatId)}</span><span class="block truncate px-2 pb-2 text-[10px] text-textcolor2">{date(item.meta?.createdAt)}</span>
                     </button>
+                    <ShButton data-gallery-delete={item.id} variant="secondary" size="icon-sm" className="absolute right-1.5 top-1.5 text-danger shadow-sm" aria-label={`${chatName(item.meta?.chatId)}, ${date(item.meta?.createdAt)} 그림 삭제`} title="그림 즉시 삭제. 본문에 삽입한 그림도 사라집니다." aria-busy={deletingImageId === item.id} disabled={disabled || deleting || loading || referenceBusy} onclick={() => void deleteImages([item], bot)}>
+                        {#if deletingImageId === item.id}<LoaderCircle size={16} class="animate-spin motion-reduce:animate-none"/>{:else}<Trash2 size={16}/>{/if}
+                    </ShButton>
                 </div>
             {/each}
         </div>

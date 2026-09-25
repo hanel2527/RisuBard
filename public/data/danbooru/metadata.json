@@ -1,0 +1,13 @@
+{
+  "source": "DraconicDragon/dbr-e621-lists-archive",
+  "sourceUrl": "https://github.com/DraconicDragon/dbr-e621-lists-archive",
+  "snapshotDate": "2025-05-01",
+  "importedFrom": "SDStudio-Blue/release/app/data/db.csv",
+  "encoding": "UTF-8",
+  "columns": ["word", "category", "frequency", "redirect"],
+  "canonicalRedirect": "null",
+  "records": 184303,
+  "bytes": 5370182,
+  "sha256": "3458c44791abc32e6cacad45114f87167d9adeff6fce2c7578e66d99175b5adc",
+  "automaticUpdates": false
+}

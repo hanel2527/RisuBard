@@ -13,9 +13,10 @@ import { insertPainterReference, shiftPainterAnchor } from './selection'
 import { createPainterChatData, type PainterAnchor, type PainterContextSource, type PainterIdentity, type PainterOutfit, type PainterResult, type PainterStyle } from './types'
 import { savePainterGalleryRecord } from './gallery'
 import { replaceSubjectOutfit } from './subjectPrompt'
-import { painterSelection } from './selectionState'
+import { painterSelection, painterInsertionRequest } from './selectionState'
 import { get } from 'svelte/store'
 import { ensureChatHydrated } from '../storage/chatStorage'
+import { createPainterSettings, painterGenerationSettings, type PainterSettings } from './types'
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value))
 const errorText = (cause: unknown) => cause instanceof Error ? cause.message : String(cause)
@@ -73,11 +74,82 @@ export class PainterSession {
     get styles() { return [...PAINTER_STYLES, ...(DBState.db.bardPainterStyles ?? [])] }
     get style() { return this.styles.find((item) => item.id === this.data.settings.styleId) ?? PAINTER_STYLES[0] }
 
+    get generationSettingsPinned() { return this.bot.settings !== undefined }
+    get hasGenerationOverrides() { return this.generationSettingsPinned || this.data.settingsScope !== 'global' }
+    get settings(): PainterSettings {
+        const local = this.data.settings
+        const shared = this.bot.settings ?? (this.data.settingsScope === 'global' ? DBState.db.bardPainterSettings : undefined)
+        return { ...local, ...shared, context: { ...local.context, ...shared?.context } }
+    }
+    async updateGenerationSettings(settings: PainterSettings) {
+        const shared = painterGenerationSettings(settings)
+        if (this.generationSettingsPinned) this.bot.settings = shared
+        else {
+            this.data.settings = { ...this.data.settings, ...shared, context: { ...this.data.settings.context, ...shared.context } }
+            this.data.settingsScope = 'chat'
+        }
+        return this.persist()
+    }
+    async pinGenerationSettings(pinned: boolean) {
+        const current = this.settings
+        if (pinned) this.bot.settings = painterGenerationSettings(current)
+        else {
+            delete this.bot.settings
+            this.data.settings = current
+            this.data.settingsScope = 'chat'
+        }
+        return this.persist()
+    }
+    async applyGenerationSettingsToGlobal() {
+        DBState.db.bardPainterSettings = painterGenerationSettings(this.settings)
+        this.data.settingsScope = 'global'
+        return this.persist()
+    }
+    async useGlobalGenerationSettings() {
+        if (this.generationSettingsPinned) this.bot.settings = painterGenerationSettings({
+            ...createPainterSettings(), ...DBState.db.bardPainterSettings,
+            context: { ...createPainterSettings().context, ...DBState.db.bardPainterSettings?.context },
+        })
+        this.data.settingsScope = 'global'
+        // With no saved global defaults, reset only reusable options to factory defaults.
+        const defaults = painterGenerationSettings(createPainterSettings())
+        this.data.settings = { ...this.data.settings, ...defaults, context: { ...this.data.settings.context, ...defaults.context } }
+        return this.persist()
+    }
+
     private async action(work: () => void | Promise<void>) {
         this.state.error = ''; this.state.notice = ''
         try { await work(); return true } catch (cause) { this.state.error = errorText(cause); return false }
     }
     async persist() { return await this.action(persist) }
+
+    async resetWorkspace(): Promise<boolean> {
+        if (this.state.status !== 'idle' || this.state.pendingImage) return false
+        this.state.status = 'saving'
+        try {
+            return await this.action(async () => {
+                const chat = this.chat
+                if (chat.isStreaming) throw new Error('메시지 작성이 끝난 뒤 리셋해 주세요.')
+                const previous = this.data
+                if (previous.results.some(result => result.compressionPending)) throw new Error('이미지 저장을 마친 뒤 리셋해 주세요.')
+                // Gallery metadata must survive even for old images without a separate record.
+                for (const result of previous.results) await savePainterGalleryRecord(result, chat.name ?? '')
+                if (chat.isStreaming) throw new Error('메시지 작성이 끝난 뒤 리셋해 주세요.')
+                const cleared = {
+                    ...previous, anchor: undefined, draft: undefined, previousDraft: undefined, conversation: [], results: [],
+                    settings: { ...previous.settings, instruction: '', context: { ...previous.settings.context, referenceId: '', referenceAssetId: '' } },
+                }
+                chat.bardPainter = cleared
+                const active = chat.bardPainter
+                try { await persist() }
+                catch (cause) { if (chat.bardPainter === active) chat.bardPainter = previous; throw cause }
+                painterSelection.update(selection => selection?.characterId === this.characterId && selection.chatId === this.chatId ? null : selection)
+                painterInsertionRequest.update(request => request?.characterId === this.characterId && request.chatId === this.chatId ? null : request)
+                this.state.sources = []
+                this.state.notice = '작업을 리셋했습니다. 생성 설정과 프리셋, 갤러리 이미지는 유지됩니다.'
+            })
+        } finally { this.state.status = 'idle' }
+    }
 
     async setReference(assetId: string): Promise<boolean> {
         if (this.state.status !== 'idle' || this.state.pendingImage) return false
@@ -158,7 +230,7 @@ export class PainterSession {
 
     private async context(anchor: PainterAnchor): Promise<PainterContextSource[]> {
         const chat = this.chat
-        const options = this.data.settings.context
+        const options = this.settings.context
         const index = chat.message.findIndex((item) => item.chatId === anchor.messageId)
         if (index < 0) throw new Error('선택한 메시지가 없습니다. 본문에서 장면을 다시 선택해 주세요.')
         const char = this.character
@@ -232,7 +304,7 @@ export class PainterSession {
             const sources = await this.context(target)
             if (controller.signal.aborted) return
             this.state.sources = sources
-            const settings = clone(this.data.settings)
+            const settings = clone(this.settings)
             if (options.instruction !== undefined) settings.instruction = options.instruction
             const style = clone(this.style)
             const draft = sameScene && !options.fresh ? previousDraft : undefined
@@ -263,6 +335,20 @@ export class PainterSession {
         if (this.controller === controller) { this.controller = null; this.state.status = 'idle' }
         return prepared && !this.state.error
     }
+    async clearConversation(): Promise<boolean> {
+        if (this.state.status !== 'idle' || this.state.pendingImage || !this.data.conversation?.length) return false
+        this.state.status = 'saving'
+        const success = await this.action(async () => {
+            if (this.chat.isStreaming) throw new Error('메시지 작성이 끝난 뒤 대화를 비워 주세요.')
+            const data = this.data, previous = data.conversation
+            data.conversation = []
+            try { await persist() }
+            catch (cause) { data.conversation = previous; throw cause }
+            this.state.notice = '프롬프트 대화를 비웠습니다. 초안과 생성한 삽화는 유지됩니다.'
+        })
+        this.state.status = 'idle'
+        return success
+    }
     async restoreDraft() {
         if (this.state.status !== 'idle' || !this.data.previousDraft) return
         this.state.status = 'saving'
@@ -286,8 +372,8 @@ export class PainterSession {
             if (!DBState.db.NAIApiKey?.trim()) throw new Error('설정의 이미지 생성에서 NovelAI API 키를 입력해 주세요.')
             const result: PainterResult = {
                 id: v4(), assetId: v4(), createdAt: Date.now(), anchor: clone(this.data.anchor!),
-                draft: clone(this.data.draft!), style: clone(this.style), settings: clone(this.data.settings),
-                seed: this.data.settings.seed ?? crypto.getRandomValues(new Uint32Array(1))[0], compressionPending: true,
+                draft: clone(this.data.draft!), style: clone(this.style), settings: clone(this.settings),
+                seed: this.settings.seed ?? crypto.getRandomValues(new Uint32Array(1))[0], compressionPending: true,
             }
             const request = buildPainterImageRequest(result.draft, result.style, result.settings, result.seed)
             // Persist the editable request before the paid, explicitly requested call.
@@ -520,7 +606,7 @@ export class PainterSession {
             const custom = { ...clone(style), id: asNew || !style.id || PAINTER_STYLES.some(item => item.id === style.id) ? v4() : style.id, name: style.name.trim() }
             uniquePresetName(custom.name, this.styles, custom.id)
             const draft = { rendering: '', scene: 'landscape', negative: '', subjects: [] }
-            buildPainterImageRequest(draft, custom, this.data.settings, 1)
+            buildPainterImageRequest(draft, custom, this.settings, 1)
             const existing = DBState.db.bardPainterStyles ?? []
             const index = existing.findIndex(item => item.id === custom.id)
             write(DBState.db, 'bardPainterStyles', index < 0 ? [...existing, custom] : existing.map((item, position) => position === index ? custom : item))
