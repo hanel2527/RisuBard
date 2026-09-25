@@ -65,6 +65,8 @@ export interface PainterSettings {
     height: number
     seed: number | null
     instruction: string
+    /** Scene-local camera selection; missing legacy values use third-person. */
+    perspective?: 'first-person' | 'third-person'
     context: PainterContext
 }
 
@@ -110,6 +112,8 @@ export interface PainterResult {
 
 export interface PainterChatData {
     settings: PainterSettings
+    /** Applied snapshot, independent of chat/global toggle values. */
+    imagePreset?: { promptPresetId: string; name: string; values: Record<string, string> }
     /** Missing on legacy chats: preserve their existing local generation options. */
     settingsScope?: 'global' | 'chat'
     anchor?: PainterAnchor
@@ -131,7 +135,7 @@ export interface PainterContextSource { name: string; content: string }
 export function createPainterSettings(): PainterSettings {
     return {
         styleId: 'default', model: 'nai-diffusion-5-full', modelSlot: 'model',
-        width: 832, height: 1216, seed: null, instruction: '',
+        width: 832, height: 1216, seed: null, instruction: '', perspective: 'third-person',
         context: {
             before: 2, after: 0, surrounding: false, systemPrompt: false,
             characterDescription: true, persona: false, characterLorebook: false,

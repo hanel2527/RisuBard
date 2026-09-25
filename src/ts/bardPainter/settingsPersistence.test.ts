@@ -17,6 +17,8 @@ it('retains global, bot-pinned and chat generation settings through a canonical 
         const local = createPainterChatData()
         local.settingsScope = 'chat'
         local.settings.width = 1216
+        local.settings.perspective = 'first-person'
+        local.imagePreset = { promptPresetId: 'prompt', name: 'Image options', values: { toggle_detail: '1' } }
         const database = {
             characters: [{ chaId: 'painter-settings-bot', type: 'character', name: 'Painter test',
                 bardPainter: { identities: [], outfits: [], settings: pinned },

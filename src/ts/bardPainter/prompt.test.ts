@@ -15,6 +15,23 @@ const draft: PainterDraft = {
 const anchor = { characterId: 'bot', chatId: 'chat', messageId: 'message', start: 10, end: 17, text: '아리아가 돌아봤다.' }
 
 describe('BardPainter prompt preparation', () => {
+    it('instructs first-person exclusion using the supplied user identity as data', () => {
+        const settings = { ...createPainterSettings(), perspective: 'first-person' as const }
+        const messages = buildPainterMessages({ anchor, style, settings, sources: [], identities: [], userName: '하린' })
+        expect(JSON.parse(messages[1].content).viewpoint).toEqual({ mode: 'first-person', userName: '하린' })
+        expect(messages[0].content).toContain("Do not depict {{user}}")
+        expect(messages[0].content).toContain('takes priority over preserving locked draft subjects')
+        expect(messages[0].content).not.toContain('하린')
+        expect(JSON.parse(messages[1].content).target.text).toBe(anchor.text)
+    })
+    it('uses third-person for legacy settings and permits the user character when present', () => {
+        const settings = createPainterSettings()
+        delete settings.perspective
+        const messages = buildPainterMessages({ anchor, style, settings, sources: [], identities: [] })
+        expect(JSON.parse(messages[1].content).viewpoint.mode).toBe('third-person')
+        expect(messages[0].content).toContain('third-person external camera')
+        expect(messages[0].content).not.toContain('Do not depict {{user}}')
+    })
     it('copies generated prompt blocks with custom subject text and all negatives last, without metadata', () => {
         const edited = structuredClone(draft)
         edited.rendering = 'soft edges'

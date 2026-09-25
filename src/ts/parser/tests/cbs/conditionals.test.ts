@@ -78,6 +78,10 @@ afterEach(() => {
 })
 
 describe('#if', () => {
+  test('uses scoped globals for getglobalvar, including empty values, without changing fallback', () => {
+    const input = '{{getglobalvar::toggle_rain}}/{{getglobalvar::toggle_note}}/{{getglobalvar::other}}'
+    expect(risuChatParser(input, { globalChatVariables: { toggle_rain: '0', toggle_note: '' } })).toBe('0//null')
+  })
   test('uses request-scoped toggle values when provided', () => {
     const input = 'A {{#when::toggle::rain}}RAIN{{/}} B'
 

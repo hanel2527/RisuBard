@@ -16,7 +16,9 @@ import { replaceSubjectOutfit } from './subjectPrompt'
 import { painterSelection, painterInsertionRequest } from './selectionState'
 import { get } from 'svelte/store'
 import { ensureChatHydrated } from '../storage/chatStorage'
+import { resolvePersonaById } from '../personaScopes'
 import { createPainterSettings, painterGenerationSettings, type PainterSettings } from './types'
+import { painterImageToggleScope, painterPromptDatabase, painterPromptPreset } from './imagePreset'
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value))
 const errorText = (cause: unknown) => cause instanceof Error ? cause.message : String(cause)
@@ -73,6 +75,30 @@ export class PainterSession {
     get bot() { return this.character.bardPainter ??= { identities: [], outfits: [] } }
     get styles() { return [...PAINTER_STYLES, ...(DBState.db.bardPainterStyles ?? [])] }
     get style() { return this.styles.find((item) => item.id === this.data.settings.styleId) ?? PAINTER_STYLES[0] }
+    get promptPreset() { return painterPromptPreset(DBState.db, this.chat) }
+    get imagePresets() {
+        const prompt = this.promptPreset
+        return prompt ? (DBState.db.togglePresets ?? []).map((preset, index) => ({ preset, index }))
+            .filter(({ preset }) => preset.promptPresetName === prompt.name) : []
+    }
+    get imagePreset() {
+        const applied = this.data.imagePreset
+        return applied && applied.promptPresetId === this.promptPreset?.id ? applied : undefined
+    }
+    async applyImagePreset(index: number | null): Promise<boolean> {
+        if (this.state.status !== 'idle' || this.state.pendingImage) return false
+        this.state.status = 'saving'
+        try {
+            return await this.action(async () => {
+                const preset = index === null ? undefined : this.imagePresets.find(item => item.index === index)?.preset
+                if (index !== null && (!preset || !this.promptPreset?.id)) throw new Error('현재 프롬프트의 이미지 프리셋을 다시 선택해 주세요.')
+                const data = this.data, previous = data.imagePreset
+                data.imagePreset = preset ? { promptPresetId: this.promptPreset.id, name: preset.name, values: clone(preset.values) } : undefined
+                try { await persist() } catch (cause) { data.imagePreset = previous; throw cause }
+                this.state.notice = preset ? `이미지 프리셋 '${preset.name}'을 적용했습니다. 다음 프롬프트 작성과 개선에 사용합니다.` : '이미지 프리셋을 해제했습니다.'
+            })
+        } finally { this.state.status = 'idle' }
+    }
 
     get generationSettingsPinned() { return this.bot.settings !== undefined }
     get hasGenerationOverrides() { return this.generationSettingsPinned || this.data.settingsScope !== 'global' }
@@ -234,10 +260,17 @@ export class PainterSession {
         const index = chat.message.findIndex((item) => item.chatId === anchor.messageId)
         if (index < 0) throw new Error('선택한 메시지가 없습니다. 본문에서 장면을 다시 선택해 주세요.')
         const char = this.character
+        const contextCharacter = { ...char, chatPage: char.chats.indexOf(chat) }
+        const imagePreset = this.imagePreset
+        const database = painterPromptDatabase(DBState.db, chat)
+        const globalChatVariables = imagePreset ? await painterImageToggleScope(database, char, chat, imagePreset.values) : undefined
+        const includeSystemPrompt = options.systemPrompt || !!imagePreset
+        const parsePrompt = includeSystemPrompt ? (await import('../parser/parser.svelte')).risuChatParser : undefined
         const modules = new Set([...(DBState.db.enabledModules ?? []), ...(char.modules ?? []), ...(chat.modules ?? [])])
         const source = collectLoreBuilderSources({
-            database: DBState.db,
-            character: { ...char, chatPage: char.chats.indexOf(chat) },
+            database,
+            character: contextCharacter,
+            parsePrompt: parsePrompt ? (text, role) => parsePrompt(text, { db: database, chara: contextCharacter, role, globalChatVariables }) : undefined,
             targetEntryId: '',
             moduleLorebooks: (DBState.db.modules ?? []).filter((item) => modules.has(item.id))
                 .flatMap((item) => (item.lorebook ?? []).map((entry) => ({ scopeId: `module:${item.id}`, entry }))),
@@ -245,7 +278,7 @@ export class PainterSession {
         const result: PainterContextSource[] = []
         const add = (name: string, content: string | undefined) => { if (content?.trim()) result.push({ name, content }) }
         for (const key of ['systemPrompt', 'characterDescription', 'characterLorebook', 'moduleLorebook'] as const) {
-            if (options[key]) add(key, source[key])
+            if (key === 'systemPrompt' ? includeSystemPrompt : options[key]) add(key, source[key])
         }
         if (options.persona) {
             const personas = [...(char.personas ?? []), ...(DBState.db.personas ?? [])]
@@ -309,7 +342,8 @@ export class PainterSession {
             const style = clone(this.style)
             const draft = sameScene && !options.fresh ? previousDraft : undefined
             const requestCharacter = { ...this.character, chatPage: this.character.chats.indexOf(this.chat) }
-            const formated = buildPainterMessages({ anchor: target, settings, style, sources,
+            const userName = resolvePersonaById(DBState.db, this.character, this.chat.bindedPersona)?.persona.name ?? DBState.db.username ?? 'User'
+            const formated = buildPainterMessages({ anchor: target, settings, style, sources, userName,
                 identities: clone(this.bot.identities), draft, outfits: clone([...this.data.outfits, ...this.bot.outfits]),
                 conversation: sameScene && !options.fresh ? clone((this.data.conversation ?? []).slice(-12)) : [] })
             const response = await requestChatData({ formated, currentChar: requestCharacter, bias: {},
@@ -318,7 +352,12 @@ export class PainterSession {
             if (controller.signal.aborted) return
             if (response.type !== 'success') throw new Error(response.type === 'fail' ? response.result : '프롬프트 응답 형식을 읽을 수 없습니다. 다시 작성해 주세요.')
             const next = parsePainterDraft(response.result)
-            next.subjects = reconcilePainterSubjects(next.subjects, this.bot, draft?.subjects ?? [])
+            const viewerNames = new Set([userName, '{{user}}', 'user', 'you', '당신'].map(name => name.trim().toLowerCase()).filter(Boolean))
+            const visibleSubjects = (subjects: typeof next.subjects) => settings.perspective === 'first-person'
+                ? subjects.filter(subject => subject.kind !== 'character' || ![subject.name, ...subject.aliases].some(name => viewerNames.has(name.trim().toLowerCase())))
+                : subjects
+            // Reconciliation otherwise restores omitted locked blocks, including the viewer.
+            next.subjects = reconcilePainterSubjects(visibleSubjects(next.subjects), this.bot, visibleSubjects(draft?.subjects ?? []))
             this.data.draft = next
             this.data.previousDraft = sameScene ? previousDraft : undefined
             const history = sameScene && !options.fresh ? this.data.conversation ?? [] : []

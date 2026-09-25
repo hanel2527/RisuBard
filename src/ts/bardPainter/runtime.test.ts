@@ -19,6 +19,22 @@ import { loadPainterReference } from './reference'
 vi.mock('../storage/chatStorage', () => ({ ensureChatHydrated: mocks.hydrate }))
 import { getPainterSession, PainterSession } from './runtime.svelte'
 let serial = 0
+it('uses the captured chat persona for first-person and does not restore its locked user block', async () => {
+    const { session, chat } = setup()
+    session.character.personas = [{ id: 'viewer', name: '하린' }] as any
+    Object.assign(chat, { bindedPersona: 'viewer' })
+    session.character.chatPage = 1
+    session.data.settings.perspective = 'first-person'
+    const subject = { id: 'viewer-block', name: '하린', aliases: [], kind: 'character' as const, appearance: 'black hair', clothing: '', state: '', pose: '', negative: '', locked: true }
+    session.data.draft!.subjects = [subject, { ...subject, id: 'other-block', name: '아리아' }]
+    mocks.request.mockResolvedValue({ type: 'success', result: JSON.stringify({ rendering: '', scene: 'pov, garden', negative: '', subjects: [] }) })
+    await session.prepare()
+    expect(session.state.error).toBe('')
+    const payload = JSON.parse(mocks.request.mock.calls[0][0].formated[1].content)
+    expect(payload.viewpoint).toEqual({ mode: 'first-person', userName: '하린' })
+    expect(session.data.draft!.subjects.map(item => item.name)).toEqual(['아리아'])
+    expect(new PainterSession('bot', chat.id).settings.perspective).toBe('first-person')
+})
 it('shares generation defaults, keeps scene inputs local, and persists bot pinning across sessions', async () => {
     const db = mocks.db as typeof mocks.db & { bardPainterSettings?: PainterGenerationSettings }
     const { session } = setup()
