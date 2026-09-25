@@ -36,17 +36,28 @@ test.each([0, 2])('repeated self restore preserves %i characters and settings af
   servers.push(server)
   const client = await createClient(server.port, server.password)
   expect((await client.importBackup(createSeedBackup({ characterCount, chatsPerCharacter: 2 }))).ok).toBe(true)
-  const original = normalizeBackup(await client.exportBackup()).normalized
+  const original = normalizeBackup(await client.exportBackup())
+  function expectPreserved(backup: Buffer) {
+    const restored = normalizeBackup(backup)
+    // Startup may materialize empty canonical collections absent from a legacy seed.
+    expect(restored.normalized).toEqual({
+      ...original.normalized,
+      settingKeys: expect.arrayContaining(original.normalized.settingKeys),
+    })
+    for (const key of original.normalized.settingKeys) {
+      expect(restored.raw[key], key).toEqual(original.raw[key])
+    }
+  }
   for (let attempt = 0; attempt < 3; attempt++) {
     const backup = await client.exportBackup()
     expect(decodeBackup(backup).filter(entry => entry.name.startsWith('inlay/')).map(entry => entry.name)).toEqual([])
     const result = await client.importBackup(backup)
     expect(result, JSON.stringify(result)).toMatchObject({ ok: true })
-    expect(normalizeBackup(await client.exportBackup()).normalized).toEqual(original)
+    expectPreserved(await client.exportBackup())
   }
   await server.stop()
   const restarted = await spawnServer({ seedSave: save => cp(path.join(server.cwd, 'save'), save, { recursive: true }) })
   servers.push(restarted)
   const restartedClient = await createClient(restarted.port, restarted.password)
-  expect(normalizeBackup(await restartedClient.exportBackup()).normalized).toEqual(original)
+  expectPreserved(await restartedClient.exportBackup())
 })
