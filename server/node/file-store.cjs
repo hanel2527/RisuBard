@@ -166,7 +166,7 @@ function writeJournal(journalPath, value) {
     replaceAtomic(journalPath, Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8'));
 }
 
-function publishTransaction(root, journal, options = {}) {
+function publishTransaction(root, journal, journalPath, options = {}) {
     let published = 0;
     let skipped = 0;
     for (const entry of journal.entries) {
@@ -179,12 +179,18 @@ function publishTransaction(root, journal, options = {}) {
             continue;
         }
         if (entry.action === 'move') {
+            if (entry.completed) {
+                skipped += 1;
+                continue;
+            }
             const source = resolveInside(root, entry.path);
             const destination = resolveInside(root, entry.destination);
             if (!fs.existsSync(source)) {
                 if (!fs.existsSync(destination)) {
                     throw new Error(`Transaction move is missing for ${entry.path}`);
                 }
+                entry.completed = true;
+                writeJournal(journalPath, journal);
                 skipped += 1;
                 continue;
             }
@@ -195,6 +201,9 @@ function publishTransaction(root, journal, options = {}) {
             fs.renameSync(source, destination);
             fsyncDirectory(path.dirname(source));
             fsyncDirectory(path.dirname(destination));
+            // Persist before later writes can recreate the source directory.
+            entry.completed = true;
+            writeJournal(journalPath, journal);
             published += 1;
             if (options.failAfterPublish === published) throw new Error('simulated crash during transaction publish');
             continue;
@@ -284,6 +293,7 @@ function commitTransaction(root, operations, options = {}) {
     if (!Array.isArray(operations) || operations.length === 0) {
         return { committed: 0, published: 0, skipped: 0, stagedBytes: 0 };
     }
+    const clearedPaths = [];
     const prepared = operations.map((operation, operationIndex) => {
         if (operation.deleteCharacter === true) {
             characterDeletionPath(root, operation.path);
@@ -305,6 +315,7 @@ function commitTransaction(root, operations, options = {}) {
             if (fs.existsSync(destination) && !destinationClearedEarlier) {
                 throw new Error(`Transaction move destination already exists: ${operation.moveTo}`);
             }
+            clearedPaths.push(source);
             return {
                 action: 'move',
                 path: operation.path,
@@ -340,7 +351,9 @@ function commitTransaction(root, operations, options = {}) {
             }
             digest = checksum(data);
         }
-        return { action: 'replace', path: operation.path, data, sourcePath, chunks, checksum: digest, unchanged: matchesStoredChecksum(target, digest) };
+        // A matching file is still needed when an earlier move removes it.
+        const targetMovedEarlier = clearedPaths.some(source => target === source || target.startsWith(`${source}${path.sep}`));
+        return { action: 'replace', path: operation.path, data, sourcePath, chunks, checksum: digest, unchanged: !targetMovedEarlier && matchesStoredChecksum(target, digest) };
     });
     const unchanged = prepared.filter(entry => entry.unchanged);
     const pending = prepared.filter(entry => !entry.unchanged);
@@ -397,7 +410,7 @@ function commitTransaction(root, operations, options = {}) {
     const stagedBytes = entries.reduce((total, entry) => (
         entry.action === 'move' || entry.action === 'delete-character' ? total : total + fs.statSync(entry.staged).size
     ), 0);
-    const published = publishTransaction(root, journal, options);
+    const published = publishTransaction(root, journal, journalPath, options);
     cleanupJournal(journalPath, stageDir);
     return {
         committed: operations.length,
@@ -416,7 +429,7 @@ function recoverTransactions(root) {
         const journalPath = path.join(journalDir, name);
         const journal = JSON.parse(fs.readFileSync(journalPath, 'utf8'));
         const stageDir = path.join(journalDir, `${journal.id}.stage`);
-        publishTransaction(root, journal);
+        publishTransaction(root, journal, journalPath);
         cleanupJournal(journalPath, stageDir);
         recovered += 1;
     }

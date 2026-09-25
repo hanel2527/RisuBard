@@ -14,7 +14,10 @@ test.each(['legacy', 'v3'])('running server adopts editor saves, chat lore delet
     const repository = createUserDataRepository({ dataRoot, allowDirectoryMapping: true, newCharacterPackages: layout === 'v3' })
     const database = { language: 'en', botPresets: [], modules: [], personas: [], loreBook: [], characters: [{
         chaId: 'one', type: 'character', name: 'One', desc: 'Before', globalLore: [{ key: 'world', content: 'Before' }], additionalAssets: [], emotionImages: [],
-        chats: [{ id: 'chat', name: 'Chat', localLore: [{ key: 'local', content: 'Delete this' }], message: [{ role: 'user', data: 'Original message' }] }],
+        chats: [
+            { id: 'chat', name: 'Chat', localLore: [{ key: 'local', content: 'Delete this' }], message: [{ role: 'user', data: 'Original message' }] },
+            { id: '', name: 'Legacy chat', localLore: [], message: [{ role: 'user', data: 'Preserved legacy message' }] },
+        ],
     }] }
     repository.importLegacyDatabase(database, { mode: 'sync' })
     const resolver = require('./character-directories.cjs').createCharacterDirectoryResolver(dataRoot)
@@ -53,6 +56,13 @@ test.each(['legacy', 'v3'])('running server adopts editor saves, chat lore delet
         }
         const initial = await sync()
         expect(initial.snapshot.characters[0].desc).toBe('Before')
+        // A poll after server restart must work before the compatibility reader
+        // assigns IDs, without publishing an unaddressable chat or migrating data.
+        expect(initial.snapshot.chatMetadata.map((entry: any) => entry.chatId)).toEqual(['chat'])
+        expect(repository.exportLegacyDatabase()).toEqual(database)
+        const unchanged = await sync(initial.revision)
+        expect(unchanged.error).toBeUndefined()
+        expect(unchanged.snapshot).toBeUndefined()
         const saved = await fetch(`${base}/api/chat-content/one/0`, {
             method: 'POST', headers: { ...headers, 'x-chat-id': 'chat' },
             body: JSON.stringify({ id: 'chat', name: 'Chat', localLore: database.characters[0].chats[0].localLore, message: [{ role: 'user', data: 'Acknowledged pending message' }] }),
@@ -105,6 +115,15 @@ test.each(['legacy', 'v3'])('running server adopts editor saves, chat lore delet
         fs.writeFileSync(chatFile, JSON.stringify({ ...chatMetadata, note: 'External note' }))
         const read = await fetch(`${base}/api/read`, { headers: { ...headers, 'file-path': Buffer.from('database/database.bin').toString('hex') } })
         expect(read.status, await read.clone().text()).toBe(200)
+        const loaded = await decodeRisuSave(Buffer.from(await read.arrayBuffer()))
+        const legacyId = loaded.characters[0].chats[1].id
+        expect(legacyId).toEqual(expect.any(String))
+        expect(legacyId.length).toBeGreaterThan(0)
+        const legacyChat = await fetch(`${base}/api/chat-content/one/1`, { headers: { ...headers, 'x-chat-id': legacyId } })
+        expect(legacyChat.ok).toBe(true)
+        expect(await decodeRisuSave(Buffer.from(await legacyChat.arrayBuffer()))).toMatchObject({
+            id: legacyId, name: 'Legacy chat', message: [{ role: 'user', data: 'Preserved legacy message' }],
+        })
     } finally {
         child.kill()
         if (child.exitCode === null) await new Promise(resolve => child.once('exit', resolve))

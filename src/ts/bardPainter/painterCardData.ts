@@ -4,7 +4,7 @@ const record = (value: unknown): Record<string, unknown> | undefined =>
     value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0
 
-/** Cards carry only validated bot-wide identities and outfits, never per-chat drafts or images. */
+/** Imported presets start private. A card cannot grant permission to re-export local data. */
 export function normalizePainterBotData(value: unknown): PainterBotData | undefined {
     const source = record(value)
     if (!source || !Array.isArray(source.identities)) return undefined
@@ -32,4 +32,16 @@ export function normalizePainterBotData(value: unknown): PainterBotData | undefi
         })
     }
     return { identities, outfits }
+}
+
+/** Public card projection, separate from the complete personal save/backup. */
+export function exportPainterBotData(value: unknown): PainterBotData | undefined {
+    const source = record(value)
+    if (!source || !Array.isArray(source.identities)) return undefined
+    const selected = (items: unknown[]) => items.filter(item => record(item)?.attachToCard === true)
+    const data = normalizePainterBotData({
+        identities: selected(source.identities),
+        outfits: selected(Array.isArray(source.outfits) ? source.outfits : []),
+    })
+    return data?.identities.length ? data : undefined
 }

@@ -19,6 +19,40 @@ import { loadPainterReference } from './reference'
 vi.mock('../storage/chatStorage', () => ({ ensureChatHydrated: mocks.hydrate }))
 import { getPainterSession, PainterSession } from './runtime.svelte'
 let serial = 0
+it('sets all saved card attachments in one save and rolls both lists back on failure', async () => {
+    const { session } = setup()
+    session.bot.identities = [{ id: 'a', name: 'A', aliases: [], appearance: 'blue eyes' }, { id: 'b', name: 'B', aliases: [], appearance: 'red hair' }]
+    session.bot.outfits = [{ id: 'coat', subjectId: 'a', name: 'Coat', clothing: 'coat', state: '' }]
+    session.data.outfits = [{ id: 'local', subjectId: 'b', name: 'Local', clothing: 'shirt', state: '' }]
+    const local = JSON.stringify(session.data.outfits)
+    mocks.save.mockClear()
+    expect(await session.setAllCardAttachments(true)).toBe(true)
+    expect([...session.bot.identities, ...session.bot.outfits].every(item => item.attachToCard === true)).toBe(true)
+    expect(mocks.save).toHaveBeenCalledOnce()
+    expect(JSON.stringify(session.data.outfits)).toBe(local)
+    mocks.save.mockRejectedValueOnce(new Error('disk full'))
+    expect(await session.setAllCardAttachments(false)).toBe(false)
+    expect([...session.bot.identities, ...session.bot.outfits].every(item => item.attachToCard === true)).toBe(true)
+    expect(await session.setAllCardAttachments(false)).toBe(true)
+    expect([...session.bot.identities, ...session.bot.outfits].every(item => item.attachToCard !== true)).toBe(true)
+    session.state.status = 'prompt'
+    expect(await session.setAllCardAttachments(true)).toBe(false)
+})
+it('keeps attachment choices on overwrite but makes copied presets private', async () => {
+    const { session } = setup()
+    const identity = { id: 'person', name: 'Public', aliases: [], appearance: 'blue eyes', attachToCard: true }
+    await session.saveIdentity(identity)
+    expect(session.bot.identities[0].attachToCard).toBe(true)
+    const copied = await session.saveIdentity({ ...identity, name: 'Private copy' }, true)
+    expect(session.bot.identities.find(item => item.id === copied)?.attachToCard).not.toBe(true)
+    const outfit = { id: 'coat', subjectId: 'person', name: 'Coat', clothing: 'blue coat', state: '', attachToCard: true }
+    await session.saveOutfitPreset(outfit, true)
+    expect(session.bot.outfits[0].attachToCard).toBe(true)
+    const copiedOutfit = await session.saveOutfitPreset({ ...outfit, name: 'Copy' }, true, true)
+    expect(session.bot.outfits.find(item => item.id === copiedOutfit)?.attachToCard).not.toBe(true)
+    await session.saveIdentity({ ...identity, attachToCard: false })
+    expect(session.bot.identities[0].attachToCard).not.toBe(true)
+})
 it('uses the captured chat persona for first-person and does not restore its locked user block', async () => {
     const { session, chat } = setup()
     session.character.personas = [{ id: 'viewer', name: '하린' }] as any
@@ -34,6 +68,23 @@ it('uses the captured chat persona for first-person and does not restore its loc
     expect(payload.viewpoint).toEqual({ mode: 'first-person', userName: '하린' })
     expect(session.data.draft!.subjects.map(item => item.name)).toEqual(['아리아'])
     expect(new PainterSession('bot', chat.id).settings.perspective).toBe('first-person')
+})
+it('removes viewer-linked scene-plan relations before saving first-person prompt blocks', async () => {
+    const { session, chat } = setup()
+    session.character.personas = [{ id: 'viewer', name: '하린' }] as any
+    Object.assign(chat, { bindedPersona: 'viewer' })
+    session.data.settings.perspective = 'first-person'
+    const subject = { id: '', name: '하린', aliases: [], kind: 'character', appearance: 'black hair', clothing: '', state: '', negative: '',
+        pose: { tags: 'standing', placement: '', posture: '', action: '', expression: '', gaze: '' } }
+    mocks.request.mockResolvedValue({ type: 'success', result: JSON.stringify({ version: 2, rendering: '', negative: '',
+        scene: { tags: 'pov', location: 'A garden.', framing: '', camera: '' },
+        subjects: [subject, { ...subject, name: '아리아' }],
+        interactions: [{ source: 0, target: 1, description: 'The viewer embraces the woman.', sourceAction: 'Embracing the woman.', targetAction: 'Leaning against the viewer.' }],
+    }) })
+    await session.prepare()
+    expect(session.state.error).toBe('')
+    expect(session.data.draft!.scene).toBe('pov\nA garden.')
+    expect(session.data.draft!.subjects.map(item => ({ name: item.name, pose: item.pose }))).toEqual([{ name: '아리아', pose: 'standing' }])
 })
 it('shares generation defaults, keeps scene inputs local, and persists bot pinning across sessions', async () => {
     const db = mocks.db as typeof mocks.db & { bardPainterSettings?: PainterGenerationSettings }
@@ -638,19 +689,60 @@ it('saving an outfit registers its manually added owner for other chats', async 
     expect(session.bot.outfits[0].subjectId).toBe('manual')
 })
 
-it('generates once and recovers a failed conversion without another image request', async () => {
+it('generates and converts before storing only WebP and committing the result once', async () => {
+    const { session } = setup()
+    const steps: string[] = []
+    mocks.fetch.mockImplementation(async () => { steps.push('generate'); return { ok: true, data: zipSync({ 'image.png': new Uint8Array([1, 2, 3]) }) } })
+    mocks.compress.mockImplementation(async () => { steps.push('convert'); return { data: new Uint8Array([4]), width: 832, height: 1216, mime: 'image/webp' } })
+    mocks.asset.mockImplementation(async () => { steps.push('asset') })
+    vi.mocked(savePainterGalleryRecord).mockImplementation(async () => { steps.push('gallery') })
+    mocks.save.mockImplementation(async () => { steps.push('commit') })
+    await session.generate()
+    expect(session.state.error).toBe('')
+    expect(steps).toEqual(['generate', 'convert', 'asset', 'gallery', 'commit'])
+    expect(mocks.asset).toHaveBeenCalledWith(session.data.results[0].assetId, expect.objectContaining({ ext: 'webp', width: 832, height: 1216 }), { charId: 'bot', chatId: session.chatId })
+    expect(mocks.asset.mock.calls[0][1].data.type).toBe('image/webp')
+    expect(session.data.results).toHaveLength(1)
+    expect(session.data.results[0].compressionPending).toBe(false)
+    expect(session.state.pendingImage).toBe(false)
+})
+
+it('generates once and recovers a failed conversion without storing PNG or requesting another image', async () => {
     const { session } = setup()
     mocks.fetch.mockResolvedValue({ ok: true, data: zipSync({ 'image.png': new Uint8Array([1, 2, 3]) }) })
     mocks.compress.mockRejectedValueOnce(new Error('encoder failed')).mockResolvedValueOnce({ data: new Uint8Array([4]), width: 832, height: 1216, mime: 'image/webp' })
     await session.generate()
     expect(session.state.pendingImage).toBe(true)
-    expect(session.data.results[0].compressionPending).toBe(true)
-    expect(mocks.asset.mock.calls[0][2]).toEqual({ charId: 'bot', chatId: session.chatId })
+    expect(session.data.results).toHaveLength(0)
+    expect(mocks.asset).not.toHaveBeenCalled()
+    expect(mocks.save).not.toHaveBeenCalled()
     await session.retrySave()
     expect(mocks.fetch).toHaveBeenCalledTimes(1)
     expect(session.state.pendingImage).toBe(false)
     expect(session.data.results[0].compressionPending).toBe(false)
-    expect(mocks.asset.mock.calls[0][0]).toBe(mocks.asset.mock.calls[1][0])
+    expect(mocks.asset).toHaveBeenCalledOnce()
+    expect(mocks.asset.mock.calls[0][1].ext).toBe('webp')
+})
+
+it.each(['asset', 'gallery', 'commit'])('retries a failed %s without regenerating or reconverting the image', async failure => {
+    const { session } = setup()
+    mocks.fetch.mockResolvedValue({ ok: true, data: zipSync({ 'image.png': new Uint8Array([1, 2, 3]) }) })
+    mocks.compress.mockResolvedValue({ data: new Uint8Array([4]), width: 832, height: 1216, mime: 'image/webp' })
+    const failing = failure === 'asset' ? mocks.asset : failure === 'gallery' ? vi.mocked(savePainterGalleryRecord) : mocks.save
+    failing.mockRejectedValueOnce(new Error('disk full'))
+    await session.generate()
+    expect(session.state.error).toContain('disk full')
+    expect(session.state.pendingImage).toBe(true)
+    await session.generate()
+    await session.retrySave()
+    expect(session.state.error).toBe('')
+    expect(session.state.pendingImage).toBe(false)
+    expect(session.data.results).toHaveLength(1)
+    expect(session.data.results[0].compressionPending).toBe(false)
+    expect(mocks.fetch).toHaveBeenCalledOnce()
+    expect(mocks.compress).toHaveBeenCalledOnce()
+    expect(mocks.asset).toHaveBeenCalledTimes(failure === 'asset' ? 2 : 1)
+    expect(mocks.asset.mock.calls.every(([, asset]) => asset.ext === 'webp')).toBe(true)
 })
 
 it('recovers an already written WebP after restart without running the PNG converter', async () => {

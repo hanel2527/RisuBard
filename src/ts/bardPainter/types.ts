@@ -75,6 +75,8 @@ export interface PainterIdentity {
     name: string
     aliases: string[]
     appearance: string
+    /** Explicit opt-in for public character cards; missing means private. */
+    attachToCard?: boolean
 }
 
 /** Reusable generation options; scene-specific instructions and references stay in the chat. */
@@ -95,6 +97,8 @@ export interface PainterOutfit {
     name: string
     clothing: string
     state: string
+    /** Requires an attached identity as well; chat-local outfits are never exported. */
+    attachToCard?: boolean
 }
 
 export interface PainterResult {

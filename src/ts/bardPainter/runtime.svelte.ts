@@ -51,7 +51,12 @@ export class PainterSession {
         loadingWiki: false, pendingImage: false, sources: [] as PainterContextSource[],
     })
     private controller: AbortController | null = null
-    private pending: { png: Uint8Array; result: PainterResult } | null = null
+    private pending: {
+        png: Uint8Array
+        result: PainterResult
+        compressed?: { data: Uint8Array; width: number; height: number; mime: 'image/webp' }
+        assetSaved?: boolean
+    } | null = null
     private wikiPromise: Promise<boolean> | null = null
 
     constructor(characterId: string, chatId: string) {
@@ -351,8 +356,8 @@ export class PainterSession {
                 disablePromptCache: true, logSource: 'other', logPurpose: 'bard-painter' }, settings.modelSlot, controller.signal)
             if (controller.signal.aborted) return
             if (response.type !== 'success') throw new Error(response.type === 'fail' ? response.result : '프롬프트 응답 형식을 읽을 수 없습니다. 다시 작성해 주세요.')
-            const next = parsePainterDraft(response.result)
             const viewerNames = new Set([userName, '{{user}}', 'user', 'you', '당신'].map(name => name.trim().toLowerCase()).filter(Boolean))
+            const next = parsePainterDraft(response.result, settings.perspective === 'first-person' ? viewerNames : undefined)
             const visibleSubjects = (subjects: typeof next.subjects) => settings.perspective === 'first-person'
                 ? subjects.filter(subject => subject.kind !== 'character' || ![subject.name, ...subject.aliases].some(name => viewerNames.has(name.trim().toLowerCase())))
                 : subjects
@@ -415,8 +420,6 @@ export class PainterSession {
                 seed: this.settings.seed ?? crypto.getRandomValues(new Uint32Array(1))[0], compressionPending: true,
             }
             const request = buildPainterImageRequest(result.draft, result.style, result.settings, result.seed)
-            // Persist the editable request before the paid, explicitly requested call.
-            await persist()
             const response = await globalFetch(DBState.db.NAIImgUrl || 'https://image.novelai.net/ai/generate-image', {
                 body: request, headers: { Authorization: `Bearer ${DBState.db.NAIApiKey}`, 'Content-Type': 'application/json' },
                 rawResponse: true, logCategory: 'image', logSource: 'image', requestTimeoutMs: 180_000,
@@ -440,26 +443,25 @@ export class PainterSession {
             if (!stored) throw new Error('저장된 생성 원본을 찾을 수 없습니다.')
             this.pending = { png: new Uint8Array(await stored.data.arrayBuffer()), result: clone(result) }
         }
-        const { png, result } = this.pending
+        const pending = this.pending
+        const { png, result } = pending
         const owner = { charId: this.characterId, chatId: this.chatId }
-        if (!this.data.results.some((item) => item.id === result.id)) {
-            // Keep received PNG recoverable if compression fails. Same asset becomes WebP on success.
-            await setInlayAsset(result.assetId, { name: `바드페인터-${result.id}.png`, data: new Blob([new Uint8Array(png)], { type: 'image/png' }), ext: 'png', type: 'image' }, owner)
-            this.data.results.unshift(clone(result))
-            await savePainterGalleryRecord(result, this.chat.name ?? '')
-            await persist()
-        }
         const { compressPainterImage } = await import('./image')
         const request = buildPainterImageRequest(result.draft, result.style, result.settings, result.seed)
         // A WebP write may have succeeded before its metadata transaction failed.
         const isWebP = new TextDecoder().decode(png.subarray(0, 4)) === 'RIFF' && new TextDecoder().decode(png.subarray(8, 12)) === 'WEBP'
-        const compressed = isWebP
+        const compressed = pending.compressed ??= isWebP
             ? { data: png, width: result.settings.width, height: result.settings.height, mime: 'image/webp' }
             : await compressPainterImage(png, request as unknown as Record<string, unknown>)
-        await setInlayAsset(result.assetId, {
-            name: `바드페인터-${result.id}.webp`, data: new Blob([new Uint8Array(compressed.data)], { type: compressed.mime }),
-            ext: 'webp', type: 'image', width: compressed.width, height: compressed.height,
-        }, owner)
+        // Only the converted image is persisted. Retain completed work for save retries.
+        if (!pending.assetSaved) {
+            await setInlayAsset(result.assetId, {
+                name: `바드페인터-${result.id}.webp`, data: new Blob([new Uint8Array(compressed.data)], { type: compressed.mime }),
+                ext: 'webp', type: 'image', width: compressed.width, height: compressed.height,
+            }, owner)
+            pending.assetSaved = true
+        }
+        if (!this.data.results.some((item) => item.id === result.id)) this.data.results.unshift(clone(result))
         const saved = this.data.results.find((item) => item.id === result.id)!
         saved.compressionPending = false
         try { await savePainterGalleryRecord(saved, this.chat.name ?? ''); await persist() }
@@ -581,6 +583,7 @@ export class PainterSession {
             const otherOwner = shared ? this.data : this.bot
             const copyingScope = !owner.outfits.some(item => item.id === outfit.id) && otherOwner.outfits.some(item => item.id === outfit.id)
             const custom = { ...clone(outfit), id: asNew || !outfit.id || copyingScope ? v4() : outfit.id, name: outfit.name.trim() }
+            if (!shared || copyingScope || (asNew && outfit.id) || outfit.attachToCard !== true) delete custom.attachToCard
             const index = owner.outfits.findIndex(item => item.id === custom.id)
             if (index >= 0 && owner.outfits[index].subjectId !== custom.subjectId) throw new Error('다른 인물의 의상을 덮어쓸 수 없습니다.')
             uniquePresetName(custom.name, owner.outfits.filter(item => item.subjectId === custom.subjectId), custom.id)
@@ -598,6 +601,19 @@ export class PainterSession {
             return true
         })) === true
     }
+    async setAllCardAttachments(attached: boolean): Promise<boolean> {
+        return (await this.presetAction(attached ? '모든 외형과 봇 공용 의상을 카드 첨부로 저장했습니다.' : '모든 카드 첨부를 해제했습니다.', write => {
+            const update = <T extends { attachToCard?: boolean }>(item: T): T => {
+                const next = { ...item }
+                if (attached) next.attachToCard = true
+                else delete next.attachToCard
+                return next
+            }
+            write(this.bot, 'identities', this.bot.identities.map(update))
+            write(this.bot, 'outfits', this.bot.outfits.map(update))
+            return true
+        })) === true
+    }
     async rememberIdentity(subjectId: string) {
         const subject = this.data.draft?.subjects.find(item => item.id === subjectId)
         if (!subject) return
@@ -606,7 +622,8 @@ export class PainterSession {
     async saveIdentity(identity: PainterIdentity, asNew = false): Promise<string | undefined> {
         return this.presetAction('인물의 이름과 외형을 저장했습니다.', write => {
             const custom: PainterIdentity = { id: asNew || !identity.id ? v4() : identity.id, name: identity.name.trim(),
-                aliases: [...new Set(identity.aliases.map(alias => alias.trim()).filter(Boolean))], appearance: identity.appearance }
+                aliases: [...new Set(identity.aliases.map(alias => alias.trim()).filter(Boolean))], appearance: identity.appearance,
+                ...(identity.attachToCard === true && !(asNew && identity.id) ? { attachToCard: true } : {}) }
             uniquePresetName(custom.name, this.bot.identities, custom.id)
             const index = this.bot.identities.findIndex(item => item.id === custom.id)
             write(this.bot, 'identities', index < 0 ? [...this.bot.identities, custom] : this.bot.identities.map((item, position) => position === index ? custom : item))

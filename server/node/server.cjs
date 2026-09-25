@@ -1662,13 +1662,18 @@ function deleteInlayFileSync(id) {
     }
 }
 
+function isGeneratedInlayFile(name) {
+    return name === '.migrated_to_fs' || name.startsWith('.migrated_to_fs.')
+        || /\.(sha256|bak|tmp)$/.test(name);
+}
+
 async function listInlayFiles() {
     await ensureInlayDir();
     const entries = await fs.readdir(inlayDir, { withFileTypes: true });
     return entries
         .filter((entry) => (
             entry.isFile() &&
-            entry.name !== '.migrated_to_fs' &&
+            !isGeneratedInlayFile(entry.name) &&
             !entry.name.endsWith('.meta.json')
         ))
         .map((entry) => {
@@ -2708,6 +2713,12 @@ async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0
                     await fs.rename(sourcePath, target);
                     canonicalEntriesRestored += 1;
                 } else if (inlayRaw) {
+                    // Older exports included filesystem checksums and migration
+                    // markers as images. They are regenerated during restore.
+                    if (isGeneratedInlayFile(name.slice('inlay/'.length))) {
+                        await fs.rm(sourcePath, { force: true });
+                        return;
+                    }
                     importedInlayIds.add(inlayRaw.id);
                     if (inlayRaw.ext) {
                         await moveStagingInlayFile(inlayRaw.id, inlayRaw.ext, sourcePath, legacyInlayInfoMap.get(inlayRaw.id) || { ext: inlayRaw.ext, name: inlayRaw.id, type: 'image' });
@@ -3511,8 +3522,11 @@ app.post('/api/live-files/sync', async (req, res, next) => {
             // after a failed validation. The next poll retries the same files.
             const payload = { revision: liveFilesRevision, etag: dbEtag, ...(errorMessage ? { error: errorMessage } : {}) }
             if (!errorMessage && req.body?.revision !== liveFilesRevision) {
-                payload.snapshot = metadataSnapshot(dbCache[DB_HEX_KEY] || userDataRepository.loadStartupDatabase())
-                payload.snapshot.chatMetadata = metadataSnapshot(userDataRepository.exportLegacyDatabase({ metadataOnly: true })).chatMetadata.map(entry => ({
+                // Polling needs metadata, not startup stubs. Legacy chat IDs are
+                // assigned by the compatibility reader, never by a background poll.
+                const metadata = userDataRepository.exportLegacyDatabase({ metadataOnly: true })
+                payload.snapshot = metadataSnapshot(dbCache[DB_HEX_KEY] || metadata)
+                payload.snapshot.chatMetadata = metadataSnapshot(metadata).chatMetadata.filter(entry => entry.chatId).map(entry => ({
                     ...entry, revision: liveFilesRevision,
                     previous: liveFilesChatPrevious.find(previous => previous.characterId === entry.characterId && previous.chatId === entry.chatId)?.metadata ?? entry.metadata,
                 }))
