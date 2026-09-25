@@ -39,14 +39,14 @@ test.each([0, 2])('repeated self restore preserves %i characters and settings af
   const original = normalizeBackup(await client.exportBackup())
   function expectPreserved(backup: Buffer) {
     const restored = normalizeBackup(backup)
-    // Startup may materialize empty canonical collections absent from a legacy seed.
+    // Startup adds empty canonical collections and IDs absent from legacy data.
     expect(restored.normalized).toEqual({
       ...original.normalized,
       settingKeys: expect.arrayContaining(original.normalized.settingKeys),
     })
-    for (const key of original.normalized.settingKeys) {
-      expect(restored.raw[key], key).toEqual(original.raw[key])
-    }
+    // Match every existing value, allowing only extra object fields such as IDs.
+    // Array lengths still have to match, so missing or duplicate entities fail.
+    expect(restored.raw).toMatchObject(original.raw)
   }
   for (let attempt = 0; attempt < 3; attempt++) {
     const backup = await client.exportBackup()
