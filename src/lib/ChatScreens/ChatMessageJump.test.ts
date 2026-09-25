@@ -2,6 +2,10 @@ import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
 import { afterEach, describe, expect, test, vi } from 'vitest'
+import { observeChatScroll } from './observeChatScroll'
+import { captureChatScrollAnchor, restoreChatScrollAnchor } from './chatScrollAnchor'
+import { scrollWithinContainer } from './scrollWithin'
+import { getChatPageForMessage } from 'src/ts/chatPagination'
 
 // Exercise the actual screen handler without mounting the entire application.
 const source = readFileSync('src/lib/ChatScreens/DefaultChatScreen.svelte', 'utf8')
@@ -10,7 +14,7 @@ const code = ts.transpileModule(source.slice(start, source.indexOf('\n    async 
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
 }).outputText
 
-afterEach(() => { vi.clearAllTimers(); vi.useRealTimers() })
+afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals() })
 
 function screen(present = true) {
     vi.useFakeTimers()
@@ -24,13 +28,13 @@ function screen(present = true) {
         DBState: { db: { risuBardHideOocTurns: false, preserveChatScrollPosition: true } },
         chatFoldedState: { data: null },
         isScrollingToMessage: false, chatPage: 1, chatPageSize: 30,
-        getChatPageForMessage: () => 1, tick: async () => {},
+        getChatPageForMessage, tick: async () => {},
         chatScrollContainer: container,
         document: { querySelector: (selector: string) => selector === '.default-chat-screen' ? container : query() },
         scrollWithinContainer: vi.fn(),
         sleep: (ms: number) => new Promise(resolve => setTimeout(resolve, ms)),
         setTimeout, clearTimeout,
-        scrollAnchorMutationToken: 0, scrollAnchorFreezeUntil: 0,
+        scrollAnchorObserver: { reset: vi.fn(), markProgrammaticScroll: vi.fn() },
         currentScrollAnchor: null, clearScrollAnchorTimers: vi.fn(),
         captureCurrentScrollAnchor: vi.fn(),
     }
@@ -39,6 +43,48 @@ function screen(present = true) {
 }
 
 describe('message jump latency', () => {
+    test.each([0, 28])('keeps page 1 message %i when its scroll event arrives after async body layout', async (targetIndex) => {
+        const { context } = screen()
+        let resize = () => {}
+        vi.stubGlobal('ResizeObserver', class {
+            constructor(callback: () => void) { resize = callback }
+            observe() {} unobserve() {} disconnect() {}
+        })
+        vi.stubGlobal('MutationObserver', class { observe() {} disconnect() {} })
+        const container = document.createElement('div')
+        container.getBoundingClientRect = () => ({ top: 0, bottom: 500, height: 500 }) as DOMRect
+        container.scrollTo = ((options: ScrollToOptions) => { container.scrollTop = Math.min(0, options.top!) }) as typeof container.scrollTo
+        let messageHeight = 30
+        for (let index = 0; index < 30; index++) {
+            const message = document.createElement('div')
+            message.dataset.chatIndex = String(index)
+            message.getBoundingClientRect = () => {
+                const top = (index - 30) * messageHeight + 500 - container.scrollTop
+                return { top, bottom: top + messageHeight, height: messageHeight } as DOMRect
+            }
+            container.append(message)
+        }
+        context.chatScrollContainer = container
+        context.scrollWithinContainer = scrollWithinContainer
+        context.scrollAnchorObserver = observeChatScroll(container, () => {
+            context.currentScrollAnchor = captureChatScrollAnchor(container, context.paginationKey, 60)
+        }, () => {
+            if (context.currentScrollAnchor) restoreChatScrollAnchor(container, context.currentScrollAnchor, context.paginationKey, 60)
+        })
+
+        // Page 2 -> page 1, first assistant turn. Wrappers exist before markdown resolves.
+        await context.scrollToMessage(targetIndex)
+        expect(context.chatPage).toBe(0)
+        messageHeight = 300
+        // The queued programmatic scroll event runs before ResizeObserver.
+        container.dispatchEvent(new Event('scroll'))
+        resize()
+
+        expect(context.currentScrollAnchor.messageIndex).toBe(targetIndex)
+        expect(container.children[targetIndex].getBoundingClientRect().top).toBe(0)
+        context.scrollAnchorObserver.destroy()
+    })
+
     test('jumps immediately to an existing target despite unrelated unloaded images', async () => {
         const { context, element, container, image } = screen()
         const onload = image.onload

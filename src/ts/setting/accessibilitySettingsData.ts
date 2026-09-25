@@ -240,6 +240,16 @@ export const accessibilitySettingsItems: SettingItem[] = [
         keywords: ['side', 'navigator', 'pin', 'scroll', 'fixed', '고정'],
     },
     {
+        id: 'acc.chatScrollNavigatorOffset',
+        type: 'number',
+        labelKey: 'chatScrollNavigatorOffset',
+        bindKey: 'chatScrollNavigatorOffset',
+        helpKey: 'chatScrollNavigatorOffset',
+        options: { min: -1000, max: 1000 },
+        condition: (ctx) => ctx.db.nodeOnlyScrollButtonType !== 'off',
+        keywords: ['side', 'navigator', 'scroll', 'offset', 'position', '위치', '오프셋'],
+    },
+    {
         id: 'acc.createFolderOnBranch',
         type: 'check',
         labelKey: 'createFolderOnBranch',
@@ -358,6 +368,7 @@ export const accessibilityScrollItems = pick([
     'acc.newMessageButtonStyle',
     'acc.nodeOnlyScrollButtonType',
     'acc.pinChatScrollNavigator',
+    'acc.chatScrollNavigatorOffset',
     'acc.chatPageSize',
 ]);
 

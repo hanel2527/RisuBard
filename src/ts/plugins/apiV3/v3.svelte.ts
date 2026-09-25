@@ -806,6 +806,7 @@ const makeRisuaiAPIV3 = (iframe:HTMLIFrameElement,plugin:RisuPlugin) => {
         if (!character?.chaId || !chat?.id) return chat
         return decorateBardWikiChatForPlugin({
             characterId: character.chaId,
+            character,
             chatId: chat.id,
             chat,
             globalSettings: DBState.db,

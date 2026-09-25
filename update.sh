@@ -77,15 +77,22 @@ EXTRACTED_DIR=$(find "$TMP_DIR" -maxdepth 1 -type d \
     -print -quit)
 [ -d "$EXTRACTED_DIR" ] || error "Extraction failed."
 
-# ── Replace files (preserve save/) ─────────────────────────────────────────────
+# ── Replace shipped files (preserve user entries) ──────────────────────────────
 
 info "Updating files..."
 
-# Remove old app files but keep save/ and backups/
-find "$SCRIPT_DIR" -mindepth 1 -maxdepth 1 ! -name 'save' ! -name 'backups' ! -name '.installed-version' -exec rm -rf {} +
-
-# Move new files in
-mv "$EXTRACTED_DIR"/* "$EXTRACTED_DIR"/.[!.]* "$SCRIPT_DIR/" 2>/dev/null || true
+# Only replace names present in the release. Never sweep the installation root:
+# it can also contain unrelated applications and user documents.
+shopt -s dotglob nullglob
+for source in "$EXTRACTED_DIR"/*; do
+    name=$(basename "$source")
+    case "$name" in
+        save|backups|config.json|.env|.npmrc|.installed-version|.git) continue ;;
+    esac
+    rm -rf -- "$SCRIPT_DIR/$name"
+    mv -- "$source" "$SCRIPT_DIR/$name"
+done
+shopt -u dotglob nullglob
 
 # Restore save/
 if [ -d "$TMP_DIR/_save_backup" ]; then

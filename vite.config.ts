@@ -4,6 +4,7 @@ import wasm from "vite-plugin-wasm";
 import strip from '@rollup/plugin-strip';
 import tailwindcss from '@tailwindcss/vite'
 import { readFileSync } from 'fs';
+import { svelteCssWarmup } from './vite/svelte-css-warmup.mjs';
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'));
 
@@ -16,6 +17,7 @@ export default defineConfig(({command, mode}) => {
       '__APP_VERSION__': JSON.stringify(pkg.version),
     },
     plugins: [
+      svelteCssWarmup(),
       {
         name: 'risubard-app-version-html',
         transformIndexHtml(html: string) {

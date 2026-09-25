@@ -1,7 +1,7 @@
 import {
     memoryWriterDraftSchema,
     buildCanonicalBatchSchema,
-    parseCanonicalBatch,
+    parseCanonicalBatchIsolated,
     parseMemoryWriterDraft,
     type CanonicalSectionPatch,
 } from './risubard-memory-writer'
@@ -39,7 +39,7 @@ export function parseCombinedMemory(output: string) {
     // Legacy providers may ignore the new field. Keep the existing rewrite path.
     if (Array.isArray(canonicalPatches) && canonicalPatches.length > 0) {
         try {
-            const batch = parseCanonicalBatch(
+            const batch = parseCanonicalBatchIsolated(
                 JSON.stringify({ documents: canonicalPatches }),
                 draft.canonicalUpdateCandidates.length,
             )

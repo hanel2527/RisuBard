@@ -1,7 +1,7 @@
 {
   "name": "risubard",
   "private": true,
-  "version": "0.9.40",
+  "version": "0.9.45",
   "license": "GPL-3.0-only",
   "packageManager": "pnpm@10.34.1",
   "engines": {
@@ -23,6 +23,9 @@
     "test": "vitest run && vitest run --config vitest.config.server.ts",
     "test:compat": "vitest run --config vitest.config.compat.ts",
     "test:server": "vitest run --config vitest.config.server.ts",
+    "verify:storage-change": "node node_modules/vitest/vitest.mjs run src/ts/storage/canonicalSaveConflict.test.ts src/ts/storage/liveFileSync.test.ts && node node_modules/vitest/vitest.mjs run --config vitest.config.server.ts server/node/character-assets.test.ts server/node/live-character-files.test.ts server/node/live-files-http.test.ts server/node/live-files-stability.test.ts server/node/new-character-packages.test.ts",
+    "check:release-inputs": "node scripts/check-release-inputs.cjs",
+    "test:release-inputs": "node --test scripts/check-release-inputs.node-test.cjs",
     "verify:release": "npm run check && npm test && npm run test:compat && npm run build",
     "verify:risubard-memory-wiki": "vitest run src/ts/risubard/memoryAnalysisClient.test.ts src/ts/risubard/automaticWikiUpdate.test.ts src/ts/risubard/narrativeContext.test.ts src/ts/risubard/memoryWiki.test.ts src/ts/risubard/memoryWikiLayout.test.ts src/ts/risubard/markdownWikiWriter.test.ts src/ts/risubard/wikiFileTree.test.ts src/ts/risubard/memoryActivity.test.ts src/ts/process/request/modelPresetBinding.test.ts src/lib/Others/RisuBardMemoryWiki.test.ts src/lib/Others/RisuBardMarkdownWorkbench.test.ts src/lib/Others/RisuBardWikiBatchDrafts.test.ts src/lib/Others/RisuBardWikiEditor.test.ts src/lib/Others/RisuBardMemoryActivity.test.ts && vitest run --config vitest.config.server.ts server/node/reveal-local-file.test.ts server/node/risubard-markdown-inquiry.test.ts server/node/risubard-markdown-wiki.test.ts server/node/risubard-memory-analysis.test.ts server/node/risubard-memory-runtime.test.ts server/node/risubard-memory-routes.test.ts server/node/risubard-memory-wiki-smoke.test.ts",
     "runserver": "node server/node/server.cjs",
@@ -41,6 +44,8 @@
     "@lucide/svelte": "^0.562.0",
     "@mlc-ai/web-llm": "^0.2.80",
     "@mlc-ai/web-tokenizers": "^0.1.6",
+    "@protontech/crypto": "2.1.3",
+    "@protontech/drive-sdk": "0.21.1",
     "@risuai/ccardlib": "^0.4.2",
     "@smithy/protocol-http": "^3.3.0",
     "@smithy/signature-v4": "^2.3.0",

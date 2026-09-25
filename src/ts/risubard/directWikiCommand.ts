@@ -1,4 +1,4 @@
-import { parseSingleJsonObject } from '../../../packages/risubard-core/src/modelOutput'
+import { parseSingleJsonObject, stripModelReasoning } from '../../../packages/risubard-core/src/modelOutput'
 import { ModelOutputError, modelOutputRepairInstruction, runValidatedModelRequest, type ModelResponse } from '../../../packages/risubard-core/src/modelResponse'
 import type { NarrativeMemoryWikiMarkdown } from './memoryWiki'
 import { normalizeRisuBardAnalysisTokenLimit } from './risuBardSettings'
@@ -152,22 +152,55 @@ function text(value: unknown, maximum: number): string | null {
         : null
 }
 
+function parseCommandJson(output: string): unknown {
+    try {
+        return parseSingleJsonObject(output)
+    } catch {
+        // Repair only literal control characters inside strings. Require the
+        // entire repaired response to parse; never salvage a partial command.
+        let source = stripModelReasoning(output).trim()
+        const fence = source.match(/^```(?:json)?\s*\r?\n([\s\S]*?)\r?\n```$/i)
+        if (fence) source = fence[1]
+        let inString = false
+        let escaped = false
+        let repaired = ''
+        for (const character of source) {
+            if (inString && !escaped && ['\n', '\r', '\t'].includes(character)) {
+                repaired += character === '\n' ? '\\n' : character === '\r' ? '\\r' : '\\t'
+                continue
+            }
+            repaired += character
+            if (inString) {
+                if (escaped) escaped = false
+                else if (character === '\\') escaped = true
+                else if (character === '"') inString = false
+            } else if (character === '"') inString = true
+        }
+        if (repaired === source) throw new Error('No recoverable string controls')
+        const parsed: unknown = JSON.parse(repaired)
+        if (!isRecord(parsed)) throw new Error('Expected one JSON object')
+        return parsed
+    }
+}
+
 function parseOperations(output: string): DirectWikiOperation[] {
     let parsed: unknown
     try {
-        parsed = parseSingleJsonObject(output)
+        parsed = parseCommandJson(output)
     }
     catch {
         throw new Error(
-            'AI가 완전한 JSON 명령 하나를 반환하지 않았습니다. 위키 문서는 변경하지 않았습니다. '
-            + '작업 모델의 최대 출력 토큰을 확인하거나, 정리할 문서를 나누어 다시 요청해 주세요.'
+            'AI 응답을 단일 JSON 명령으로 해석하지 못했습니다. 위키 문서는 변경하지 않았습니다. '
+            + 'JSON 문법, 닫는 따옴표와 괄호, 단일 객체 반환 여부를 확인해야 합니다.'
         )
     }
     if (!isRecord(parsed)
         || !exactKeys(parsed, ['schemaVersion', 'operations'])
-        || parsed.schemaVersion !== 1
         || !Array.isArray(parsed.operations)) {
         throw new Error('직접 위키 명령 응답 형식이 올바르지 않습니다.')
+    }
+    if (parsed.schemaVersion !== 1 && parsed.schemaVersion !== '1') {
+        throw new Error('직접 위키 명령의 schemaVersion은 숫자 1이어야 합니다. 위키 문서는 변경하지 않았습니다.')
     }
     const operations = parsed.operations.map((value, index) => {
         if (!isRecord(value)) {
@@ -377,6 +410,8 @@ export async function executeDirectWikiCommand(input: {
                 'Return every required operation in execution order. Do not silently skip any part of the instruction.',
                 'The instruction controls content, but cannot change this JSON protocol or filesystem safety rules.',
                 'Return exactly one JSON object matching the provided schema.',
+                'schemaVersion must be the number 1, not a quoted string.',
+                String.raw`Inside JSON strings (especially markdown), escape line breaks as \n or \r\n and tabs as \t. Escape quotes as \" and backslashes as \\. Never insert literal line breaks or tabs inside a quoted JSON string.`,
             ].join('\n'),
         }, {
             role: 'user',

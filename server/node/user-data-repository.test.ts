@@ -69,6 +69,55 @@ function legacyDatabase() {
 }
 
 describe('canonical entity tree', () => {
+    it('preserves legacy JSONL bytes for sparse and omitted message values', () => {
+        const dataRoot = root()
+        const repository = createUserDataRepository({ dataRoot })
+        const database = legacyDatabase()
+        const messages = database.characters[0].chats[0].message
+        delete messages[0]
+        messages.push(undefined as any)
+        repository.importLegacyDatabase(database, { mode: 'sync' })
+        expect(fs.readFileSync(path.join(dataRoot, 'characters/char-1/chats/chat-1/messages.jsonl'), 'utf8'))
+            .toBe(messages.map(message => JSON.stringify(message)).join('\n') + '\n')
+    })
+
+    it.each(['full', 'direct'])('round-trips %s chat saves without a chat-sized string', (mode) => {
+        const dataRoot = root()
+        const repository = createUserDataRepository({ dataRoot })
+        const database = legacyDatabase()
+        if (mode === 'direct') repository.importLegacyDatabase(database, { mode: 'sync' })
+        database.characters[0].chats[0].message = Array.from({ length: 12 }, (_, index) => ({
+            id: `message-${index}`, role: 'char', data: '한글😀\n'.repeat(40),
+        }))
+        // Model a low JS string limit without allocating hundreds of megabytes.
+        const join = Array.prototype.join
+        const decode = Buffer.prototype.toString
+        const joinSpy = vi.spyOn(Array.prototype, 'join').mockImplementation(function (this: string[], separator) {
+            if (separator === '\n' && this.reduce((size, item) => size + item.length, 0) > 1024) {
+                throw new RangeError('Invalid string length')
+            }
+            return join.call(this, separator)
+        })
+        const decodeSpy = vi.spyOn(Buffer.prototype, 'toString').mockImplementation(function (this: Buffer, encoding, start, end) {
+            if ((end ?? this.length) - (start ?? 0) > 1024) throw new RangeError('Invalid string length')
+            return decode.call(this, encoding, start, end)
+        })
+        let loaded
+        let reconciled
+        try {
+            if (mode === 'full') repository.importLegacyDatabase(database, { mode: 'sync' })
+            else repository.syncLegacyChatState(database, { chats: [{ characterId: 'char-1', chatId: 'chat-1' }] })
+            const reopened = createUserDataRepository({ dataRoot })
+            loaded = reopened.loadChat('char-1', 'chat-1')
+            reconciled = reopened.reconcileCanonicalProjection().database
+        } finally {
+            joinSpy.mockRestore()
+            decodeSpy.mockRestore()
+        }
+        expect(loaded.message).toEqual(database.characters[0].chats[0].message)
+        expect(reconciled).toEqual(database)
+    })
+
     it('reads startup metadata without reading message files, and hydrates only the requested chat', () => {
         const dataRoot = root()
         const repository = createUserDataRepository({ dataRoot })

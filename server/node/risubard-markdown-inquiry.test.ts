@@ -21,6 +21,36 @@ function document(
 }
 
 describe('progressive Markdown inquiry', () => {
+    test.each(['Why did Alice leave the fortress?', 'Did Alice leave the fortress?', 'Where was Alice before the collapse?'])('does not crowd out historical reasons for: %s', currentInput => {
+        const history = 'Alice guarded the fortress. '.repeat(25) + 'Alice left because the bridge collapsed.'
+        const content = '## Alice\n\n### Current State\n' + 'Alice lives in the southern village. '.repeat(40)
+            + '\n\n### Story History\n' + history
+        const doc = document({ id: 'alice', title: 'Alice', type: 'character', relativePath: 'characters/alice.md', content })
+        const result = inquireMarkdownDocuments({ documents: [doc], currentInput,
+            semanticMatches: [{ documentId: 'alice', score: 0.9, contentHash: doc.contentHash,
+                start: content.indexOf(history), end: content.length }],
+            tokenBudget: { target: 512, events: 512, perSource: 256, maximum: 1024 } })
+        expect(result.sources[0].content).toContain('bridge collapsed')
+        expect(result.sources[0].tokens).toBeLessThanOrEqual(256)
+    })
+
+    test.each(['Alice greets the guard.', 'Alice가 경비병에게 인사했다.', 'Alice asks why the guard is laughing.'])('keeps current facts alongside semantic evidence for: %s', currentInput => {
+        const history = 'Alice once guarded the northern fortress.'
+        const content = '## Alice\n\n### Current State\nAlice lives in the southern village.\n\n### Story History\n' + history.repeat(300)
+        const doc = document({ id: 'alice', title: 'Alice', type: 'character', relativePath: 'characters/alice.md', content })
+        const input = { documents: [doc], currentInput,
+            semanticMatches: [{ documentId: 'alice', score: 0.9, contentHash: doc.contentHash, start: content.indexOf(history), end: content.indexOf(history) + history.length }],
+            tokenBudget: { target: 512, events: 512, perSource: 256, maximum: 1024 } }
+        const source = inquireMarkdownDocuments(input).sources[0]
+        expect(source.content).toContain('southern village')
+        expect(source.content).toContain(history)
+        expect(source.content).toContain('Story History')
+        expect(source.tokens).toBeLessThanOrEqual(256)
+        const historical = inquireMarkdownDocuments({ ...input, currentInput: 'Where did Alice live before?' }).sources[0]
+        expect(historical.content).toContain(history)
+        expect(historical.content).not.toContain('southern village')
+    })
+
     test('preserves enclosing qualifications around a semantic passage', () => {
         const content = '## Archive\n\n### Disproven rumors\n\n#### Courier\n\nThe courier gave a secret ledger to the enemy.'
         const doc = document({ id: 'rumor', title: 'Archive', type: 'event', relativePath: 'events/rumor.md', content })

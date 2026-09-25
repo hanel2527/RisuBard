@@ -127,10 +127,17 @@
         isOptimizedStreamingMessage: boolean
         streamingOptimizationMode: StreamingDisplayOptimizationMode
         rawStreamingText: string
+        messageGenerationInfo?: MessageGenerationInfo
+        memoryConfirmed?: boolean
+        canonicalReceipt?: CanonicalTurnReceipt
     }){
         isOptimizedStreamingMessage = state.isOptimizedStreamingMessage
         streamingOptimizationMode = state.streamingOptimizationMode
         rawStreamingText = state.rawStreamingText
+        if (!editMode) message = state.rawStreamingText
+        messageGenerationInfo = state.messageGenerationInfo ?? null
+        memoryConfirmed = state.memoryConfirmed ?? false
+        canonicalReceipt = state.canonicalReceipt
     }
 
     async function rm(){
@@ -565,10 +572,11 @@
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <span class="text chat-width chattext prose minw-0"
+            data-painter-message={!readOnly && idx >= 0 && !isOptimizedStreamingMessage && !translated && !editMode ? idx : undefined}
             class:prose-invert={$ColorSchemeTypeStore === 'dark'}
             bind:this={bodyRoot}
             onclick={() => {
-            if(!readOnly && DBState.db.clickToEdit && idx > -1 && !isOptimizedStreamingMessage){
+            if(!readOnly && DBState.db.clickToEdit && idx > -1 && !isOptimizedStreamingMessage && !window.getSelection()?.toString()){
                 editMode = true
             }
         }}
@@ -1113,7 +1121,8 @@
                     ?.message[idx]
                 if (!current?.chatId || memoryConfirmed) return
                 if (isOocAssistantTurn(current) && resolveRisuBardChatSettings(DBState.db,
-                    DBState.db.characters[selIdState.selId]?.chats[DBState.db.characters[selIdState.selId].chatPage]?.risuBardSettings
+                    DBState.db.characters[selIdState.selId]?.chats[DBState.db.characters[selIdState.selId].chatPage]?.risuBardSettings,
+                    DBState.db.characters[selIdState.selId]?.risuBardPinnedSettings,
                 ).risuBardIgnoreOocTurns) {
                     statusMessage = 'OOC 턴은 위키 분석에서 제외됩니다.'
                     return
@@ -1158,7 +1167,8 @@
                     ?.message[idx]
                 if (!current?.chatId || memoryConfirming) return
                 if (isOocAssistantTurn(current) && resolveRisuBardChatSettings(DBState.db,
-                    DBState.db.characters[selIdState.selId]?.chats[DBState.db.characters[selIdState.selId].chatPage]?.risuBardSettings
+                    DBState.db.characters[selIdState.selId]?.chats[DBState.db.characters[selIdState.selId].chatPage]?.risuBardSettings,
+                    DBState.db.characters[selIdState.selId]?.risuBardPinnedSettings,
                 ).risuBardIgnoreOocTurns) {
                     statusMessage = 'OOC 턴은 위키 분석에서 제외됩니다.'
                     return

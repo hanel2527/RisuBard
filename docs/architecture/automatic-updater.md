@@ -39,17 +39,23 @@ GitHub가 `404`를 반환하는 경우는 공개 릴리즈가 없는 상태로 �
 - `package.json`의 현재 버전보다 태그 버전이 높아야 한다.
 - 포터블 자동 설치에는 실행 환경과 일치하는 릴리즈 파일이 필요하다.
 
-현재 `.github/workflows/release.yml`은 `workflow_dispatch`에서 배포할 버전을 입력받는다. 입력 버전이 `package.json` 및 `patchnote/X.Y.Z.md`와 일치하는지 먼저 검사하고, 전체 검증과 네 플랫폼 패키징이 모두 성공한 뒤에만 태그와 `draft: true` 초안을 생성한다. 빌드가 끝난 뒤 GitHub에서 초안을 검토하고 **Publish release**를 눌러야 사용자 앱이 새 버전을 발견한다.
+현재 `.github/workflows/release.yml`은 `workflow_dispatch`에서 배포할 버전을 입력받는다. 입력 버전이 `package.json` 및 `patchnote/X.Y.Z.md`와 일치하는지 먼저 검사하고 전체 검증과 네 플랫폼 패키징을 수행한다. 이 프로젝트는 `prepare_only=true`로 패키지만 준비한 뒤, 아래 지정 계정 절차로 태그와 초안을 생성하고 공개한다. 초안을 공개해야 사용자 앱이 새 버전을 발견한다.
 
 포터블에 포함하는 Cloudflared 버전은 릴리즈 워크플로에 고정한다. 일반 앱 릴리즈마다 외부의 `latest`가 달라져 Windows 실행 파일 교체가 불필요하게 발생하지 않도록 하며, 버전 갱신은 명시적인 릴리즈 변경으로 수행한다.
 
 릴리즈 준비 커밋을 `main`에 푸시한 뒤 다음 명령으로 워크플로를 시작한다. 전체 검증은 태그 생성 전에 CI에서 한 번만 실행하므로 릴리즈를 위해 로컬에서 같은 전체 명령을 다시 실행하지 않는다. CI가 실패하면 태그와 초안은 만들어지지 않는다.
 
 ```powershell
-gh workflow run release.yml --ref main -f version=X.Y.Z
+gh workflow run release.yml --ref main -f version=X.Y.Z -f prepare_only=true
 ```
 
 실행이 끝나면 해당 워크플로의 커밋, 초안 본문, 네 플랫폼 아티팩트와 해시를 확인한 뒤 공개한다. 코드 변경을 구현할 때 수행하는 검증은 이 릴리즈 절차와 별개이며 생략하지 않는다.
+
+## 지정 계정으로 릴리스 게시
+
+릴리스 작성자를 `rpaddict`로 유지하려면 `release.yml`을 `prepare_only=true`로 실행한다. 이 모드는 동일한 전체 검사와 네 플랫폼 패키징 및 압축 파일 기동 검증을 수행하지만, 자동 태그 생성과 릴리스 게시 및 Docker 실행 단계는 건너뛴다.
+
+성공한 실행의 `headSha`를 확인하고 `portable-*` artifact를 내려받은 뒤, 검증한 커밋에 `vX.Y.Z` 태그를 만든다. 각 GitHub 쓰기 작업은 프로세스에 고정한 `rpaddict` 자격 증명으로 `gh api user --jq .login`을 확인한 뒤 수행한다. 태그 push는 기존 Docker 배포를 실행한다. 네 패키지를 첨부한 초안을 같은 계정으로 만들고 파일명, 크기, checksum과 작성자를 확인한 뒤 공개한다. 기존 `prepare_only=false` 경로의 자동 게시 작성자는 GitHub Actions 봇이므로 지정 계정 게시에는 사용하지 않는다.
 
 ## 포터블 파일명 규칙
 
@@ -65,6 +71,14 @@ gh workflow run release.yml --ref main -f version=X.Y.Z
 릴리즈 워크플로와 `getSelfUpdateAssetInfo()`도 같은 파일명 규칙을 사용한다.
 
 ## 배포 형태별 차이
+
+### 설치 루트의 사용자 파일 보존 (0.9.41)
+
+독립 포터블 업데이터와 Unix 앱 내부 업데이터는 새 배포에 포함된 최상위 항목만 교체한다. 설치 루트 전체를 임시 백업으로 옮긴 뒤 삭제하지 않는다. 새 배포에 없는 사용자 파일과 폴더는 그대로 두며, 보존 목록은 백업 단계와 설치 단계 모두에 적용해 배포에 포함된 기본 파일로 사용자 설정이나 백업을 덮어쓰지 않는다. Windows 앱 내부 업데이터도 기존의 staged 항목 기준 교체를 유지한다.
+
+`server`, `dist`, `node_modules` 등 배포와 이름이 같은 프로그램 디렉터리는 전체 교체 대상이다. 그 내부에 임의로 추가한 자료까지 보존하는 계약은 아니다. 소스 설치용 `update.sh` 역시 새 소스에 없는 설치 루트 항목을 삭제하지 않는다.
+
+첫 전환은 기존 설치의 업데이터가 수행하므로 수정된 릴리즈를 배포하는 것만으로 구버전 업데이터의 삭제 동작을 막을 수 없다. 기존 `scripts/updater.cjs`를 수정본으로 먼저 교체하거나 새 버전을 별도 폴더에 설치해야 한다.
 
 ### Windows 포터블 업데이트 (0.9.35)
 

@@ -7,6 +7,11 @@ on:
         description: SemVer version to release without the v prefix
         required: true
         type: string
+      prepare_only:
+        description: Verify and package only; publish separately with the release account
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: release-${{ inputs.version }}
@@ -64,6 +69,9 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - name: Check release dependency inputs
+        run: node scripts/check-release-inputs.cjs
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -84,6 +92,7 @@ jobs:
             package.json
             pnpm-lock.yaml
             pnpm-workspace.yaml
+            patches/
             update.sh
             LICENSE
             NOTICE.md
@@ -389,6 +398,7 @@ jobs:
           retention-days: 1
 
   release:
+    if: ${{ !inputs.prepare_only }}
     needs:
       - build
       - portable

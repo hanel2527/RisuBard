@@ -6,6 +6,8 @@ const legacyTokens = [
     {
         value: ['jel', 'ly'].join(''),
         contentExceptions: new Set([
+            // Third-party tag vocabulary is data, not application branding.
+            'public/data/danbooru/db.csv',
             'src/ts/plugins/providerRequestStatus.test.ts',
             'src/ts/plugins/providerRequestStatus.ts',
         ]),

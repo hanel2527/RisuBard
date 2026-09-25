@@ -6,6 +6,8 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { completeMemoryWikiFork } from 'src/ts/risubard/memoryWikiFork'
 import { startGeneration, endGeneration } from 'src/ts/process/generationState'
+import { painterTestState } from './BardPainterTestState.svelte'
+import { createPainterChatData } from 'src/ts/bardPainter/types'
 
 const mocks = vi.hoisted(() => ({
     loadNarrativeMemoryWiki: vi.fn(),
@@ -62,6 +64,12 @@ vi.mock('src/ts/risubard/wikiTransfer', async (importOriginal) => ({
 vi.mock('src/ts/process/request/request', () => ({
     requestChatData: vi.fn(),
 }))
+vi.mock('src/ts/loreBuilder', () => ({ collectLoreBuilderSources: vi.fn() }))
+vi.mock('src/ts/process/files/inlays', () => ({ setInlayAsset: vi.fn(), getInlayAssetBlob: vi.fn() }))
+vi.mock('src/ts/bardPainter/gallery', async () => {
+    const { writable } = await import('svelte/store')
+    return { painterGalleryRequested: writable(null), savePainterGalleryRecord: vi.fn() }
+})
 vi.mock('src/ts/risubard/memoryWiki', () => ({
     loadNarrativeMemoryWiki: mocks.loadNarrativeMemoryWiki,
     saveManualWikiDocument: mocks.saveManualWikiDocument,
@@ -118,6 +126,11 @@ vi.mock('src/ts/storage/chatStorage', () => ({
 vi.mock('src/ts/stores.svelte', () => ({
     DBState: { db: mocks.db },
     selIdState: { selId: -1 },
+    botMakerMode: { set: vi.fn() },
+    CharConfigSubMenu: { set: vi.fn() },
+    risuBardGalleryOpen: { set: vi.fn() },
+    MobileSideBar: { set: vi.fn() },
+    ReloadChatPointer: { update: vi.fn() },
 }))
 
 import RisuBardMemoryWiki from './RisuBardMemoryWiki.svelte'
@@ -143,6 +156,39 @@ afterEach(async () => {
 })
 
 describe('RisuBardMemoryWiki', () => {
+    test.each(['bot', 'chat'])('waits for hydration when switching %s with painter open', async (scope) => {
+        mocks.loadNarrativeMemoryWiki.mockResolvedValue(null)
+        const ready = { id: `ready-${scope}`, message: [], bardPainter: createPainterChatData() }
+        ready.bardPainter.settings.instruction = '이전 채팅의 그림'
+        const pending = { id: `pending-${scope}`, _placeholder: true, message: [], bardPainter: createPainterChatData() }
+        pending.bardPainter.settings.instruction = '새 채팅의 그림'
+        const characters = painterTestState([
+            { chaId: `first-${scope}`, chats: scope === 'chat' ? [ready, pending] : [ready] },
+            { chaId: `second-${scope}`, chats: scope === 'bot' ? [pending] : [] },
+        ])
+        mocks.db.characters = characters
+        const props = painterTestState({ open: true, characterId: characters[0].chaId, chatId: ready.id })
+        mounted = mount(RisuBardMemoryWiki, { target: document.body, props })
+        await tick()
+        document.querySelector<HTMLButtonElement>('[data-memory-view="painter"]')!.click()
+        const instruction = () => document.querySelector<HTMLTextAreaElement>('[aria-label="프롬프트 대화 입력"]')?.value
+        await vi.waitFor(() => expect(instruction()).toBe('이전 채팅의 그림'))
+
+        const destination = characters[scope === 'bot' ? 1 : 0]
+        props.characterId = destination.chaId
+        props.chatId = pending.id
+        await tick()
+        expect(document.querySelector('[data-bard-painter]')).toBeNull()
+        expect(document.body.textContent).toContain('채팅을 불러오는 중...')
+
+        // Hydration replaces the placeholder without changing the selected IDs.
+        destination.chats[destination.chats.findIndex(chat => chat.id === pending.id)] = {
+            id: pending.id, message: [], bardPainter: pending.bardPainter,
+        }
+        await vi.waitFor(() => expect(instruction()).toBe('새 채팅의 그림'))
+        expect(document.body.textContent).not.toContain('채팅을 불러오는 중...')
+    })
+
     test('opens a live OOC mirror before the workspace tab, even without a wiki', async () => {
         const onNavigateOocMessage = vi.fn()
         mocks.loadNarrativeMemoryWiki.mockRejectedValue(new Error('Wiki unavailable'))
@@ -158,8 +204,8 @@ describe('RisuBardMemoryWiki', () => {
         })
         await tick()
         const tabs = [...document.querySelectorAll('[data-memory-view]')]
-        expect(tabs[0]?.getAttribute('data-memory-view')).toBe('ooc')
-        ;(tabs[0] as HTMLButtonElement).click()
+        expect(tabs.slice(0, 3).map((tab) => tab.getAttribute('data-memory-view'))).toEqual(['painter', 'ooc', 'workspace'])
+        ;(tabs[1] as HTMLButtonElement).click()
         await tick()
         const memo = document.querySelector('[data-ooc-notepad]')
         expect(memo?.textContent).toContain('Plan a twist')

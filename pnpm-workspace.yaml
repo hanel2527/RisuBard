@@ -9,3 +9,5 @@ onlyBuiltDependencies:
   - onnxruntime-node
   - protobufjs
   - sharp
+patchedDependencies:
+  '@protontech/crypto@2.1.3': patches/@protontech__crypto@2.1.3.patch

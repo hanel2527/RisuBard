@@ -1,2 +1,5 @@
 /scripts/*.cmd text eol=crlf
 /scripts/portable/*.bat text eol=crlf
+
+# Preserve the upstream tag snapshot and its recorded SHA-256 on every platform.
+/public/data/danbooru/db.csv -text

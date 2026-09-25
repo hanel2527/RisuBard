@@ -1,5 +1,6 @@
 <script lang="ts">
     import { onMount } from 'svelte'
+    import { painterInsertionRequest } from 'src/ts/bardPainter/selectionState'
     import {
         BookOpenIcon,
         CheckCircle2Icon,
@@ -51,6 +52,7 @@
     import RisuBardCurrentChatSettings from './RisuBardCurrentChatSettings.svelte'
     import RisuBardOocNotepad from './RisuBardOocNotepad.svelte'
     import SolarChatRoundQuestionMarkBold from 'src/lib/UI/Icons/SolarChatRoundQuestionMarkBold.svelte'
+    import SolarPen2Bold from 'src/lib/UI/Icons/SolarPen2Bold.svelte'
     import ManagerResizeHandles from 'src/lib/UI/GUI/ManagerResizeHandles.svelte'
     import SolarBoldIcon from 'src/lib/UI/Icons/SolarBoldIcon.svelte'
     import forceUpdateIdle from 'src/assets/risubard-memory/additional-analysis-idle.png'
@@ -170,10 +172,14 @@
     let loadedScope = ''
     let dockElement = $state<HTMLElement | null>(null)
     let workspaceSplitElement = $state<HTMLElement | null>(null)
-    let activeView = $state<'ooc' | 'workspace' | 'story' | 'arc-plot' | 'log'>('workspace')
+    let activeView = $state<'painter' | 'ooc' | 'workspace' | 'story' | 'arc-plot' | 'log'>('workspace')
+    let painterLoadError = $state('')
     let settingsOpen = $state(false)
     let settingsPopoverElement = $state<HTMLElement | null>(null)
     let layoutMode = $state<MemoryWikiLayout>('desktop')
+    $effect(() => {
+        if (layoutMode === 'mobile' && $painterInsertionRequest?.characterId === characterId && $painterInsertionRequest.chatId === chatId) open = false
+    })
     let layoutManuallySelected = false
     let dockRatio = $state(normalizeMemoryWikiDockRatio(
         DBState.db.risuBardMemoryDockRatio
@@ -211,14 +217,17 @@
             character.chaId === characterId
         )?.chats.find((chat) => chat.id === chatId)?.message ?? []
     )
-    let currentChat = $derived(
+    let currentCharacter = $derived(
         DBState.db.characters?.find((character) =>
             character.chaId === characterId
-        )?.chats.find((chat) => chat.id === chatId)
+        )
     )
+    let currentChat = $derived(currentCharacter?.chats.find((chat) => chat.id === chatId))
+    let painterChatReady = $derived(!!currentChat && !currentChat._placeholder && Array.isArray(currentChat.message))
     let resolvedChatSettings = $derived(resolveRisuBardChatSettings(
         DBState.db,
-        currentChat?.risuBardSettings
+        currentChat?.risuBardSettings,
+        currentCharacter?.risuBardPinnedSettings,
     ))
     let transferBlocked = $derived(loading || forceUpdating || transferBusy || $isWikiGenerating || $isAnyGenerating || !!rebootJob || !!currentChat?.isStreaming || wiki?.mode !== 'markdown')
     let arcPlotterSettings = $derived(normalizeArcPlotterRuntimeSettings({
@@ -249,7 +258,8 @@
     let rebootAnalysisTokenLimit = $derived(
         resolveRisuBardChatSettings(
             DBState.db,
-            currentChat?.risuBardSettings
+            currentChat?.risuBardSettings,
+            currentCharacter?.risuBardPinnedSettings,
         ).risuBardAnalysisTokenLimit
     )
     let empty = $derived(
@@ -511,8 +521,8 @@
         selection: DirectWikiContextSelection
     ) {
         if (!currentChat) return
-        currentChat.risuBardSettings ??= {}
-        Object.assign(currentChat.risuBardSettings, {
+        const target = currentCharacter?.risuBardPinnedSettings ?? (currentChat.risuBardSettings ??= {})
+        Object.assign(target, {
             bardChatIncludeWiki: selection.wiki,
             bardChatIncludeChat: selection.chat,
             bardChatIncludeSystemPrompt: selection.systemPrompt,
@@ -602,7 +612,7 @@
     }
 
     $effect(() => {
-        if (!open || !characterId || !wikiChatId) {
+        if (!open || activeView === 'painter' || !characterId || !wikiChatId) {
             cancelWikiLoad()
             return
         }
@@ -611,7 +621,7 @@
     })
 
     $effect(() => {
-        if (!open || !characterId || !wikiChatId || !onExecuteWikiCommand) return
+        if (!open || activeView === 'painter' || !characterId || !wikiChatId || !onExecuteWikiCommand) return
         bardChatUpdatedIds = null
         bardChatUndoAvailable = false
         void refreshBardChatUndoStatus()
@@ -626,7 +636,7 @@
             const detail = (event as CustomEvent<
                 RisuBardMemoryUpdatedDetail
             >).detail
-            if (!open || detail?.characterId !== characterId
+            if (!open || activeView === 'painter' || detail?.characterId !== characterId
                 || detail.chatId !== wikiChatId) return
             void loadWiki()
         }
@@ -706,7 +716,7 @@
             </button>
         </div>
         <nav class="dock-views" aria-label="BardWiki 보기">
-            {#if wiki?.mode === 'markdown'}
+            {#if wiki?.mode === 'markdown' && activeView !== 'painter'}
                 <button
                     type="button"
                     class="force-update-button"
@@ -748,6 +758,11 @@
                 </ShDropdownMenu>
             {/if}
             <div class="dock-view-actions">
+                <button type="button" class:active={activeView === 'painter'} data-memory-view="painter"
+                    title="바드페인터" aria-label="바드페인터" aria-pressed={activeView === 'painter'}
+                    onclick={() => { activeView = 'painter'; settingsOpen = false }}>
+                    <SolarPen2Bold size={22} /><span>바드페인터</span>
+                </button>
                 <button
                     type="button"
                     class:active={activeView === 'ooc'}
@@ -794,7 +809,7 @@
                     title="로그"
                     onclick={() => activeView = 'log'}
                 ><LogsIcon size={20} /><span>로그</span></button>
-                {#if wiki?.mode === 'markdown'}
+                {#if wiki?.mode === 'markdown' && activeView !== 'painter'}
                     <button
                         type="button"
                         class="dock-settings"
@@ -849,7 +864,7 @@
                 hidden={!settingsOpen}
                 bind:this={settingsPopoverElement}
             >
-                <RisuBardCurrentChatSettings chat={currentChat} global={DBState.db} />
+                <RisuBardCurrentChatSettings chat={currentChat} character={currentCharacter} global={DBState.db} />
                 <ManagerResizeHandles
                     target={settingsPopoverElement}
                     rightAnchored
@@ -953,7 +968,22 @@
             </div>
         {/if}
 
-        {#if activeView === 'ooc'}
+        {#if activeView === 'painter'}
+            {#if painterLoadError}<p role="alert">{painterLoadError}</p>{/if}
+            {#if open && !painterChatReady}
+                <div class="ledger-state" role="status"><LoaderCircleIcon class="animate-spin" size={24} /><span>채팅을 불러오는 중...</span></div>
+            {:else if open}
+                {#await import('./BardPainter.svelte')}
+                    <div class="ledger-state"><LoaderCircleIcon class="animate-spin" size={24} /><span>바드페인터를 여는 중...</span></div>
+                {:then painter}
+                    {#key `${characterId}:${chatId}`}
+                        <painter.default {characterId} {chatId} visible={open} />
+                    {/key}
+                {:catch cause}
+                    <div class="ledger-state" role="alert">바드페인터를 열지 못했습니다. 앱을 새로고침해 주세요. {String(cause)}</div>
+                {/await}
+            {/if}
+        {:else if activeView === 'ooc'}
             {#key `${characterId}:${chatId}`}
                 <RisuBardOocNotepad
                     messages={activityMessages}

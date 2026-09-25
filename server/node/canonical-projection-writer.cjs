@@ -6,6 +6,7 @@ function safeErrorCode(error) {
 
 function writeCanonicalProjection(options = {}) {
     const { repository, database, directCollection } = options;
+    const importOptions = { mode: 'sync', ...(options.preserveCharacterLayout ? { preserveCharacterLayout: true } : {}) };
     if (!repository || typeof repository.importLegacyDatabase !== 'function') {
         throw new Error('Canonical projection repository is required');
     }
@@ -19,7 +20,7 @@ function writeCanonicalProjection(options = {}) {
         return {
             strategy: 'full-sync',
             fallbackUsed: false,
-            result: repository.importLegacyDatabase(database, { mode: 'sync' }),
+            result: repository.importLegacyDatabase(database, importOptions),
         };
     }
 
@@ -42,7 +43,7 @@ function writeCanonicalProjection(options = {}) {
                 strategy,
                 fallbackUsed: true,
                 fallbackCode,
-                result: repository.importLegacyDatabase(database, { mode: 'sync' }),
+                result: repository.importLegacyDatabase(database, importOptions),
             };
         } catch (fallbackError) {
             if (fallbackError && typeof fallbackError === 'object') {

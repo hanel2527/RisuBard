@@ -30,7 +30,7 @@ import { dispatchCommittedChatOutput } from "../plugins/pluginChatOutput";
 import { getModelInfo, LLMFlags } from "../model/modellist";
 import { resolveChatModelBinding, resolvePresetMaxOutputTokens } from "./request/modelPresetBinding";
 import { getModuleAssets, getModuleLorebooksWithSources, getModuleToggles } from "./modules";
-import { forageStorage, readImage } from "../globalApi.svelte";
+import { forageStorage, readImage, refreshLiveFiles } from "../globalApi.svelte";
 import { chatGenKey, chatProcessStage, endGeneration, isChatGenerating, setGenerationStage, startGeneration } from "./generationState";
 import { clearPendingSend, registerPendingSend } from "./request/pendingSends";
 import {
@@ -99,7 +99,8 @@ import { mergeWikiSemanticMatches, type WikiSemanticMatch } from '../risubard/wi
 import { normalizeArcPlotterRuntimeSettings } from '../risubard/arcPlotterSettings';
 import {
     canonicalTurnNeedsRetry,
-    canonicalTurnRetryWarning,
+    canonicalTurnFailureWarning,
+    mergeCanonicalTurnReceipts,
 } from '../risubard/canonicalTurnReceipt';
 import { saveChatToServer } from '../storage/chatStorage';
 import {
@@ -128,7 +129,9 @@ import {
 } from '../chatScriptstateCheckpoint';
 
 function resolvedRisuBardSettings(chat?: Chat) {
-    return resolveRisuBardChatSettings(DBState.db, chat?.risuBardSettings)
+    const character = chat && DBState.db.characters.find((item) =>
+        item.chats.some((candidate) => candidate === chat || (!!chat.id && candidate.id === chat.id)))
+    return resolveRisuBardChatSettings(DBState.db, chat?.risuBardSettings, character?.risuBardPinnedSettings)
 }
 
 function resolvedArcPlotterSettings() {
@@ -234,6 +237,9 @@ async function confirmProjectedNarrativeTurn(input: {
             (item) => item.id === input.chatId
         )
         const settings = resolvedRisuBardSettings(chat)
+        const previousCanonicalReceipt = chat?.message.find(
+            (item) => item.chatId === input.targetMessageId
+        )?.risubardCanonicalReceipt
         if (settings.risuBardIgnoreOocTurns && input.messages.some((message) =>
             message.role === 'assistant' && isOocAssistantTurn({ role: 'char', data: message.content })
         )) return false
@@ -304,6 +310,8 @@ async function confirmProjectedNarrativeTurn(input: {
                 },
             } : {}),
             ...(input.additionalAnalysis ? { additionalAnalysis: true } : {}),
+            ...(!input.additionalAnalysis && !input.historicalReanalysis && previousCanonicalReceipt
+                ? { previousCanonicalReceipt } : {}),
             ...(input.historicalReanalysis ? { historicalReanalysis: true } : {}),
             ...(input.excludeCanonicalDocumentIds ? {
                 excludeCanonicalDocumentIds:
@@ -312,7 +320,7 @@ async function confirmProjectedNarrativeTurn(input: {
             ...(chat ? { contextMessages } : {}),
         }, generationSignal)
         const retryWarning = receipt
-            ? canonicalTurnRetryWarning(receipt)
+            ? canonicalTurnFailureWarning(receipt)
             : undefined
         if (retryWarning) {
             publishRisuBardMemoryActivity({
@@ -336,7 +344,12 @@ async function confirmProjectedNarrativeTurn(input: {
             else {
                 message.risubardMemoryConfirmed = true
             }
-            if (receipt) message.risubardCanonicalReceipt = receipt
+            if (receipt) {
+                message.risubardCanonicalReceipt = mergeCanonicalTurnReceipts(
+                    message.risubardCanonicalReceipt,
+                    receipt
+                )
+            }
         }
         return true
     }
@@ -1129,6 +1142,13 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     previewPrompt?:boolean
 } = {}):Promise<boolean> {
 
+    try {
+        await refreshLiveFiles()
+    } catch (error) {
+        notifyError(`외부 파일을 확인하지 못해 전송하지 않았습니다: ${error instanceof Error ? error.message : String(error)}`)
+        return false
+    }
+
     const selected = DBState.db.characters[get(selectedCharID)]
     const selectedConversation = selected?.chats[selected.chatPage]
     if (selectedConversation?.risuBardWikiReboot) return false
@@ -1602,16 +1622,14 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                 try {
                     const inquirySettings = resolvedRisuBardSettings(currentChat)
                     activateWikiEmbeddings(currentChar.chaId, narrativeSessionChatId, DBState.db)
-                    const embedded = await wikiEmbeddingRuntime.search(
-                        currentInput,
-                        buildBoundedNarrativeInquiryFallback(projectRecentMemoryMessages(
+                    const retrievalRecentContext = buildBoundedNarrativeInquiryFallback(projectRecentMemoryMessages(
                             currentChat.message.slice(currentChat.message.findLastIndex(
                                 message => message.disabled === 'allBefore',
                             ) + 1), 4, undefined, undefined,
                             !inquirySettings.risuBardResponseExcludeUserMessages,
                             inquirySettings.risuBardIgnoreOocTurns,
-                        )),
-                    )
+                        ))
+                    const embedded = await wikiEmbeddingRuntime.search(currentInput, retrievalRecentContext)
                     // Refresh does not delay this response; inquiry verifies old ranges against live hashes.
                     wikiEmbeddingRuntime.refresh()
                     const loadInquiry = (semanticMatches?: readonly WikiSemanticMatch[]) => loadNarrativeInquiry({
@@ -1669,6 +1687,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                         enabled: inquirySettings.risuBardBardChanEnabled,
                         modelMode: inquirySettings.risuBardBardChanModelMode,
                         currentInput,
+                        recentContext: retrievalRecentContext,
                         candidates: initialInquiry.rerankCandidates,
                         realChatId: narrativeSessionChatId,
                         requestModel: (request, mode) =>

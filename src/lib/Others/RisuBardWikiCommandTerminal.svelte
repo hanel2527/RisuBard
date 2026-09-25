@@ -1,5 +1,6 @@
 <script lang="ts">
     import { tick } from 'svelte'
+    import { Popover } from 'bits-ui'
     import {
         ChevronDownIcon,
         ListTreeIcon,
@@ -72,7 +73,6 @@
     let result = $state<DirectWikiCommandResult | null>(null)
     let restoring = $state(false)
     let textareaElement = $state<HTMLTextAreaElement>()
-    let contextPopoverElement = $state<HTMLDivElement>()
     let contextOpen = $state(false)
     let templatesOpen = $state(false)
     let selectedTemplateId = $state(BARDCHAT_COMMAND_TEMPLATES[0].id)
@@ -173,13 +173,7 @@
         }
     }
 
-    function closeContextOutside(event: MouseEvent) {
-        if (!contextOpen || contextPopoverElement?.contains(event.target as Node)) return
-        contextOpen = false
-    }
 </script>
-
-<svelte:window onclick={closeContextOutside} />
 
 <section
     class="command-terminal"
@@ -191,45 +185,56 @@
             <span class="terminal-mark"><SquareTerminalIcon size={17} /></span>
             <strong>BARDCHAT</strong>
         </div>
-        <div class="context-popover" bind:this={contextPopoverElement}>
-            <button
-                type="button"
-                class="toolbar-button"
-                data-bardchat-context-open
-                aria-expanded={contextOpen}
-                aria-controls="bardchat-context-menu"
-                title="AI에게 함께 보낼 컨텍스트 선택"
-                disabled={running || restoring}
-                onclick={(event) => {
-                    event.stopPropagation()
-                    contextOpen = !contextOpen
-                }}
-            ><span>컨텍스트</span><ChevronDownIcon size={13} /></button>
-            {#if contextOpen}
-                <fieldset
-                    id="bardchat-context-menu"
-                    class="context-menu"
+        <Popover.Root bind:open={contextOpen}>
+            <Popover.Trigger>
+                {#snippet child({ props })}
+                    <button
+                        {...props}
+                        type="button"
+                        class="toolbar-button"
+                        data-bardchat-context-open
+                        title="AI에게 함께 보낼 컨텍스트 선택"
+                        disabled={running || restoring}
+                    ><span>컨텍스트</span><ChevronDownIcon size={13} /></button>
+                {/snippet}
+            </Popover.Trigger>
+            <Popover.Portal>
+                <Popover.Content
+                    side="bottom"
+                    align="start"
+                    sideOffset={8}
+                    collisionPadding={8}
+                    avoidCollisions={true}
+                    strategy="fixed"
+                    trapFocus={false}
                     aria-label="BARDCHAT 주입 정보"
-                    data-bardchat-context-menu
+                    class="z-50 w-64 overflow-y-auto overscroll-contain rounded-md border border-darkborderc bg-darkbg p-1.5 text-textcolor shadow-md outline-none"
+                    style="max-width: calc(100vw - 1rem); max-height: var(--bits-popover-content-available-height);"
                 >
-                    {#each contextOptions as option}
-                        <label class:active={selection[option.key]} title={option.title}>
-                            <input
-                                type="checkbox"
-                                data-bardchat-context={option.key}
-                                checked={selection[option.key]}
-                                disabled={running || restoring}
-                                onchange={(event) => setContext(
-                                    option.key,
-                                    event.currentTarget.checked
-                                )}
-                            />
-                            <span>{option.label}</span>
-                        </label>
-                    {/each}
-                </fieldset>
-            {/if}
-        </div>
+                    <fieldset
+                        class="context-menu"
+                        aria-label="BARDCHAT 주입 정보"
+                        data-bardchat-context-menu
+                    >
+                        {#each contextOptions as option}
+                            <label class:active={selection[option.key]} title={option.title}>
+                                <input
+                                    type="checkbox"
+                                    data-bardchat-context={option.key}
+                                    checked={selection[option.key]}
+                                    disabled={running || restoring}
+                                    onchange={(event) => setContext(
+                                        option.key,
+                                        event.currentTarget.checked
+                                    )}
+                                />
+                                <span>{option.label}</span>
+                            </label>
+                        {/each}
+                    </fieldset>
+                </Popover.Content>
+            </Popover.Portal>
+        </Popover.Root>
         <button
             type="button"
             class="toolbar-button"
@@ -452,34 +457,30 @@
         color: var(--risu-theme-primary);
         background: color-mix(in srgb, var(--risu-theme-primary) 8%, transparent);
     }
-    .context-popover { position: relative; }
     .context-menu {
-        position: absolute;
-        z-index: 20;
-        top: calc(100% + .45rem);
-        left: 0;
+        --terminal-line: color-mix(in srgb, var(--risu-theme-primary) 34%, transparent);
         display: grid;
-        grid-template-columns: minmax(10rem, 1fr);
-        gap: .22rem;
-        width: 12rem;
+        grid-template-columns: minmax(0, 1fr);
+        gap: .25rem;
+        min-width: 0;
         margin: 0;
-        padding: .35rem;
-        border: 1px solid var(--terminal-line);
-        border-radius: .45rem;
-        background: var(--risu-theme-darkbg);
-        box-shadow: 0 .65rem 1.6rem color-mix(in srgb, var(--color-darkbg) 60%, transparent);
+        padding: 0;
+        border: 0;
     }
     .context-menu label {
         display: inline-flex;
         align-items: center;
-        gap: .24rem;
-        min-height: 1.45rem;
-        padding: .12rem .32rem;
+        gap: .75rem;
+        min-height: 2.75rem;
+        padding: .5rem .75rem;
+        box-sizing: border-box;
         border: 1px solid var(--terminal-line);
-        border-radius: .24rem;
-        color: var(--risu-theme-textcolor2);
+        border-radius: .35rem;
+        color: var(--risu-theme-textcolor);
         background: color-mix(in srgb, var(--risu-theme-darkbg) 88%, transparent);
-        font: 650 .58rem/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+        font-size: .875rem;
+        font-weight: 500;
+        line-height: 1.4;
         cursor: pointer;
         user-select: none;
     }
@@ -488,9 +489,17 @@
         color: var(--risu-theme-primary);
         background: color-mix(in srgb, var(--risu-theme-primary) 10%, transparent);
     }
+    .context-menu label:hover {
+        background: color-mix(in srgb, var(--risu-theme-primary) 16%, var(--risu-theme-darkbg));
+    }
+    .context-menu label:focus-within {
+        outline: 2px solid var(--risu-theme-primary);
+        outline-offset: -2px;
+    }
     .context-menu input {
-        width: .72rem;
-        height: .72rem;
+        width: 1.125rem;
+        height: 1.125rem;
+        flex-shrink: 0;
         margin: 0;
         accent-color: var(--risu-theme-primary);
     }
@@ -734,10 +743,6 @@
             padding: .4rem .45rem;
         }
         .mobile-layout .terminal-title { display: none; }
-        .mobile-layout .context-menu label {
-            min-height: 2.25rem;
-            padding-inline: .5rem;
-        }
         .mobile-layout .toolbar-button {
             min-height: 2.25rem;
             justify-content: center;

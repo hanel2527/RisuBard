@@ -23,6 +23,8 @@ import { normalizeFirstMessageStudioProject, type FirstMessageStudioProject } fr
 import { normalizeBardLoreOwnerState, type BardLoreState } from './lorebook/bardLore'
 import { createUniqueDisplayName } from './displayName'
 import { yieldImportTask } from './importTaskYield'
+import { normalizePainterBotData } from './bardPainter/painterCardData'
+import type { PainterBotData } from './bardPainter/types'
 
 
 const EXTERNAL_HUB_URL = 'https://sv.risuai.xyz';
@@ -961,6 +963,7 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
         bias: bias,
         globalLore: lorebook, //lorebook
         bardLore: undefined,
+        bardPainter: normalizePainterBotData((data.extensions as Record<string, any> | undefined)?.risubard?.bardPainter),
         viewScreen: viewScreen,
         chaId: uuidv4(),
         sdData: sdData,
@@ -1164,6 +1167,7 @@ export function convertCharbook(arg:{
 
 export function createBaseV2(char:character) {
     const bardLoreOwner = exportableBardLoreOwner(char)
+    const bardPainter = normalizePainterBotData(char.bardPainter)
     const exportGlobalLore = bardLoreOwner?.legacyEntries ?? char.globalLore
     let charBook:charBookEntry[] = []
     for(const lore of exportGlobalLore){
@@ -1271,7 +1275,7 @@ export function createBaseV2(char:character) {
                     moduleNamespace: char.moduleNamespace ?? '',
                     defaultVariables: char.defaultVariables ?? ''
                 },
-                risubard: bardLoreOwner ? { bardLore: bardLoreOwner.state } : undefined,
+                risubard: bardLoreOwner || bardPainter ? { bardLore: bardLoreOwner?.state, bardPainter } : undefined,
                 depth_prompt: char.depth_prompt
             }
         }
@@ -1564,6 +1568,7 @@ type RisuLorebookEntry = LorebookEntry & {
 
 export function createBaseV3(char:character){
     const bardLoreOwner = exportableBardLoreOwner(char)
+    const bardPainter = normalizePainterBotData(char.bardPainter)
     const exportGlobalLore = bardLoreOwner?.legacyEntries ?? char.globalLore
     let charBook:RisuLorebookEntry[] = []
     let assets:Array<{
@@ -1713,7 +1718,7 @@ export function createBaseV3(char:character){
                     prebuiltAssetStyle: char.prebuiltAssetStyle ?? '',
                     toggles: char.customModuleToggle ?? '',
                 },
-                risubard: bardLoreOwner ? { bardLore: bardLoreOwner.state } : undefined,
+                risubard: bardLoreOwner || bardPainter ? { bardLore: bardLoreOwner?.state, bardPainter } : undefined,
                 depth_prompt: char.depth_prompt
             },
             group_only_greetings: char.group_only_greetings ?? [],
@@ -1937,6 +1942,7 @@ type CharacterCardV2Risu = {
             }
             risubard?: {
                 bardLore?: BardLoreState
+                bardPainter?: PainterBotData
             }
             depth_prompt?: { depth: number, prompt: string }
         }

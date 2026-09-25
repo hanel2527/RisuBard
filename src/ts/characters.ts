@@ -22,6 +22,7 @@ import { resetImportedBardWikiState } from './risubard/chatImportMemory'
 import { completeMemoryWikiFork, forkMemoryWiki } from './risubard/memoryWikiFork'
 import { needsCharacterRuntimeNormalization } from './characterRuntime'
 import { createUniqueDisplayName } from './displayName'
+import { rebindPainterChatScope } from './bardPainter/chatScope'
 
 export function createNewCharacter() {
     let db = getDatabase()
@@ -453,6 +454,7 @@ export async function importChat(){
                         }
                         rawChat.id = v4()
                         const imported = normalizeChat(rawChat)
+                        rebindPainterChatScope(imported, targetCharacter.chaId)
                         if (sourceCharacterId && sourceChatId) {
                             const receipt = await forkMemoryWiki({
                                 characterId: sourceCharacterId,
@@ -537,6 +539,7 @@ export async function importChat(){
                         }
                         v.fmIndex ??= -1
                         const imported = normalizeChat(v)
+                        rebindPainterChatScope(imported, db.characters[selectedID].chaId)
                         imported.name = createUniqueDisplayName(imported.name, [
                             ...db.characters[selectedID].chats,
                             ...importedChats,
@@ -557,6 +560,7 @@ export async function importChat(){
                     das.fmIndex ??= -1
                     das.id = v4()
                     const imported = normalizeChat(das)
+                    rebindPainterChatScope(imported, db.characters[selectedID].chaId)
                     imported.name = createUniqueDisplayName(imported.name, db.characters[selectedID].chats)
                     db.characters[selectedID].chats.unshift(imported)
                     notifySuccess(language.successImport)
@@ -578,6 +582,7 @@ export async function importChat(){
             const json = JSON.parse(chat)
             if(json.message && json.note && json.name && json.localLore){
                 const imported = normalizeChat(json)
+                rebindPainterChatScope(imported, db.characters[selectedID].chaId)
                 imported.name = createUniqueDisplayName(imported.name, db.characters[selectedID].chats)
                 db.characters[selectedID].chats.unshift(imported)
                 notifySuccess(language.successImport)

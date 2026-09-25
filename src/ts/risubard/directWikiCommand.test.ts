@@ -28,6 +28,51 @@ const documents: WikiDocument[] = [{
 }]
 
 describe('direct wiki command', () => {
+    test.each(['version', 'controls', 'fenced-controls', 'retry-controls', 'invalid-version', 'invalid-action', 'cut', 'multiple', 'truncated', 'escaped-control'])(
+        'handles bounded JSON compatibility: %s', async (mode) => {
+        const markdown = '## 사토\r\n\n### 지식\n\t"인용"과 \\ 경로, {괄호}.'
+        let output = JSON.stringify({ schemaVersion: mode === 'version' ? '1' : mode === 'invalid-version' ? '2' : 1,
+            operations: [{ action: mode === 'invalid-action' ? 'erase' : 'upsert',
+                targetDocumentId: null, type: 'character', title: '사토', aliases: [], markdown, reason: '작성' }] })
+        if (['controls', 'fenced-controls', 'retry-controls', 'invalid-action', 'cut', 'multiple'].includes(mode)) {
+            output = output.replace(/\\r/g, '\r').replace(/\\n/g, '\n').replace(/\\t/g, '\t')
+        }
+        if (mode === 'cut') output = output.slice(0, -3)
+        if (mode === 'multiple') output += '\n' + output
+        if (mode === 'fenced-controls') output = '<think>internal</think>\n```json\n' + output + '\n```'
+        if (mode === 'escaped-control') output = output.replace('\\n', '\\\n')
+        let attempts = 0
+        const requestModel = vi.fn(async (request: DirectWikiModelCall) => {
+            attempts += 1
+            if (mode === 'retry-controls' && attempts === 1) {
+                return { type: 'success', result: '{"schemaVersion":2,"operations":[]}' }
+            }
+            return { type: 'success', result: output, finishReason: mode === 'truncated' ? 'length' : 'stop' }
+        })
+        const saveDocument = vi.fn(async () => ({ id: 'character.sato', title: '사토', relativePath: 'characters/sato.md' }))
+        const beforeApply = vi.fn()
+        const command = executeDirectWikiCommand({ instruction: '사토 항목 작성', documents,
+            currentMessages: [], maxTokens: 12000, requestModel, saveDocument,
+            beforeApply, trashDocument: vi.fn(), retractEvent: vi.fn() })
+        if (['version', 'controls', 'fenced-controls', 'retry-controls'].includes(mode)) {
+            await expect(command).resolves.toMatchObject({ failed: [] })
+            expect(saveDocument).toHaveBeenCalledWith(expect.objectContaining({ markdown }))
+            expect(requestModel).toHaveBeenCalledTimes(mode === 'retry-controls' ? 2 : 1)
+            if (mode === 'retry-controls') {
+                const prompt = requestModel.mock.calls[1][0].formated[0].content
+                expect(prompt).toContain('schemaVersion')
+                expect(prompt).toContain('\\n')
+                expect(prompt).toContain('\\t')
+            }
+        } else {
+            await expect(command).rejects.toThrow(mode === 'truncated' ? /출력 한도/ : mode === 'invalid-version' ? /schemaVersion/ : mode === 'invalid-action' ? /값이 올바르지/ : /JSON/)
+            expect(saveDocument).not.toHaveBeenCalled()
+            expect(beforeApply).not.toHaveBeenCalled()
+            if (mode !== 'truncated') {
+                expect(requestModel.mock.calls[1][0].formated[0].content).not.toContain('작업 모델의 최대 출력 토큰을 확인')
+            }
+        }
+    })
     test.each([32_768, 65_536])(
         'uses the configured analysis limit for a large wiki: %i tokens', async (maxTokens) => {
             const largeWiki = Array.from({ length: 600 }, (_, index) => ({

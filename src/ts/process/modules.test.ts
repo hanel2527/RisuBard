@@ -92,7 +92,7 @@ vi.mock('../characterCards', () => ({
 }))
 vi.mock('../parser/parser.svelte', () => ({ hasher: mocks.hasher }))
 
-import { exportModuleLegacy, getModules, importModule, readModule, refreshModules, resolveModuleIds } from './modules'
+import { exportModuleLegacy, getModules, importModule, importRisum, readModule, refreshModules, resolveModuleIds } from './modules'
 
 function uint32le(value: number) {
     const bytes = Buffer.alloc(4)
@@ -143,6 +143,26 @@ describe('module import durability', () => {
 
         expect(mocks.requestImmediateSave).toHaveBeenCalledWith({ flushServer: true, rejectOnFailure: true })
         expect(mocks.events).toEqual(['saved', 'notified'])
+    })
+
+    it('imports downloaded risum bytes without a file picker and waits for persistence', async () => {
+        await importRisum(risumWithAssets(0))
+        expect(mocks.selectSingleFile).not.toHaveBeenCalled()
+        expect(mocks.database.current.modules).toHaveLength(1)
+        expect(mocks.events).toEqual(['saved', 'notified'])
+    })
+
+    it('rolls back a failed downloaded import so retry does not duplicate modules', async () => {
+        mocks.requestImmediateSave.mockRejectedValueOnce(new Error('disk full'))
+        await expect(importRisum(risumWithAssets(0))).rejects.toThrow('disk full')
+        expect(mocks.database.current.modules).toHaveLength(0)
+        expect(mocks.events).toEqual([])
+    })
+
+    it('does not register invalid downloaded bytes', async () => {
+        await expect(importRisum(new Uint8Array([0, 0]))).rejects.toThrow()
+        expect(mocks.database.current.modules).toHaveLength(0)
+        expect(mocks.requestImmediateSave).not.toHaveBeenCalled()
     })
 })
 

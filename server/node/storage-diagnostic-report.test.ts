@@ -28,6 +28,27 @@ afterEach(() => {
 })
 
 describe('privacy-safe storage diagnostic report', () => {
+    it('separates the active server session from retained historical problems across rotation', async () => {
+        const root = tempRoot()
+        writeRows(root, 'storage-observation.previous.jsonl', [
+            { sessionId: 'old-private-session', kind: 'projection-shadow', outcome: 'mismatch' },
+            { sessionId: 'active-private-session', kind: 'compatibility-persist', outcome: 'success', durationMs: 10 },
+        ])
+        writeRows(root, 'storage-observation.jsonl', [
+            { sessionId: 'old-private-session', kind: 'canonical-sync', outcome: 'failure', errorCode: 'CANONICAL_FILES_CHANGED' },
+            { sessionId: 'active-private-session', kind: 'projection-shadow', outcome: 'success', semanticMatch: true },
+        ])
+        const report = await generateStorageDiagnosticReport({ dataRoot: root, sessionId: 'active-private-session', appVersion: '0.9.41' })
+        expect(report).toMatchObject({ scope: 'server-session', status: 'no-issues-observed',
+            saves: { attempts: 1 }, shadow: { matches: 1, mismatches: 0 }, issues: [],
+            history: { scope: 'retained-logs', status: 'issues-detected', shadow: { mismatches: 1 } } })
+        expect(JSON.stringify(report)).not.toContain('private-session')
+        const fresh = await generateStorageDiagnosticReport({ dataRoot: root, sessionId: 'new-private-session' })
+        expect(fresh).toMatchObject({ scope: 'server-session', status: 'no-observations', saves: { attempts: 0 } })
+        const failed = await generateStorageDiagnosticReport({ dataRoot: root, sessionId: 'old-private-session' })
+        expect(failed).toMatchObject({ status: 'issues-detected', canonicalProjection: { failures: 1 }, shadow: { mismatches: 1 } })
+    })
+
     it('reports deferred writes and materialization costs and errors separately', async () => {
         const root=tempRoot()
         writeRows(root,'storage-observation.jsonl',[
@@ -57,6 +78,7 @@ describe('privacy-safe storage diagnostic report', () => {
         expect(server).toContain("require('./storage-diagnostic-report.cjs')")
         expect(server).toContain("app.get('/api/storage-diagnostics/report'")
         expect(server).toMatch(/app\.get\('\/api\/storage-diagnostics\/report'[\s\S]*?checkAuth\(req, res\)/)
+        expect(server).toMatch(/app\.get\('\/api\/storage-diagnostics\/report'[\s\S]*?await saveObservation\.flush\(\);[\s\S]*?sessionId: saveObservation\.sessionId/)
     })
 
     it('exports aggregate performance and categorized issues without raw identifiers or content', async () => {

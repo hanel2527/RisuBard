@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { onDestroy } from 'svelte'
     import { DBState } from 'src/ts/stores.svelte'
     import { isNodeServer } from 'src/ts/platform'
     import { forageStorage } from 'src/ts/globalApi.svelte'
@@ -7,6 +8,11 @@
     let characterId = $state('')
     let busy = $state(false)
     let message = $state('')
+    let batchRunning = $state(false)
+    let stopRequested = $state(false)
+    let batchMessage = $state('')
+    let batchResults = $state<{ id: string; name: string; outcome: string }[]>([])
+    onDestroy(() => { stopRequested = true })
     let result = $state<{ enabled: boolean; directory: string; chats: number; assets: { enabled: boolean; copied: number; skipped: number; failed: number }; diagnostics: { reads: number; fallbacks: number } } | null>(null)
     const characters = $derived(DBState.db.characters.filter(character => !character.trashTime))
     const nameCounts = $derived.by(() => {
@@ -14,6 +20,53 @@
         for (const character of characters) counts.set(character.name, (counts.get(character.name) ?? 0) + 1)
         return counts
     })
+
+    async function runAll() {
+        if (busy) return
+        const targets = [...new Map(DBState.db.characters.filter(character => !character.trashTime)
+            .map(character => [character.chaId, { id: character.chaId, name: character.name }])).values()]
+        if (!targets.length) return
+        busy = true
+        batchRunning = true
+        stopRequested = false
+        batchResults = []
+        result = null
+        message = ''
+        batchMessage = '전체 전환 준비 중'
+        const active = (id: string) => DBState.db.characters.some(character => character.chaId === id && !character.trashTime)
+        try {
+            await forageStorage.Init()
+            for (const target of targets) {
+                if (stopRequested) break
+                batchMessage = `처리 중 ${batchResults.length + 1}/${targets.length}: ${target.name}`
+                let outcome = '삭제되어 제외'
+                if (active(target.id)) {
+                    try {
+                        let status = await forageStorage.realStorage.characterPackageTransition(target.id, 'status')
+                        if (stopRequested) break
+                        if (active(target.id)) {
+                            if (!status.enabled || !status.assets.enabled || status.assets.failed > 0) {
+                                status = await forageStorage.realStorage.characterPackageTransition(target.id, status.enabled ? 'refresh' : 'migrate')
+                                outcome = status.enabled ? '전환 완료' : 'V3 폴더 전환 미완료'
+                            } else {
+                                outcome = '이미 V3 사용 중'
+                            }
+                            if (status.assets.failed > 0) outcome = `에셋 ${status.assets.failed}개 실패: 재개 시 재검증`
+                        }
+                    } catch {
+                        outcome = '상태 확인 또는 전환 실패: 재개 시 서버 상태를 다시 확인합니다.'
+                    }
+                }
+                batchResults = [...batchResults, { ...target, outcome }]
+            }
+            batchMessage = `${stopRequested ? '전체 처리 중단' : '전체 처리 완료'} (${batchResults.length}/${targets.length}). 캐릭터별 결과를 확인해 주세요.`
+        } catch {
+            batchMessage = '전체 전환을 시작하지 못했습니다. 저장 연결을 확인하고 다시 시도해 주세요.'
+        } finally {
+            busy = false
+            batchRunning = false
+        }
+    }
 
     async function run(action: 'status' | 'migrate' | 'refresh' | 'rollback') {
         const id = characterId
@@ -51,6 +104,21 @@
     <section class="asset-pilot">
         <h2>캐릭터 V3 저장 구조 전환 (시험 기능)</h2>
         <p>선택한 캐릭터 하나의 본문, 채팅과 전용 에셋을 이름 기반 폴더로 전환합니다. 다른 캐릭터와 기존 백업 형식은 바뀌지 않습니다. 되돌릴 때는 전환 뒤 변경까지 최신 상태로 ID 폴더에 복귀합니다.</p>
+        <p>전체 전환은 현재 삭제되지 않은 캐릭터를 하나씩 처리합니다. 시작 전 백업을 보관해 주세요. 중단하거나 이 화면을 나가면 진행 중 요청까지만 처리하며, 다시 실행하면 서버 상태를 확인해 남은 전환과 실패한 에셋 검증을 이어갑니다. 공유 에셋, 바드위키와 모듈의 위치는 유지됩니다.</p>
+        <div class="actions">
+            <ShButton variant="primary" onclick={runAll} disabled={busy || !characters.length}>전체 캐릭터 V3 전환 / 재개</ShButton>
+            {#if batchRunning}
+                <ShButton variant="outline" onclick={() => { stopRequested = true }} disabled={stopRequested}>{stopRequested ? '중단 대기 중' : '중단'}</ShButton>
+            {/if}
+        </div>
+        <div role="status" aria-live="polite">{batchMessage}</div>
+        {#if batchResults.length}
+            <ul>
+                {#each batchResults as entry (entry.id)}
+                    <li>{entry.name} ({entry.id}): {entry.outcome}</li>
+                {/each}
+            </ul>
+        {/if}
         <label for="asset-transition-character">전환할 캐릭터</label>
         <select id="asset-transition-character" bind:value={characterId} disabled={busy} onchange={() => { result = null; message = '' }}>
             <option value="">캐릭터를 선택해 주세요</option>

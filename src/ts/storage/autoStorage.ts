@@ -71,6 +71,11 @@ export class AutoStorage{
         return this.realStorage.getWriterLockState()
     }
 
+    async syncLiveFiles(revision?: string) {
+        await this.Init()
+        return this.realStorage.syncLiveFiles(revision)
+    }
+
     async getExternalEditModeStatus() {
         await this.Init()
         return this.realStorage.getExternalEditModeStatus()

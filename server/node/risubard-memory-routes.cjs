@@ -1,6 +1,7 @@
 const wikiWritingLocales = require('../../src/ts/risubard/wikiWritingLocales.json')
 require('sucrase/register/ts')
 const { normalizeMemoryRetrievalMetadata } = require('./risubard-memory-metadata.ts')
+const { parseCanonicalTurnReceipt } = require('../../src/ts/risubard/canonicalTurnReceipt.ts')
 
 function validRetrievalMetadata(value) {
     try {
@@ -142,27 +143,16 @@ function validRebootSources(body, includeGroups) {
 }
 
 function validCanonicalReceipt(value) {
-    return hasExactKeys(value, [
-        'sourceMessageIds', 'eventIds', 'changes', 'warnings', 'recordedAt',
-    ])
-        && Array.isArray(value.sourceMessageIds)
-        && value.sourceMessageIds.every(hasBoundedId)
-        && Array.isArray(value.eventIds)
-        && value.eventIds.every(hasBoundedId)
-        && Array.isArray(value.warnings)
-        && value.warnings.every((warning) => typeof warning === 'string')
-        && typeof value.recordedAt === 'string'
-        && Array.isArray(value.changes)
-        && value.changes.every((change) => hasExactKeys(change, [
-            'documentId', 'type', 'title', 'relativePath', 'action', 'afterHash',
-        ])
-            && hasBoundedId(change.documentId)
-            && ['character', 'location', 'scene', 'faction', 'creature',
-                'item', 'concept', 'other'].includes(change.type)
-            && typeof change.title === 'string'
-            && typeof change.relativePath === 'string'
-            && (change.action === 'create' || change.action === 'update')
-            && hasBoundedId(change.afterHash))
+    try {
+        const receipt = parseCanonicalTurnReceipt(value)
+        return receipt.sourceMessageIds.every(hasBoundedId)
+            && receipt.eventIds.every(hasBoundedId)
+            && receipt.changes.every((change) =>
+                hasBoundedId(change.documentId) && hasBoundedId(change.afterHash))
+    }
+    catch {
+        return false
+    }
 }
 
 function createRisuBardMemoryJsonParser(express) {
@@ -851,6 +841,10 @@ function registerRisuBardMemoryRoutes(app, options) {
                 ))
             }
             catch (error) {
+                if (error?.message === 'Wiki document changed since the draft was created') {
+                    res.status(409).send({ error: 'Wiki document changed since the draft was created' })
+                    return
+                }
                 next(error)
             }
         }

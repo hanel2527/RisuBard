@@ -19,6 +19,8 @@ const repository = createUserDataRepository({
     dataRoot,
     allowDirectoryMapping: true,
     maintainDirectoryNames: true,
+    liveExternalEditing: true,
+    newCharacterPackages: true,
 });
 const compatibilityCache = attachCompatibilityCache({
     store, repository, dataRoot,

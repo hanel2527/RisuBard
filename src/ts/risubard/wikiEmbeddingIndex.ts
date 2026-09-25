@@ -145,19 +145,25 @@ export class WikiEmbeddingIndex {
             ])
             if (vectors.length !== queries.length || !vectors.every(validVector)
                 || vectors.some(vector => vector.length !== entries[0].vector.length)) return emptyResult()
-            const ranked = entries.map(entry => {
+            const bestByDocument = new Map<string, IndexedChunk & { score: number; order: number }>()
+            entries.forEach((entry, order) => {
                 const direct = cosine(entry.vector, vectors[0])
                 const contextual = vectors[1] ? cosine(entry.vector, vectors[1]) : direct
-                return { ...entry, score: Math.max(0, Math.min(1, direct * 0.55 + contextual * 0.45)) }
-            }).sort((a, b) => b.score - a.score || a.chunk.documentId.localeCompare(b.chunk.documentId) || a.chunk.start - b.chunk.start)
+                const score = Math.max(0, Math.min(1, direct * 0.55 + contextual * 0.45))
+                if (score < 0.4) return
+                const previous = bestByDocument.get(entry.chunk.documentId)
+                if (!previous || score > previous.score
+                    || (score === previous.score && entry.chunk.start < previous.chunk.start)) {
+                    bestByDocument.set(entry.chunk.documentId, { ...entry, score, order })
+                }
+            })
+            // Only the strongest passage can survive document deduplication; sort those winners.
+            const ranked = [...bestByDocument.values()].sort((a, b) =>
+                b.score - a.score || a.chunk.documentId.localeCompare(b.chunk.documentId)
+                || a.chunk.start - b.chunk.start || a.order - b.order)
             // Do not fill the budget with weak matches or repeated chunks of one document.
             const threshold = Math.max(0.4, (ranked[0]?.score ?? 0) - 0.12)
-            const seen = new Set<string>()
-            const selected = ranked.filter(item => {
-                if (item.score < threshold || seen.has(item.chunk.documentId)) return false
-                seen.add(item.chunk.documentId)
-                return true
-            }).slice(0, 12)
+            const selected = ranked.filter(item => item.score >= threshold).slice(0, 12)
             return {
                 matches: selected.map(({ chunk, score }) => ({
                     documentId: chunk.documentId, score, contentHash: chunk.contentHash,
@@ -178,10 +184,17 @@ export class WikiEmbeddingIndex {
 export function mergeWikiSemanticMatches(
     semantic: readonly WikiSemanticMatch[], ranked: readonly WikiSemanticMatch[],
 ): WikiSemanticMatch[] {
+    if (ranked.length === 0) return [...semantic].sort((a, b) => b.score - a.score).slice(0, 32)
     const matches = new Map(semantic.map(match => [match.documentId, match]))
-    for (const match of ranked) {
+    const ordered = new Map<string, WikiSemanticMatch>()
+    for (const match of [...ranked].sort((a, b) => b.score - a.score)) {
         const previous = matches.get(match.documentId)
-        matches.set(match.documentId, { ...match, ...previous, score: match.score })
+        if (!ordered.has(match.documentId)) ordered.set(match.documentId, { ...match, ...previous })
     }
-    return [...matches.values()].sort((a, b) => b.score - a.score).slice(0, 32)
+    for (const match of [...matches.values()].sort((a, b) => b.score - a.score)) {
+        if (!ordered.has(match.documentId)) ordered.set(match.documentId, match)
+    }
+    const result = [...ordered.values()].slice(0, 32)
+    // Encode one ordering, never compare cosine values to reranker rank fractions.
+    return result.map((match, index) => ({ ...match, score: (result.length - index) / result.length }))
 }

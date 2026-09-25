@@ -679,6 +679,9 @@ export async function saveManualWikiDocument(input: {
         }
     )
     if (!response.ok) {
+        if (response.status === 409) {
+            throw new Error('이 문서에 다른 변경이 저장되었습니다. 편집 내용은 유지됩니다. 내용을 복사해 보관한 뒤 최신 문서를 다시 열어 변경 사항을 확인해 주세요.')
+        }
         throw new Error(`Wiki manual save failed with status ${response.status}`)
     }
     const value = await response.json() as NarrativeMemoryWikiMarkdown['documents'][number]

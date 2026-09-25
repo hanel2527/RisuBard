@@ -114,11 +114,15 @@ describe('BardWiki legacy plugin compatibility', () => {
 })
 
 describe('BardWiki plugin service', () => {
-    it('retrieves wiki sources and appends the configured recent response window', async () => {
+    it.each([false, true])('retrieves wiki sources with the effective response window (bot pin: %s)', async (pinned) => {
         let inquiryInput: Record<string, unknown> | undefined
         const result = await buildBardWikiPluginContext({
             characterId: 'char-1',
             chatId: 'chat-1',
+            character: pinned ? { risuBardPinnedSettings: {
+                risuBardResponseMessageCount: 1,
+                risuBardResponseExcludeUserMessages: true,
+            } } : undefined,
             chat: {
                 message: [
                     { role: 'user', data: 'old question' },
@@ -127,7 +131,7 @@ describe('BardWiki plugin service', () => {
                     { role: 'char', data: 'current answer' },
                 ],
                 risuBardSettings: {
-                    risuBardResponseMessageCount: 1,
+                    risuBardResponseMessageCount: pinned ? 12 : 1,
                     risuBardResponseExcludeUserMessages: true,
                 },
             },

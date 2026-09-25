@@ -209,6 +209,7 @@ interface BardWikiPluginScope {
 
 interface BardWikiPluginContextInput extends BardWikiPluginScope {
     chat: BardWikiCompatibleChat
+    character?: { risuBardPinnedSettings?: RisuBardChatSettings }
     globalSettings: RisuBardChatSettings
     query?: string
 }
@@ -249,7 +250,8 @@ export async function buildBardWikiPluginContext(
 ): Promise<BardWikiPluginContextResult> {
     const settings = resolveRisuBardChatSettings(
         input.globalSettings,
-        input.chat.risuBardSettings
+        input.chat.risuBardSettings,
+        input.character?.risuBardPinnedSettings,
     )
     const recentMessages = selectBardWikiPluginRecentMessages(
         input.chat.message ?? [],
@@ -367,6 +369,7 @@ export interface BardWikiCompatibleCharacter {
     chaId?: string
     chatPage?: number
     chats?: BardWikiCompatibleChat[]
+    risuBardPinnedSettings?: RisuBardChatSettings
 }
 
 export async function decorateBardWikiChatForPlugin<
@@ -375,6 +378,7 @@ export async function decorateBardWikiChatForPlugin<
     characterId: string
     chatId: string
     chat: T
+    character?: { risuBardPinnedSettings?: RisuBardChatSettings }
     globalSettings: RisuBardChatSettings
     fetchImpl: typeof fetch
     createAuth(): Promise<string>
@@ -383,7 +387,7 @@ export async function decorateBardWikiChatForPlugin<
     try {
         // Cache only compatibility reads; explicit bardWiki.getContext() stays fresh.
         // Never cache the chat itself: polling must see current streaming state.
-        const settings = resolveRisuBardChatSettings(input.globalSettings, input.chat.risuBardSettings)
+        const settings = resolveRisuBardChatSettings(input.globalSettings, input.chat.risuBardSettings, input.character?.risuBardPinnedSettings)
         const recent = selectBardWikiPluginRecentMessages(
             input.chat.message ?? [], settings.risuBardResponseMessageCount,
             settings.risuBardResponseExcludeUserMessages,
@@ -429,6 +433,7 @@ export async function decorateBardWikiCharacterForPlugin<
     if (!input.character.chaId || !chat?.id) return input.character
     const decoratedChat = await decorateBardWikiChatForPlugin({
         characterId: input.character.chaId,
+        character: input.character,
         chatId: chat.id,
         chat,
         globalSettings: input.globalSettings,

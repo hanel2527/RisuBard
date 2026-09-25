@@ -20,7 +20,7 @@
         type RequestLogSource,
     } from 'src/ts/requestLog'
     import { requestPurposeLabels } from 'src/ts/requestPurpose'
-    import { canonicalTurnNeedsRetry } from 'src/ts/risubard/canonicalTurnReceipt'
+    import { canonicalTurnFailureWarning } from 'src/ts/risubard/canonicalTurnReceipt'
     import type { RequestInjectionKind } from 'src/ts/status/requestStatus'
     import { downloadFile } from 'src/ts/globalApi.svelte'
 
@@ -56,7 +56,7 @@
     let receiptEntries = $derived(messages.flatMap((message) => {
         const receipt = message.risubardCanonicalReceipt
         if (message.role !== 'char' || !receipt) return []
-        const failed = canonicalTurnNeedsRetry(receipt)
+        const failed = canonicalTurnFailureWarning(receipt) !== undefined
         return [{
             id: message.chatId ?? receipt.recordedAt,
             timestamp: receipt.recordedAt,

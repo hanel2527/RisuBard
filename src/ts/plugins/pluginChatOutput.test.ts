@@ -43,6 +43,102 @@ describe('plugin chat output listeners', () => {
         })).resolves.toBeUndefined()
     })
 
+    test('dispatches a large-shaped payload when aggregate JSON serialization exceeds the host limit', async () => {
+        const listeners = new PluginChatOutputListeners()
+        const listener = vi.fn()
+        const oversized = {
+            ...output,
+            chat: {
+                message: Array.from({ length: 30 }, (_, index) => ({ chatId: `reply-${index}`, data: 'short record' })),
+            },
+        }
+        const nativeStringify = JSON.stringify
+        const stringify = vi.spyOn(JSON, 'stringify').mockImplementation((value, ...args) => {
+            const serialized = nativeStringify(value, ...args)
+            if (serialized.length > 100) {
+                throw new RangeError('Invalid string length')
+            }
+            return serialized
+        })
+        listeners.add(V2_CHAT_OUTPUT_OWNER, listener)
+
+        try {
+            await expect(listeners.dispatch(oversized)).resolves.toBeUndefined()
+
+            expect(listener).toHaveBeenCalledWith(oversized)
+        }
+        finally {
+            stringify.mockRestore()
+        }
+    })
+
+    test('matches JSON snapshots for proxy-backed values and JSON edge cases', async () => {
+        const listeners = new PluginChatOutputListeners()
+        const listener = vi.fn()
+        const shared = { value: 'shared' }
+        let toJSONCalls = 0
+        const selfToJSON = {
+            value: 'self',
+            toJSON() {
+                toJSONCalls++
+                return this
+            },
+        }
+        const proto = Object.create(null) as Record<string, unknown>
+        Object.defineProperty(proto, '__proto__', {
+            enumerable: true,
+            value: { preserved: true },
+        })
+        const payload = new Proxy({
+            ...output,
+            char: {
+                date: new Date('2026-09-24T12:00:00.000Z'),
+                sparse: [, undefined, Number.NaN, -0],
+                wrappedNumber: new Number(7),
+                wrappedString: new String('wrapped'),
+                wrappedBoolean: new Boolean(false),
+                shared: [shared, shared],
+                selfToJSON,
+                proto,
+                omitted: undefined,
+            },
+        }, {})
+        const expected = JSON.parse(JSON.stringify(payload))
+        toJSONCalls = 0
+        listeners.add(V2_CHAT_OUTPUT_OWNER, listener)
+
+        await listeners.dispatch(payload)
+
+        expect(toJSONCalls).toBe(1)
+        expect(listener).toHaveBeenCalledWith(expected)
+        const snapshot = listener.mock.calls[0][0]
+        expect(Object.hasOwn(snapshot.char.proto, '__proto__')).toBe(true)
+        expect(Object.getPrototypeOf(snapshot.char.proto)).toBe(Object.prototype)
+    })
+
+    test('contains canonical snapshot failures so output processing can continue', async () => {
+        const listeners = new PluginChatOutputListeners()
+        const listener = vi.fn()
+        const logError = vi.spyOn(console, 'error').mockImplementation(() => {})
+        const snapshotFailure = new RangeError('snapshot failed')
+        const unreadable = new Proxy({}, {
+            ownKeys() {
+                throw snapshotFailure
+            },
+        })
+        listeners.add(V2_CHAT_OUTPUT_OWNER, listener)
+
+        try {
+            await expect(listeners.dispatch({ ...output, char: unreadable })).resolves.toBeUndefined()
+
+            expect(listener).not.toHaveBeenCalled()
+            expect(logError).toHaveBeenCalledWith('Failed to snapshot plugin chat output:', snapshotFailure)
+        }
+        finally {
+            logError.mockRestore()
+        }
+    })
+
     test('removes an owner-scoped chat listener and ignores duplicate registration', async () => {
         const listeners = new PluginChatOutputListeners()
         const listener = vi.fn()

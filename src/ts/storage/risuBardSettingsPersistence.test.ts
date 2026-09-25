@@ -16,6 +16,26 @@ vi.mock('../../lang', () => ({ language: {}, changeLanguage: vi.fn() }))
 const { getDatabase, newChatModelDefaults, normalizeChat, setDatabase } = await import('./database.svelte')
 
 describe('RisuBard settings persistence', () => {
+    test('preserves bot-pinned wiki settings across database reloads', () => {
+        setDatabase({
+            characters: [{
+                chaId: 'pinned-bot', name: 'Pinned bot', chats: [],
+                risuBardPinnedSettings: {
+                    risuBardResponseMessageCount: 7,
+                    risuBardBardChanEnabled: false,
+                    risuBardWikiWritingLanguage: 'ja',
+                },
+            }],
+            formatingOrder: ['main'], loreBook: [], personas: [],
+            username: 'User', userIcon: '', userNote: '',
+        } as any)
+        setDatabase(JSON.parse(JSON.stringify(getDatabase())))
+        expect(getDatabase().characters[0].risuBardPinnedSettings).toEqual({
+            risuBardResponseMessageCount: 7,
+            risuBardBardChanEnabled: false,
+            risuBardWikiWritingLanguage: 'ja',
+        })
+    })
     test.each([
         { font: undefined, md: undefined, expected: 14, preview: true },
         { font: 22, md: false, expected: 22, preview: false },

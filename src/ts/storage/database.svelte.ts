@@ -1,5 +1,6 @@
 import { get } from 'svelte/store';
 import type { ChatScriptstateCheckpoint } from '../chatScriptstateCheckpoint';
+import type { TagAutocompleteSettings } from '../tagAutocomplete/settings';
 import { checkNullish, decryptBuffer, encryptBuffer, selectSingleFile } from '../util';
 import { changeLanguage, language } from '../../lang';
 import { DEFAULT_CHAT_LOAD_ADDITIONAL_PAGES, DEFAULT_CHAT_LOAD_INITIAL_PAGES, normalizeChatLoadPages } from '../chatLoadPages';
@@ -872,6 +873,8 @@ export function setDatabase(data:Database){
     data.alwaysScrollToNewMessage ??= false
     data.preserveChatScrollPosition ??= true
     data.pinChatScrollNavigator ??= false
+    data.chatScrollNavigatorOffset = Number.isFinite(data.chatScrollNavigatorOffset)
+        ? Math.max(-1000, Math.min(1000, Math.round(data.chatScrollNavigatorOffset))) : 0
     data.newMessageButtonStyle ??= 'bottom-center'
     data.echoMessage ??= "Echo Message"
     data.echoDelay ??= 0
@@ -1556,6 +1559,8 @@ export interface Database{
     togglePresets?:TogglePreset[]
     personaBuilderPromptPresets?:PersonaBuilderPromptPreset[]
     loreBuilderPromptPresets?:LoreBuilderPromptPreset[]
+    bardPainterStyles?: import('../bardPainter/types').PainterStyle[]
+    bardPainterSettings?: import('../bardPainter/types').PainterGenerationSettings
     personaBuilderStylePromptPresetId?:string
     loreBuilderStylePromptPresetId?:string
     sdProvider: string
@@ -1963,6 +1968,7 @@ export interface Database{
     doNotChangeSeperateModels:boolean
     modelTools: string[]
     hotkeys:Hotkey[]
+    tagAutocomplete?: TagAutocompleteSettings
     fallbackModels: {
         memory: string[],
         emotion: string[],
@@ -2090,6 +2096,7 @@ export interface Database{
     alwaysScrollToNewMessage?: boolean
     preserveChatScrollPosition?: boolean
     pinChatScrollNavigator?: boolean
+    chatScrollNavigatorOffset?: number
     newMessageButtonStyle?: string
     pluginDevelopMode?: boolean
     echoMessage?:string
@@ -2198,6 +2205,7 @@ export interface RisuBardGallery {
 }
 
 export interface character{
+    bardPainter?: import('../bardPainter/types').PainterBotData
     type?:"character"
     name:string
     image?:string
@@ -2216,6 +2224,7 @@ export interface character{
     globalLore: loreBook[]
     bardLore?: BardLoreState
     risuBardWikiGuide?: string
+    risuBardPinnedSettings?: import('../risubard/risuBardSettings').RisuBardChatSettings
     chaId: string
     sdData: [string, string][]
     newGenData?: {
@@ -2721,6 +2730,7 @@ export function normalizeChat(chat: Partial<Chat>): Chat {
 }
 
 export interface Chat{
+    bardPainter?: import('../bardPainter/types').PainterChatData
     message: Message[]
     note:string
     name:string

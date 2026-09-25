@@ -37,6 +37,8 @@ import ShButton from "../UI/GUI/ShButton.svelte";
     import SliderInput from "../UI/GUI/SliderInput.svelte";
     import FirstMessageStudioEditor from '../FirstMessageStudio/FirstMessageStudioEditor.svelte'
     import { createUniqueDisplayName } from 'src/ts/displayName'
+    import { painterGalleryRequested } from 'src/ts/bardPainter/gallery'
+    import BardPainterGallery from '../Others/BardPainterGallery.svelte'
 
     interface Props {
         subMenuOverride?: number
@@ -59,6 +61,12 @@ import ShButton from "../UI/GUI/ShButton.svelte";
     let pkgIncludePersona = $state(true)
     let pkgIncludeInlays = $state(false)
     let viewSubMenu = $state(0)
+    $effect(() => {
+        if ($painterGalleryRequested && $painterGalleryRequested === currentCharacter?.chaId) {
+            viewSubMenu = 3
+            painterGalleryRequested.set(null)
+        }
+    })
     let firstMessageStudioOpen = $state(false)
     let emos:[string, string][] = $state([])
     let tokens = $state({
@@ -386,7 +394,7 @@ import ShButton from "../UI/GUI/ShButton.svelte";
 
     {@render assetViewerButton()}
 
-    <div class="flex w-full rounded-md border border-selected mb-4">
+    <div class="flex w-full flex-wrap rounded-md border border-selected mb-4">
         <button onclick={() => {
             viewSubMenu = 0
         }} class="p-2 flex-1" class:bg-selected={viewSubMenu === 0}>
@@ -402,9 +410,14 @@ import ShButton from "../UI/GUI/ShButton.svelte";
         }} class="p-2 flex-1" class:bg-selected={viewSubMenu === 2}>
             <span>{language.additionalAssets}</span>
         </button>
+        <button onclick={() => { viewSubMenu = 3 }} class="p-2 flex-1" class:bg-selected={viewSubMenu === 3}>
+            <span>그림 갤러리</span>
+        </button>
     </div>
 
-    {#if viewSubMenu === 0}
+    {#if viewSubMenu === 3}
+        {#key currentCharacter.chaId}<BardPainterGallery bot={currentCharacter as character}/>{/key}
+    {:else if viewSubMenu === 0}
             <div class="p-2 border-darkborderc border rounded-md flex flex-wrap gap-2">
                 {#if DBState.db.characters[$selectedCharID].image !== '' && DBState.db.characters[$selectedCharID].image}
                     <button onclick={() => {

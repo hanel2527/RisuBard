@@ -76,6 +76,30 @@ function jsonBytes(value) {
     return Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
+function* messageChunks(messages) {
+    for (const message of messages) yield Buffer.from(`${JSON.stringify(message) ?? ''}\n`, 'utf8');
+}
+
+function parseMessageBytes(bytes, relativePath, errorCode) {
+    const messages = [];
+    let start = 0;
+    while (start < bytes.length) {
+        const newline = bytes.indexOf(10, start);
+        const end = newline === -1 ? bytes.length : newline;
+        const contentEnd = newline !== -1 && bytes[end - 1] === 13 ? end - 1 : end;
+        if (contentEnd > start) {
+            try { messages.push(JSON.parse(bytes.toString('utf8', start, contentEnd))); }
+            catch {
+                const error = new Error(`Invalid chat JSONL at ${relativePath}:${messages.length + 1}`);
+                if (errorCode) error.code = errorCode;
+                throw error;
+            }
+        }
+        start = end + 1;
+    }
+    return messages;
+}
+
 function stableId(value, prefix) {
     const raw = typeof value === 'string' ? value.trim() : '';
     if (/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(raw)) return raw;
@@ -285,28 +309,79 @@ function createUserDataRepository(options = {}) {
         const relativePath = messagesPath(characterId, chatId);
         const target = resolveInside(dataRoot, relativePath);
         if (!fs.existsSync(target)) return [];
-        const text = fs.readFileSync(target, 'utf8');
-        return text.split(/\r?\n/).filter(Boolean).map((line, index) => {
-            try { return JSON.parse(line); }
-            catch { throw new Error(`Invalid chat JSONL at ${relativePath}:${index + 1}`); }
-        });
+        return parseMessageBytes(fs.readFileSync(target), relativePath);
     }
 
     function parseCanonicalMessages(characterId, chatId) {
         const relativePath = messagesPath(characterId, chatId);
-        const text = readCanonicalBytes(relativePath).toString('utf8');
-        return text.split(/\r?\n/).filter(Boolean).map((line, index) => {
-            try { return JSON.parse(line); }
-            catch {
-                const error = new Error(`Invalid chat JSONL at ${relativePath}:${index + 1}`);
-                error.code = 'CANONICAL_FILES_CHANGED';
-                throw error;
-            }
-        });
+        return parseMessageBytes(readCanonicalBytes(relativePath), relativePath, 'CANONICAL_FILES_CHANGED');
     }
 
     function reconcileCanonicalProjection(options = {}) {
         const includeDatabase = options.includeDatabase !== false;
+        const externalWrites = [];
+        const externalInputs = [];
+        function readEditableJson(relativePath, kind) {
+            if (!options.externalEditing) return readCanonicalJson(relativePath);
+            const target = resolveInside(dataRoot, relativePath);
+            let current = dataRoot;
+            for (const part of path.relative(dataRoot, target).split(path.sep)) {
+                current = path.join(current, part);
+                if (fs.lstatSync(current).isSymbolicLink()) throw new Error(`External edit uses a symbolic link: ${relativePath}`);
+            }
+            const original = fs.readFileSync(target);
+            const normalizedPath = relativePath.split(path.sep).join('/');
+            const plannedOriginal = options.externalOriginals?.get(normalizedPath);
+            if (plannedOriginal && !original.equals(plannedOriginal)) throw checksumMismatch(relativePath);
+            const bytes = options.externalMetadata?.get(normalizedPath) || original;
+            const digest = crypto.createHash('sha256').update(bytes).digest('hex');
+            const checksumPath = `${target}.sha256`;
+            if (fs.existsSync(checksumPath) && fs.readFileSync(checksumPath, 'utf8').trim() === digest) {
+                return readCanonicalJson(relativePath);
+            }
+            const fail = () => {
+                const error = new Error(`Invalid external ${kind}: ${relativePath}`);
+                error.code = 'LIVE_FILES_INVALID';
+                throw error;
+            };
+            let value;
+            try { value = JSON.parse(bytes.toString('utf8')); } catch { fail(); }
+            if (!isPlainObject(value)) fail();
+            // These objects are merged into live application state. Never accept prototype keys.
+            JSON.stringify(value, (key, child) => {
+                if (['__proto__', 'prototype', 'constructor'].includes(key)) fail();
+                return child;
+            });
+            if (kind === 'character') {
+                if (typeof value.chaId !== 'string' || !value.chaId || 'chats' in value) fail();
+                for (const key of ['name', 'desc', 'firstMessage', 'personality', 'scenario', 'exampleMessage', 'image']) {
+                    if (key in value && typeof value[key] !== 'string') fail();
+                }
+                for (const key of ['globalLore', 'additionalAssets', 'emotionImages']) {
+                    if (key in value && !Array.isArray(value[key])) fail();
+                }
+                for (const entry of value.globalLore || []) {
+                    if (!isPlainObject(entry) || ('content' in entry && typeof entry.content !== 'string')) fail();
+                }
+                for (const entry of [...(value.additionalAssets || []), ...(value.emotionImages || [])]) {
+                    if (!Array.isArray(entry) || typeof entry[0] !== 'string' || typeof entry[1] !== 'string') fail();
+                }
+            } else if (kind === 'chat') {
+                if (typeof value.id !== 'string' || !value.id || 'message' in value || '_stub' in value) fail();
+                if ('name' in value && typeof value.name !== 'string') fail();
+                if ('localLore' in value && !Array.isArray(value.localLore)) fail();
+                for (const entry of value.localLore || []) {
+                    if (!isPlainObject(entry) || ('content' in entry && typeof entry.content !== 'string')) fail();
+                }
+            } else {
+                if ('name' in value && typeof value.name !== 'string') fail();
+                if ('data' in value && !Array.isArray(value.data)) fail();
+                if (value.id && stableId(value.id, 'lore') !== path.basename(relativePath, '.json')) fail();
+            }
+            externalInputs.push({ target, bytes: original });
+            externalWrites.push({ path: relativePath, data: bytes });
+            return value;
+        }
         const sourcePathsBefore = collectCanonicalSourcePaths();
         if (sourcePathsBefore.length === 0) {
             return { database: null, revision: null, sidebar: null, sidebarWritten: false, transaction: null };
@@ -322,8 +397,10 @@ function createUserDataRepository(options = {}) {
         for (const [legacyName, directory] of COLLECTIONS) {
             const ids = orderedIds(previousIndex?.collections?.[legacyName], listJsonIds(directory));
             collections[legacyName] = ids;
-            if (includeDatabase) {
-                collectionValues[legacyName] = ids.map(id => readCanonicalJson(path.join(directory, `${id}.json`)));
+            if (includeDatabase || (options.externalEditing && directory === 'lorebooks')) {
+                collectionValues[legacyName] = ids.map(id => directory === 'lorebooks'
+                    ? readEditableJson(path.join(directory, `${id}.json`), 'lorebook')
+                    : readCanonicalJson(path.join(directory, `${id}.json`)));
             }
         }
 
@@ -335,7 +412,7 @@ function createUserDataRepository(options = {}) {
         const sidebarCharacters = [];
         for (const characterId of characterIds) {
             const metadataPath = path.join(directories.characterDirectory(characterId), 'metadata.json');
-            const metadata = readCanonicalJson(metadataPath);
+            const metadata = readEditableJson(metadataPath, 'character');
             if (metadata.chaId && stableId(metadata.chaId, 'character') !== characterId) {
                 throw new Error('Canonical character directory does not match its stable ID');
             }
@@ -347,7 +424,7 @@ function createUserDataRepository(options = {}) {
             const chats = [];
             const chatSummaries = [];
             for (const chatId of chatIds) {
-                const chatMetadata = readCanonicalJson(chatMetadataPath(characterId, chatId));
+                const chatMetadata = readEditableJson(chatMetadataPath(characterId, chatId), 'chat');
                 if (chatMetadata.id && stableId(chatMetadata.id, 'chat') !== chatId) {
                     throw new Error('Canonical chat directory does not match its stable ID');
                 }
@@ -397,9 +474,12 @@ function createUserDataRepository(options = {}) {
             characters: sidebarCharacters,
             collections,
         };
-        const transaction = unchanged ? null : commitTransaction(dataRoot, [
-            { path: 'index/sidebar.json', data: jsonBytes(sidebar) },
-        ]);
+        for (const input of externalInputs) {
+            if (!fs.readFileSync(input.target).equals(input.bytes)) throw checksumMismatch(path.relative(dataRoot, input.target));
+        }
+        const operations = [...externalWrites, ...(options.externalOperations || [])];
+        if (!unchanged) operations.push({ path: 'index/sidebar.json', data: jsonBytes(sidebar) });
+        const transaction = operations.length ? commitTransaction(dataRoot, operations) : null;
         let database = null;
         if (includeDatabase) {
             const { schemaVersion: _settingsSchema, ...plainSettings } = settings;
@@ -559,6 +639,7 @@ function createUserDataRepository(options = {}) {
         const charactersRoot = directories.safePath('characters');
         const occupiedCharacters = new Set(fs.readdirSync(charactersRoot));
         occupiedCharacters.delete(current.directory);
+        occupiedCharacters.add(id);
         for (const entry of previous.characters) {
             if (entry.id === id) continue;
             occupiedCharacters.add(entry.id);
@@ -579,6 +660,7 @@ function createUserDataRepository(options = {}) {
         for (const chat of summary.chats) {
             const old = current.chats.find(entry => entry.id === chat.id) || { id: chat.id, directory: chat.id };
             occupiedChats.delete(old.directory);
+            occupiedChats.add(chat.id);
             const directory = allocateSegment(chat.name, occupiedChats);
             occupiedChats.add(directory);
             occupiedChats.add(chat.id);
@@ -720,21 +802,53 @@ function createUserDataRepository(options = {}) {
                 : incomingIds;
         }
 
+        const incomingCharacters = (Array.isArray(database.characters) ? database.characters : []).map(character => ({
+            raw: character,
+            id: stableId(character?.chaId || character?.id, 'character'),
+            chats: (Array.isArray(character?.chats) ? character.chats : []).map(chat => ({ raw: chat, id: stableId(chat?.id, 'chat') })),
+        }));
+        directories.refresh();
+        const previousMapping = directories.snapshot();
+        const newMappings = new Map();
+        if (options.newCharacterPackages === true && mode === 'sync' && importOptions.preserveCharacterLayout !== true) {
+            const occupied = new Set([
+                ...incomingCharacters.map(character => character.id),
+                ...previousMapping.characters.flatMap(entry => [entry.id, entry.directory]),
+                ...(fs.existsSync(path.join(dataRoot, 'characters')) ? fs.readdirSync(directories.safePath('characters')) : []),
+            ]);
+            const existing = new Set(previousIndex.characters.map(character => character.id));
+            for (const { raw, id, chats } of incomingCharacters) {
+                if (existing.has(id) || previousMapping.characters.some(entry => entry.id === id)
+                    || fs.existsSync(directories.safePath(directories.characterDirectory(id)))) continue;
+                const mapping = planDirectoryMapping({ ...raw, chaId: id, chats: chats.map(chat => ({ ...chat.raw, id: chat.id })) },
+                    [...occupied], chats.map(chat => chat.id));
+                delete mapping.active;
+                delete mapping.schemaVersion;
+                mapping.packageVersion = 1;
+                newMappings.set(id, mapping);
+                occupied.add(mapping.directory);
+                operations.push({ path: path.join('characters', mapping.directory, 'package.json'), data: jsonBytes(createCharacterPackageManifest(mapping)) });
+            }
+        }
+        const nextMapping = newMappings.size ? validateDirectoryMapping({ schemaVersion: 1,
+            characters: [...previousMapping.characters, ...newMappings.values()] }) : null;
         const characters = [];
-        for (const rawCharacter of Array.isArray(database.characters) ? database.characters : []) {
-            const characterId = stableId(rawCharacter?.chaId || rawCharacter?.id, 'character');
+        for (const { raw: rawCharacter, id: characterId, chats: incomingChats } of incomingCharacters) {
+            const mapping = newMappings.get(characterId);
+            const characterDirectory = mapping ? path.join('characters', mapping.directory) : directories.characterDirectory(characterId);
             const chats = [];
-            for (const rawChat of Array.isArray(rawCharacter?.chats) ? rawCharacter.chats : []) {
-                const chatId = stableId(rawChat?.id, 'chat');
+            for (const { raw: rawChat, id: chatId } of incomingChats) {
+                const chatDirectory = mapping ? path.join(characterDirectory, 'chats', mapping.chats.find(chat => chat.id === chatId).directory)
+                    : directories.chatDirectory(characterId, chatId);
                 const metadata = without(rawChat, new Set(['message']));
                 operations.push({
-                    path: chatMetadataPath(characterId, chatId),
+                    path: path.join(chatDirectory, 'metadata.json'),
                     data: jsonBytes(metadata),
                 });
                 const messages = Array.isArray(rawChat?.message) ? rawChat.message : [];
                 operations.push({
-                    path: messagesPath(characterId, chatId),
-                    data: Buffer.from(messages.map(message => JSON.stringify(message)).join('\n') + (messages.length ? '\n' : ''), 'utf8'),
+                    path: path.join(chatDirectory, 'messages.jsonl'),
+                    chunks: () => messageChunks(messages),
                 });
                 chats.push({
                     id: chatId,
@@ -745,7 +859,7 @@ function createUserDataRepository(options = {}) {
             }
             const metadata = without(rawCharacter, new Set(['chats']));
             operations.push({
-                path: path.join(directories.characterDirectory(characterId), 'metadata.json'),
+                path: path.join(characterDirectory, 'metadata.json'),
                 data: jsonBytes({ ...metadata, chaId: characterId }),
             });
             const previousCharacter = previousIndex.characters.find(item => item.id === characterId);
@@ -779,7 +893,10 @@ function createUserDataRepository(options = {}) {
                 }
             }
         }
+        // Publish identity only after every new package file has been staged.
+        if (nextMapping) operations.push({ path: DIRECTORY_INDEX, data: jsonBytes(nextMapping) });
         const transaction = commitTransaction(dataRoot, operations);
+        if (nextMapping) directories.invalidate();
 
         if (mode !== 'merge') {
             for (const [legacyName, directory] of COLLECTIONS) {
@@ -805,7 +922,7 @@ function createUserDataRepository(options = {}) {
                 }
             }
         }
-        maintainMappedDirectories(characters.map(character => character.id));
+        maintainMappedDirectories(characters.map(character => character.id).filter(id => !newMappings.has(id)));
         return { mode, characters: characters.length, files: operations.length, transaction, deletedAssetCandidates: [...deletedAssetCandidates] };
     }
 
@@ -945,7 +1062,7 @@ function createUserDataRepository(options = {}) {
         for (const { character, chat, id, index } of selected.values()) {
             operations.push(
                 { path: chatMetadataPath(character.id, id), data: jsonBytes(without(chat, new Set(['message']))) },
-                { path: messagesPath(character.id, id), data: Buffer.from(chat.message.map(message => JSON.stringify(message)).join('\n') + (chat.message.length ? '\n' : ''), 'utf8') },
+                { path: messagesPath(character.id, id), chunks: () => messageChunks(chat.message) },
             );
             sidebar.characters[character.index].chats[index] = {
                 id, name: chat.name || '', lastDate: chat.lastDate ?? 0, legacyMessagePresent: true,
@@ -1013,7 +1130,13 @@ function createUserDataRepository(options = {}) {
     }
 
     if (collectCanonicalSourcePaths().length > 0) {
-        reconcileCanonicalProjection({ includeDatabase: false, preserveSidebarTimestamps: true });
+        try {
+            reconcileCanonicalProjection({ includeDatabase: false, preserveSidebarTimestamps: true, externalEditing: options.liveExternalEditing === true });
+        } catch (error) {
+            // Keep the server available to report/retry an unfinished editor
+            // save. Never bless its checksum or overwrite the editor's bytes.
+            if (!options.liveExternalEditing || error?.code !== 'LIVE_FILES_INVALID') throw error;
+        }
     }
 
     return {

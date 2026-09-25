@@ -22,7 +22,12 @@ export function chunkWikiDocument(document: {
     const passages = document.content.matchAll(/[^\r\n]+(?:\r?\n(?!\r?\n|#{1,6}\s)[^\r\n]+)*/g)
     for (const passage of passages) {
         const value = passage[0]
-        if (/^#{1,6}\s/.test(value)) heading = value.split(/\r?\n/)[0]
+        if (/^#{1,6}\s/.test(value)) {
+            heading = value.split(/\r?\n/)[0]
+            // Keep headings as context for evidence, not competing evidence of their own.
+            // A heading and body without a blank separator retain their cached text/range.
+            if (value === heading) continue
+        }
         const prefix = [document.title.slice(0, 200), heading.slice(0, 200)].filter(Boolean).join('\n') + '\n\n'
         const limit = 1000 - prefix.length
         for (let offset = 0; offset < value.length;) {

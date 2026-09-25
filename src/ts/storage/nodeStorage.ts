@@ -20,21 +20,22 @@ import { uploadChatContent } from './chatContentUpload'
 const CHAT_CONTENT_TRANSFER_PAGE_SIZE = 200
 const CHAT_CONTENT_TRANSFER_CONCURRENCY = 4
 
-// ── User-gesture recency for the write lock ─────────────────────────────────
+// ── User intent for the write lock ─────────────────────────────────────────
 // The server moves the single-writer lock only on writes that follow a real
-// user gesture (x-user-active header). The app also writes automatically —
-// boot housekeeping, the flush-on-hide keepalive — and those must never move
-// the lock: a phone tab going to background fires a flush, and without this
-// distinction it silently stole the lock from the device actually in use.
-const USER_GESTURE_WINDOW_MS = 15_000
-let lastUserGestureAt = 0
+// user gesture in this page lifetime (x-user-active header). Untouched pages
+// also write automatically during boot or backgrounding; those writes must
+// not claim ownership. A page that has been used still has to pass the
+// server's freshness check before it can claim the lock.
+// A slow generation or authentication must not expire the action that caused
+// a save. This resets on reload; server freshness still rejects stale pages.
+let hasUserGesture = false
 if (typeof window !== 'undefined') {
-    const markGesture = () => { lastUserGestureAt = Date.now() }
+    const markGesture = () => { hasUserGesture = true }
     window.addEventListener('pointerdown', markGesture, { capture: true, passive: true })
     window.addEventListener('keydown', markGesture, { capture: true, passive: true })
 }
 function isUserActive(): boolean {
-    return Date.now() - lastUserGestureAt < USER_GESTURE_WINDOW_MS
+    return hasUserGesture
 }
 
 // Custom error class for database conflict detection
@@ -444,6 +445,22 @@ export class NodeStorage{
         } catch {
             return 'unknown'
         }
+    }
+
+    async syncLiveFiles(revision?: string): Promise<import('./liveFileSync').LiveFileSyncResult> {
+        const response = await this.authFetch('/api/live-files/sync', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ revision }),
+        })
+        const data = await response.json()
+        if (!response.ok) {
+            if (data?.code === 'LIVE_FILES_INACTIVE') {
+                window.dispatchEvent(new CustomEvent('risu-session-deactivated'))
+            }
+            throw Object.assign(new Error(data?.error || `Live file sync failed (${response.status})`), { code: data?.code })
+        }
+        return data
     }
 
     private async externalEditRequest(path: string, method: 'GET' | 'POST'): Promise<ExternalEditModeStatus> {

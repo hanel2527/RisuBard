@@ -1,0 +1,53 @@
+name: Storage change check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/node/**'
+      - 'src/ts/storage/**'
+      - 'src/ts/globalApi.svelte.ts'
+      - 'package.json'
+      - 'pnpm-*.yaml'
+      - 'patches/**'
+      - 'vitest*'
+      - '.github/workflows/storage-change-check.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'server/node/**'
+      - 'src/ts/storage/**'
+      - 'src/ts/globalApi.svelte.ts'
+      - 'package.json'
+      - 'pnpm-*.yaml'
+      - 'patches/**'
+      - 'vitest*'
+      - '.github/workflows/storage-change-check.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: storage-change-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  storage:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.34.1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Check storage integration and incremental reads
+        run: pnpm verify:storage-change

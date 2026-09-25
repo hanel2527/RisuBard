@@ -19,6 +19,62 @@ vi.mock('./chatContentPage', () => ({ assembleChatContentPages: vi.fn() }))
 
 import { NodeStorage } from './nodeStorage'
 
+describe('NodeStorage live file synchronization', () => {
+    it('sends the revision through authenticated transport without advancing the save etag', async () => {
+        const storage = new NodeStorage()
+        storage.setDbEtag('acknowledged')
+        const result = { revision: 'new', etag: 'remote', snapshot: { characters: [], loreBook: [] } }
+        const authFetch = vi.fn(async () => new Response(JSON.stringify(result), { status: 200 }))
+        ;(storage as any).authFetch = authFetch
+        expect(await storage.syncLiveFiles('old')).toEqual(result)
+        expect(authFetch).toHaveBeenCalledWith('/api/live-files/sync', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"revision":"old"}',
+        })
+        expect(storage._lastDbEtag).toBe('acknowledged')
+    })
+
+    it('rejects a failed sync instead of accepting a partial response', async () => {
+        const storage = new NodeStorage()
+        ;(storage as any).authFetch = vi.fn(async () => new Response('{"error":"writer busy"}', { status: 423 }))
+        await expect(storage.syncLiveFiles()).rejects.toThrow('writer busy')
+    })
+
+    it('announces inactive sync while preserving the error for send preflight', async () => {
+        const storage = new NodeStorage()
+        const deactivated = vi.fn()
+        window.addEventListener('risu-session-deactivated', deactivated)
+        ;(storage as any).authFetch = vi.fn(async () => new Response(
+            '{"code":"LIVE_FILES_INACTIVE","error":"writer inactive"}', { status: 409 },
+        ))
+        try {
+            await expect(storage.syncLiveFiles()).rejects.toMatchObject({ code: 'LIVE_FILES_INACTIVE' })
+            expect(deactivated).toHaveBeenCalledOnce()
+        } finally {
+            window.removeEventListener('risu-session-deactivated', deactivated)
+        }
+    })
+})
+
+it('keeps user intent when a save follows a long response or slow authentication', async () => {
+    vi.useFakeTimers()
+    const storage = new NodeStorage()
+    ;(storage as any).checkAuth = async () => {}
+    storage.createAuth = async () => 'test-token'
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('{}'))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+        await (storage as any).authFetch('/before-input')
+        expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).has('x-user-active')).toBe(false)
+        window.dispatchEvent(new Event('pointerdown'))
+        vi.advanceTimersByTime(60_000)
+        await (storage as any).authFetch('/after-long-response')
+        expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('x-user-active')).toBe('1')
+    } finally {
+        vi.unstubAllGlobals()
+        vi.useRealTimers()
+    }
+})
+
 describe('NodeStorage bulk asset writes', () => {
     it('sends up to 200 small assets per request', async () => {
         const storage = new NodeStorage()

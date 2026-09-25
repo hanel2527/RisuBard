@@ -15,6 +15,16 @@ vi.mock('../globalApi.svelte', () => ({ forageStorage: { realStorage: null } }))
 const { diffArrayWithIdGuard, RisuSavePatcher } = await import('./risuSave')
 const { compare } = await import('fast-json-patch')
 
+test('patch baseline snapshots survive subsequent patch advancement and cannot mutate the patcher', async () => {
+    const patcher = new RisuSavePatcher()
+    await patcher.init({ characters: [], loreBook: ['old'] })
+    const baseline = patcher.snapshot()
+    baseline.loreBook.push('local')
+    expect(patcher.snapshot().loreBook).toEqual(['old'])
+    await patcher.init({ characters: [], loreBook: ['external'] })
+    expect(baseline.loreBook).toEqual(['old', 'local'])
+})
+
 // ──────────────────────────────────────────────────────────────────────────
 // diffArrayWithIdGuard — direct tests on the structural-vs-elementwise pivot.
 //

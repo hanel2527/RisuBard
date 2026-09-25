@@ -788,7 +788,8 @@ async function processInlayQueue() {
 
                 switch (type) {
                     case 'image':
-                        if (DBState.db.hideAllImages) { el.remove(); break }
+                        // Keep the slot so incremental chat rendering can retain adjacent nodes.
+                        if (DBState.db.hideAllImages) { el.replaceWith(document.createComment('hidden inlay')); break }
                         const img = document.createElement('img')
                         img.src = url
                         img.style.animation = 'risu-fade-in 0.3s ease-out'
@@ -856,9 +857,12 @@ async function processInlayQueue() {
     isResolvingPlaceholders = false
 }
 
+const observedInlayPlaceholders = new WeakSet<HTMLElement>()
+
 export function resolveInlayPlaceholders(root: HTMLElement) {
     if (!root) return
-    const placeholders = Array.from(root.querySelectorAll('[data-inlay-id]')) as HTMLElement[]
+    const placeholders = Array.from(root.querySelectorAll<HTMLElement>('[data-inlay-id]'))
+        .filter(element => !observedInlayPlaceholders.has(element))
     if (placeholders.length === 0) return
 
     const observer = new IntersectionObserver((entries) => {
@@ -876,7 +880,10 @@ export function resolveInlayPlaceholders(root: HTMLElement) {
         })
     }, { rootMargin: '200px' }) // Start loading a bit before they scroll into view
 
-    placeholders.forEach(el => observer.observe(el))
+    placeholders.forEach(el => {
+        observedInlayPlaceholders.add(el)
+        observer.observe(el)
+    })
 }
 
 export interface simpleCharacterArgument{

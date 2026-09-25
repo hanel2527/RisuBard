@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { WikiEmbeddingIndex, buildWikiEmbeddingQueries, mergeWikiSemanticMatches } from './wikiEmbeddingIndex'
+import { chunkWikiDocument } from './wikiEmbeddingChunks'
 
 const chunk = (documentId: string, text: string, contentHash = 'hash') => ({
     documentId, text, contentHash, start: 0, end: text.length,
@@ -12,6 +13,85 @@ const cache = () => {
 }
 
 describe('optional wiki embedding index', () => {
+    it('reuses pre-existing body embeddings after heading-only chunks are removed', async () => {
+        const content = '## 기록\n\n### 약속\n\n역에 가겠다는 약속은 하지 않았다.'
+        const storage = cache()
+        const bodyText = '기록\n### 약속\n\n역에 가겠다는 약속은 하지 않았다.'
+        await storage.write(JSON.stringify(['wiki-vector-v1', 'cached', 'record', bodyText]), [1, 0])
+        const embed = vi.fn(async (texts: string[]) => texts.map(() => [1, 0]))
+        const index = new WikiEmbeddingIndex({ identity: 'cached', embed }, storage)
+        await index.refresh(page(chunkWikiDocument({ id: 'record', title: '기록', contentHash: 'hash', content })))
+        expect((await index.search('약속은?', '')).evidenceHints.record).toBe(bodyText)
+        expect(embed.mock.calls).toEqual([[['약속은?'], 'query', expect.any(AbortSignal)]])
+    })
+
+    it('selects the strongest passage per document across pages with stable ties and the original cap', async () => {
+        const chunks = Array.from({ length: 15 }, (_, i) => `doc-${String(i).padStart(2, '0')}`)
+            .reverse().flatMap(documentId => [
+                { ...chunk(documentId, 'late strongest'), start: 30, end: 44 },
+                { ...chunk(documentId, 'early strongest'), start: 10, end: 25 },
+                { ...chunk(documentId, 'weaker'), start: 0, end: 6 },
+            ])
+        chunks.push(chunk('unrelated', 'negative'))
+        const index = new WikiEmbeddingIndex({ identity: 'scaled', embed: async (texts, purpose) => texts.map(text =>
+            purpose === 'query' ? text.includes('Current request:') ? [0, 5] : [20, 0]
+                : text === 'negative' ? [-5, -5] : text === 'weaker' ? [3, 4] : [8, 6]),
+        }, cache())
+        await index.refresh(async offset => ({ revision: 'r1', chunks: chunks.slice(offset, offset + 16),
+            nextOffset: offset + 16 < chunks.length ? offset + 16 : null,
+        }))
+        for (const recent of ['', 'recent scene']) {
+            const result = await index.search('question', recent)
+            expect(result.matches.map(match => match.documentId)).toEqual([
+                'doc-00', 'doc-01', 'doc-02', 'doc-03', 'doc-04', 'doc-05',
+                'doc-06', 'doc-07', 'doc-08', 'doc-09', 'doc-10', 'doc-11',
+            ])
+            for (const match of result.matches) {
+                expect(match.start).toBe(10)
+                expect(match.score).toBeCloseTo(recent ? 0.71 : 0.8, 12)
+            }
+            expect(result.evidenceQuery).toBe('early strongest\nearly strongest\nearly strongest')
+            expect(Object.values(result.evidenceHints)).toEqual(Array(12).fill('early strongest'))
+        }
+    })
+
+    it('keeps both the absolute cutoff and the strongest-document relative cutoff', async () => {
+        const vector = (score: number) => [score, Math.sqrt(1 - score ** 2)]
+        const values: Record<string, number[]> = {
+            strongest: vector(0.9), close: vector(0.8), distant: vector(0.7),
+            aboveFloor: vector(0.41), belowFloor: vector(0.39),
+        }
+        const index = new WikiEmbeddingIndex({ identity: 'cutoff', embed: async (texts, purpose) =>
+            texts.map(text => purpose === 'query' ? [1, 0] : values[text]),
+        }, cache())
+        await index.refresh(page(['strongest', 'close', 'distant'].map(id => chunk(id, id))))
+        expect((await index.search('query', '')).matches.map(match => match.documentId))
+            .toEqual(['strongest', 'close'])
+        await index.refresh(page(['aboveFloor', 'belowFloor'].map(id => chunk(id, id))))
+        expect((await index.search('query', '')).matches.map(match => match.documentId))
+            .toEqual(['aboveFloor'])
+        await index.refresh(page([chunk('belowFloor', 'belowFloor')]))
+        expect((await index.search('query', '')).matches).toEqual([])
+    })
+
+    it('preserves source offsets and winning passage order when distinct IDs collate equally', async () => {
+        const index = new WikiEmbeddingIndex({ identity: 'unicode', embed: async (texts, purpose) =>
+            texts.map(text => purpose === 'query' || text !== 'weaker' ? [1, 0] : [4, 3]),
+        }, cache())
+        await index.refresh(page([
+            { ...chunk('é', 'later'), start: 20, end: 25 },
+            { ...chunk('e\u0301', 'earlier'), start: 0, end: 7 },
+        ]))
+        expect((await index.search('query', '')).matches.map(match => match.documentId))
+            .toEqual(['e\u0301', 'é'])
+        await index.refresh(page([
+            { ...chunk('é', 'weaker'), start: 0, end: 6 },
+            { ...chunk('e\u0301', 'first winner'), start: 10, end: 22 },
+            { ...chunk('é', 'second winner'), start: 10, end: 23 },
+        ]))
+        expect((await index.search('query', '')).evidenceQuery).toBe('first winner\nsecond winner')
+    })
+
     it('finds a paraphrased event without a shared keyword and returns its verified range', async () => {
         const embed = vi.fn(async (texts: string[], purpose: string) => texts.map(() => purpose === 'query' ? [0.98, 0.02] : [1, 0]))
         const index = new WikiEmbeddingIndex({ identity: 'local', embed }, cache())
@@ -100,5 +180,19 @@ describe('optional wiki embedding index', () => {
         const semantic = { documentId: 'a', score: 0.8, contentHash: 'h', start: 90, end: 150 }
         expect(mergeWikiSemanticMatches([semantic], [{ documentId: 'a', score: 1 }, { documentId: 'b', score: 0.5 }]))
             .toEqual([{ ...semantic, score: 1 }, { documentId: 'b', score: 0.5 }])
+    })
+
+    it('does not let unranked cosine scores override the reranker ordering', () => {
+        const semantic = [
+            { documentId: 'omitted', score: 0.99 },
+            { documentId: 'second', score: 0.97, contentHash: 'h', start: 10, end: 30 },
+        ]
+        const merged = mergeWikiSemanticMatches(semantic, [
+            { documentId: 'first', score: 1 }, { documentId: 'second', score: 0.5 },
+        ])
+        expect(merged.map(item => item.documentId)).toEqual(['first', 'second', 'omitted'])
+        expect(merged[1]).toMatchObject({ contentHash: 'h', start: 10, end: 30 })
+        expect(merged[1].score).toBeGreaterThan(merged[2].score)
+        expect(mergeWikiSemanticMatches(semantic, [])).toEqual(semantic)
     })
 })
