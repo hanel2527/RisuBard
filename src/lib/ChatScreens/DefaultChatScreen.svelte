@@ -144,7 +144,9 @@ import { isMobile } from 'src/ts/platform'
     let paginationKey = $state('')
     let paginationMessageCount = $state(0)
     let paginationPageSize = $state(DEFAULT_CHAT_PAGE_SIZE)
-    let doingChatInputTranslate = false
+    let preparingInput = $state(false)
+    let sendingChat = $state(false)
+    let sendingChatKey = $state<string | null>(null)
     let toggleStickers:boolean = $state(false)
     let fileInput:string[] = $state([])
     let showNewMessageButton = $state(false)
@@ -588,7 +590,7 @@ import { isMobile } from 'src/ts/platform'
 
     async function sendMain(continueResponse:boolean) {
         let selectedChar = $selectedCharID
-        if($doingChat){
+        if($doingChat || preparingInput || sendingChat || currentChatGenerating){
             return
         }
         if (wikiRebootBlocksGeneration) {
@@ -596,73 +598,81 @@ import { isMobile } from 'src/ts/platform'
             return
         }
 
-        const activeChat = await ensureActiveChatReady(selectedChar)
-        if(!activeChat) return
+        preparingInput = true
+        try {
+            const activeChat = await ensureActiveChatReady(selectedChar)
+            if(!activeChat) return
 
-        let cha = activeChat.message
+            let cha = activeChat.message
 
-        if(messageInput.startsWith('/')){
-            const commandProcessed = await processMultiCommand(messageInput)
-            if(commandProcessed !== false){
-                messageInput = ''
-                messageInputTranslate = ''
-                removeChatDraft(draftChaId, draftChatId)
-                return
+            if(messageInput.startsWith('/')){
+                const commandProcessed = await processMultiCommand(messageInput)
+                if(commandProcessed !== false){
+                    messageInput = ''
+                    messageInputTranslate = ''
+                    removeChatDraft(draftChaId, draftChatId)
+                    return
+                }
             }
-        }
 
-        if(fileInput.length > 0){
-            for(const file of fileInput){
-                messageInput += `{{inlayed::${file}}}`
+            if(fileInput.length > 0){
+                for(const file of fileInput){
+                    messageInput += `{{inlayed::${file}}}`
+                }
+                fileInput = []
             }
-            fileInput = []
-        }
 
-        if(messageInput === ''){
-            if(cha.length === 0 || cha[cha.length - 1].role !== 'user'){
-                if(DBState.db.useSayNothing){
+            if(messageInput === ''){
+                if(cha.length === 0 || cha[cha.length - 1].role !== 'user'){
+                    if(DBState.db.useSayNothing){
+                        cha.push({
+                            role: 'user',
+                            data: '*says nothing*',
+                            name: null
+                        })
+                    }
+                }
+            }
+            else{
+                const char = DBState.db.characters[selectedChar]
+                if(char.type === 'character'){
+                    let triggerResult = await runTrigger(char,'input', {chat: activeChat})
+                    if(triggerResult){
+                        cha = triggerResult.chat.message
+                    }
+
                     cha.push({
                         role: 'user',
-                        data: '*says nothing*',
+                        data: await processScript(char,messageInput,'editinput'),
+                        time: Date.now(),
+                        name: null
+                    })
+                }
+                else{
+                    cha.push({
+                        role: 'user',
+                        data: messageInput,
+                        time: Date.now(),
                         name: null
                     })
                 }
             }
+            messageInput = ''
+            messageInputTranslate = ''
+            removeChatDraft(draftChaId, draftChatId)
+            DBState.db.characters[selectedChar].chats[DBState.db.characters[selectedChar].chatPage].message = cha
+            chatPage = getLatestChatPage(cha.length, chatPageSize)
+
+            await sleep(10)
+            updateInputSizeAll()
+            preparingInput = false
+            await sendChatMain(continueResponse)
+        } catch (error) {
+            console.error(error)
+            alertError(error)
+        } finally {
+            preparingInput = false
         }
-        else{
-            const char = DBState.db.characters[selectedChar]
-            if(char.type === 'character'){
-                let triggerResult = await runTrigger(char,'input', {chat: activeChat})
-                if(triggerResult){
-                    cha = triggerResult.chat.message
-                }
-
-                cha.push({
-                    role: 'user',
-                    data: await processScript(char,messageInput,'editinput'),
-                    time: Date.now(),
-                    name: null
-                })
-            }
-            else{
-                cha.push({
-                    role: 'user',
-                    data: messageInput,
-                    time: Date.now(),
-                    name: null
-                })
-            }
-        }
-        messageInput = ''
-        messageInputTranslate = ''
-        removeChatDraft(draftChaId, draftChatId)
-        DBState.db.characters[selectedChar].chats[DBState.db.characters[selectedChar].chatPage].message = cha
-        chatPage = getLatestChatPage(cha.length, chatPageSize)
-
-        await sleep(10)
-        updateInputSizeAll()
-        await sendChatMain(continueResponse)
-
     }
 
     // Fullscreen compose mode: the same messageInput, just shown in a full-screen
@@ -712,7 +722,7 @@ import { isMobile } from 'src/ts/platform'
     }
 
     async function reroll() {
-        if($doingChat) return
+        if($doingChat || preparingInput || sendingChat || currentChatGenerating) return
         if (wikiRebootBlocksGeneration) {
             alertError(language.risuBardWikiRebootChatLocked)
             return
@@ -787,7 +797,7 @@ import { isMobile } from 'src/ts/platform'
     }
 
     async function unReroll() {
-        if($doingChat) return
+        if($doingChat || preparingInput || sendingChat || currentChatGenerating) return
         const lastMsg = getLastCharMsg()
         if (!lastMsg || !lastMsg.swipes || lastMsg.swipeId === undefined) return
 
@@ -861,8 +871,7 @@ import { isMobile } from 'src/ts/platform'
     let currentChatGenerating = $derived($generationStates.has(currentChatGenKey()))
 
     async function sendChatMain(continued:boolean = false) {
-
-        messageInput = ''
+        if (sendingChat) return false
         if (wikiRebootBlocksGeneration) return false
         const genKey = currentChatGenKey()
         // Mirror sendChat's per-chat guard BEFORE any side effects: a blocked
@@ -872,6 +881,9 @@ import { isMobile } from 'src/ts/platform'
         if ($generationStates.has(genKey)) {
             return false
         }
+        messageInput = ''
+        sendingChat = true
+        sendingChatKey = genKey
         const abortController = new AbortController()
         registerAbort(genKey, abortController)
         let generated = false
@@ -883,11 +895,13 @@ import { isMobile } from 'src/ts/platform'
         } catch (error) {
             console.error(error)
             alertError(error)
+        } finally {
+            sendingChat = false
+            sendingChatKey = null
+            endGeneration(genKey)
+            // This client's send concluded; do not resume it on the next boot.
+            clearPendingSend(genKey)
         }
-        endGeneration(genKey)
-        // Send concluded on THIS client (success, failure or abort alike) —
-        // drop the resumable-send tombstone so no later boot re-runs it.
-        clearPendingSend(genKey)
         if(DBState.db.playMessage){
             playNotificationSound(DBState.db.messageSound, DBState.db.messageSoundVolume)
         }
@@ -1508,12 +1522,25 @@ import { isMobile } from 'src/ts/platform'
                     <Maximize2 size={18} />
                 </button>
 
-                {#if currentChatGenerating || doingChatInputTranslate}
+                {#if currentChatGenerating || (sendingChat && sendingChatKey === currentChatGenKey())}
                     <button
-                            aria-labelledby="cancel"
+                            aria-label={language.cancel}
+                            title={currentChatGenerating ? language.cancel : language.chatSendPreparing}
                             class="order-2 shrink-0 flex justify-center items-center w-9 h-9 rounded-full text-textcolor hover:bg-primary/20 transition-colors" onclick={abortChat}
                     >
                         <div class="loadmove chat-process-stage-{$chatProcessStage}"></div>
+                        <span class="sr-only" role="status">{currentChatGenerating ? language.loading : language.chatSendPreparing}</span>
+                    </button>
+                {:else if preparingInput || sendingChat || $doingChat}
+                    <button
+                            disabled
+                            aria-busy="true"
+                            aria-label={preparingInput ? language.chatSendPreparing : language.chatSendBusy}
+                            title={preparingInput ? language.chatSendPreparing : language.chatSendBusy}
+                            class="order-2 shrink-0 flex justify-center items-center w-9 h-9 rounded-full text-textcolor"
+                    >
+                        <div class="loadmove chat-process-stage-0"></div>
+                        <span class="sr-only" role="status">{preparingInput ? language.chatSendPreparing : language.chatSendBusy}</span>
                     </button>
                 {:else}
                     <button

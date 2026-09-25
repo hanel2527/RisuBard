@@ -32,6 +32,7 @@ import { resolveChatModelBinding, resolvePresetMaxOutputTokens } from "./request
 import { getModuleAssets, getModuleLorebooksWithSources, getModuleToggles } from "./modules";
 import { forageStorage, readImage, refreshLiveFiles } from "../globalApi.svelte";
 import { chatGenKey, chatProcessStage, endGeneration, isChatGenerating, setGenerationStage, startGeneration } from "./generationState";
+import { waitForSendSync } from './sendPreparation';
 import { clearPendingSend, registerPendingSend } from "./request/pendingSends";
 import {
     buildBoundedNarrativeInquiryFallback,
@@ -1141,16 +1142,28 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     preview?:boolean
     previewPrompt?:boolean
 } = {}):Promise<boolean> {
-
+    const characterBeforeSync = DBState.db.characters[get(selectedCharID)]
+    const chatBeforeSync = characterBeforeSync?.chats[characterBeforeSync.chatPage]
+    const characterIdBeforeSync = characterBeforeSync?.chaId
+    const chatIdBeforeSync = chatBeforeSync?.id
     try {
-        await refreshLiveFiles()
+        await waitForSendSync(refreshLiveFiles, {
+            signal: arg.signal,
+            timeoutMessage: language.chatSendSyncTimeout,
+        })
     } catch (error) {
+        if (arg.signal?.aborted) return false
         notifyError(`외부 파일을 확인하지 못해 전송하지 않았습니다: ${error instanceof Error ? error.message : String(error)}`)
         return false
     }
 
     const selected = DBState.db.characters[get(selectedCharID)]
     const selectedConversation = selected?.chats[selected.chatPage]
+    if (selected?.chaId !== characterIdBeforeSync
+        || (chatIdBeforeSync ? selectedConversation?.id !== chatIdBeforeSync : selectedConversation !== chatBeforeSync)) {
+        notifyError(language.chatSendSelectionChanged)
+        return false
+    }
     if (selectedConversation?.risuBardWikiReboot) return false
 
     chatProcessStage.set(0)

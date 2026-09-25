@@ -2719,6 +2719,13 @@ export const languageKorean = {
   dynamicOutputPrompt: "동적 출력 프롬프트",
   settingsCloseButtonSize: "설정 닫기 버튼 크기",
   translating: "번역 중...",
+  chatSendPreparing: "전송 준비 중...",
+  chatSendBusy: "진행 중인 응답이 끝나기를 기다리는 중",
+  chatSendSelectionChanged: "전송 준비 중 선택한 대화가 바뀌어 전송을 중단했습니다. 원래 대화에서 다시 전송해 주세요.",
+  chatSendSyncTimeout: "파일 동기화 대기가 30초를 넘었습니다. 서버 연결을 확인한 뒤 다시 전송해 주세요.",
+  messageBodySize: "본문 크기",
+  messageStoredSize: "메시지 전체 크기",
+  messageSizeHelp: "UTF-8 바이트 기준입니다. 전체 크기에는 JSON 형식, 프롬프트, 번역 기록과 복구 정보가 포함되며 모델에 전송한 토큰 수와는 다릅니다.",
   stackTraceTranslationFailed:
     "스택 트레이스 번역에 실패했습니다. 아래에 원래 난독화된 스택 트레이스를 표시합니다.",
   translate: "코드 주소 번역하기",
