@@ -47,8 +47,11 @@ it.each(['risu-session-deactivated', 'focus', 'broadcast'])('%s cannot discard l
 
 it('send preflight rejects even when polling is disabled after a handoff', async () => {
     const begin = source.indexOf('    const refreshThisRuntime =')
-    const finish = source.indexOf('    let pollPending', begin)
-    const refreshWiring = ts.transpile(source.slice(begin, finish), { target: ts.ScriptTarget.ES2022 })
+    const assignment = '    refreshLiveFilesImpl = refreshWithSessionCheck'
+    const finish = source.indexOf(assignment, begin)
+    expect(begin).toBeGreaterThanOrEqual(0)
+    expect(finish).toBeGreaterThan(begin)
+    const refreshWiring = ts.transpile(source.slice(begin, finish + assignment.length), { target: ts.ScriptTarget.ES2022 })
     const run = new Function(`
         let gotChannel = true, refreshLiveFilesImpl = null, saveInFlight = null;
         const language = {sessionSavePausedTitle: 'Saving paused'};
