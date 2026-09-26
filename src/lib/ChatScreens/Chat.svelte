@@ -123,6 +123,14 @@
     let translated = $state(false)
     let partialEditEnabled = $state(true)
 
+    export function updateRerollControls(state: Pick<Props, 'rerollIcon' | 'onNextSwipe' | 'onDeleteSwipe' | 'currentPage' | 'totalPages'>) {
+        rerollIcon = state.rerollIcon ?? false
+        onNextSwipe = state.onNextSwipe ?? (() => {})
+        onDeleteSwipe = state.onDeleteSwipe ?? (() => {})
+        currentPage = state.currentPage ?? 1
+        totalPages = state.totalPages ?? 1
+    }
+
     export function updateStreamingDisplay(state: {
         isOptimizedStreamingMessage: boolean
         streamingOptimizationMode: StreamingDisplayOptimizationMode
