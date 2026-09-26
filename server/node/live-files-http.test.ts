@@ -63,14 +63,67 @@ test.each(['legacy', 'v3'])('running server adopts editor saves, chat lore delet
         const unchanged = await sync(initial.revision)
         expect(unchanged.error).toBeUndefined()
         expect(unchanged.snapshot).toBeUndefined()
+        const monitoringUrl = `${base}/api/live-files/monitoring`
+        const noAuth = await fetch(monitoringUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: false }) })
+        expect(noAuth.ok).toBe(false)
+        const malformed = await fetch(monitoringUrl, { method: 'POST', headers, body: JSON.stringify({ enabled: 'false' }) })
+        expect(malformed.status).toBe(400)
+        const disabled = await fetch(monitoringUrl, { method: 'POST', headers, body: JSON.stringify({ enabled: false }) })
+        expect(disabled.ok, await disabled.clone().text()).toBe(true)
+        expect((await disabled.json()).enabled).toBe(false)
+        expect((await (await fetch(monitoringUrl, { headers })).json()).enabled).toBe(false)
+        const noSync = await sync(initial.revision)
+        expect(noSync.enabled).toBe(false)
+        expect(noSync.snapshot).toBeUndefined()
+        const bulk = await fetch(`${base}/api/assets/bulk-write`, { method: 'POST', headers, body: JSON.stringify([{ key: 'assets/disabled-test.png', value: Buffer.from('asset while disabled').toString('base64') }]) })
+        expect(bulk.ok, await bulk.clone().text()).toBe(true)
+        const asset = await fetch(`${base}/api/read`, { headers: { ...headers, 'file-path': Buffer.from('assets/disabled-test.png').toString('hex') } })
+        expect(await asset.text()).toBe('asset while disabled')
         const saved = await fetch(`${base}/api/chat-content/one/0`, {
             method: 'POST', headers: { ...headers, 'x-chat-id': 'chat' },
             body: JSON.stringify({ id: 'chat', name: 'Chat', localLore: database.characters[0].chats[0].localLore, message: [{ role: 'user', data: 'Acknowledged pending message' }] }),
         })
         expect(saved.ok, await saved.clone().text()).toBe(true)
+        const session = await fetch(`${base}/api/session`, { method: 'POST', headers })
+        const cookie = session.headers.get('set-cookie')!.split(';')[0]
+        const flushed = await fetch(`${base}/api/db/flush`, { method: 'POST', headers: { ...headers, cookie } })
+        expect(flushed.ok, await flushed.clone().text()).toBe(true)
+        expect(fs.readFileSync(path.join(dataRoot, chatPath, 'messages.jsonl'), 'utf8')).toContain('Acknowledged pending message')
+        const enabled = await fetch(monitoringUrl, { method: 'POST', headers, body: JSON.stringify({ enabled: true }) })
+        expect(enabled.ok, await enabled.clone().text()).toBe(true)
+        expect((await fetch(`${base}/api/live-files/events`)).status).toBe(401)
+        const eventAbort = new AbortController()
+        const events = await fetch(`${base}/api/live-files/events`, { headers: { cookie }, signal: eventAbort.signal })
+        expect(events.headers.get('content-type')).toContain('text/event-stream')
+        const reader = events.body!.getReader()
+        let eventBuffer = ''
+        const readEvent = async () => {
+            for (;;) {
+                const boundary = eventBuffer.indexOf('\n\n')
+                if (boundary >= 0) {
+                    const frame = eventBuffer.slice(0, boundary)
+                    eventBuffer = eventBuffer.slice(boundary + 2)
+                    const data = frame.split('\n').find(line => line.startsWith('data: '))
+                    if (data) return JSON.parse(data.slice(6))
+                    continue
+                }
+                const chunk = await reader.read()
+                if (chunk.done) throw new Error('Event stream ended before notification')
+                eventBuffer += new TextDecoder().decode(chunk.value)
+            }
+        }
+        expect(await readEvent()).toMatchObject({ reason: 'ready', enabled: true })
         const metadata = path.join(dataRoot, characterPath, 'metadata.json')
         const value = JSON.parse(fs.readFileSync(metadata, 'utf8')); value.desc = 'Edited'; value.globalLore = []
-        fs.writeFileSync(metadata, JSON.stringify(value))
+        const eventTimeout = setTimeout(() => eventAbort.abort(), 5000)
+        try {
+            fs.writeFileSync(metadata, JSON.stringify(value))
+            expect(await readEvent()).toEqual({ reason: 'change', enabled: true, defaultEnabled: true })
+        } finally {
+            clearTimeout(eventTimeout)
+            eventAbort.abort()
+            await reader.cancel().catch(() => {})
+        }
         const assets = path.join(dataRoot, characterPath, 'assets'); fs.mkdirSync(assets, { recursive: true })
         fs.writeFileSync(path.join(assets, 'smile.png'), 'image one')
         // Let the 5s debounce fail against the edited canonical file and remove

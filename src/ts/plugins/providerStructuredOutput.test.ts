@@ -29,6 +29,34 @@ describe('plugin provider structured output contract', () => {
         expect(module.resolvePluginStructuredOutput({ structuredOutput: () => true })).toBe(true)
     })
 
+    test.each([
+        'pagefold-gemini-3.8-flash-vertex-1',
+        'pagefold-gemini-3.8-flash-openrouter-1',
+        'pagefold-gemini-3.8-flash-openrouter-2',
+    ])('omits native schema on the first BardWiki analysis request to %s', async (provider) => {
+        const { createPluginStructuredOutput } = await import('./providerStructuredOutput')
+        const schema = { type: 'object', properties: { title: { type: 'string' } } }
+
+        expect(createPluginStructuredOutput(schema, false, {
+            provider, purpose: 'bardwiki-analysis',
+        })).toBeUndefined()
+    })
+
+    test.each([
+        ['pagefold-gemini-3.8-flash-vertex-1', 'chat-response'],
+        ['pagefold-gemini-3.8-flash-openrouter-1', 'bardwiki-canonical-update'],
+        ['pagefold-gemini-3.8-flash-vertex-1', undefined],
+        ['pagefold-claude-sonnet-openrouter-1', 'bardwiki-analysis'],
+        ['another-gemini-vertex-1', 'bardwiki-analysis'],
+    ])('retains native schema for unaffected requests: %s / %s', async (provider, purpose) => {
+        const { createPluginStructuredOutput } = await import('./providerStructuredOutput')
+        const schema = { type: 'object', properties: { title: { type: 'string' } } }
+
+        expect(createPluginStructuredOutput(schema, true, { provider, purpose })).toEqual({
+            name: 'risubard_response', strict: true, schema,
+        })
+    })
+
     test('retries only schema-related native provider failures', async () => {
         const module = await loadModule()
         expect(module).not.toBeNull()
@@ -109,7 +137,7 @@ describe('plugin provider structured output contract', () => {
         expect(declarations).toContain('structured_output?: boolean;')
         expect(declarations).toContain('structuredOutput?: boolean | (() => boolean);')
         expect(request).toContain('createStructuredOutputFallbackMessage(')
-        expect(request).toContain('createPluginStructuredOutput(responseSchema, db.strictJsonSchema)')
+        expect(request).toContain('createPluginStructuredOutput(responseSchema, db.strictJsonSchema, {')
         expect(request).toContain('normalizePluginStructuredOutputFailure(d)')
         expect(request).toContain('structured_output: Boolean(responseSchema)')
         expect(request).toContain('response_schema: nativeStructuredOutput')

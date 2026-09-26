@@ -27,10 +27,12 @@ it('retains global, bot-pinned and chat generation settings through a canonical 
                 ], outfits: [{ id: 'private-outfit', subjectId: 'private', name: 'Private outfit', clothing: 'test clothes', state: '' }], settings: pinned },
                 chats: [{ id: 'painter-settings-chat', message: [], bardPainter: local }] }],
             botPresets: [], modules: [], personas: [], loreBook: [], bardPainterSettings: global,
+            bardPainterDefaultStyleId: 'favorite-style',
         }
         createUserDataRepository({ dataRoot }).importLegacyDatabase(database, { mode: 'sync' })
         const loaded = createUserDataRepository({ dataRoot }).exportLegacyDatabase()
         expect(loaded.bardPainterSettings).toEqual(global)
+        expect(loaded.bardPainterDefaultStyleId).toBe('favorite-style')
         expect(loaded.characters[0].bardPainter.settings).toEqual(pinned)
         expect(loaded.characters[0].bardPainter).toEqual(database.characters[0].bardPainter)
         expect(loaded.characters[0].chats[0].bardPainter).toEqual(local)

@@ -7,6 +7,7 @@ import { SvelteMap } from 'svelte/reactivity'
 import Chat from './Chat.svelte'
 import Chats from './Chats.svelte'
 import { DBState, selIdState } from 'src/ts/stores.svelte'
+import { ParseMarkdown } from 'src/ts/parser/parser.svelte'
 
 vi.mock('src/ts/stores.svelte', () => ({
     DBState: { db: {} },
@@ -98,6 +99,33 @@ afterEach(async () => {
 })
 
 describe('message edit button', () => {
+    test.each(['normal', 'ambiguous', 'streaming'] as const)('removes only the chosen inlay and active swipe safely (%s)', async (mode) => {
+        const data = 'Before {{inlay::scene}} middle {{inlay::scene}} after'
+        const msg = { role: 'char', data, chatId: 'message-1', swipes: ['untouched swipe', data], swipeId: 1 }
+        const chat = DBState.db.characters[0].chats[0]
+        chat.message = [msg] as any
+        chat.isStreaming = mode === 'streaming'
+        DBState.db.clickToEdit = true
+        vi.mocked(ParseMarkdown).mockImplementation(async () => '<p><img data-inlay-image-id="scene" data-inlay-occurrence="0" src="/scene.png">'
+            + (mode === 'ambiguous' ? '' : '<img data-inlay-image-id="scene" data-inlay-occurrence="1" src="/scene.png">') + '</p>')
+        try {
+            mounted = mount(Chat, { target: document.body, props: { message: data, name: 'Character', isLastMemory: false, idx: 0, role: 'char' } })
+            await tick(); await tick(); await tick()
+            await new Promise(resolve => setTimeout(resolve, 0))
+            const buttons = document.querySelectorAll<HTMLButtonElement>('.inlay-image-remove')
+            if (mode === 'streaming') {
+                expect(buttons).toHaveLength(0)
+            } else {
+                buttons[buttons.length - 1]!.click()
+                await tick()
+            }
+            expect(msg.data).toBe(mode === 'normal' ? 'Before {{inlay::scene}} middle  after' : data)
+            expect(msg.swipes).toEqual(['untouched swipe', msg.data])
+            expect(document.querySelector('.message-edit-area')).toBeNull()
+        } finally {
+            vi.mocked(ParseMarkdown).mockImplementation(async value => value)
+        }
+    })
     test.each([true, false])('retains the previous reply when sending input with preserveReadingPosition=%s', async (preserve) => {
         DBState.db.preserveChatScrollPosition = preserve
         const character = DBState.db.characters[0]

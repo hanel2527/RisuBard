@@ -195,7 +195,7 @@
     {/if}
     <section class="output" aria-label="현재 삽화">
         <div class="section-title"><h3><span class="step">3</span>그림 만들기</h3><button type="button" onclick={openGallery}>갤러리 열기</button></div>
-        <div class="actions generation-actions"><button type="button" class="primary" disabled={blocked || !data.anchor || !data.draft?.scene.trim()} onclick={() => session.generate()}>이미지 생성</button><button type="button" class="primary" onclick={() => toolMode = 'settings'}>생성 설정</button></div>
+        <div class="actions generation-actions"><button type="button" class="primary" disabled={blocked || !data.anchor || !data.draft?.scene.trim()} onclick={() => session.generate()}>이미지 생성</button><button type="button" class="primary" onclick={() => toolMode = 'settings'}>생성 설정</button><span class="hint" aria-label="현재 이미지 형식과 화풍">{session.settings.width > session.settings.height ? '가로' : session.settings.width < session.settings.height ? '세로' : '정사각형'} / {session.style.name}</span></div>
         <p class="hint">프롬프트를 확인한 뒤 생성하세요. NovelAI 사용량이 차감될 수 있습니다.</p>
         {#if latest}
             <article class="card result" data-painter-result={latest.id}>

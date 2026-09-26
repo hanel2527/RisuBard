@@ -19,6 +19,35 @@ import { loadPainterReference } from './reference'
 vi.mock('../storage/chatStorage', () => ({ ensureChatHydrated: mocks.hydrate }))
 import { getPainterSession, PainterSession } from './runtime.svelte'
 let serial = 0
+it('falls back to the configured default after a style disappears', async () => {
+    const { session } = setup()
+    const favorite = await session.saveStyle({ ...session.style, name: 'Favorite' }, true)
+    await session.setDefaultStyle(favorite!)
+    const removed = await session.saveStyle({ ...session.style, name: 'Temporary' }, true)
+    expect(await session.removeStyle(removed!)).toBe(true)
+    expect(session.style.id).toBe(favorite)
+    session.data.settings.styleId = 'missing-imported-style'
+    expect(session.style.id).toBe(favorite)
+    await session.setDefaultStyle('default')
+})
+it('uses the saved default style for new work while retaining existing choices', async () => {
+    const { session } = setup()
+    const id = await session.saveStyle({ ...session.style, name: 'Favorite' }, true)
+    expect(await session.setDefaultStyle(id!)).toBe(true)
+    expect(session.defaultStyle.id).toBe(id)
+    const other = new PainterSession('bot', 'other')
+    expect(other.style.id).toBe(id)
+    other.data.settings.styleId = 'default'
+    expect(new PainterSession('bot', 'other').style.id).toBe('default')
+    expect(await session.resetWorkspace()).toBe(true)
+    expect(session.style.id).toBe(id)
+    mocks.save.mockRejectedValueOnce(new Error('disk full'))
+    expect(await session.setDefaultStyle('default')).toBe(false)
+    expect(session.defaultStyle.id).toBe(id)
+    expect(await session.removeStyle(id!)).toBe(true)
+    expect(session.defaultStyle.id).toBe('default')
+    expect(session.style.id).toBe('default')
+})
 it('sets all saved card attachments in one save and rolls both lists back on failure', async () => {
     const { session } = setup()
     session.bot.identities = [{ id: 'a', name: 'A', aliases: [], appearance: 'blue eyes' }, { id: 'b', name: 'B', aliases: [], appearance: 'red hair' }]
@@ -145,7 +174,7 @@ function setup() {
     mocks.db.characters = [{ chaId: 'bot', chatPage: 0, chats: [chat, { id: 'other', message: [{ chatId: 'm1', data: '다른 챗' }] }] }]
     return { session: getPainterSession('bot', id), chat }
 }
-beforeEach(() => { vi.resetAllMocks(); mocks.save.mockResolvedValue(undefined); mocks.hydrate.mockImplementation(async (chats, index) => chats[index]); mocks.db.bardPainterStyles = []; painterSelection.set(null); painterInsertionRequest.set(null) })
+beforeEach(() => { vi.resetAllMocks(); mocks.save.mockResolvedValue(undefined); mocks.hydrate.mockImplementation(async (chats, index) => chats[index]); mocks.db.bardPainterStyles = []; Object.assign(mocks.db, { bardPainterDefaultStyleId: undefined }); painterSelection.set(null); painterInsertionRequest.set(null) })
 
 it('resets only current painter work after preserving gallery records, retaining settings and presets', async () => {
     const { session, chat } = setup()

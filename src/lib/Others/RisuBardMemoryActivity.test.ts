@@ -76,6 +76,27 @@ afterEach(async () => {
 })
 
 describe('RisuBardMemoryActivity', () => {
+    it('shows saved wiki diagnostics alongside a persisted request after reopening', async () => {
+        mocks.loadChatRequestEvidence.mockResolvedValue({
+            schemaVersion: 1, generatedAt: '2026-09-26T00:00:00.000Z', chatId: 'chat', requestCount: 1,
+            totals: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 },
+            requests: [{ id: 42, generationId: 'diag-generation', source: 'main',
+                timestamp: '2026-09-26T00:00:00.000Z', outcome: 'done', streaming: false }],
+        })
+        mounted = mount(RisuBardMemoryActivity, { target: document.body, props: {
+            characterId: 'c', chatId: 'chat', messages: [{ role: 'char', data: 'reply',
+                generationInfo: { generationId: 'diag-generation', risuBardContext: {
+                    mode: 'current', recentMessages: [], wikiPaths: [], selectedTokens: 20, inquiryDurationMs: 1,
+                    wikiInquiry: { status: 'not-injected', documentCount: 3, candidateCount: 1,
+                        selectedWikiCount: 1, injectedWikiCount: 0 },
+                } },
+            }] as any,
+        } })
+        await vi.waitFor(() => expect(document.querySelector('[data-wiki-inquiry]')?.textContent)
+            .toContain('프리셋 확인'))
+        expect(document.querySelector('[data-wiki-inquiry]')?.textContent).toContain('최종 포함 0개')
+    })
+
     it('uses a dedicated vertical log scroller and raises log type by three pixels', () => {
         const source = readFileSync(resolve(
             process.cwd(), 'src/lib/Others/RisuBardMemoryActivity.svelte'

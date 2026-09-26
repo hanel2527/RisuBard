@@ -1,3 +1,5 @@
+import type { WikiInquiryDiagnostic } from './wikiInquiryDiagnostics'
+
 export const RISUBARD_MEMORY_ACTIVITY_EVENT = 'risubard-memory-activity'
 
 export interface RisuBardContextTrace {
@@ -6,6 +8,7 @@ export interface RisuBardContextTrace {
     wikiPaths: string[]
     selectedTokens: number
     inquiryDurationMs: number
+    wikiInquiry?: WikiInquiryDiagnostic
 }
 
 export interface RisuBardLiveActivity {
@@ -49,6 +52,7 @@ export function createRisuBardContextTrace(input: {
     selectedSourceIds: string[]
     selectedTokens: number
     inquiryDurationMs: number
+    wikiInquiry?: WikiInquiryDiagnostic
 }): RisuBardContextTrace {
     return {
         mode: input.mode,
@@ -61,6 +65,7 @@ export function createRisuBardContextTrace(input: {
             .filter((path): path is string => path !== null))].slice(0, 16),
         selectedTokens: Math.max(0, Math.round(input.selectedTokens)),
         inquiryDurationMs: Math.max(0, Math.round(input.inquiryDurationMs)),
+        ...(input.wikiInquiry ? { wikiInquiry: input.wikiInquiry } : {}),
     }
 }
 

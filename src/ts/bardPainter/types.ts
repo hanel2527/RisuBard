@@ -148,6 +148,6 @@ export function createPainterSettings(): PainterSettings {
     }
 }
 
-export function createPainterChatData(): PainterChatData {
-    return { settings: createPainterSettings(), settingsScope: 'global', outfits: [], results: [] }
+export function createPainterChatData(defaultStyleId = 'default'): PainterChatData {
+    return { settings: { ...createPainterSettings(), styleId: defaultStyleId }, settingsScope: 'global', outfits: [], results: [] }
 }

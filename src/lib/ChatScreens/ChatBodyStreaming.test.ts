@@ -39,9 +39,10 @@ async function settle() {
     await tick()
     await Promise.resolve()
     await tick()
+    await new Promise(resolve => setTimeout(resolve, 0))
 }
 
-async function render(html: string) {
+async function render(html: string, onRemoveInlay?: (id: string, occurrence: number) => void) {
     const state = new SvelteMap([['html', html]])
     const target = document.createElement('div')
     document.body.append(target)
@@ -51,6 +52,7 @@ async function render(html: string) {
             get msgDisplay() { return state.get('html')! },
             idx: 1, character: 'test', role: 'char', translated: false,
             retranslate: false, translating: false, modelShortName: '', bodyRoot: target,
+            onRemoveInlay,
         },
     }))
     await settle()
@@ -58,6 +60,26 @@ async function render(html: string) {
 }
 
 describe('streaming chat body', () => {
+    test('offers an accessible removal control for an editable inlay and retains it across text updates', async () => {
+        const remove = vi.fn()
+        const html = '<p><img data-inlay-image-id="scene" data-inlay-occurrence="1" src="https://example.test/a.png">One</p>'
+        const { target, update } = await render(html, remove)
+        const button = target.querySelector<HTMLButtonElement>('button[aria-label="본문에서 이미지 삭제"]')
+        expect(button).not.toBeNull()
+        const image = target.querySelector('img')
+        update(html.replace('One', 'One two'))
+        await settle()
+        expect(target.querySelector('img')).toBe(image)
+        button!.click()
+        expect(remove).toHaveBeenCalledWith('scene', 1)
+    })
+
+    test('does not offer removal for ordinary images or read-only inlays', async () => {
+        const { target } = await render('<p><img data-inlay-image-id="scene" data-inlay-occurrence="0" src="https://example.test/a.png"></p>')
+        expect(target.querySelector('button')).toBeNull()
+        const editable = await render('<p><img src="https://example.test/a.png"></p>', vi.fn())
+        expect(editable.target.querySelector('button')).toBeNull()
+    })
     test('keeps loaded images and existing text nodes while parsing and appending tokens', async () => {
         const { target, update } = await render('<p><img src="https://example.test/a.png">Hello</p>')
         const paragraph = target.querySelector('p')!

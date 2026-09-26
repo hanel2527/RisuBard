@@ -16,6 +16,24 @@ afterEach(async () => {
 })
 
 describe('Markdown narrative wiki', () => {
+    test('retrieves an inherited character from entity hints without old chat messages', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        const wiki = createMarkdownNarrativeWiki(root)
+        await wiki.saveCanonicalDocument({ characterId: 'character', chatId: 'old',
+            type: 'character', title: 'Alice', sourceMessageIds: ['old-turn'],
+            markdown: '## Alice\n\n### Current State\nAlice lives in the southern village.' })
+        const { inheritWikiWorkspace } = await import('./risubard-wiki-transfer')
+        await inheritWikiWorkspace({ userDataDirectory: root, characterId: 'character',
+            sourceChatId: 'old', destinationChatId: 'new' })
+        const result = await wiki.inquire({ characterId: 'character', chatId: 'new',
+            currentInput: '...', entityHints: [{ kind: 'character', names: ['Alice'] }] })
+        expect(result.sources).toHaveLength(1)
+        expect(result.sources[0].content).toContain('southern village')
+        expect((await wiki.inquire({ characterId: 'character', chatId: 'new',
+            currentInput: '...' })).sources).toEqual([])
+    })
+
     test('paginates complete embedding catalog and rejects changed revisions', async () => {
         const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
         temporaryDirectories.push(root)

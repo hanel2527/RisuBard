@@ -6,6 +6,7 @@
     import SettingPage from 'src/lib/UI/GUI/SettingPage.svelte'
     import ShButton from 'src/lib/UI/GUI/ShButton.svelte'
     import CharacterAssetTransition from './CharacterAssetTransition.svelte'
+    import LiveFileMonitoring from './LiveFileMonitoring.svelte'
 
     interface DurationSummary {
         p50: number | null
@@ -80,6 +81,7 @@
 
 <SettingPage title={language.storageDiagnosticsTitle} description={language.storageDiagnosticsDesc}>
     <div class="diagnostics-stack">
+        <LiveFileMonitoring />
         <CharacterAssetTransition />
         <section class="privacy-note" aria-label={language.storageDiagnosticsPrivacy}>
             <ShieldCheckIcon size={20} />

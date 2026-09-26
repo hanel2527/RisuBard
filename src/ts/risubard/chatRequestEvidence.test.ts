@@ -11,6 +11,7 @@ import {
     formatChatRequestEvidenceMarkdown,
 } from './chatRequestEvidence'
 import * as evidenceModule from './chatRequestEvidence'
+import { createRisuBardContextTrace } from './memoryActivity'
 
 const entry: RequestLogEntry = {
     id: 7,
@@ -49,6 +50,23 @@ const entry: RequestLogEntry = {
 }
 
 describe('chat request evidence', () => {
+    it('exports saved wiki failure diagnostics beside the matching generation only', async () => {
+        const evidence = buildChatRequestEvidence('chat-7', [entry, { ...entry, id: 8, chatId: 'another' }])
+        const enriched = await evidenceModule.addRetainedAssistantSummary(evidence, [{
+            role: 'char', data: 'secret response', chatId: 'generation-7',
+            generationInfo: { generationId: 'generation-7', risuBardContext: JSON.parse(JSON.stringify(createRisuBardContextTrace({
+                mode: 'legacy', recentMessages: [], selectedSourceIds: [], selectedTokens: 0, inquiryDurationMs: 12,
+                wikiInquiry: { status: 'failed', injectedWikiCount: 0,
+                    failure: { code: 'budget-exceeded', httpStatus: 500 } },
+            }))) },
+        }] as any, async () => 3)
+        const report = formatChatRequestEvidenceMarkdown(enriched)
+        expect(report).toContain('필수 위키')
+        expect(report).toContain('HTTP 500')
+        expect(report).not.toContain('secret response')
+        expect(enriched.requests[1].wikiInquiry).toBeUndefined()
+    })
+
     it('builds exportable evidence for old plugin generations without stored rows', () => {
         const evidence = buildLegacyChatRequestEvidence('chat-legacy', [{
             timestamp: Date.UTC(2026, 7, 12, 3, 4, 5),

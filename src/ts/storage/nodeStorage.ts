@@ -16,6 +16,7 @@ import {
 } from './chatContentPage'
 import { isCanonicalFilesChangedResponse } from './canonicalConflict'
 import { uploadChatContent } from './chatContentUpload'
+import { subscribeLiveFileEvents } from './liveFileEvents'
 
 const CHAT_CONTENT_TRANSFER_PAGE_SIZE = 200
 const CHAT_CONTENT_TRANSFER_CONCURRENCY = 4
@@ -85,6 +86,11 @@ export interface ExternalEditModeStatus {
     revision?: string | null
 }
 
+export interface LiveFileMonitoringStatus {
+    enabled: boolean
+    defaultEnabled: boolean
+}
+
 export interface ExportBackupOptions {
     /** Strip NodeOnly-only inlay namespaces so upstream RisuAI can import it. */
     target?: 'upstream'
@@ -133,6 +139,10 @@ export class NodeStorage{
     private static sessionInitialized = false
     private static sessionPending: Promise<void> | null = null
     private refreshPending: Promise<string> | null = null
+    private liveMonitoringCache: { status: LiveFileMonitoringStatus, expiresAt: number } | null = null
+    private liveMonitoringPending: Promise<LiveFileMonitoringStatus> | null = null
+    private liveMonitoringGeneration = 0
+    private liveSnapshotRequired = false
 
     async createAuth(){
         const now = Date.now()
@@ -447,11 +457,81 @@ export class NodeStorage{
         }
     }
 
+    private cacheLiveFileMonitoring(status: LiveFileMonitoringStatus) {
+        if (!status.enabled || this.liveMonitoringCache?.status.enabled === false) {
+            this.liveSnapshotRequired = true
+        }
+        this.liveMonitoringCache = { status, expiresAt: Date.now() + 30_000 }
+        return status
+    }
+
+    async subscribeLiveFileChanges(onChange: () => void): Promise<() => void> {
+        return subscribeLiveFileEvents({
+            authenticate: async () => {
+                const response = await this.authFetch('/api/session', { method: 'POST' })
+                if (!response.ok) throw new Error(`Live file session failed (${response.status})`)
+            },
+            onEvent: event => {
+                this.liveMonitoringGeneration++
+                this.liveMonitoringPending = null
+                if (event.reason === 'ready') this.liveSnapshotRequired = true
+                this.cacheLiveFileMonitoring({ enabled: event.enabled, defaultEnabled: event.defaultEnabled })
+                onChange()
+            },
+            onFallback: () => {
+                if (this.liveMonitoringCache) this.liveMonitoringCache.expiresAt = 0
+                onChange()
+            },
+        })
+    }
+
+    async getLiveFileMonitoring(force = false): Promise<LiveFileMonitoringStatus> {
+        if (!force && this.liveMonitoringCache && this.liveMonitoringCache.expiresAt > Date.now()) {
+            return this.liveMonitoringCache.status
+        }
+        if (this.liveMonitoringPending) return this.liveMonitoringPending
+        const generation = this.liveMonitoringGeneration
+        const pending = (async () => {
+            const response = await this.authFetch('/api/live-files/monitoring', { method: 'GET' })
+            const data = await response.json()
+            if (!response.ok) throw new Error(data?.error || `Live file monitoring request failed (${response.status})`)
+            if (generation === this.liveMonitoringGeneration) this.cacheLiveFileMonitoring(data)
+            return this.liveMonitoringCache?.status ?? data
+        })()
+        this.liveMonitoringPending = pending
+        try {
+            return await pending
+        } finally {
+            if (this.liveMonitoringPending === pending) this.liveMonitoringPending = null
+        }
+    }
+
+    async setLiveFileMonitoring(enabled: boolean): Promise<LiveFileMonitoringStatus> {
+        const generation = this.liveMonitoringGeneration
+        const response = await this.authFetch('/api/live-files/monitoring', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ enabled }),
+        })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data?.error || `Live file monitoring request failed (${response.status})`)
+        // Events and POST responses travel on separate connections; re-read the
+        // authoritative setting when their ordering is ambiguous.
+        if (generation !== this.liveMonitoringGeneration) return this.getLiveFileMonitoring(true)
+        this.liveMonitoringGeneration++
+        this.liveMonitoringPending = null
+        return this.cacheLiveFileMonitoring(data)
+    }
+
     async syncLiveFiles(revision?: string): Promise<import('./liveFileSync').LiveFileSyncResult> {
+        if (!(await this.getLiveFileMonitoring()).enabled) {
+            return { revision: revision ?? '', etag: null, enabled: false }
+        }
+        const generation = this.liveMonitoringGeneration
         const response = await this.authFetch('/api/live-files/sync', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ revision }),
+            body: JSON.stringify({ revision: this.liveSnapshotRequired ? undefined : revision }),
         })
         const data = await response.json()
         if (!response.ok) {
@@ -459,6 +539,11 @@ export class NodeStorage{
                 window.dispatchEvent(new CustomEvent('risu-session-deactivated'))
             }
             throw Object.assign(new Error(data?.error || `Live file sync failed (${response.status})`), { code: data?.code })
+        }
+        if (data.enabled === false && generation === this.liveMonitoringGeneration) {
+            this.cacheLiveFileMonitoring({ enabled: false, defaultEnabled: this.liveMonitoringCache?.status.defaultEnabled ?? true })
+        } else if (!data.error && generation === this.liveMonitoringGeneration) {
+            this.liveSnapshotRequired = false
         }
         return data
     }

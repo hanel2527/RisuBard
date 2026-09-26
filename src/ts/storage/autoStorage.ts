@@ -76,6 +76,21 @@ export class AutoStorage{
         return this.realStorage.syncLiveFiles(revision)
     }
 
+    async getLiveFileMonitoring(force = false) {
+        await this.Init()
+        return this.realStorage.getLiveFileMonitoring(force)
+    }
+
+    async setLiveFileMonitoring(enabled: boolean) {
+        await this.Init()
+        return this.realStorage.setLiveFileMonitoring(enabled)
+    }
+
+    async subscribeLiveFileChanges(onChange: () => void) {
+        await this.Init()
+        return this.realStorage.subscribeLiveFileChanges(onChange)
+    }
+
     async getExternalEditModeStatus() {
         await this.Init()
         return this.realStorage.getExternalEditModeStatus()

@@ -3032,6 +3032,10 @@ export const languageKorean = {
 
   // 시스템 페이지
   system: "시스템",
+  liveFileMonitoringTitle: "외부 파일 변경 자동 감지",
+  liveFileMonitoringDesc: "이 서버에 접속하는 모든 기기에 공통으로 적용되며, 바꾸면 즉시 반영됩니다. Termux에서는 기본으로 꺼져 있습니다. 끄면 외부 파일 감시와 자동 검사를 중단합니다. 일반 가져오기와 저장은 계속 동작하지만, 앱 밖에서 수정한 파일은 자동으로 반영되지 않습니다.",
+  liveFileMonitoringFailed: "감시 설정을 불러오거나 변경하지 못했습니다",
+  liveFileMonitoringRetry: "다시 시도",
   storageDiagnosticsTitle: "개발자",
   storageDiagnosticsDesc: "저장 성능을 확인하고 문제 해결에 필요한 개인정보 없는 진단 보고서를 만듭니다.",
   storageDiagnosticsPrivacy: "보고서에는 집계된 시간, 결과 수와 분류된 오류 코드만 포함됩니다. 이름, 메시지, 경로, 식별자, hash, 데이터베이스 크기, 항목 수와 원본 로그는 제외됩니다.",

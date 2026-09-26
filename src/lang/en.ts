@@ -2867,6 +2867,10 @@ export const languageEnglish = {
 
     // System page
     system: "System",
+    liveFileMonitoringTitle: "Automatically detect external file changes",
+    liveFileMonitoringDesc: "Applies to every device connected to this server and takes effect immediately. Off by default on Termux. Turning it off stops external file monitoring and automatic checks. Normal imports and saves continue, but edits made outside the app are not reflected automatically.",
+    liveFileMonitoringFailed: "Could not change or load the monitoring setting",
+    liveFileMonitoringRetry: "Retry",
     storageDiagnosticsTitle: "Developer",
     storageDiagnosticsDesc: "Review storage performance and create a privacy-safe diagnostic report for troubleshooting.",
     storageDiagnosticsPrivacy: "The report contains aggregate timing, result counts, and categorized error codes only. It excludes names, messages, paths, identifiers, hashes, database sizes, entity counts, and raw logs.",

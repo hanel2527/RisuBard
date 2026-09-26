@@ -76,10 +76,11 @@ export class PainterSession {
         if (!chat || chat._placeholder || !Array.isArray(chat.message)) throw new Error('이 챗을 먼저 열어 주세요.')
         return chat
     }
-    get data() { return this.chat.bardPainter ??= createPainterChatData() }
+    get data() { return this.chat.bardPainter ??= createPainterChatData(this.defaultStyle.id) }
     get bot() { return this.character.bardPainter ??= { identities: [], outfits: [] } }
     get styles() { return [...PAINTER_STYLES, ...(DBState.db.bardPainterStyles ?? [])] }
-    get style() { return this.styles.find((item) => item.id === this.data.settings.styleId) ?? PAINTER_STYLES[0] }
+    get defaultStyle() { return this.styles.find(item => item.id === DBState.db.bardPainterDefaultStyleId) ?? PAINTER_STYLES[0] }
+    get style() { return this.styles.find((item) => item.id === this.data.settings.styleId) ?? this.defaultStyle }
     get promptPreset() { return painterPromptPreset(DBState.db, this.chat) }
     get imagePresets() {
         const prompt = this.promptPreset
@@ -657,6 +658,13 @@ export class PainterSession {
             return true
         })) === true
     }
+    async setDefaultStyle(id: string): Promise<boolean> {
+        return (await this.presetAction('새 작업에 사용할 기본 화풍을 지정했습니다.', write => {
+            if (!this.styles.some(item => item.id === id)) return
+            write(DBState.db, 'bardPainterDefaultStyleId', id)
+            return true
+        }, true)) === true
+    }
     async saveStyle(style: PainterStyle, asNew = false): Promise<string | undefined> {
         return this.presetAction('화풍 프리셋을 저장했습니다.', write => {
             const custom = { ...clone(style), id: asNew || !style.id || PAINTER_STYLES.some(item => item.id === style.id) ? v4() : style.id, name: style.name.trim() }
@@ -674,8 +682,9 @@ export class PainterSession {
         return (await this.presetAction('화풍 프리셋을 삭제했습니다.', write => {
             if (PAINTER_STYLES.some(item => item.id === id) || !DBState.db.bardPainterStyles?.some(item => item.id === id)) return
             write(DBState.db, 'bardPainterStyles', DBState.db.bardPainterStyles.filter(item => item.id !== id))
+            if (DBState.db.bardPainterDefaultStyleId === id) write(DBState.db, 'bardPainterDefaultStyleId', PAINTER_STYLES[0].id)
             for (const character of DBState.db.characters) for (const chat of character.chats) {
-                if (!chat._placeholder && chat.bardPainter?.settings.styleId === id) write(chat.bardPainter.settings, 'styleId', PAINTER_STYLES[0].id)
+                if (!chat._placeholder && chat.bardPainter?.settings.styleId === id) write(chat.bardPainter.settings, 'styleId', this.defaultStyle.id)
             }
             return true
         }, true)) === true

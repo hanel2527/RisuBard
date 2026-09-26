@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import ts from 'typescript'
 import { expect, test, vi } from 'vitest'
+import { waitForSendSync } from '../process/sendPreparation'
 
 // Exercise the actual runtime response handler without mounting the application.
 const source = readFileSync(resolve(process.cwd(), 'src/ts/globalApi.svelte.ts'), 'utf8')
@@ -31,10 +32,15 @@ test('send preflight failure is a visible false result before any generation sta
     const bodyMarker = '} = {}):Promise<boolean> {'
     const bodyStart = sendSource.indexOf(bodyMarker, sendStart) + bodyMarker.length
     const bodyEnd = sendSource.indexOf('    const selected =', bodyStart)
-    const preflight = ts.transpile(`async function preflight() { ${sendSource.slice(bodyStart, bodyEnd)}; return true }`, { target: ts.ScriptTarget.ES2022 })
+    const preflight = ts.transpile(`async function preflight(arg = {}) { ${sendSource.slice(bodyStart, bodyEnd)}; return true }`, { target: ts.ScriptTarget.ES2022 })
     const notifyError = vi.fn()
-    const create = new Function('refreshLiveFiles', 'notifyError', `${preflight}; return preflight`)
-    const run = create(async () => { throw new Error('writer inactive') }, notifyError)
+    const refreshLiveFiles = vi.fn(async () => { throw new Error('writer inactive') })
+    const dependencies = {
+        refreshLiveFiles, notifyError, waitForSendSync,
+        DBState: { db: { characters: [] } }, get: () => 0, selectedCharID: {}, language: {},
+    }
+    const run = new Function(...Object.keys(dependencies), `${preflight}; return preflight`)(...Object.values(dependencies))
     await expect(run()).resolves.toBe(false)
-    expect(notifyError).toHaveBeenCalledOnce()
+    expect(refreshLiveFiles).toHaveBeenCalledOnce()
+    expect(notifyError).toHaveBeenCalledWith(expect.stringContaining('writer inactive'))
 })

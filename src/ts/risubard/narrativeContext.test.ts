@@ -56,6 +56,14 @@ describe('narrative context prompt composition', () => {
 })
 
 describe('actual narrative inquiry prompt', () => {
+    it('preserves safe server failure codes without exposing raw server errors', async () => {
+        await expect(loadNarrativeInquiry({ characterId: 'c', chatId: 'chat', currentInput: 'Alice',
+            createAuth: async () => 'auth', fetchImpl: async () => new Response(JSON.stringify({
+                code: 'budget-exceeded', error: 'private path and document contents',
+            }), { status: 500 }),
+        })).rejects.toMatchObject({ code: 'budget-exceeded', httpStatus: 500 })
+    })
+
     it('re-excerpts an already supplied source using the verified semantic event identity', async () => {
         const request = { messageId: 'm', eventTitle: 'Archive', documentId: 'event' }
         const fetchImpl = vi.fn(async () => new Response(JSON.stringify({

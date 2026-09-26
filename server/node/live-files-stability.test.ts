@@ -97,6 +97,37 @@ test('a replica published after a live index still replaces the portrait referen
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
 
+test.each(['saved', 'conflict', 'pending'])('enabling monitoring settles acknowledged writes before replacing their baseline: %s', async (outcome) => {
+    const source = fs.readFileSync(path.join(import.meta.dirname, 'server.cjs'), 'utf8')
+    const start = source.indexOf("app.post('/api/live-files/monitoring'")
+    const body = source.slice(start, source.indexOf("app.post('/api/live-files/sync'", start))
+    let handler: any
+    const calls: string[] = []
+    const errors: unknown[] = []
+    const deps: any = {
+        app: { post: (_path: string, fn: any) => { handler = fn } },
+        checkAuth: async () => true, checkActiveSession: () => true,
+        queueStorageOperation: async (fn: any) => fn(),
+        externalEditSession: { isActive: () => false }, liveFilesAdoption: null,
+        liveFilesPendingWrites: true, liveFilesRevision: 'before',
+        liveCharacterFiles: { isEnabled: () => false, setEnabled: () => { calls.push('enable'); return { enabled: true } } },
+        nodeCrypto: { randomUUID: () => 'after' },
+        liveFileEvents: { notify: () => {} },
+        flushPendingDbWithinQueue: async () => {
+            calls.push('flush')
+            if (outcome === 'conflict') throw new Error('CANONICAL_FILES_CHANGED')
+            if (outcome === 'saved') deps.liveFilesPendingWrites = false
+        },
+    }
+    new Function('deps', `with (deps) { ${body} }`)(deps)
+    let status = 200
+    const res = { status: (code: number) => { status = code; return res }, json: (value: any) => value }
+    await handler({ body: { enabled: true } }, res, (error: unknown) => errors.push(error))
+    expect(calls).toEqual(outcome === 'saved' ? ['flush', 'enable'] : ['flush'])
+    expect(errors.length).toBe(outcome === 'conflict' ? 1 : 0)
+    expect(status).toBe(outcome === 'pending' ? 409 : 200)
+})
+
 test.each(['before-publication', 'after-publication'])('failed adoption retries without watcher events: %s', (failureStage) => {
     const source = fs.readFileSync(path.join(import.meta.dirname, 'server.cjs'), 'utf8')
     const body = source.slice(source.indexOf('function adoptExternallyChangedCanonicalProjection('), source.indexOf('\nexternalEditSession = createExternalEditSession'))
@@ -110,6 +141,7 @@ test.each(['before-publication', 'after-publication'])('failed adoption retries 
     const run = new Function('deps', `with (deps) { let liveFilesAdoption = null, liveFilesRecovery = null, liveFilesChatPrevious = []; let liveFilesPendingWrites = true; let liveFilesRevision = 'old'; let dbEtag, externallyAdoptedDbEtag; ${body}; return adoptExternallyChangedCanonicalProjection; }`)({
         canonicalProjectionReady: true,
         liveCharacterFiles: {
+            isEnabled: () => true,
             reconcile: () => reconciles++ === 0 ? { database: external, previous: before, revision: 'revision' }
                 : invalidated && published ? { database: external, previous: external, revision: 'published' } : null,
             accept: () => {}, invalidate: () => { invalidated = true },

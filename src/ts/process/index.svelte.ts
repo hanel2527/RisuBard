@@ -1,4 +1,5 @@
 import { isOocAssistantTurn } from '../risubard/oocTurns'
+import { createWikiInquiryDiagnostic, formatWikiInquiryDiagnostic, wikiInquiryFailure, type WikiInquiryFailure } from '../risubard/wikiInquiryDiagnostics'
 import { get } from "svelte/store";
 import { type character, type MessageGenerationInfo, type Chat, type MessagePresetInfo, changeToPreset, getActivePromptOverlayToggleTemplate, setCurrentChat, type Message, normalizeChat, type StreamingDisplayOptimizationMode } from "../storage/database.svelte";
 import { DBState } from '../stores.svelte';
@@ -1559,6 +1560,9 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     }
 
     const lorepmt = await loadLoreBookV3Prompt()
+    let wikiInquiryAttempted = false
+    let wikiInquiryError: WikiInquiryFailure | undefined
+    let wikiInquirySources: Awaited<ReturnType<typeof loadNarrativeInquiry>>['sources'] = []
     const narrativeContextObservation: {
         mode: 'disabled' | 'legacy' | 'current'
         promptMode: 'disabled' | 'v2-current' | 'bounded-v1-fallback'
@@ -1632,6 +1636,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             if (!narrativeContext.sourceChanged
                 && currentInput.trim().length > 0) {
                 const inquiryStartedAt = performance.now()
+                wikiInquiryAttempted = true
                 try {
                     const inquirySettings = resolvedRisuBardSettings(currentChat)
                     activateWikiEmbeddings(currentChar.chaId, narrativeSessionChatId, DBState.db)
@@ -1719,6 +1724,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                         }
                         : initialInquiry
                     sources = inquiry.sources
+                    wikiInquirySources = sources
                     narrativeContextObservation.promptMode = inquiry.mode
                     narrativeContextObservation.graphRevision =
                         inquiry.graphRevision
@@ -1740,6 +1746,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                         inquiry.sources.map((source) => source.id)
                 }
                 catch (error) {
+                    wikiInquiryError = wikiInquiryFailure(error)
                     narrativeContext.sourceChanged = true
                     narrativeContextObservation.mode = 'legacy'
                     narrativeContextObservation.promptMode =
@@ -1834,6 +1841,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             }
         }
         catch (error) {
+            wikiInquiryError = wikiInquiryFailure(error)
             narrativeContextObservation.reason = 'context-preparation-failed'
             console.warn('RisuBard narrative context fallback', error)
         }
@@ -2880,6 +2888,16 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             selectedSourceIds: narrativeContextObservation.selectedSourceIds,
             selectedTokens: narrativeContextObservation.selectedTokens,
             inquiryDurationMs: narrativeContextObservation.inquiryDurationMs,
+            wikiInquiry: createWikiInquiryDiagnostic({
+                attempted: wikiInquiryAttempted,
+                ...(wikiInquiryAttempted && !wikiInquiryError ? {
+                    documentCount: narrativeContextObservation.inspectedNodeCount,
+                    candidateCount: narrativeContextObservation.candidateCount,
+                } : {}),
+                failure: wikiInquiryError,
+                sources: wikiInquirySources,
+                messages: formated,
+            }),
         }),
         stageTiming: {
             stage1: stageTimings.stage1Duration,
@@ -2921,7 +2939,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         chatId: narrativeSessionChatId,
         operation: 'request',
         timestamp: Date.now(),
-        message: `${generationModel} 요청 시작`,
+        message: `${generationModel} 요청 시작 / ${formatWikiInquiryDiagnostic(generationInfo.risuBardContext!.wikiInquiry!)}`,
         wikiPaths: generationInfo.risuBardContext?.wikiPaths,
     })
 

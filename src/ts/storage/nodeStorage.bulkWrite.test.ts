@@ -24,7 +24,9 @@ describe('NodeStorage live file synchronization', () => {
         const storage = new NodeStorage()
         storage.setDbEtag('acknowledged')
         const result = { revision: 'new', etag: 'remote', snapshot: { characters: [], loreBook: [] } }
-        const authFetch = vi.fn(async () => new Response(JSON.stringify(result), { status: 200 }))
+        const authFetch = vi.fn(async (path: string) => new Response(JSON.stringify(
+            path === '/api/live-files/monitoring' ? { enabled: true, defaultEnabled: true } : result,
+        ), { status: 200 }))
         ;(storage as any).authFetch = authFetch
         expect(await storage.syncLiveFiles('old')).toEqual(result)
         expect(authFetch).toHaveBeenCalledWith('/api/live-files/sync', {
@@ -35,12 +37,14 @@ describe('NodeStorage live file synchronization', () => {
 
     it('rejects a failed sync instead of accepting a partial response', async () => {
         const storage = new NodeStorage()
+        vi.spyOn(storage, 'getLiveFileMonitoring').mockResolvedValue({ enabled: true, defaultEnabled: true })
         ;(storage as any).authFetch = vi.fn(async () => new Response('{"error":"writer busy"}', { status: 423 }))
         await expect(storage.syncLiveFiles()).rejects.toThrow('writer busy')
     })
 
     it('announces inactive sync while preserving the error for send preflight', async () => {
         const storage = new NodeStorage()
+        vi.spyOn(storage, 'getLiveFileMonitoring').mockResolvedValue({ enabled: true, defaultEnabled: true })
         const deactivated = vi.fn()
         window.addEventListener('risu-session-deactivated', deactivated)
         ;(storage as any).authFetch = vi.fn(async () => new Response(

@@ -57,7 +57,9 @@ const { writeCanonicalProjection } = require('./canonical-projection-writer.cjs'
 const { reclaimDeletedCharacterAssets } = require('./deleted-character-assets.cjs');
 const { kvDelManyAndCollect } = require('./db.cjs');
 const { createExternalEditSession } = require('./external-edit-session.cjs');
-const { createLiveCharacterFiles, metadataSnapshot, mergePendingLiveDatabase, createLiveFileRecovery } = require('./live-character-files.cjs');
+const { metadataSnapshot, mergePendingLiveDatabase, createLiveFileRecovery } = require('./live-character-files.cjs');
+const { createLiveFileMonitoring } = require('./live-file-monitoring.cjs');
+const { createLiveFileEvents } = require('./live-file-events.cjs');
 const {
     collectDatabaseAssetReferences,
     collectNestedAssetReferences,
@@ -1009,7 +1011,8 @@ const canonicalProjectionSync = createCanonicalProjectionSync({
 })
 let externalEditSession
 let canonicalProjectionReady = existsSync(path.join(savePath, 'index', 'sidebar.json'))
-const liveCharacterFiles = createLiveCharacterFiles({ repository: userDataRepository, writeAsset: kvSet, writeAssets: kvSetMany, reloadAssets: () => characterAssets.reload() });
+const liveFileEvents = createLiveFileEvents({ getStatus: () => liveCharacterFiles.status() });
+const liveCharacterFiles = createLiveFileMonitoring({ repository: userDataRepository, writeAsset: kvSet, writeAssets: kvSetMany, reloadAssets: () => characterAssets.reload(), onChange: () => liveFileEvents.notify() });
 let liveFilesRevision = nodeCrypto.randomUUID();
 let liveFilesChatPrevious = [];
 let liveFilesPendingWrites = false;
@@ -1138,8 +1141,12 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
 
 function adoptExternallyChangedCanonicalProjection(liveOnly = false) {
     if (!canonicalProjectionReady) return null
+    // Disabling automatic monitoring never discards an interrupted adoption.
+    if (!liveCharacterFiles.isEnabled() && !liveFilesAdoption) return null
     try {
-    const fresh = liveCharacterFiles.reconcile({ verifyMetadata: liveOnly }) || (!liveOnly && canonicalProjectionSync.loadExternalChanges())
+    const fresh = liveCharacterFiles.isEnabled()
+        ? liveCharacterFiles.reconcile({ verifyMetadata: liveOnly }) || (!liveOnly && canonicalProjectionSync.loadExternalChanges())
+        : null
     if (!fresh && !liveFilesAdoption) return null
     if (!liveFilesAdoption) {
         liveFilesAdoption = {
@@ -3505,6 +3512,39 @@ app.get('/api/external-edit/status', async (req, res) => {
     res.json(externalEditSession.status())
 })
 
+app.get('/api/live-files/events', sessionAuthMiddleware, (req, res) => liveFileEvents.connect(req, res))
+
+app.get('/api/live-files/monitoring', async (req, res) => {
+    if (!await checkAuth(req, res)) return
+    res.json(liveCharacterFiles.status())
+})
+
+app.post('/api/live-files/monitoring', async (req, res, next) => {
+    if (!await checkAuth(req, res)) return
+    if (typeof req.body?.enabled !== 'boolean') return res.status(400).json({ error: 'enabled must be a boolean' })
+    if (!checkActiveSession(req, res)) return
+    try {
+        await queueStorageOperation(async () => {
+            if (externalEditSession.isActive() || liveFilesAdoption) {
+                return res.status(409).json({ error: 'Finish external editing or pending recovery before changing monitoring' })
+            }
+            if (req.body.enabled && !liveCharacterFiles.isEnabled()) {
+                // Do not merge pending acknowledged writes against a newly created
+                // monitor's disk baseline. Persist them with the original conflict
+                // checks while adoption is still disabled, or leave monitoring off.
+                await flushPendingDbWithinQueue({ materialize: false })
+                if (liveFilesPendingWrites) {
+                    return res.status(409).json({ error: 'Finish pending saves before enabling external file monitoring' })
+                }
+            }
+            const status = liveCharacterFiles.setEnabled(req.body.enabled)
+            liveFilesRevision = nodeCrypto.randomUUID()
+            liveFileEvents.notify('settings')
+            res.json(status)
+        })
+    } catch (error) { next(error) }
+})
+
 app.post('/api/live-files/sync', async (req, res, next) => {
     if (!await checkAuth(req, res)) return
     // Polling must not advance lastWriteAt or steal/deactivate another tab.
@@ -3513,6 +3553,9 @@ app.post('/api/live-files/sync', async (req, res, next) => {
     }
     try {
         await queueStorageOperation(async () => {
+            if (!liveCharacterFiles.isEnabled() && !liveFilesAdoption) {
+                return res.json({ enabled: false, revision: liveFilesRevision, etag: dbEtag })
+            }
             let errorMessage
             try {
                 await adoptSettledExternalProjection(true)
@@ -3542,6 +3585,9 @@ app.post('/api/external-edit/start', async (req, res, next) => {
     if (!checkActiveSession(req, res)) return
     try {
         await queueStorageOperation(async () => {
+            if (!liveCharacterFiles.isEnabled()) {
+                return res.status(409).json({ error: 'Enable external file monitoring before starting external editing' })
+            }
             res.json(await externalEditSession.start())
         })
     } catch (error) {
@@ -7185,9 +7231,11 @@ async function startServer() {
 for (const sig of ['SIGTERM', 'SIGINT']) {
     process.on(sig, async () => {
         console.log(`[Server] Received ${sig}, flushing pending data...`);
+        liveFileEvents.close();
         stopTunnel();
         try { await chatContentUploads.close(); } catch (e) { logger.warn('[ChatContent] Upload cleanup error:', e); }
         try { await flushPendingDb(); } catch (e) { logger.error('[Server] Flush error:', e); }
+        liveCharacterFiles.close();
         await saveObservation.flush();
         process.exit(0);
     });

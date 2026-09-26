@@ -60,6 +60,58 @@ afterEach(() => {
 })
 
 describe('BardPainter passage selection', () => {
+    test('replaces an earlier passage when the selection ends at the message wrapper', async () => {
+        const transcript = await mount()
+        const root = transcript.querySelector<HTMLElement>('[data-painter-message="0"]')!
+        const source = 'First paragraph.\n\nLast paragraph.'
+        DBState.db.characters[0].chats[0].message[0].data = source
+        root.innerHTML = '<span data-painter-body><p>First paragraph.</p><p>Last paragraph.</p></span><button>Edit</button>'
+        select(root.querySelector('p')!.firstChild!)
+        await finishSelection()
+        expect(get(painterSelection)?.anchor?.text).toBe('First paragraph.')
+
+        const range = document.createRange()
+        range.setStart(root.querySelector('p')!.firstChild!, 0)
+        range.setEnd(root, 1)
+        window.getSelection()!.removeAllRanges()
+        window.getSelection()!.addRange(range)
+        document.dispatchEvent(new Event('selectionchange'))
+        await finishSelection()
+
+        expect(get(painterSelection)?.anchor).toMatchObject({
+            start: 0, end: source.length, text: 'First paragraph.Last paragraph.',
+        })
+    })
+
+    test('captures the finished drag before clicking a panel control clears the highlight', async () => {
+        const transcript = await mount()
+        select(transcript.querySelector('strong')!.firstChild!)
+        await finishSelection()
+        select(transcript.querySelector('[data-painter-message="1"]')!.firstChild!)
+        document.dispatchEvent(new MouseEvent('mouseup'))
+        window.getSelection()!.removeAllRanges()
+        document.dispatchEvent(new Event('selectionchange'))
+        await finishSelection()
+
+        expect(get(painterSelection)?.anchor).toMatchObject({ messageId: 'other-message', text: 'other passage' })
+    })
+
+    test('captures only story text when wrapper selection includes sibling controls', async () => {
+        const transcript = await mount()
+        const root = transcript.querySelector<HTMLElement>('[data-painter-message="0"]')!
+        root.innerHTML = '<span data-painter-body><strong>echo</strong> then <em>echo</em></span><button>Edit</button>'
+        const range = document.createRange()
+        range.selectNodeContents(root)
+        window.getSelection()!.addRange(range)
+        document.dispatchEvent(new MouseEvent('mouseup'))
+        await tick()
+        expect(get(painterSelection)?.anchor).toMatchObject({ start: 0, end: source.length, text: 'echo then echo' })
+
+        select(root.querySelector('button')!.firstChild!)
+        await finishSelection()
+        expect(get(painterSelection)?.anchor?.text).toBe('echo then echo')
+    })
+
     test('does not insert on a held Enter, a coordinate-less click, or elapsed time', async () => {
         const transcript = await mount()
         const insert = vi.fn().mockResolvedValue(true)

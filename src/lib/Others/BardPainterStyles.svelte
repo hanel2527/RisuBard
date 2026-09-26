@@ -74,6 +74,13 @@
             if (current === session) { load(current.style); feedback = '화풍 프리셋을 삭제했습니다.' }
         })
     }
+    async function setDefault() {
+        await perform(async () => {
+            const current = session
+            if (!await current.setDefaultStyle(selected)) throw new Error(current.state.error || '기본 화풍을 저장하지 못했습니다.')
+            if (current === session) feedback = '새 채팅에서 사용할 기본 화풍으로 지정했습니다.'
+        })
+    }
     async function move(direction: -1 | 1) {
         await perform(async () => {
             const current = session
@@ -93,7 +100,7 @@
             <input type="search" aria-label="화풍 검색" placeholder="화풍 이름 검색" bind:value={query} oninput={() => page = 0} />
             <div class="list">
                 {#each filtered.slice(page * 16, (page + 1) * 16) as style (style.id)}
-                    <button type="button" class="preset" class:chosen={selected === style.id} aria-pressed={selected === style.id} data-painter-style={style.id} disabled={locked} onclick={() => { if (selected !== style.id) guard(() => select(style)) }}><span>{style.name}</span>{#if session.data.settings.styleId === style.id}<small>사용 중</small>{/if}</button>
+                    <button type="button" class="preset" class:chosen={selected === style.id} aria-pressed={selected === style.id} data-painter-style={style.id} disabled={locked} onclick={() => { if (selected !== style.id) guard(() => select(style)) }}><span>{style.name}</span>{#if session.defaultStyle?.id === style.id}<small>기본 화풍</small>{/if}{#if session.data.settings.styleId === style.id}<small>사용 중</small>{/if}</button>
                 {:else}<p class="hint">검색 결과가 없습니다.</p>{/each}
             </div>
             {#if pages > 1}<div class="pagination"><button type="button" aria-label="이전 화풍 페이지" disabled={page === 0} onclick={() => page--}>이전</button><span>{page + 1} / {pages}</span><button type="button" aria-label="다음 화풍 페이지" disabled={page + 1 >= pages} onclick={() => page++}>다음</button></div>{/if}
@@ -116,6 +123,7 @@
                 </div></details>
             </fieldset>
             <div class="save-bar">
+                {#if original}<button type="button" disabled={locked || dirty || session.defaultStyle?.id === selected} onclick={setDefault}>기본 화풍으로 지정</button>{/if}
                 {#if original && !builtIn}<button type="button" class="primary" disabled={locked || !dirty || !draft.name.trim()} onclick={() => save(false)}>덮어쓰기</button>{/if}
                 <button type="button" class:primary={!original || builtIn} disabled={locked || !canCopy} onclick={() => save(true)}>{original ? '새 이름으로 저장' : '새 프리셋 저장'}</button>
                 {#if dirty && original}<button type="button" disabled={locked} onclick={() => guard(() => load(original!))}>되돌리기</button>{/if}

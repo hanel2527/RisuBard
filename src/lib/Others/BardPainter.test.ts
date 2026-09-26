@@ -55,6 +55,22 @@ beforeEach(() => {
 afterEach(() => { component?.$destroy(); component = undefined; document.body.replaceChildren() })
 
 describe('BardPainter workspace', () => {
+    test('shows the effective image orientation and active style beside generation settings', async () => {
+        mount(); await tick()
+        const summary = () => document.querySelector('[aria-label="현재 이미지 형식과 화풍"]')
+        expect(summary()?.textContent).toContain('세로')
+        expect(summary()?.textContent).toContain('잉크')
+        expect(summary()?.parentElement?.querySelector('button:last-of-type')?.textContent).toBe('생성 설정')
+        runtime.current.data.settings.width = 1216
+        runtime.current.data.settings.height = 832
+        runtime.current.style.name = '수채화'
+        await tick()
+        expect(summary()?.textContent).toContain('가로')
+        expect(summary()?.textContent).toContain('수채화')
+        runtime.current.data.settings.height = 1216
+        await tick()
+        expect(summary()?.textContent).toContain('정사각형')
+    })
     test('applies an image preset only on button click and restores the applied label', async () => {
         runtime.current.imagePreset = { name: 'Saved image', promptPresetId: 'current', values: {} }
         mount(); await tick()
