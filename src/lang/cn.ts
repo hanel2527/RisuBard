@@ -655,8 +655,6 @@ export const languageChinese = {
     "useChatCopy": "激活聊天消息复制",
     "useChatSticker": "激活聊天贴图",
     "useAdditionalAssetsPreview": "使用额外资源预览",
-    "autoTranslateInput": "自动输入翻译",
-    "enterMessageForTranslateToEnglish": "输入消息以翻译成英文",
     "recent": "最新",
     "downloads": "下载",
     "trending": "热门",

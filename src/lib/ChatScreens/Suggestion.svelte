@@ -22,7 +22,7 @@
     let { send, messageInput }: Props = $props();
     let suggestMessages:string[] = $state(DBState.db.characters[$selectedCharID]?.chats[DBState.db.characters[$selectedCharID].chatPage]?.suggestMessages)
     let suggestMessagesTranslated:string[] = $state()
-    let toggleTranslate:boolean = $state(DBState.db.autoTranslate)
+    let toggleTranslate:boolean = $state(false)
     let progress:boolean = $state();
     let progressChatPage=-1;
     let abortController:AbortController;

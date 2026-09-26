@@ -655,8 +655,6 @@ export const languageVietnamese = {
     "useChatCopy": "Sử dụng Sao chép tin nhắn trò chuyện",
     "useChatSticker": "Sử dụng nhãn dán trò chuyện",
     "useAdditionalAssetsPreview": "Sử dụng bản xem trước nội dung bổ sung",
-    "autoTranslateInput": "Đầu vào dịch tự động",
-    "enterMessageForTranslateToEnglish": "Nhập tin nhắn để dịch sang tiếng Anh",
     "recent": "Gần đây",
     "downloads": "Tải xuống",
     "trending": "Đang thịnh hành",

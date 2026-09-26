@@ -1,15 +1,18 @@
-import { afterEach, describe, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { mount, tick, unmount } from 'svelte'
 import { SvelteMap } from 'svelte/reactivity'
 import ChatBody from './ChatBody.svelte'
 import { ParseMarkdown } from 'src/ts/parser/parser.svelte'
+import { DBState } from 'src/ts/stores.svelte'
+import { getCurrentChat, type Chat } from 'src/ts/storage/database.svelte'
+import { getLLMCache, translateHTML } from 'src/ts/translator/translator'
 
 vi.mock('src/ts/stores.svelte', () => ({ DBState: { db: {} } }))
 vi.mock('src/ts/util', () => ({ sleep: async () => {} }))
 vi.mock('src/ts/alert', () => ({ alertError: vi.fn() }))
 vi.mock('src/ts/translator/translator', () => ({ getLLMCache: vi.fn(), translateHTML: vi.fn() }))
 vi.mock('src/ts/process/modules', () => ({ getModuleAssets: () => [] }))
-vi.mock('src/ts/storage/database.svelte', () => ({ getCurrentCharacter: () => ({}) }))
+vi.mock('src/ts/storage/database.svelte', () => ({ getCurrentCharacter: () => ({}), getCurrentChat: vi.fn() }))
 vi.mock('src/ts/globalApi.svelte', () => ({ getFileSrc: vi.fn() }))
 vi.mock('src/ts/parser/parser.svelte', () => ({
     ParseMarkdown: vi.fn(async (text: string) => text),
@@ -27,10 +30,16 @@ vi.mock('src/ts/parser/parser.svelte', () => ({
 }))
 
 const mounted: ReturnType<typeof mount>[] = []
+beforeEach(() => { vi.useFakeTimers() })
 afterEach(async () => {
     for (const component of mounted.splice(0)) await unmount(component)
     document.body.replaceChildren()
     vi.mocked(ParseMarkdown).mockReset().mockImplementation(async text => text)
+    vi.mocked(getCurrentChat).mockReset()
+    vi.mocked(getLLMCache).mockReset()
+    vi.mocked(translateHTML).mockReset()
+    for (const key of Object.keys(DBState.db)) delete DBState.db[key]
+    vi.useRealTimers()
 })
 
 async function settle() {
@@ -39,7 +48,8 @@ async function settle() {
     await tick()
     await Promise.resolve()
     await tick()
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await vi.advanceTimersByTimeAsync(10)
+    await tick()
 }
 
 async function render(html: string, onRemoveInlay?: (id: string, occurrence: number) => void) {
@@ -142,5 +152,79 @@ describe('streaming chat body', () => {
         finishOld('<p>Outdated</p>')
         await settle()
         expect(target.textContent).toBe('Newest')
+    })
+})
+
+async function renderTranslation(role: 'user' | 'char', options: { global?: boolean, local?: boolean, cachedOnly?: boolean } = {}) {
+    const settings = new SvelteMap<string, boolean | undefined>([
+        ['global', options.global ?? true], ['local', options.local],
+    ])
+    Object.defineProperty(DBState.db, 'autoTranslate', {
+        configurable: true, enumerable: true, get: () => settings.get('global'),
+    })
+    Object.assign(DBState.db, { translatorType: 'llm', autoTranslateCachedOnly: !!options.cachedOnly })
+    vi.mocked(getCurrentChat).mockReturnValue({
+        id: 'chat-a', get autoTranslate() { return settings.get('local') },
+    } as Chat)
+    vi.mocked(translateHTML).mockResolvedValue('<p>번역된 메시지</p>')
+    const state = new SvelteMap<string, boolean>([['translated', false]])
+    const target = document.createElement('div')
+    document.body.append(target)
+    mounted.push(mount(ChatBody, {
+        target, props: {
+            msgDisplay: '<p>Original message</p>', character: 'test', idx: 1, role,
+            get translated() { return state.get('translated')! },
+            retranslate: false, translating: false, modelShortName: '', bodyRoot: target,
+        },
+    }))
+    await settle()
+    return { target, settings, manualTranslate: () => state.set('translated', true) }
+}
+
+describe('chat automatic translation', () => {
+    test('leaves user messages original, including cached ones, but allows manual translation', async () => {
+        vi.mocked(getLLMCache).mockResolvedValue('cached')
+        const { target, manualTranslate } = await renderTranslation('user', { cachedOnly: true })
+        expect(target.textContent).toBe('Original message')
+        expect(translateHTML).not.toHaveBeenCalled()
+        expect(getLLMCache).not.toHaveBeenCalled()
+        manualTranslate()
+        await settle()
+        expect(target.textContent).toBe('번역된 메시지')
+    })
+
+    test('applies chat overrides live without changing the global default', async () => {
+        const { target, settings } = await renderTranslation('char')
+        expect(target.textContent).toBe('번역된 메시지')
+        settings.set('local', false)
+        await settle()
+        expect(target.textContent).toBe('Original message')
+        expect(settings.get('global')).toBe(true)
+        settings.set('global', false)
+        settings.set('local', true)
+        await settle()
+        expect(target.textContent).toBe('번역된 메시지')
+    })
+
+    test('allows manual translation while this chat opts out of automatic translation', async () => {
+        const { target, manualTranslate } = await renderTranslation('char', { local: false })
+        expect(target.textContent).toBe('Original message')
+        expect(translateHTML).not.toHaveBeenCalled()
+        manualTranslate()
+        await settle()
+        expect(target.textContent).toBe('번역된 메시지')
+    })
+
+    test('does not enable translation after a pending cache lookup when the chat is turned off', async () => {
+        let resolveCache!: (value: string) => void
+        // The project targets ES2023, before Promise.withResolvers.
+        vi.mocked(getLLMCache).mockImplementationOnce(() => new Promise(resolve => { resolveCache = resolve }))
+        const { target, settings } = await renderTranslation('char', { cachedOnly: true })
+        settings.set('local', false)
+        await settle()
+        resolveCache('cached')
+        await settle()
+        expect(target.textContent).toBe('Original message')
+        expect(translateHTML).not.toHaveBeenCalled()
     })
 })

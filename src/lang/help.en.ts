@@ -546,7 +546,7 @@ export const helpEn = {
         htmlTranslation:
             "When using the Firefox/Bergamot translator, translate HTML markup too. Turn this off if markup breaks and you only want plain text translated.",
         autoTranslation:
-            "Automatically translate character responses as soon as they arrive. When off, use the per-message translate button. Pairs well with No Wait For Translate if you want the original shown first.",
+            "Default automatic translation for character messages. The composer toggle overrides this setting for the current chat only; chats without an override follow this default. User messages and typed input are never translated automatically: use the per-message translate button or Translate Input. Pairs well with No Wait For Translate if you want the original shown first.",
         translationResponseSize:
             "Maximum response tokens to request during LLM translation. Too low can cut long translations; too high increases cost. 1000-4000 is common.",
         translatorPreset:

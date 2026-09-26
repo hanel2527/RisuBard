@@ -40,7 +40,7 @@ function screen(overrides: Record<string, unknown> = {}) {
         ...overrides,
     }
     const api = new Function(...Object.keys(dependencies), `
-        let messageInput = 'original input', messageInputTranslate = '', fileInput = [], chatPage = 0;
+        let messageInput = 'original input', fileInput = [], chatPage = 0;
         let preparingInput = false, sendingChat = false, sendingChatKey = null;
         ${code}
         return {sendMain, sendChatMain, state: () => ({messageInput, preparingInput, sendingChat})};

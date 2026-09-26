@@ -655,8 +655,6 @@ export const languageGerman = {
     "useChatCopy": "Kopiervorlage für Chatnachrichten verwenden",
     "useChatSticker": "Chatsticker verwenden",
     "useAdditionalAssetsPreview": "Vorschau für zusätzliche Medien verwenden",
-    "autoTranslateInput": "Eingabe automatisch übersetzen",
-    "enterMessageForTranslateToEnglish": "Nachricht eingeben, um sie ins Englische zu übersetzen",
     "recent": "Letzte",
     "downloads": "Downloads",
     "trending": "Trends",

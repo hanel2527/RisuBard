@@ -713,8 +713,6 @@ export const languageChineseTraditional = {
     "useChatCopy": "啟用對話訊息複製",
     "useChatSticker": "啟用對話貼圖",
     "useAdditionalAssetsPreview": "使用額外資源預覽",
-    "autoTranslateInput": "自動輸入翻譯",
-    "enterMessageForTranslateToEnglish": "輸入訊息以翻譯成英文",
     "recent": "最新",
     "downloads": "下載",
     "trending": "熱門",
