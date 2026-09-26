@@ -10,6 +10,7 @@
     import { getFileSrc } from "src/ts/globalApi.svelte";
     import { clearGenericChatImageStyles, isFirstMessageStudioManagedImage } from './chatImageHandling'
     import { retainedChatHtml } from './retainedChatHtml'
+    import { inlayImageControls } from './inlayImageControls'
 
     interface Props {
         character?: simpleCharacterArgument|string|null
@@ -25,6 +26,7 @@
         modelShortName: string
         renderRawStreaming?: boolean
         rawStreamingText?: string
+        onRemoveInlay?: (id: string, occurrence: number) => void
     }
 
     let {
@@ -40,6 +42,7 @@
         modelShortName = '',
         renderRawStreaming = false,
         rawStreamingText = '',
+        onRemoveInlay,
     }: Props =  $props()
 
     // svelte-ignore non_reactive_update
@@ -264,10 +267,48 @@
 {#if shouldRenderRawStreaming}
     <span class="whitespace-pre-wrap">{rawStreamingText}</span>
 {:else}
-    <span data-painter-body style="display: contents" use:retainedChatHtml={{
+    <span data-painter-body style="display: contents" use:inlayImageControls={onRemoveInlay} use:retainedChatHtml={{
         content: markParsingResult,
         format: (html) => addMetadataToElement(trimMarkdown(html), modelShortName),
         onRender: onHtmlRendered,
         pendingHtml: (translated || retranslate) && DBState.db.showTranslationLoading ? lastParsed : undefined,
     }}></span>
 {/if}
+
+<style>
+    :global(.inlay-image-control) {
+        position: relative;
+        display: inline-block;
+        max-width: 100%;
+        vertical-align: middle;
+    }
+    :global(.inlay-image-control > img) { margin: 0; }
+    :global(.x-risu-risu-inlay-image > .inlay-image-control) { width: 100%; max-width: 20rem; }
+    :global(.inlay-image-remove) {
+        position: absolute;
+        top: 0.5rem;
+        right: 0.5rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 2.75rem;
+        height: 2.75rem;
+        border-radius: 0.5rem;
+        border: 1px solid var(--color-darkborderc);
+        background: var(--color-darkbg);
+        color: var(--color-textcolor);
+        opacity: 0;
+        pointer-events: none;
+        cursor: pointer;
+        transition: opacity 150ms;
+    }
+    :global(.inlay-image-control:hover > .inlay-image-remove),
+    :global(.inlay-image-control:focus-within > .inlay-image-remove) {
+        opacity: 1;
+        pointer-events: auto;
+    }
+    :global(.inlay-image-remove:hover) { color: var(--color-danger); }
+    :global(.inlay-image-remove:focus-visible) { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+    @media (hover: none) { :global(.inlay-image-remove) { opacity: 1; pointer-events: auto; } }
+    @media (prefers-reduced-motion: reduce) { :global(.inlay-image-remove) { transition: none; } }
+</style>

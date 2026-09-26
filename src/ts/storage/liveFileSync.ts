@@ -7,6 +7,7 @@ export interface LiveFileSnapshot {
 export type LiveChatMetadataBaseline = Map<string, { metadata: Record<string, any>, revision?: string }>
 
 export interface LiveFileSyncResult {
+    enabled?: boolean
     revision: string
     etag: string | null
     snapshot?: LiveFileSnapshot
@@ -39,6 +40,39 @@ export function createLiveFileRefresh(options: {
         try { await operation } finally {
             if (options.getInFlight() === operation) options.setInFlight(null)
         }
+    }
+}
+
+/** Coalesce server signals without dropping a change received during a save. */
+export function createLiveFileSignalRefresh(options: {
+    refresh(): Promise<void>
+    isActive(): boolean
+    isVisible(): boolean
+    onError(error: unknown): void
+}) {
+    let pending = false
+    let running = false
+    let closed = false
+    const canRefresh = () => !closed && options.isActive() && options.isVisible()
+    async function drain() {
+        if (running || !canRefresh()) return
+        running = true
+        try {
+            while (pending && canRefresh()) {
+                pending = false
+                try { await options.refresh() } catch (error) { options.onError(error) }
+            }
+        } finally {
+            running = false
+        }
+    }
+    return {
+        signal() {
+            if (closed) return
+            pending = true
+            void drain()
+        },
+        close() { closed = true; pending = false },
     }
 }
 

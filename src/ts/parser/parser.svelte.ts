@@ -704,16 +704,20 @@ function createMissingInlayPlaceholder(id: string): HTMLDivElement {
 export function parseInlayAssets(data:string){
     const inlayMatch = data.match(/{{(inlay|inlayed|inlayeddata)::(.+?)}}/g)
     if(inlayMatch){
+        const occurrences = new Map<string, number>()
         for(const inlay of inlayMatch){
             const inlayType = inlay.startsWith('{{inlayed') ? 'inlayed' : 'inlay'
             const id = inlay.substring(inlay.indexOf('::') + 2, inlay.length - 2)
+            const occurrence = occurrences.get(id) ?? 0
+            occurrences.set(id, occurrence + 1)
+            const escapedId = id.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
             let prefix = inlayType !== 'inlay' ? `<div class="risu-inlay-image">` : ''
             let postfix = inlayType !== 'inlay' ? `</div>\n\n` : ''
 
             let cached = blobUrlCache.get(id)
             if(!cached){
                 // If not in memory cache, inject placeholder
-                const placeholder = `${prefix}<div data-inlay-id="${id}" data-inlay-type="${inlayType}" class="risu-inlay-placeholder risu-loading-spinner" style="width: 100%; min-height: 100px; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--color-selected) 20%, transparent); border-radius: 8px;"></div>${postfix}`
+                const placeholder = `${prefix}<div data-inlay-id="${escapedId}" data-inlay-occurrence="${occurrence}" data-inlay-type="${inlayType}" class="risu-inlay-placeholder risu-loading-spinner" style="width: 100%; min-height: 100px; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--color-selected) 20%, transparent); border-radius: 8px;"></div>${postfix}`
                 data = data.replace(inlay, placeholder)
                 continue
             }
@@ -726,7 +730,7 @@ export function parseInlayAssets(data:string){
                         data = data.replace(inlay, '')
                         break
                     }
-                    data = data.replace(inlay, `${prefix}<img src="${url}"/>${postfix}`)
+                    data = data.replace(inlay, `${prefix}<img src="${url}" data-inlay-image-id="${escapedId}" data-inlay-occurrence="${occurrence}"/>${postfix}`)
                     break
                 case 'video':
                     data = data.replace(inlay, `${prefix}<video controls><source src="${url}" type="video/mp4"></video>${postfix}`)
@@ -792,6 +796,8 @@ async function processInlayQueue() {
                         if (DBState.db.hideAllImages) { el.replaceWith(document.createComment('hidden inlay')); break }
                         const img = document.createElement('img')
                         img.src = url
+                        img.dataset.inlayImageId = id
+                        img.dataset.inlayOccurrence = el.dataset.inlayOccurrence ?? '0'
                         img.style.animation = 'risu-fade-in 0.3s ease-out'
                         // Fallback for legacy inlays without inlay_info:
                         // if <img> fails, probe Content-Type and swap to video/audio

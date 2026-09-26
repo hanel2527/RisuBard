@@ -45,5 +45,7 @@ export function capturePainterOutfit(subject: PainterSubject, name: string, incl
 }
 
 export function promotePainterOutfit(outfit: PainterOutfit): PainterOutfit {
-    return { ...outfit, id: v4() }
+    const copy = { ...outfit, id: v4() }
+    delete copy.attachToCard
+    return copy
 }

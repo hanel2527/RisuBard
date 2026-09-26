@@ -37,7 +37,7 @@ import { claimSaveDbRuntime } from './storage/saveDbRuntime'
 import { createCanonicalSaveConflict } from './storage/canonicalSaveConflict'
 import { createSessionHandoff } from './storage/sessionHandoff'
 import { hasDisplayNameCollision } from './displayName'
-import { applyLiveFileSnapshot, createLiveFileRefresh, type LiveFileConflict, type LiveChatMetadataBaseline } from './storage/liveFileSync'
+import { applyLiveFileSnapshot, createLiveFileRefresh, createLiveFileSignalRefresh, type LiveFileConflict, type LiveChatMetadataBaseline } from './storage/liveFileSync'
 
 export const forageStorage = new AutoStorage()
 
@@ -569,6 +569,11 @@ export async function saveDb() {
         const result = await forageStorage.syncLiveFiles(liveRevision)
         if (!saveRuntime.isActive()) return
         if (gotChannel) throw new Error(language.sessionSavePausedTitle)
+        if (result.enabled === false) {
+            liveRevision = undefined
+            lastLiveError = ''
+            return
+        }
         if (result.snapshot) {
             if (result.recovery?.conflicts) {
                 notifyInfo(`외부 파일 변경을 반영했습니다. 겹친 앱 편집 ${result.recovery.conflicts}건은 서버 데이터 폴더의 ${result.recovery.path}에 보관했습니다.`)
@@ -619,20 +624,36 @@ export async function saveDb() {
         if (gotChannel) throw new Error(language.sessionSavePausedTitle)
     }
     refreshLiveFilesImpl = refreshWithSessionCheck
-    let pollPending = false
-    let lastPollError = ''
-    const livePoll = supportsPatchSync ? setInterval(() => {
-        if (pollPending || !saveRuntime.isActive() || document.hidden || gotChannel) return
-        pollPending = true
-        void refreshThisRuntime().then(() => { lastPollError = '' }).catch(error => {
-            if (error?.code === 'LIVE_FILES_INACTIVE') return
+    let lastSignalError = ''
+    const liveSignals = createLiveFileSignalRefresh({
+        isActive: () => supportsPatchSync && saveRuntime.isActive() && !gotChannel,
+        isVisible: () => !document.hidden,
+        refresh: async () => {
+            await refreshThisRuntime()
+            lastSignalError = ''
+        },
+        onError: error => {
+            if ((error as { code?: string })?.code === 'LIVE_FILES_INACTIVE') return
             const message = String(error)
-            if (!lastLiveError && lastPollError !== message) console.warn('[Live files]', error)
-            lastPollError = message
-        }).finally(() => { pollPending = false })
-    }, 750) : null
+            if (!lastLiveError && lastSignalError !== message) console.warn('[Live files]', error)
+            lastSignalError = message
+        },
+    })
+    let stopLiveEvents: (() => void) | undefined
+    let liveEventsClosed = false
+    const catchUpLiveFiles = () => { if (!document.hidden) liveSignals.signal() }
+    if (supportsPatchSync) {
+        document.addEventListener('visibilitychange', catchUpLiveFiles)
+        void forageStorage.subscribeLiveFileChanges(liveSignals.signal).then(stop => {
+            if (liveEventsClosed) stop()
+            else stopLiveEvents = stop
+        })
+    }
     saveRuntime.addCleanup(() => {
-        if (livePoll) clearInterval(livePoll)
+        liveEventsClosed = true
+        stopLiveEvents?.()
+        liveSignals.close()
+        document.removeEventListener('visibilitychange', catchUpLiveFiles)
         if (refreshLiveFilesImpl === refreshWithSessionCheck) refreshLiveFilesImpl = null
     })
 

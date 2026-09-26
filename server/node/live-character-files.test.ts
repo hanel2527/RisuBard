@@ -6,6 +6,113 @@ const { createUserDataRepository } = require('./user-data-repository.cjs')
 const { createFileKv } = require('./file-kv.cjs')
 const { atomicWriteFile } = require('./file-store.cjs')
 const { metadataSnapshot, mergePendingLiveDatabase } = require('./live-character-files.cjs')
+const { createLiveFileMonitoring } = require('./live-file-monitoring.cjs')
+
+test.each([
+    ['android', {}, false],
+    ['linux', { PREFIX: '/data/data/com.termux/files/usr' }, false],
+    ['win32', {}, true],
+    ['linux', {}, true],
+])('monitoring uses server platform defaults and persists user overrides: %s %j', (platform, env, expected) => {
+    const { repository } = fixture()
+    const options = { repository, platform, env, watch: false, writeAsset: () => {} }
+    const monitor = createLiveFileMonitoring(options)
+    expect(monitor.status()).toEqual({ enabled: expected, defaultEnabled: expected })
+    monitor.setEnabled(!expected)
+    monitor.close()
+    const reopened = createLiveFileMonitoring(options)
+    expect(reopened.status()).toEqual({ enabled: !expected, defaultEnabled: expected })
+    expect(() => reopened.setEnabled('false')).toThrow('boolean')
+    reopened.close()
+})
+
+test('failed monitoring setting persistence restores the previous disabled state', () => {
+    const { root, repository } = fixture()
+    const monitor = createLiveFileMonitoring({ repository, platform: 'android', env: {}, watch: false, writeAsset: () => {} })
+    fs.writeFileSync(path.join(root, 'config'), 'blocks the config directory')
+    expect(() => monitor.setEnabled(true)).toThrow()
+    expect(monitor.isEnabled()).toBe(false)
+    monitor.close()
+})
+
+test('interrupted monitoring publication recovers on reopen', () => {
+    const { root, repository } = fixture()
+    const options = { repository, platform: 'android', env: {}, watch: false, writeAsset: () => {} }
+    const monitor = createLiveFileMonitoring(options)
+    monitor.setEnabled(false)
+    const rename = fs.renameSync
+    const failure = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+        if (String(to) === path.join(root, 'config/live-file-monitoring.json.sha256')) throw new Error('interrupted checksum')
+        return rename(from, to)
+    })
+    try {
+        expect(() => monitor.setEnabled(true)).toThrow('interrupted checksum')
+        expect(monitor.isEnabled()).toBe(false)
+    } finally { failure.mockRestore(); monitor.close() }
+    const reopened = createLiveFileMonitoring(options)
+    expect(reopened.status().enabled).toBe(true)
+    reopened.close()
+})
+
+test('re-enabling reconciles valid external metadata even when its checksum was updated', () => {
+    const { root, repository } = fixture()
+    const monitor = createLiveCharacterFiles({ repository, enabled: false, watch: false, settleMs: 0, writeAsset: () => {} })
+    const metadata = repository.exportLegacyDatabase().characters[0]
+    const { chats, ...value } = metadata
+    atomicWriteFile(root, 'characters/one/metadata.json', Buffer.from(JSON.stringify({ ...value, desc: 'Edited while off' })))
+    monitor.setEnabled(true)
+    expect(monitor.reconcile({ verifyMetadata: true }).database.characters[0].desc).toBe('Edited while off')
+    monitor.close()
+})
+
+test('disabled monitoring creates no watcher and performs no repository scans', () => {
+    const { repository } = fixture()
+    const getRevision = vi.spyOn(repository, 'getProjectionRevision')
+    const exportDatabase = vi.spyOn(repository, 'exportLegacyDatabase')
+    const watcher = { on: vi.fn(), unref: vi.fn(), close: vi.fn() }
+    const watch = vi.spyOn(fs, 'watch').mockReturnValue(watcher as any)
+    let live: any
+    try {
+        live = createLiveCharacterFiles({ repository, enabled: false, writeAsset: () => {} })
+        expect(watch).not.toHaveBeenCalled()
+        expect(getRevision).not.toHaveBeenCalled()
+        expect(exportDatabase).not.toHaveBeenCalled()
+        live.invalidate(); live.reset(); live.accept()
+        expect(live.reconcile({ verifyMetadata: true })).toBeNull()
+        expect(getRevision).not.toHaveBeenCalled()
+        live.setEnabled(true)
+        expect(watch).toHaveBeenCalledOnce()
+        live.setEnabled(false)
+        expect(watcher.close).toHaveBeenCalledOnce()
+        getRevision.mockClear(); exportDatabase.mockClear()
+        live.reconcile({ verifyMetadata: true }); live.reset(); live.accept()
+        expect(getRevision).not.toHaveBeenCalled()
+        expect(exportDatabase).not.toHaveBeenCalled()
+    } finally { live?.close(); vi.restoreAllMocks() }
+})
+
+test('watcher signals relevant changes and failures without reading file contents', () => {
+    const { repository } = fixture()
+    const onChange = vi.fn()
+    const watcher = { on: vi.fn(), unref: vi.fn(), close: vi.fn() }
+    const watch = vi.spyOn(fs, 'watch').mockReturnValue(watcher as any)
+    let live: any
+    try {
+        live = createLiveCharacterFiles({ repository, onChange, writeAsset: () => {} })
+        // A failed validation marks retry state dirty; it is not a new file event.
+        live.invalidate()
+        expect(onChange).not.toHaveBeenCalled()
+        const listener = watch.mock.calls[0][2] as unknown as (event: string, name: string) => void
+        const read = vi.spyOn(fs, 'readFileSync')
+        listener('change', 'kv/objects/irrelevant')
+        expect(onChange).not.toHaveBeenCalled()
+        listener('change', 'characters/one/metadata.json')
+        expect(onChange).toHaveBeenCalledOnce()
+        expect(read).not.toHaveBeenCalled()
+        watcher.on.mock.calls.find(call => call[0] === 'error')![1](new Error('watch unavailable'))
+        expect(onChange).toHaveBeenCalledTimes(2)
+    } finally { live?.close(); vi.restoreAllMocks() }
+})
 
 test.each(['clear', 'remove-field'])('external chat lore deletion is adopted and preserves pending messages: %s', (operation) => {
     const { root, repository } = fixture()

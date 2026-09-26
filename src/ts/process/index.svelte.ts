@@ -1,4 +1,5 @@
 import { isOocAssistantTurn } from '../risubard/oocTurns'
+import { createWikiInquiryDiagnostic, formatWikiInquiryDiagnostic, wikiInquiryFailure, type WikiInquiryFailure } from '../risubard/wikiInquiryDiagnostics'
 import { get } from "svelte/store";
 import { type character, type MessageGenerationInfo, type Chat, type MessagePresetInfo, changeToPreset, getActivePromptOverlayToggleTemplate, setCurrentChat, type Message, normalizeChat, type StreamingDisplayOptimizationMode } from "../storage/database.svelte";
 import { DBState } from '../stores.svelte';
@@ -32,6 +33,7 @@ import { resolveChatModelBinding, resolvePresetMaxOutputTokens } from "./request
 import { getModuleAssets, getModuleLorebooksWithSources, getModuleToggles } from "./modules";
 import { forageStorage, readImage, refreshLiveFiles } from "../globalApi.svelte";
 import { chatGenKey, chatProcessStage, endGeneration, isChatGenerating, setGenerationStage, startGeneration } from "./generationState";
+import { waitForSendSync } from './sendPreparation';
 import { clearPendingSend, registerPendingSend } from "./request/pendingSends";
 import {
     buildBoundedNarrativeInquiryFallback,
@@ -1141,16 +1143,28 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     preview?:boolean
     previewPrompt?:boolean
 } = {}):Promise<boolean> {
-
+    const characterBeforeSync = DBState.db.characters[get(selectedCharID)]
+    const chatBeforeSync = characterBeforeSync?.chats[characterBeforeSync.chatPage]
+    const characterIdBeforeSync = characterBeforeSync?.chaId
+    const chatIdBeforeSync = chatBeforeSync?.id
     try {
-        await refreshLiveFiles()
+        await waitForSendSync(refreshLiveFiles, {
+            signal: arg.signal,
+            timeoutMessage: language.chatSendSyncTimeout,
+        })
     } catch (error) {
+        if (arg.signal?.aborted) return false
         notifyError(`외부 파일을 확인하지 못해 전송하지 않았습니다: ${error instanceof Error ? error.message : String(error)}`)
         return false
     }
 
     const selected = DBState.db.characters[get(selectedCharID)]
     const selectedConversation = selected?.chats[selected.chatPage]
+    if (selected?.chaId !== characterIdBeforeSync
+        || (chatIdBeforeSync ? selectedConversation?.id !== chatIdBeforeSync : selectedConversation !== chatBeforeSync)) {
+        notifyError(language.chatSendSelectionChanged)
+        return false
+    }
     if (selectedConversation?.risuBardWikiReboot) return false
 
     chatProcessStage.set(0)
@@ -1546,6 +1560,9 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     }
 
     const lorepmt = await loadLoreBookV3Prompt()
+    let wikiInquiryAttempted = false
+    let wikiInquiryError: WikiInquiryFailure | undefined
+    let wikiInquirySources: Awaited<ReturnType<typeof loadNarrativeInquiry>>['sources'] = []
     const narrativeContextObservation: {
         mode: 'disabled' | 'legacy' | 'current'
         promptMode: 'disabled' | 'v2-current' | 'bounded-v1-fallback'
@@ -1619,6 +1636,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             if (!narrativeContext.sourceChanged
                 && currentInput.trim().length > 0) {
                 const inquiryStartedAt = performance.now()
+                wikiInquiryAttempted = true
                 try {
                     const inquirySettings = resolvedRisuBardSettings(currentChat)
                     activateWikiEmbeddings(currentChar.chaId, narrativeSessionChatId, DBState.db)
@@ -1706,6 +1724,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                         }
                         : initialInquiry
                     sources = inquiry.sources
+                    wikiInquirySources = sources
                     narrativeContextObservation.promptMode = inquiry.mode
                     narrativeContextObservation.graphRevision =
                         inquiry.graphRevision
@@ -1727,6 +1746,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                         inquiry.sources.map((source) => source.id)
                 }
                 catch (error) {
+                    wikiInquiryError = wikiInquiryFailure(error)
                     narrativeContext.sourceChanged = true
                     narrativeContextObservation.mode = 'legacy'
                     narrativeContextObservation.promptMode =
@@ -1821,6 +1841,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             }
         }
         catch (error) {
+            wikiInquiryError = wikiInquiryFailure(error)
             narrativeContextObservation.reason = 'context-preparation-failed'
             console.warn('RisuBard narrative context fallback', error)
         }
@@ -2867,6 +2888,16 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             selectedSourceIds: narrativeContextObservation.selectedSourceIds,
             selectedTokens: narrativeContextObservation.selectedTokens,
             inquiryDurationMs: narrativeContextObservation.inquiryDurationMs,
+            wikiInquiry: createWikiInquiryDiagnostic({
+                attempted: wikiInquiryAttempted,
+                ...(wikiInquiryAttempted && !wikiInquiryError ? {
+                    documentCount: narrativeContextObservation.inspectedNodeCount,
+                    candidateCount: narrativeContextObservation.candidateCount,
+                } : {}),
+                failure: wikiInquiryError,
+                sources: wikiInquirySources,
+                messages: formated,
+            }),
         }),
         stageTiming: {
             stage1: stageTimings.stage1Duration,
@@ -2908,7 +2939,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         chatId: narrativeSessionChatId,
         operation: 'request',
         timestamp: Date.now(),
-        message: `${generationModel} 요청 시작`,
+        message: `${generationModel} 요청 시작 / ${formatWikiInquiryDiagnostic(generationInfo.risuBardContext!.wikiInquiry!)}`,
         wikiPaths: generationInfo.risuBardContext?.wikiPaths,
     })
 

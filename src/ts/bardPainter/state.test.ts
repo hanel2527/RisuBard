@@ -55,6 +55,7 @@ it('saves clothing without pose, appearance or transient state by default', () =
 it('promotion copies a chat outfit to a separately editable bot outfit', () => {
     const original = capturePainterOutfit(subject({ id: 'aria' }), '여행복', true)
     const promoted = promotePainterOutfit(original)
+    expect(promotePainterOutfit({ ...original, attachToCard: true }).attachToCard).not.toBe(true)
     expect(promoted.id).not.toBe(original.id)
     promoted.clothing = 'black dress'
     expect(original.clothing).toBe('white shirt')

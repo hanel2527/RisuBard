@@ -55,6 +55,13 @@
         && messages.slice(pageStart, pageEnd).every((_, index) => hiddenOocIndices.has(pageStart + index)));
     let hashes: Set<number> = new Set();
     type ChatInstance = {
+        updateRerollControls?: (state: {
+            rerollIcon: false | 'force'
+            onNextSwipe: () => void
+            onDeleteSwipe: () => void
+            currentPage: number
+            totalPages: number
+        }) => void
         updateStreamingDisplay?: (state: {
             isOptimizedStreamingMessage: boolean
             streamingOptimizationMode: StreamingDisplayOptimizationMode
@@ -135,7 +142,8 @@
             const hashRenderContext = preserveReadingPosition
                 ? JSON.stringify([currentCharacter.chaId, currentCharacter.chatPage, currentChat?.id, message.role, message.isComment])
                 : '';
-            let hashd = hashRenderContext + hashMessageData + (message.chatId ?? '') + i.toString() + messageLargePortrait.toString() + message.disabled?.toString() + reloadPointer.toString() + (message.swipeId ?? 0).toString() + (message.swipes?.length ?? 0).toString() + isRerollTarget.toString() + (turnNumber ?? 0).toString() + hashMemoryState;
+            // Becoming an older reply only changes controls, not the reading DOM.
+            let hashd = hashRenderContext + hashMessageData + (message.chatId ?? '') + i.toString() + messageLargePortrait.toString() + message.disabled?.toString() + reloadPointer.toString() + (message.swipeId ?? 0).toString() + (message.swipes?.length ?? 0).toString() + (turnNumber ?? 0).toString() + hashMemoryState;
             const currentHash = hashCode(hashd);
             currentHashes.add(currentHash);
             if(!hashes.has(currentHash)){
@@ -190,6 +198,13 @@
                 }
             }
             else{
+                mountInstances.get(currentHash)?.updateRerollControls?.({
+                    rerollIcon: isRerollTarget ? 'force' : false,
+                    onNextSwipe: isRerollTarget ? onNextSwipe : () => {},
+                    onDeleteSwipe: isRerollTarget ? onDeleteSwipe : () => {},
+                    currentPage: isRerollTarget ? (message.swipeId ?? 0) + 1 : 1,
+                    totalPages: isRerollTarget ? message.swipes?.length ?? 1 : 1,
+                })
                 mountInstances.get(currentHash)?.updateStreamingDisplay?.({
                     isOptimizedStreamingMessage: activeStreamingMessage,
                     streamingOptimizationMode: performanceMode,

@@ -11,6 +11,7 @@ import {
 } from './risuBardSettings'
 import type { HistoricalSourceMatch } from './historicalSourceRecall'
 import { oocTurnIndices } from './oocTurns'
+import { WikiInquiryError } from './wikiInquiryDiagnostics'
 
 export const NARRATIVE_CONTEXT_OPT_IN_KEY =
     'risubard.experimentalNarrativeContext'
@@ -213,9 +214,8 @@ export async function loadNarrativeInquiry(input: {
                     }
                 )
                 if (!response.ok) {
-                    throw new Error(
-                        `RisuBard narrative inquiry failed with status ${response.status}`
-                    )
+                    const failure = await response.json().catch(() => null)
+                    throw new WikiInquiryError(failure?.code, response.status)
                 }
                 return response.json()
             })(),

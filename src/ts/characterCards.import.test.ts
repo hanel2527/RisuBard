@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
+import type { character } from './storage/database.svelte'
 
 const state = vi.hoisted(() => ({
     events: [] as string[],
@@ -244,22 +245,41 @@ describe('public character-card lifecycle round-trips', () => {
             outfits: [{ id: 'travel', subjectId: 'aria', name: 'Travel clothes', clothing: 'white shirt, dark trousers', state: '' }],
         }
         const card = createCard({
-            name: 'Painter test', globalLore: [], loreExt: {}, bardPainter: painter,
+            name: 'Painter test', globalLore: [], loreExt: {}, bardPainter: {
+                identities: [...painter.identities.map(item => ({ ...item, attachToCard: true })), { id: 'private', name: 'PRIVATE_NAME', aliases: ['PRIVATE_ALIAS'], appearance: 'PRIVATE_APPEARANCE' }],
+                outfits: [...painter.outfits.map(item => ({ ...item, attachToCard: true })), { id: 'experiment', subjectId: 'aria', name: 'PRIVATE_OUTFIT', clothing: 'PRIVATE_CLOTHING', state: 'PRIVATE_STATE' },
+                    { id: 'orphan', subjectId: 'private', name: 'PRIVATE_OWNER_OUTFIT', clothing: 'PRIVATE_OWNER_CLOTHING', state: '', attachToCard: true }],
+            },
             chats: [{ bardPainter: { outfits: [{ id: 'private-outfit', clothing: 'private-chat-clothing' }], results: [{ assetId: 'private-chat-image' }] } }],
         } as any)
         expect((card.data.extensions as any).risubard?.bardPainter).toEqual(painter)
+        expect(JSON.stringify(card)).not.toContain('PRIVATE_')
+        expect(JSON.stringify(card)).not.toContain('attachToCard')
         expect(JSON.stringify(card)).not.toContain('private-chat')
         const imported = await importFixture(card as any)
         expect(imported.bardPainter).toEqual(painter)
         expect(imported.bardPainter).not.toBe(painter)
+        expect((createCard(imported).data.extensions as any).risubard?.bardPainter).toBeUndefined()
         imported.bardPainter.identities[0].aliases.push('New alias')
         expect(painter.identities[0].aliases).toEqual(['Captain'])
+    })
+
+    test.each([['v2', createBaseV2], ['v3', createBaseV3]] as const)('excludes legacy personal painter data by default from %s', (_spec, createCard) => {
+        const char = { name: 'Private', globalLore: [], loreExt: {}, bardPainter: {
+            identities: [{ id: 'private', name: 'PRIVATE_NAME', aliases: [], appearance: 'PRIVATE_APPEARANCE' }],
+            outfits: [{ id: 'outfit', subjectId: 'private', name: 'PRIVATE_OUTFIT', clothing: 'PRIVATE_CLOTHING', state: '' }],
+        }, extentions: { risubard: { bardPainter: { private: 'PRIVATE_STALE_EXTENSION' } } } } as unknown as character
+        const before = JSON.stringify(char.bardPainter)
+        const card = createCard(char)
+        expect((card.data.extensions as any).risubard?.bardPainter).toBeUndefined()
+        expect(JSON.stringify(card)).not.toContain('PRIVATE_')
+        expect(JSON.stringify(char.bardPainter)).toBe(before)
     })
 
     test('validates painter card data and excludes orphan outfits and unexpected fields at import', async () => {
         const card = cardFixture('chara_card_v3', undefined)
         ;(card.data.extensions as any).risubard = { bardPainter: {
-            identities: [null, { id: 'aria', name: 'Aria', appearance: 'black hair', aliases: ['Captain', 7] }],
+            identities: [null, { id: 'aria', name: 'Aria', appearance: 'black hair', aliases: ['Captain', 7], attachToCard: true }],
             outfits: [
                 { id: 'valid', subjectId: 'aria', name: 'Travel', clothing: 'cape', state: 'wet' },
                 { id: 'orphan', subjectId: 'missing', name: 'Lost', clothing: 'dress', state: '' },

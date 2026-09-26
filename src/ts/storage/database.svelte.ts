@@ -1560,6 +1560,7 @@ export interface Database{
     personaBuilderPromptPresets?:PersonaBuilderPromptPreset[]
     loreBuilderPromptPresets?:LoreBuilderPromptPreset[]
     bardPainterStyles?: import('../bardPainter/types').PainterStyle[]
+    bardPainterDefaultStyleId?: string
     bardPainterSettings?: import('../bardPainter/types').PainterGenerationSettings
     personaBuilderStylePromptPresetId?:string
     loreBuilderStylePromptPresetId?:string

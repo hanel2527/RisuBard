@@ -38,6 +38,7 @@
     import { selectSingleFile } from "src/ts/util";
     import { translateStackTrace } from "../../ts/sourcemap";
     import { getDetailedOSLabel, getFallbackOSLabel, getRisuEnvironmentLabel } from "src/ts/platform";
+    import { getMessageSize } from 'src/ts/messageSize';
 
     let showDetails = $state(false);
     let translatedStackTrace = $state('');
@@ -282,6 +283,7 @@
                     <span class="text-textcolor2 text-sm">{language.tokenWarning}</span>
                 {/if}
                 {#if generationInfoMenuIndex === 1}
+                {@const messageSize = getMessageSize(DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message[$alertGenerationInfoStore.idx])}
                 <div class="grid grid-cols-2 gap-y-2 gap-x-4 mt-4">
                     <span class="text-info">Index</span>
                     <span class="text-info justify-self-end">{$alertGenerationInfoStore.idx}</span>
@@ -293,8 +295,11 @@
                     <span class="text-danger justify-self-end">{$alertGenerationInfoStore.genInfo.generationId}</span>
                     <span class="text-info">Saying</span>
                     <span class="text-info justify-self-end">{DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message[$alertGenerationInfoStore.idx].saying}</span>
-                    <span class="text-secondary">Size</span>
-                    <span class="text-secondary justify-self-end">{JSON.stringify(DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message[$alertGenerationInfoStore.idx]).length} Bytes</span>
+                    <span class="text-secondary">{language.messageBodySize}</span>
+                    <span class="text-secondary justify-self-end">{messageSize.bodyBytes.toLocaleString()} Bytes</span>
+                    <span class="text-secondary">{language.messageStoredSize}</span>
+                    <span class="text-secondary justify-self-end">{messageSize.totalBytes.toLocaleString()} Bytes</span>
+                    <span class="col-span-2 text-textcolor2 text-xs">{language.messageSizeHelp}</span>
                     <span class="text-warning">Time</span>
                     <span class="text-warning justify-self-end">{(new Date(DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message[$alertGenerationInfoStore.idx].time ?? 0)).toLocaleString()}</span>
                     {#if $alertGenerationInfoStore.genInfo.stageTiming}

@@ -1690,7 +1690,10 @@ async function requestPlugin(arg:RequestDataArgumentExtended):Promise<requestDat
             ? convertInterfaceToSchema(arg.schema)
             : undefined
         const nativeStructuredOutput = resolvePluginStructuredOutput(providerOptions)
-            ? createPluginStructuredOutput(responseSchema, db.strictJsonSchema)
+            ? createPluginStructuredOutput(responseSchema, db.strictJsonSchema, {
+                provider: model,
+                purpose: arg.logPurpose,
+            })
             : undefined
         if(arg.schema){
             const schemaMessage = createStructuredOutputFallbackMessage(

@@ -11,6 +11,7 @@ import {
     type RequestInjectionManifest,
 } from 'src/ts/status/requestStatus'
 import type { Message } from 'src/ts/storage/database.svelte'
+import { formatWikiInquiryDiagnostic, type WikiInquiryDiagnostic } from './wikiInquiryDiagnostics'
 
 export interface ChatRequestEvidenceEntry {
     id: number
@@ -32,6 +33,7 @@ export interface ChatRequestEvidenceEntry {
     reasoningTokens?: number
     injectionManifest?: RequestInjectionManifest
     selectedHistoryMessageCount?: number
+    wikiInquiry?: WikiInquiryDiagnostic
     failureCategory?: 'timeout' | 'rate-limit' | 'authentication'
         | 'server' | 'network' | 'format' | 'invalid-request' | 'provider'
 }
@@ -460,6 +462,24 @@ async function countRetainedTextTokens(text: string): Promise<number> {
     return (await encodeWithTokenizer(text, 'tik')).length
 }
 
+/** Join saved response diagnostics by generation, including after reopening the log. */
+export function attachWikiInquiryDiagnostics(
+    requests: ChatRequestEvidenceEntry[], messages: readonly Message[],
+): ChatRequestEvidenceEntry[] {
+    const diagnostics = new Map<string, WikiInquiryDiagnostic>()
+    for (const message of messages) {
+        const diagnostic = message.generationInfo?.risuBardContext?.wikiInquiry
+        if (message.role !== 'char' || !diagnostic) continue
+        if (message.chatId) diagnostics.set(message.chatId, diagnostic)
+        if (message.generationInfo?.generationId) diagnostics.set(message.generationInfo.generationId, diagnostic)
+    }
+    return requests.map(request => {
+        const diagnostic = request.source === 'main' && request.generationId
+            ? diagnostics.get(request.generationId) : undefined
+        return diagnostic ? { ...request, wikiInquiry: diagnostic } : request
+    })
+}
+
 /** Adds current-chat totals without counting user text or discarded swipes. */
 export async function addRetainedAssistantSummary(
     evidence: ChatRequestEvidence,
@@ -485,7 +505,7 @@ export async function addRetainedAssistantSummary(
             responseCount: retained.length,
             bodyTokens,
         },
-        requests: evidence.requests.map((request) => {
+        requests: attachWikiInquiryDiagnostics(evidence.requests, messages).map((request) => {
             const recentMessages = request.generationId
                 ? byGenerationId.get(request.generationId)
                     ?.generationInfo?.risuBardContext?.recentMessages
@@ -560,6 +580,9 @@ export function formatChatRequestEvidenceMarkdown(evidence: ChatRequestEvidence)
                 `| 선택된 채팅 메시지 | ${number(request.selectedHistoryMessageCount)} |`,
             ]),
         )
+        if (request.wikiInquiry) {
+            lines.push(`| 위키 조회 진단 | ${escapeTable(formatWikiInquiryDiagnostic(request.wikiInquiry))} |`)
+        }
         if (request.injectionManifest) {
             lines.push(
                 '',

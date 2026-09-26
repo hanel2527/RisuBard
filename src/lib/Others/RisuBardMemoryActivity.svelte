@@ -8,6 +8,7 @@
     } from 'src/ts/risubard/memoryActivity'
     import {
         addRetainedAssistantSummary,
+        attachWikiInquiryDiagnostics,
         buildLegacyChatRequestEvidence,
         chatRequestFailureLabel,
         formatChatRequestEvidenceMarkdown,
@@ -23,6 +24,7 @@
     import { canonicalTurnFailureWarning } from 'src/ts/risubard/canonicalTurnReceipt'
     import type { RequestInjectionKind } from 'src/ts/status/requestStatus'
     import { downloadFile } from 'src/ts/globalApi.svelte'
+    import { formatWikiInquiryDiagnostic } from 'src/ts/risubard/wikiInquiryDiagnostics'
 
     interface Props {
         characterId: string
@@ -52,7 +54,7 @@
             }]
             : []
     }).reverse())
-    let requestEntries = $derived(storedEvidence?.requests ?? [])
+    let requestEntries = $derived(attachWikiInquiryDiagnostics(storedEvidence?.requests ?? [], messages))
     let receiptEntries = $derived(messages.flatMap((message) => {
         const receipt = message.risubardCanonicalReceipt
         if (message.role !== 'char' || !receipt) return []
@@ -358,6 +360,9 @@
                     <span class="fold-icon"><ChevronDownIcon size={15} /></span>
                 </summary>
                 <div class="request-details">
+                    {#if item.request.wikiInquiry}
+                        <p data-wiki-inquiry>{formatWikiInquiryDiagnostic(item.request.wikiInquiry)}</p>
+                    {/if}
                     <div class="metadata-grid">
                         <span><small>로그 ID</small><strong>#{item.request.id}</strong></span>
                         <span><small>모델</small><strong>{item.request.model ?? '확인 불가'}</strong></span>
@@ -455,6 +460,9 @@
                         <span><small>검색</small><strong>{formatDuration(entry.info.risuBardContext?.inquiryDurationMs)}</strong></span>
                         <span><small>도구</small><strong>{entry.info.toolUsed ? '사용' : '없음'}</strong></span>
                     </div>
+                    {#if entry.info.risuBardContext?.wikiInquiry}
+                        <p data-wiki-inquiry>{formatWikiInquiryDiagnostic(entry.info.risuBardContext.wikiInquiry)}</p>
+                    {/if}
                     <div class="trace-grid">
                         <div>
                             <div class="detail-title">최근 원문 메시지</div>

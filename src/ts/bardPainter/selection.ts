@@ -129,18 +129,30 @@ export function mapPainterSelection(source: string, rendered: string, start: num
     return inspectPainterSelection(source, rendered, start, end, names).range
 }
 
-export function capturePainterSelection(root: HTMLElement, source: string, selection: Selection | null, names: NameSubstitutions = {}): SelectionInspection | null {
-    root = root.querySelector<HTMLElement>('[data-painter-body]') ?? root
+export function capturePainterSelection(root: HTMLElement, source: string, selection: Selection | null, names: NameSubstitutions = {}): (SelectionInspection & { text: string }) | null {
     if (!selection?.rangeCount || selection.isCollapsed) return null
-    const range = selection.getRangeAt(0)
+    const selectedRange = selection.getRangeAt(0)
+    const range = selectedRange.cloneRange()
     if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return null
+    root = root.querySelector<HTMLElement>('[data-painter-body]') ?? root
+    // Dragging through the last paragraph can leave the endpoint on the outer
+    // message element. Intersect with the body instead of retaining an old scene.
+    const body = document.createRange()
+    body.selectNodeContents(root)
+    if (range.compareBoundaryPoints(Range.START_TO_START, body) < 0) range.setStart(body.startContainer, body.startOffset)
+    if (range.compareBoundaryPoints(Range.END_TO_END, body) > 0) range.setEnd(body.endContainer, body.endOffset)
+    if (range.collapsed) return null
     const before = document.createRange()
     before.selectNodeContents(root)
     before.setEnd(range.startContainer, range.startOffset)
     const through = document.createRange()
     through.selectNodeContents(root)
     through.setEnd(range.endContainer, range.endOffset)
-    return inspectPainterSelection(source, root.textContent ?? '', before.toString().length, through.toString().length, names)
+    return {
+        ...inspectPainterSelection(source, root.textContent ?? '', before.toString().length, through.toString().length, names),
+        // Preserve the browser's paragraph breaks unless sibling controls were clipped.
+        text: range.toString() === selectedRange.toString() ? selection.toString() : range.toString(),
+    }
 }
 
 export function capturePainterRange(root: HTMLElement, source: string, selection: Selection | null) {

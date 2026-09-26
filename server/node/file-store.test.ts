@@ -244,6 +244,63 @@ describe('journal recovery and trash', () => {
         expect(fs.readdirSync(path.join(root, '.journal'))).toHaveLength(0)
     })
 
+    it.each(['presets', 'presets/preset-1.json'])('restores identical bytes after moving %s aside', movedPath => {
+        const root = tempRoot()
+        atomicWriteFile(root, 'presets/preset-1.json', Buffer.from('same-preset'))
+        commitTransaction(root, [
+            { path: movedPath, moveTo: `trash/restore-1/${movedPath}` },
+            { path: 'presets/preset-1.json', data: Buffer.from('same-preset') },
+        ])
+        expect(fs.readFileSync(path.join(root, 'presets/preset-1.json'), 'utf8')).toBe('same-preset')
+        expect(fs.readFileSync(path.join(root, 'trash/restore-1/presets/preset-1.json'), 'utf8')).toBe('same-preset')
+    })
+
+    it('preserves appended live logs in trash while restoring the backed-up log', () => {
+        const root = tempRoot()
+        atomicWriteFile(root, 'logs/storage-observation.jsonl', Buffer.from('backup\n'))
+        fs.appendFileSync(path.join(root, 'logs/storage-observation.jsonl'), 'later\n')
+        commitTransaction(root, [
+            { path: 'logs', moveTo: 'trash/restore-1/logs' },
+            { path: 'logs/storage-observation.jsonl', data: Buffer.from('backup\n') },
+        ])
+        expect(fs.readFileSync(path.join(root, 'logs/storage-observation.jsonl'), 'utf8')).toBe('backup\n')
+        expect(fs.readFileSync(path.join(root, 'trash/restore-1/logs/storage-observation.jsonl'), 'utf8')).toBe('backup\nlater\n')
+    })
+
+    it.each([2, 3])('replays a restore after %i publications have recreated the moved root', failAfterPublish => {
+        const root = tempRoot()
+        atomicWriteFile(root, 'characters/old/metadata.json', Buffer.from('old'))
+        expect(() => commitTransaction(root, [
+            { path: 'characters', moveTo: 'trash/restore-1/characters' },
+            { path: 'characters/new/metadata.json', data: Buffer.from('new') },
+            { path: 'kv/manifest.json', data: Buffer.from('{}') },
+        ], { failAfterPublish })).toThrow(/simulated crash/)
+        recoverTransactions(root)
+        expect(fs.readFileSync(path.join(root, 'characters/new/metadata.json'), 'utf8')).toBe('new')
+        expect(fs.readFileSync(path.join(root, 'trash/restore-1/characters/old/metadata.json'), 'utf8')).toBe('old')
+        expect(fs.readFileSync(path.join(root, 'kv/manifest.json'), 'utf8')).toBe('{}')
+        expect(fs.readdirSync(path.join(root, '.journal'))).toEqual([])
+    })
+
+    it('recovers a moved directory when interruption precedes its journal completion record', () => {
+        const root = tempRoot()
+        atomicWriteFile(root, 'characters/old/metadata.json', Buffer.from('old'))
+        const originalRename = fs.renameSync
+        const rename = vi.spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
+            originalRename(source, destination)
+            if (source === path.join(root, 'characters')) throw new Error('interrupted after move')
+        })
+        expect(() => commitTransaction(root, [
+            { path: 'characters', moveTo: 'trash/restore-1/characters' },
+            { path: 'characters/new/metadata.json', data: Buffer.from('new') },
+        ])).toThrow('interrupted after move')
+        rename.mockRestore()
+        recoverTransactions(root)
+        expect(fs.readFileSync(path.join(root, 'characters/new/metadata.json'), 'utf8')).toBe('new')
+        expect(fs.readFileSync(path.join(root, 'trash/restore-1/characters/old/metadata.json'), 'utf8')).toBe('old')
+        expect(fs.readdirSync(path.join(root, '.journal'))).toEqual([])
+    })
+
     it('skips an optional move whose source is absent', () => {
         const root = tempRoot()
         expect(commitTransaction(root, [

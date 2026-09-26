@@ -45,6 +45,8 @@ beforeEach(() => {
     const style = result().style
     runtime.current = painterTestState({
         data, get settings() { return this.data.settings }, chat: { isStreaming: false }, bot: { identities: [], outfits: [] }, style, styles: [style],
+        promptPreset: { id: 'current' }, imagePreset: undefined,
+        imagePresets: [{ index: 0, preset: { name: 'Image', values: { toggle_detail: '0' } } }], applyImagePreset: vi.fn().mockResolvedValue(true),
         state: { status: 'idle', error: '', notice: '', wikiDocs: [], loadingWiki: false, pendingImage: false },
         ...Object.fromEntries(['prepare', 'generate', 'retrySave', 'cancel', 'insert', 'loadWiki', 'persist', 'saveOutfit', 'promoteOutfit', 'applyOutfit', 'removeOutfit', 'rememberIdentity', 'saveStyle', 'removeResult', 'downloadOriginal', 'restoreDraft', 'clearConversation', 'resetWorkspace'].map(name => [name, vi.fn()])),
     })
@@ -53,6 +55,58 @@ beforeEach(() => {
 afterEach(() => { component?.$destroy(); component = undefined; document.body.replaceChildren() })
 
 describe('BardPainter workspace', () => {
+    test('shows the effective image orientation and active style beside generation settings', async () => {
+        mount(); await tick()
+        const summary = () => document.querySelector('[aria-label="현재 이미지 형식과 화풍"]')
+        expect(summary()?.textContent).toContain('세로')
+        expect(summary()?.textContent).toContain('잉크')
+        expect(summary()?.parentElement?.querySelector('button:last-of-type')?.textContent).toBe('생성 설정')
+        runtime.current.data.settings.width = 1216
+        runtime.current.data.settings.height = 832
+        runtime.current.style.name = '수채화'
+        await tick()
+        expect(summary()?.textContent).toContain('가로')
+        expect(summary()?.textContent).toContain('수채화')
+        runtime.current.data.settings.height = 1216
+        await tick()
+        expect(summary()?.textContent).toContain('정사각형')
+    })
+    test('applies an image preset only on button click and restores the applied label', async () => {
+        runtime.current.imagePreset = { name: 'Saved image', promptPresetId: 'current', values: {} }
+        mount(); await tick()
+        const select = document.querySelector<HTMLSelectElement>('[aria-label="이미지 프리셋"]')!
+        expect(select).not.toBeNull()
+        expect(select.selectedOptions[0].textContent).toContain('Saved image')
+        expect(select.closest('.scene-options')).toBe(document.querySelector('[aria-label="그림 시점"]')!.closest('.scene-options'))
+        select.value = '0'; select.dispatchEvent(new Event('change', { bubbles: true })); await tick()
+        expect(runtime.current.applyImagePreset).not.toHaveBeenCalled()
+        button('적용').click(); await tick(); await tick()
+        expect(runtime.current.applyImagePreset).toHaveBeenCalledWith(0)
+        expect(runtime.current.prepare).not.toHaveBeenCalled()
+        select.value = ''; select.dispatchEvent(new Event('change', { bubbles: true })); await tick()
+        button('적용').click(); await tick(); await tick()
+        expect(runtime.current.applyImagePreset).toHaveBeenLastCalledWith(null)
+        runtime.current.state.status = 'prompt'; await tick()
+        expect(select.disabled).toBe(true)
+        expect(button('적용').disabled).toBe(true)
+    })
+    test('saves perspective above the scene without triggering generation or editing the draft', async () => {
+        delete runtime.current.data.settings.perspective
+        runtime.current.data.draft = draft()
+        const previous = JSON.stringify(runtime.current.data.draft)
+        mount(); await tick()
+        const select = document.querySelector<HTMLSelectElement>('[aria-label="그림 시점"]')!
+        expect(select.value).toBe('third-person')
+        expect([...select.options].map(option => option.text)).toEqual(['1인칭', '3인칭'])
+        expect(select.compareDocumentPosition(document.querySelector('[aria-label="그릴 장면"]')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+        select.value = 'first-person'; select.dispatchEvent(new Event('change', { bubbles: true })); await tick()
+        expect(runtime.current.data.settings.perspective).toBe('first-person')
+        expect(runtime.current.persist).toHaveBeenCalledOnce()
+        expect(runtime.current.prepare).not.toHaveBeenCalled()
+        expect(JSON.stringify(runtime.current.data.draft)).toBe(previous)
+        runtime.current.state.status = 'prompt'; await tick()
+        expect(select.disabled).toBe(true)
+    })
     test('always shows scene selection and enables it only for a valid current-chat passage', async () => {
         mount(); await tick()
         const choose = button('그릴 장면 선택')

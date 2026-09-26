@@ -9,6 +9,7 @@
     import { botMakerMode, CharConfigSubMenu, risuBardGalleryOpen, MobileSideBar } from 'src/ts/stores.svelte'
     import BardPainterSubject from './BardPainterSubject.svelte'
     import BardPainterTools from './BardPainterTools.svelte'
+    import type { TogglePreset } from 'src/ts/storage/database.svelte'
 
     let { characterId, chatId, visible = true }: { characterId: string; chatId: string; visible?: boolean } = $props()
     let session = $state(untrack(() => getPainterSession(characterId, chatId)))
@@ -21,6 +22,16 @@
     let insertionTarget = $derived(selection?.issue ? undefined : selection?.anchor ?? data.anchor ?? latest?.anchor)
     let busy = $derived(session.state.status !== 'idle')
     let blocked = $derived(busy || session.state.pendingImage)
+    let imageChoice = $state<TogglePreset | null | undefined>(undefined)
+    let imageChoices = $derived(session.imagePresets)
+    let imageChoiceIndex = $derived(imageChoices.find(item => item.preset === imageChoice)?.index)
+    let imageChoiceValue = $derived(imageChoice === undefined ? (session.imagePreset ? 'applied' : '') : imageChoice === null ? '' : String(imageChoiceIndex))
+    $effect(() => { session; session.promptPreset?.id; imageChoice = undefined })
+    async function applyImagePreset() {
+        if (blocked || imageChoice === undefined || imageChoice !== null && imageChoiceIndex === undefined) return
+        const current = session
+        if (await current.applyImagePreset(imageChoice === null ? null : imageChoiceIndex!) && current === session) imageChoice = undefined
+    }
     let resetBlocked = $derived(blocked || session.chat.isStreaming)
     let toolMode = $state<'style' | 'characters' | 'settings' | null>(null)
     let confirmScene = $state(false)
@@ -127,6 +138,18 @@
     </header>
     <BardPainterTools {session} mode={toolMode} onClose={() => toolMode = null} disabled={blocked} />
 
+    <div class="scene-options">
+        <label class="perspective">시점<select aria-label="그림 시점" title="다음 프롬프트 작성과 개선에 적용합니다. 1인칭에서는 사용자 캐릭터를 묘사하지 않습니다." disabled={blocked} value={data.settings.perspective ?? 'third-person'} onchange={event => { data.settings.perspective = event.currentTarget.value === 'first-person' ? 'first-person' : 'third-person'; save() }}><option value="first-person">1인칭</option><option value="third-person">3인칭</option></select></label>
+        <div class="image-preset">
+            <label>이미지 프리셋<select aria-label="이미지 프리셋" title="현재 프롬프트의 커스텀 토글 프리셋을 선택한 뒤 적용하세요. 프롬프트 작성과 개선에만 사용하며 채팅 토글은 변경하지 않습니다." disabled={blocked} value={imageChoiceValue} onchange={event => { imageChoice = event.currentTarget.value === '' ? null : event.currentTarget.value === 'applied' ? undefined : imageChoices.find(item => item.index === Number(event.currentTarget.value))?.preset }}>
+                <option value="">사용 안 함</option>
+                {#if session.imagePreset}<option value="applied">{session.imagePreset.name} (적용됨)</option>{/if}
+                {#each imageChoices as { preset, index }}<option value={String(index)}>{preset.name}</option>{/each}
+            </select></label>
+            <button type="button" disabled={blocked || imageChoice === undefined || imageChoice !== null && imageChoiceIndex === undefined} onclick={applyImagePreset}>적용</button>
+        </div>
+    </div>
+
     <section class="card scene" aria-label="그릴 장면">
         <div class="section-title"><h3><span class="step">1</span>그릴 장면</h3><div class="actions">{#if data.draft}<span class="hint">확정됨</span>{/if}<button type="button" class="primary" disabled={!selection?.anchor || blocked || session.chat.isStreaming} aria-expanded={confirmScene} onclick={selectScene}>그릴 장면 선택</button></div></div>
         {#if scene}<blockquote>{scene.text}</blockquote>
@@ -172,7 +195,7 @@
     {/if}
     <section class="output" aria-label="현재 삽화">
         <div class="section-title"><h3><span class="step">3</span>그림 만들기</h3><button type="button" onclick={openGallery}>갤러리 열기</button></div>
-        <div class="actions generation-actions"><button type="button" class="primary" disabled={blocked || !data.anchor || !data.draft?.scene.trim()} onclick={() => session.generate()}>이미지 생성</button><button type="button" class="primary" onclick={() => toolMode = 'settings'}>생성 설정</button></div>
+        <div class="actions generation-actions"><button type="button" class="primary" disabled={blocked || !data.anchor || !data.draft?.scene.trim()} onclick={() => session.generate()}>이미지 생성</button><button type="button" class="primary" onclick={() => toolMode = 'settings'}>생성 설정</button><span class="hint" aria-label="현재 이미지 형식과 화풍">{session.settings.width > session.settings.height ? '가로' : session.settings.width < session.settings.height ? '세로' : '정사각형'} / {session.style.name}</span></div>
         <p class="hint">프롬프트를 확인한 뒤 생성하세요. NovelAI 사용량이 차감될 수 있습니다.</p>
         {#if latest}
             <article class="card result" data-painter-result={latest.id}>
@@ -203,6 +226,14 @@
     fieldset { display: flex; flex-direction: column; gap: .7rem; padding: 0; border: 0; margin: 0; min-width: 0; }
     fieldset:disabled { opacity: .65; }
     label { display: flex; flex-direction: column; gap: .4rem; min-width: 0; font-size: .85rem; }
+    .scene-options { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1rem; }
+    .scene-options label { flex-direction: row; align-items: center; gap: .6rem; white-space: nowrap; }
+    .scene-options select { min-height: 2.75rem; min-width: 0; padding: .4rem .65rem; border: 1px solid var(--color-darkborderc); border-radius: .4rem; background: var(--color-bgcolor); color: var(--color-textcolor); font: inherit; }
+    .scene-options select:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+    .image-preset { display: flex; flex: 1; min-width: min(100%, 16rem); align-items: center; gap: .5rem; }
+    .image-preset label { flex: 1; }
+    .image-preset select { flex: 1; width: 0; }
+    .image-preset button { flex-shrink: 0; }
     summary { cursor: pointer; min-height: 2.75rem; padding: .65rem 0; color: var(--color-textcolor2); }
     details { border-top: 1px solid var(--color-darkborderc); }
     button { min-height: 2.75rem; border: 1px solid var(--color-darkborderc); border-radius: .4rem; padding: .5rem .75rem; font-size: .85rem; overflow-wrap: anywhere; }

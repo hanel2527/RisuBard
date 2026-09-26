@@ -44,6 +44,17 @@ beforeEach(() => {
 afterEach(() => { component?.$destroy(); component = undefined; document.body.replaceChildren() })
 
 describe('BardPainter tools', () => {
+    test('sets the selected saved style as default and shows its designation', async () => {
+        const favorite = { ...session.style, id: 'favorite', name: '자주 쓰는 화풍' }
+        session.styles.push(favorite); session.style = favorite; session.data.settings.styleId = favorite.id
+        session.defaultStyle = session.styles[0]
+        session.setDefaultStyle = vi.fn(async (id: string) => { session.defaultStyle = session.styles.find((item: any) => item.id === id); return true })
+        await mount('style')
+        button('기본 화풍으로 지정').click(); await tick(); await tick()
+        expect(session.setDefaultStyle).toHaveBeenCalledWith('favorite')
+        expect(document.querySelector('[data-painter-style="favorite"]')?.textContent).toContain('기본 화풍')
+        expect(button('기본 화풍으로 지정').disabled).toBe(true)
+    })
     test('exposes pin/global controls and disables global actions when already inheriting', async () => {
         await mount('settings')
         const scope = document.querySelector('[aria-label="생성 설정 적용 범위"]')!

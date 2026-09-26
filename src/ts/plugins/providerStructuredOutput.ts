@@ -49,8 +49,16 @@ export function resolvePluginStructuredOutput(
 export function createPluginStructuredOutput(
     schema: Record<string, unknown> | undefined,
     strict: boolean,
+    context?: { provider: string; purpose?: string },
 ): PluginProviderStructuredOutput | undefined {
     if (!schema) return undefined
+    // PageFold Gemini rejects the analysis schema on both Google routes.
+    // requestPlugin still supplies the schema prompt and structured_output flag;
+    // BardWiki keeps validating the returned JSON before saving it.
+    if (context?.purpose === 'bardwiki-analysis'
+        && /^pagefold-gemini-.+-(?:vertex|openrouter)-\d+$/.test(context.provider)) {
+        return undefined
+    }
     return {
         name: 'risubard_response',
         strict,

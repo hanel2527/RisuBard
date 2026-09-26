@@ -31,6 +31,7 @@
     import { HideIconStore, ReloadGUIPointer, selIdState } from "../../ts/stores.svelte"
     import AutoresizeArea from "../UI/GUI/TextAreaResizable.svelte"
     import ChatBody from './ChatBody.svelte'
+    import { removeInlayOccurrence } from './inlayImageControls'
     import PopupButton from "../UI/PopupButton.svelte";
     import PartialEditController from './PartialEditController.svelte';
     import RisuBardTurnReceipt from './RisuBardTurnReceipt.svelte';
@@ -122,6 +123,14 @@
     let msgDisplay = $state('')
     let translated = $state(false)
     let partialEditEnabled = $state(true)
+
+    export function updateRerollControls(state: Pick<Props, 'rerollIcon' | 'onNextSwipe' | 'onDeleteSwipe' | 'currentPage' | 'totalPages'>) {
+        rerollIcon = state.rerollIcon ?? false
+        onNextSwipe = state.onNextSwipe ?? (() => {})
+        onDeleteSwipe = state.onDeleteSwipe ?? (() => {})
+        currentPage = state.currentPage ?? 1
+        totalPages = state.totalPages ?? 1
+    }
 
     export function updateStreamingDisplay(state: {
         isOptimizedStreamingMessage: boolean
@@ -219,6 +228,23 @@
             }
             displaya(e.detail.newData)
         }
+    }
+
+    function removeInlayImage(id: string, occurrence: number) {
+        if (readOnly || idx < 0 || editMode || translated || isOptimizedStreamingMessage) return
+        const current = DBState.db.characters[selIdState.selId]
+        const chat = current?.chats[current.chatPage]
+        const msg = chat?.message[idx]
+        if (chat?.isStreaming || !msg || msg.data !== message) return
+        // Display scripts can hide or duplicate tokens. Do not guess which source occurrence to edit.
+        const sourceCount = Array.from(msg.data.matchAll(/{{(?:inlay|inlayed|inlayeddata)::(.+?)}}/g))
+            .filter(match => match[1] === id).length
+        const rendered = Array.from(bodyRoot?.querySelectorAll<HTMLElement>('[data-inlay-image-id], [data-inlay-id]') ?? [])
+            .filter(element => (element.dataset.inlayImageId ?? element.dataset.inlayId) === id)
+        if (sourceCount !== rendered.length || rendered.some((element, index) => Number(element.dataset.inlayOccurrence) !== index)) return
+        const newData = removeInlayOccurrence(msg.data, id, occurrence)
+        if (newData === msg.data) return
+        handlePartialEditSave(new CustomEvent('save', { detail: { newData } }))
     }
 
     function getCbsCondition(){
@@ -591,6 +617,7 @@
                     {msgDisplay}
                     {name}
                     {bodyRoot}
+                    onRemoveInlay={!readOnly && idx >= 0 && !editMode && !translated && !isOptimizedStreamingMessage && !DBState.db.characters[selIdState.selId]?.chats[DBState.db.characters[selIdState.selId].chatPage]?.isStreaming ? removeInlayImage : undefined}
                     modelShortName={
                         messageGenerationInfo ? getModelInfo(messageGenerationInfo?.model).shortName : ''
                     }

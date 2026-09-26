@@ -37,6 +37,11 @@ beforeEach(() => {
             { id: 'person-b', name: '예시 인물 B', aliases: [], appearance: 'long black hair' },
         ], outfits: [{ id: 'shared-a', subjectId: 'person-a', name: '예복', clothing: 'formal jacket', state: 'clean' }] },
         state: { error: '' },
+        setAllCardAttachments: vi.fn(async (attached: boolean) => {
+            session.bot.identities = session.bot.identities.map((item: any) => ({ ...item, attachToCard: attached }))
+            session.bot.outfits = session.bot.outfits.map((item: any) => ({ ...item, attachToCard: attached }))
+            return true
+        }),
         saveIdentity: vi.fn(async (identity: any, asNew: boolean) => {
             const saved = { ...identity, id: asNew || !identity.id ? 'new-person' : identity.id }
             const index = session.bot.identities.findIndex((item: any) => item.id === saved.id)
@@ -57,6 +62,48 @@ beforeEach(() => {
 afterEach(() => { component?.$destroy(); component = undefined; document.body.replaceChildren() })
 
 describe('BardPainter character and outfit manager', () => {
+    test('applies bulk attachment outside search filters while preserving unsaved editor text', async () => {
+        mount(); await tick()
+        await change('기본 외형', 'unsaved green eyes')
+        await change('인물과 의상 검색', '예시 인물 A')
+        await click('모든 항목 첨부')
+        expect(session.setAllCardAttachments).toHaveBeenLastCalledWith(true)
+        expect(session.bot.identities[1].attachToCard).toBe(true)
+        expect(document.querySelector<HTMLInputElement>('[aria-label="봇에 첨부"]')?.checked).toBe(true)
+        expect(document.querySelector<HTMLTextAreaElement>('[aria-label="기본 외형"]')?.value).toBe('unsaved green eyes')
+        expect(session.saveIdentity).not.toHaveBeenCalled()
+        expect(dirtyChange).toHaveBeenLastCalledWith(true)
+        await click('모든 항목 미첨부')
+        expect(session.setAllCardAttachments).toHaveBeenLastCalledWith(false)
+        expect(document.querySelector<HTMLInputElement>('[aria-label="봇에 첨부"]')?.checked).toBe(false)
+        expect(session.data.outfits.every((item: any) => item.attachToCard === undefined)).toBe(true)
+    })
+    test('keeps attachment off by default and only persists it when the preset is saved', async () => {
+        mount(); await tick()
+        const checkbox = document.querySelector<HTMLInputElement>('[aria-label="봇에 첨부"]')!
+        expect(checkbox).not.toBeNull()
+        expect(checkbox.checked).toBe(false)
+        checkbox.click(); await tick()
+        expect(session.bot.identities[0].attachToCard).toBeUndefined()
+        await click('덮어쓰기')
+        expect(session.bot.identities[0].attachToCard).toBe(true)
+        checkbox.click(); await tick()
+        await click('덮어쓰기')
+        expect(session.bot.identities[0].attachToCard).not.toBe(true)
+    })
+    test('requires a separate attachment choice for shared outfits and never exposes it for chat outfits', async () => {
+        mount(); await tick()
+        await click('연습복 의상 편집')
+        expect(document.querySelector('[aria-label="봇에 첨부"]')).toBeNull()
+        await click('예복 의상 편집')
+        const checkbox = document.querySelector<HTMLInputElement>('[aria-label="봇에 첨부"]')!
+        expect(checkbox.checked).toBe(false)
+        checkbox.click(); await tick(); await click('덮어쓰기')
+        expect(session.bot.outfits[0].attachToCard).toBe(true)
+        expect(session.bot.identities[0].attachToCard).toBeUndefined()
+        await change('의상 이름', '복사한 예복'); await click('새 이름으로 저장')
+        expect(session.bot.outfits.at(-1).attachToCard).not.toBe(true)
+    })
     test('opens a single editor without auto-saving field changes', async () => {
         mount(); await tick()
         expect(document.querySelector('[data-painter-presets]')?.tagName).toBe('SECTION')

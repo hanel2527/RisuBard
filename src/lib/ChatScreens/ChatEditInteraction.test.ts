@@ -7,6 +7,7 @@ import { SvelteMap } from 'svelte/reactivity'
 import Chat from './Chat.svelte'
 import Chats from './Chats.svelte'
 import { DBState, selIdState } from 'src/ts/stores.svelte'
+import { ParseMarkdown } from 'src/ts/parser/parser.svelte'
 
 vi.mock('src/ts/stores.svelte', () => ({
     DBState: { db: {} },
@@ -98,6 +99,73 @@ afterEach(async () => {
 })
 
 describe('message edit button', () => {
+    test.each(['normal', 'ambiguous', 'streaming'] as const)('removes only the chosen inlay and active swipe safely (%s)', async (mode) => {
+        const data = 'Before {{inlay::scene}} middle {{inlay::scene}} after'
+        const msg = { role: 'char', data, chatId: 'message-1', swipes: ['untouched swipe', data], swipeId: 1 }
+        const chat = DBState.db.characters[0].chats[0]
+        chat.message = [msg] as any
+        chat.isStreaming = mode === 'streaming'
+        DBState.db.clickToEdit = true
+        vi.mocked(ParseMarkdown).mockImplementation(async () => '<p><img data-inlay-image-id="scene" data-inlay-occurrence="0" src="/scene.png">'
+            + (mode === 'ambiguous' ? '' : '<img data-inlay-image-id="scene" data-inlay-occurrence="1" src="/scene.png">') + '</p>')
+        try {
+            mounted = mount(Chat, { target: document.body, props: { message: data, name: 'Character', isLastMemory: false, idx: 0, role: 'char' } })
+            await tick(); await tick(); await tick()
+            await new Promise(resolve => setTimeout(resolve, 0))
+            const buttons = document.querySelectorAll<HTMLButtonElement>('.inlay-image-remove')
+            if (mode === 'streaming') {
+                expect(buttons).toHaveLength(0)
+            } else {
+                buttons[buttons.length - 1]!.click()
+                await tick()
+            }
+            expect(msg.data).toBe(mode === 'normal' ? 'Before {{inlay::scene}} middle  after' : data)
+            expect(msg.swipes).toEqual(['untouched swipe', msg.data])
+            expect(document.querySelector('.message-edit-area')).toBeNull()
+        } finally {
+            vi.mocked(ParseMarkdown).mockImplementation(async value => value)
+        }
+    })
+    test.each([true, false])('retains the previous reply when sending input with preserveReadingPosition=%s', async (preserve) => {
+        DBState.db.preserveChatScrollPosition = preserve
+        const character = DBState.db.characters[0]
+        const reply = { role: 'char', chatId: 'reply', data: '<p>First line</p><p>Reading here</p>', swipes: ['old', 'current'], swipeId: 1 }
+        const state = new SvelteMap<string, any>([['messages', [reply]]])
+        const chat = { id: 'room', get message() { return state.get('messages') } }
+        character.chats = [chat] as any
+        const nextSwipe = vi.fn()
+        mounted = mount(Chats, {
+            target: document.body,
+            props: {
+                get messages() { return chat.message }, currentCharacter: character,
+                onReroll: vi.fn(), onNextSwipe: nextSwipe, unReroll: vi.fn(),
+                currentUsername: 'User', userIcon: '', pageStart: 0,
+                get pageEnd() { return chat.message.length },
+            },
+        })
+        await tick(); await tick(); await tick()
+        const previousReply = document.querySelector('[data-chat-index="0"]')!
+        const paragraph = previousReply.querySelector('.chattext p')!
+        expect(paragraph.textContent).toBe('First line')
+        expect(previousReply.querySelector('[data-hotkey-action="reroll"]')).not.toBeNull()
+
+        state.set('messages', [reply, { role: 'user', chatId: 'input', data: 'Next input' }])
+        await tick(); await tick(); await tick()
+        expect(document.querySelector('[data-chat-index="0"]')).toBe(previousReply)
+        expect(previousReply.querySelector('.chattext p')).toBe(paragraph)
+        expect(previousReply.querySelector('[data-hotkey-action="reroll"]')).toBeNull()
+        expect(document.querySelector('[data-chat-index="1"]')?.textContent).toContain('Next input')
+
+        // Removing the new input makes the retained reply the reroll target again.
+        state.set('messages', [reply])
+        await tick(); await tick(); await tick()
+        expect(document.querySelector('[data-chat-index="0"]')).toBe(previousReply)
+        expect(previousReply.querySelector('.chattext p')).toBe(paragraph)
+        expect(previousReply.textContent).toContain('2/2')
+        previousReply.querySelector<HTMLButtonElement>('.button-icon-reroll')!.click()
+        expect(nextSwipe).toHaveBeenCalledOnce()
+    })
+
     test.each([
         ['balanced', true], ['strong', true], ['off', true], ['balanced', false],
     ] as const)('finishes %s streaming with preserveReadingPosition=%s', async (mode, preserve) => {

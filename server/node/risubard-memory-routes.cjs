@@ -605,7 +605,17 @@ function registerRisuBardMemoryRoutes(app, options) {
             res.send(await options.service.inquireNarrative(req.body))
         }
         catch (error) {
-            next(error)
+            // Return bounded categories, never filesystem paths or document text.
+            const message = error instanceof Error ? error.message : ''
+            const code = /^Required wiki context exceeds /.test(message)
+                ? 'budget-exceeded'
+                : /^(Invalid|Missing) Markdown wiki /.test(message)
+                    ? 'invalid-document'
+                    : ['EACCES', 'EPERM', 'ENOENT', 'EIO', 'EMFILE'].includes(error?.code)
+                        ? 'storage-error'
+                        : 'server-error'
+            console.error('BardWiki inquiry failed', error)
+            res.status(500).send({ error: 'BardWiki inquiry failed', code })
         }
     })
 

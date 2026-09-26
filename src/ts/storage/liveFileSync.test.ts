@@ -1,5 +1,38 @@
-import { describe, expect, it } from 'vitest'
-import { applyLiveFileSnapshot, createLiveFileRefresh } from './liveFileSync'
+import { describe, expect, it, vi } from 'vitest'
+import { applyLiveFileSnapshot, createLiveFileRefresh, createLiveFileSignalRefresh } from './liveFileSync'
+
+describe('live file signal refresh', () => {
+    it('coalesces concurrent signals while retaining the last change', async () => {
+        let finish!: () => void
+        const refresh = vi.fn().mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
+            .mockResolvedValue(undefined)
+        const listener = createLiveFileSignalRefresh({ refresh, isActive: () => true, isVisible: () => true, onError: vi.fn() })
+        listener.signal()
+        listener.signal()
+        listener.signal()
+        expect(refresh).toHaveBeenCalledTimes(1)
+        finish()
+        await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(2))
+        listener.close()
+        listener.signal()
+        expect(refresh).toHaveBeenCalledTimes(2)
+    })
+
+    it('defers hidden-tab signals, catches up on visibility and stops after cleanup', async () => {
+        let visible = false
+        const refresh = vi.fn(async () => {})
+        const listener = createLiveFileSignalRefresh({ refresh, isActive: () => true, isVisible: () => visible, onError: vi.fn() })
+        listener.signal()
+        listener.signal()
+        expect(refresh).not.toHaveBeenCalled()
+        visible = true
+        listener.signal()
+        await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce())
+        listener.close()
+        listener.signal()
+        expect(refresh).toHaveBeenCalledOnce()
+    })
+})
 
 describe('live chat metadata reconciliation', () => {
     it('removes external local lore while preserving live messages and unrelated unsaved metadata', () => {

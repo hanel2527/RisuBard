@@ -41,6 +41,26 @@ function createHarness() {
 }
 
 describe('RisuBard memory routes', () => {
+    test.each([
+        ['Required wiki context exceeds token budget', 'budget-exceeded'],
+        ['Required wiki context exceeds 12 documents', 'budget-exceeded'],
+        ['Invalid Markdown wiki frontmatter', 'invalid-document'],
+        ['unexpected private data /private/wiki.md', 'server-error'],
+    ])('returns a safe inquiry failure code for %s', async (message, code) => {
+        const { registerRisuBardMemoryRoutes } = require('./risubard-memory-routes.cjs')
+        const harness = createHarness()
+        registerRisuBardMemoryRoutes(harness.app, { auth: async () => true,
+            service: { inquireNarrative: async () => { throw new Error(message) } } })
+        const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+        try {
+            await harness.routes.get('/api/risubard/memory/inquiry')!({ body: {
+                characterId: 'c', chatId: 'chat', currentInput: 'Alice',
+            } }, harness.response, vi.fn())
+            expect(harness.response.statusCode).toBe(500)
+            expect(harness.response.body).toEqual({ error: 'BardWiki inquiry failed', code })
+        } finally { log.mockRestore() }
+    })
+
     test('authenticates catalog pages, bounds offsets and reports revision conflicts', async () => {
         const { registerRisuBardMemoryRoutes } = require('./risubard-memory-routes.cjs')
         const harness = createHarness()

@@ -854,7 +854,8 @@ export function registerCBS(arg:CBSRegisterArg) {
     registerFunction({
         name: 'getglobalvar',
         callback: (str, matcherArg, args, vars) => {
-            return getGlobalChatVar(args[0])
+            return matcherArg.globalChatVariables && Object.hasOwn(matcherArg.globalChatVariables, args[0])
+                ? matcherArg.globalChatVariables[args[0]] : getGlobalChatVar(args[0])
         },
         alias: [],
         description: 'Gets the value of a global chat variable by name. Global variables are shared across all chats and characters. Returns empty string if variable doesn\'t exist.\n\nUsage:: {{getglobalvar::variableName}}',

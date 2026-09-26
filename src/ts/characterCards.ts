@@ -23,7 +23,7 @@ import { normalizeFirstMessageStudioProject, type FirstMessageStudioProject } fr
 import { normalizeBardLoreOwnerState, type BardLoreState } from './lorebook/bardLore'
 import { createUniqueDisplayName } from './displayName'
 import { yieldImportTask } from './importTaskYield'
-import { normalizePainterBotData } from './bardPainter/painterCardData'
+import { exportPainterBotData, normalizePainterBotData } from './bardPainter/painterCardData'
 import type { PainterBotData } from './bardPainter/types'
 
 
@@ -1167,7 +1167,7 @@ export function convertCharbook(arg:{
 
 export function createBaseV2(char:character) {
     const bardLoreOwner = exportableBardLoreOwner(char)
-    const bardPainter = normalizePainterBotData(char.bardPainter)
+    const bardPainter = exportPainterBotData(char.bardPainter)
     const exportGlobalLore = bardLoreOwner?.legacyEntries ?? char.globalLore
     let charBook:charBookEntry[] = []
     for(const lore of exportGlobalLore){
@@ -1568,7 +1568,7 @@ type RisuLorebookEntry = LorebookEntry & {
 
 export function createBaseV3(char:character){
     const bardLoreOwner = exportableBardLoreOwner(char)
-    const bardPainter = normalizePainterBotData(char.bardPainter)
+    const bardPainter = exportPainterBotData(char.bardPainter)
     const exportGlobalLore = bardLoreOwner?.legacyEntries ?? char.globalLore
     let charBook:RisuLorebookEntry[] = []
     let assets:Array<{

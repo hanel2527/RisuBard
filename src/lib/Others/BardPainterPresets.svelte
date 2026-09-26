@@ -12,6 +12,7 @@
     type Editor = {
         kind: 'identity' | 'outfit'; id: string; subjectId: string; exists: boolean; name: string; originalName: string
         aliases: string; appearance: string; clothing: string; state: string; shared: boolean; targetShared: boolean
+        attachToCard: boolean
     }
     let draft = $state<Editor | null>(null)
     let baseline = $state('')
@@ -82,15 +83,15 @@
         void tick().then(() => library?.querySelector<HTMLElement>('[aria-pressed="true"]')?.scrollIntoView?.({ block: 'nearest' }))
     }
     function emptyEditor(kind: Editor['kind'], subjectId = ''): Editor {
-        return { kind, id: '', subjectId, exists: false, name: '', originalName: '', aliases: '', appearance: '', clothing: '', state: '', shared: false, targetShared: false }
+        return { kind, id: '', subjectId, exists: false, name: '', originalName: '', aliases: '', appearance: '', clothing: '', state: '', shared: false, targetShared: false, attachToCard: false }
     }
     function selectIdentity(person: Owner) {
         const source = person.identity ?? session.data.draft?.subjects.find(subject => subject.id === person.id)
-        setEditor({ ...emptyEditor('identity', person.id), id: person.id, exists: !!person.identity, name: source?.name ?? '', originalName: source?.name ?? '', aliases: source?.aliases.join(', ') ?? '', appearance: source?.appearance ?? '' })
+        setEditor({ ...emptyEditor('identity', person.id), id: person.id, exists: !!person.identity, name: source?.name ?? '', originalName: source?.name ?? '', aliases: source?.aliases.join(', ') ?? '', appearance: source?.appearance ?? '', attachToCard: person.identity?.attachToCard === true })
     }
     function selectOutfit(item: OutfitItem) {
         const outfit = item.outfit
-        setEditor({ ...emptyEditor('outfit', outfit.subjectId), id: outfit.id, exists: true, name: outfit.name, originalName: outfit.name, clothing: outfit.clothing, state: outfit.state, shared: item.shared, targetShared: item.shared })
+        setEditor({ ...emptyEditor('outfit', outfit.subjectId), id: outfit.id, exists: true, name: outfit.name, originalName: outfit.name, clothing: outfit.clothing, state: outfit.state, shared: item.shared, targetShared: item.shared, attachToCard: item.shared && outfit.attachToCard === true })
     }
     function navigate(action: () => void) {
         if (locked) return
@@ -124,18 +125,28 @@
             if (token === operation && currentSession === session) { failed = true; feedback = error instanceof Error ? error.message : String(error) }
         } finally { if (token === operation && currentSession === session) busy = false }
     }
+    function setAllCardAttachments(attached: boolean) {
+        void run(() => session.setAllCardAttachments(attached), () => {
+            if (draft?.exists && (draft.kind === 'identity' || draft.shared)) {
+                draft.attachToCard = attached
+                baseline = JSON.stringify({ ...JSON.parse(baseline), attachToCard: attached })
+            }
+        }, attached ? '모든 외형과 봇 공용 의상을 카드 첨부로 저장했습니다.' : '모든 카드 첨부를 해제했습니다.')
+    }
     function save(asNew = false) {
         if (!draft || !valid || (draft.exists && asNew && !canCopy)) return
         const value = { ...draft }
         if (value.kind === 'identity') {
-            const identity = { id: value.id, name: value.name.trim(), aliases: [...new Set(value.aliases.split(',').map(alias => alias.trim()).filter(Boolean))], appearance: value.appearance.trim() }
+            const identity = { id: value.id, name: value.name.trim(), aliases: [...new Set(value.aliases.split(',').map(alias => alias.trim()).filter(Boolean))], appearance: value.appearance.trim(),
+                ...(value.attachToCard && !(asNew && value.exists) ? { attachToCard: true } : {}) }
             void run(() => session.saveIdentity(identity, asNew || !value.id), id => {
                 resetFilters()
                 selectIdentity({ ...identity, id, identity: { ...identity, id }, outfits: [] })
             }, asNew ? '새 인물 프리셋으로 저장했습니다.' : '인물 프리셋을 저장했습니다.')
         } else {
-            const outfit = { id: value.id, subjectId: value.subjectId, name: value.name.trim(), clothing: value.clothing.trim(), state: value.state.trim() }
             const shared = asNew || !value.exists ? value.targetShared : value.shared
+            const outfit = { id: value.id, subjectId: value.subjectId, name: value.name.trim(), clothing: value.clothing.trim(), state: value.state.trim(),
+                ...(shared && value.attachToCard && !(asNew && value.exists) ? { attachToCard: true } : {}) }
             void run(() => session.saveOutfitPreset(outfit, shared, asNew || !value.exists), id => {
                 resetFilters(); selectOutfit({ outfit: { ...outfit, id }, shared })
             }, asNew ? '새 의상 프리셋으로 저장했습니다.' : '의상 프리셋을 저장했습니다.')
@@ -166,6 +177,11 @@
             <label class="search">인물과 의상 검색<input type="search" aria-label="인물과 의상 검색" placeholder="이름, 별칭, 의상" bind:value={query} oninput={resetLimits} /></label>
             <label>의상 저장 범위<select aria-label="의상 저장 범위" value={scope} onchange={event => { scope = event.currentTarget.value; resetLimits() }}><option value="all">전체</option><option value="local">현재 챗</option><option value="shared">봇 공용</option></select></label>
             <button type="button" disabled={locked} onclick={() => navigate(() => setEditor(emptyEditor('identity')))}>새 인물</button>
+        </div>
+        <div class="actions" role="group" aria-label="카드 첨부 일괄 설정">
+            <button type="button" disabled={locked || !(session.bot.identities.length || session.bot.outfits.length)} onclick={() => setAllCardAttachments(true)}>모든 항목 첨부</button>
+            <button type="button" disabled={locked || !(session.bot.identities.length || session.bot.outfits.length)} onclick={() => setAllCardAttachments(false)}>모든 항목 미첨부</button>
+            <span class="hint">저장된 외형과 봇 공용 의상 전체에 즉시 적용</span>
         </div>
         {#if query || scope !== 'all'}<div class="filter-note"><span class="hint">인물 {folders.length}명 검색됨</span><button type="button" class="text-button" onclick={resetFilters}>검색과 필터 초기화</button></div>{/if}
         {#if pendingAction}
@@ -218,6 +234,12 @@
                             <label>{draft.exists ? '복사할 저장 범위' : '저장 범위'}<select aria-label={draft.exists ? '복사할 저장 범위' : '새 의상 저장 범위'} value={draft.targetShared ? 'shared' : 'local'} onchange={event => { if (draft) draft.targetShared = event.currentTarget.value === 'shared' }}><option value="local">현재 챗</option><option value="shared">봇 공용</option></select></label>
                             <p class="hint">{draft.exists ? `덮어쓰기는 원본(${draft.shared ? '봇 공용' : '현재 챗'})을 수정합니다. 이름이나 저장 범위를 바꾸면 별도 프리셋으로 저장할 수 있습니다.` : '현재 챗에서만 쓰거나, 같은 봇의 모든 챗에서 사용할 수 있습니다.'}</p>
                         {/if}
+                        {#if draft.kind === 'identity' || (draft.exists ? draft.shared : draft.targetShared)}
+                            <label class="attachment"><input type="checkbox" aria-label="봇에 첨부" bind:checked={draft.attachToCard} />봇에 첨부</label>
+                            <p class="hint">체크한 뒤 저장하면 CHARX, PNG, JSON 카드에 포함됩니다. {draft.kind === 'identity' ? '의상은 각각 따로 첨부해야 합니다.' : '이 인물의 기본 외형도 첨부로 저장해야 의상이 포함됩니다.'} 복사본은 첨부 해제로 시작합니다.</p>
+                        {:else}
+                            <p class="hint">현재 챗 의상은 개인 데이터입니다. 카드에 넣으려면 봇 공용으로 복사한 뒤 첨부를 선택하세요.</p>
+                        {/if}
                     </fieldset>
                     <div class="save-bar">
                         {#if draft.exists}<button type="button" class="primary" disabled={locked || !valid || !dirty} onclick={() => save(false)}>덮어쓰기</button><button type="button" disabled={locked || !canCopy} title={!canCopy ? '다른 이름을 입력해 주세요. 의상은 저장 범위를 바꿔 복사할 수도 있습니다.' : undefined} onclick={() => save(true)}>새 이름으로 저장</button>
@@ -247,6 +269,8 @@
     .toolbar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; }
     .toolbar .search { flex: 1; min-width: 10rem; }
     label { display: flex; flex-direction: column; gap: .25rem; font-size: .82rem; min-width: 0; }
+    .attachment { flex-direction: row; align-items: center; gap: .5rem; min-height: 2.75rem; cursor: pointer; }
+    .attachment input { width: 1.1rem; min-height: 1.1rem; padding: 0; accent-color: var(--color-primary); }
     input, select { width: 100%; min-width: 0; border: 1px solid var(--color-darkborderc); background: var(--color-bgcolor); color: var(--color-textcolor); border-radius: .3rem; padding: .45rem .55rem; }
     input, select { min-height: 2.15rem; }
     button { min-height: 2.1rem; border: 1px solid var(--color-darkborderc); border-radius: .3rem; padding: .35rem .65rem; font-size: .82rem; overflow-wrap: anywhere; }

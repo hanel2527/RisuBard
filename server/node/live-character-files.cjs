@@ -88,12 +88,32 @@ function mergePendingLiveDatabase(pending, baseline, external, conflicts = []) {
 }
 
 /** Files are inputs; never overwrite a partially saved editor buffer. */
-function createLiveCharacterFiles({ repository, writeAsset, writeAssets, reloadAssets = () => {}, watch = true, settleMs = 250 }) {
+function createLiveCharacterFiles(options) {
+    let active;
+    let initialized = false;
+    function setEnabled(enabled) {
+        if (enabled && !active) active = createActiveLiveCharacterFiles({ ...options, forceInitialReconcile: initialized });
+        else if (!enabled && active) { active.close(); active = undefined; }
+    }
+    setEnabled(options.enabled !== false);
+    initialized = true;
+    return {
+        isEnabled: () => Boolean(active),
+        setEnabled,
+        reconcile: options => active?.reconcile(options) ?? null,
+        invalidate: () => active?.invalidate(),
+        reset: () => active?.reset(),
+        accept: database => active?.accept(database),
+        close: () => setEnabled(false),
+    };
+}
+
+function createActiveLiveCharacterFiles({ repository, writeAsset, writeAssets, reloadAssets = () => {}, watch = true, settleMs = 250, forceInitialReconcile = false, onChange = () => {} }) {
     const root = repository.dataRoot;
     const directories = createCharacterDirectoryResolver(root);
     let accepted = repository.getProjectionRevision();
     let baseline;
-    let needsInitialReconcile = false;
+    let needsInitialReconcile = forceInitialReconcile;
     try { baseline = metadataSnapshot(repository.exportLegacyDatabase({ metadataOnly: true })); }
     catch { baseline = { characters: [], loreBook: [] }; needsInitialReconcile = true; }
     let dirty = true;
@@ -127,9 +147,10 @@ function createLiveCharacterFiles({ repository, writeAsset, writeAssets, reloadA
                     || /^lorebooks(?:\/[^/]+\.json)?$/.test(name)
                     || /^index\/(?:character-directories|character-asset-replicas)\.json$/.test(name)) {
                     invalidate(!name || name.includes('/assets') || name.startsWith('index/') || /^characters\/[^/]+$/.test(name));
+                    onChange();
                 }
             });
-            watcher.on('error', () => { fallback = true; dirty = true; });
+            watcher.on('error', () => { fallback = true; dirty = true; onChange(); });
             watcher.unref();
         } catch { fallback = true; }
     }
