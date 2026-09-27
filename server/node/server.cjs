@@ -1143,13 +1143,23 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
 
 function adoptExternallyChangedCanonicalProjection(liveOnly = false) {
     if (!canonicalProjectionReady) return null
-    // Disabling automatic monitoring never discards an interrupted adoption.
-    if (!liveCharacterFiles.isEnabled() && !liveFilesAdoption) return null
+    // Disabling watchers/polls must not disable mandatory revision reconciliation
+    // on ordinary reads and saves (including a missing/stale acceptance record).
+    // An interrupted adoption still resumes regardless of the monitoring setting.
+    if (liveOnly && !liveCharacterFiles.isEnabled() && !liveFilesAdoption) return null
     try {
-    const fresh = liveCharacterFiles.isEnabled()
-        ? liveCharacterFiles.reconcile({ verifyMetadata: liveOnly }) || (!liveOnly && canonicalProjectionSync.loadExternalChanges())
-        : null
+    const fresh = (liveCharacterFiles.isEnabled()
+        ? liveCharacterFiles.reconcile({ verifyMetadata: liveOnly }) : null)
+        || (!liveOnly && canonicalProjectionSync.loadExternalChanges())
     if (!fresh && !liveFilesAdoption) return null
+    // The checksum-validated fallback has no old metadata baseline. It cannot
+    // safely merge acknowledged writes: leave them queued instead of replacing
+    // the cache and cancelling their save during adoption.
+    if (fresh && !liveFilesAdoption && liveFilesPendingWrites && !fresh.previous) {
+        const error = new Error('Canonical files changed while acknowledged saves are pending; a merge baseline is unavailable')
+        error.code = 'CANONICAL_FILES_CHANGED'
+        throw error
+    }
     if (!liveFilesAdoption) {
         liveFilesAdoption = {
             changed: fresh,

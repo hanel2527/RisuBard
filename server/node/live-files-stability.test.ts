@@ -164,3 +164,32 @@ test.each(['before-publication', 'after-publication'])('failed adoption retries 
     expect(cache.db.characters[0].desc).toBe('B')
     expect(archives[0].conflicts[0].local).toBe('A')
 })
+
+test.each([false, true])('canonical fallback preserves pending writes when no merge baseline exists (monitoring %s)', enabled => {
+    const source = fs.readFileSync(path.join(import.meta.dirname, 'server.cjs'), 'utf8')
+    const body = source.slice(source.indexOf('function adoptExternallyChangedCanonicalProjection('), source.indexOf('\nexternalEditSession = createExternalEditSession'))
+    const pending = { characters: [{ chaId: 'one', desc: 'Acknowledged app edit', chats: [] }], loreBook: [] }
+    const external = { characters: [{ chaId: 'one', desc: 'External edit', chats: [] }], loreBook: [] }
+    const cache = { db: pending }
+    const timers = { db: 'pending-save' }
+    const published: unknown[] = []
+    const deps: any = {
+        canonicalProjectionReady: true, liveFilesAdoption: null, liveFilesPendingWrites: true,
+        liveCharacterFiles: { isEnabled: () => enabled, reconcile: () => null, invalidate: () => {}, accept: () => {} },
+        canonicalProjectionSync: { loadExternalChanges: () => ({ database: external, revision: 'external' }), accept: () => {} },
+        normalizeJSON: (x: any) => structuredClone(x), reassembleFullDb: (x: any) => x, stripChatsFromDb: (x: any) => x,
+        dbCache: cache, DB_HEX_KEY: 'db', saveTimers: timers,
+        directWriteTracker: { clear: () => {} }, clearTimeout: () => {},
+        encodeRisuSaveLegacyBuffer: JSON.stringify, kvSet: (_key: string, value: unknown) => published.push(value),
+        initChatStore: () => {}, computeBufferEtag: () => 'etag', nodeCrypto: { randomUUID: () => 'new' },
+        liveFileRecovery: { complete: () => {} }, logger: { info: () => {} },
+    }
+    const run = new Function('deps', `with (deps) { ${body}; return adoptExternallyChangedCanonicalProjection; }`)(deps)
+    expect(() => run()).toThrow(expect.objectContaining({ code: 'CANONICAL_FILES_CHANGED' }))
+    expect(cache.db).toBe(pending)
+    expect(cache.db.characters[0].desc).toBe('Acknowledged app edit')
+    expect(timers.db).toBe('pending-save')
+    expect(published).toEqual([])
+    expect(deps.liveFilesAdoption).toBeNull()
+    expect(deps.liveFilesPendingWrites).toBe(true)
+})
