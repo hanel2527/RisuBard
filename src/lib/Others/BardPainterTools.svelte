@@ -100,7 +100,8 @@
                     </section>
                     <section aria-label="이미지 생성 설정">
                         <h3>이미지 생성</h3>
-                        <label>NovelAI 모델<select value={settings.model} onchange={event => { settings.model = event.currentTarget.value as typeof settings.model; save() }}><option value="nai-diffusion-5-full">NovelAI V5 Full</option><option value="nai-diffusion-5-curated">NovelAI V5 Curated</option></select></label>
+                        <label>NovelAI 모델<select value={settings.model} onchange={event => { settings.model = event.currentTarget.value as typeof settings.model; save() }}><option value="nai-diffusion-5-full">NovelAI V5 Full</option><option value="nai-diffusion-5-curated">NovelAI V5 Curated</option><option value="nai-diffusion-4-5-full">NovelAI V4.5 Full</option><option value="nai-diffusion-4-5-curated">NovelAI V4.5 Curated</option></select></label>
+                        {#if settings.model === 'nai-diffusion-4-5-full' || settings.model === 'nai-diffusion-4-5-curated'}<p class="hint">V4.5는 인물과 사물 블록을 최대 6개까지 지원합니다.</p>{/if}
                         <div class="grid">
                             <label>이미지 크기<select aria-label="이미지 크기" value={`${settings.width}x${settings.height}`} onchange={event => { const [width, height] = event.currentTarget.value.split('x').map(Number); settings.width = width; settings.height = height; save() }}><option value="832x1216">세로 832 × 1216</option><option value="1216x832">가로 1216 × 832</option><option value="1024x1024">정사각 1024 × 1024</option></select></label>
                             <label>시드<span class="hint">비우면 무작위</span><input aria-label="이미지 시드" type="number" min="0" max="4294967295" step="1" value={settings.seed ?? ''} onchange={event => { settings.seed = event.currentTarget.value === '' ? null : event.currentTarget.valueAsNumber; save() }} /></label>

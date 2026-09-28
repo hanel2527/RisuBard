@@ -1580,6 +1580,7 @@ export interface Database{
     bardPainterFragments?: import('../bardPainter/types').PainterFragment[]
     bardPainterDefaultStyleId?: string
     bardPainterSettings?: import('../bardPainter/types').PainterGenerationSettings
+    bardPainterLibrary?: import('../bardPainter/types').PainterLibraryData
     personaBuilderStylePromptPresetId?:string
     loreBuilderStylePromptPresetId?:string
     sdProvider: string
@@ -2182,7 +2183,8 @@ export interface loreBook{
     alwaysActive: boolean
     selective:boolean
     extentions?:{
-        risu_case_sensitive:boolean
+        risu_case_sensitive?:boolean
+        [key: string]: unknown
     }
     activationPercent?:number
     loreCache?:{

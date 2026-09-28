@@ -69,6 +69,38 @@ function legacyDatabase() {
 }
 
 describe('canonical entity tree', () => {
+    it.each([false, true])('saves painter character metadata without reading chat bodies (root settings: %s)', (includeRootSettings) => {
+        const dataRoot = root()
+        const repository = createUserDataRepository({ dataRoot })
+        const database = legacyDatabase()
+        repository.importLegacyDatabase(database, { mode: 'sync' })
+        Object.assign(database.characters[0], { bardPainter: { identities: [{ id: 'person', name: 'Aria', appearance: 'blue eyes' }], outfits: [] } })
+        if (includeRootSettings) Object.assign(database, { bardPainterLibrary: { identities: [], outfits: [] } })
+        const expected = structuredClone(database)
+        const chat = database.characters[0].chats[0]
+        const messages = chat.message
+        Object.defineProperty(chat, 'message', { configurable: true, get() { throw new Error('Unrelated chat body was read') } })
+        try {
+            const { writeCanonicalProjection } = require('./canonical-projection-writer.cjs')
+            const result = writeCanonicalProjection({ repository, database, directCollection: {
+                kind: 'chatState', chats: [], characterIds: ['char-1'], includeRootSettings,
+            } })
+            expect(result.fallbackUsed).toBe(false)
+            expect(result.result.files).toBe(includeRootSettings ? 4 : 2)
+        } finally { Object.defineProperty(chat, 'message', { configurable: true, enumerable: true, writable: true, value: messages }) }
+        expect(createUserDataRepository({ dataRoot }).exportLegacyDatabase()).toEqual(expected)
+    })
+
+    it.each([{ characterIds: [] }, { characterIds: ['unknown'] }])('rejects empty or stale metadata scopes before writing: %j', ({ characterIds }) => {
+        const dataRoot = root()
+        const repository = createUserDataRepository({ dataRoot })
+        const database = legacyDatabase()
+        repository.importLegacyDatabase(database, { mode: 'sync' })
+        database.characters[0].name = 'must not save'
+        expect(() => repository.syncLegacyChatState(database, { chats: [], characterIds })).toThrow(/scope changed/)
+        expect(repository.exportLegacyDatabase()).toEqual(legacyDatabase())
+    })
+
     it('preserves legacy JSONL bytes for sparse and omitted message values', () => {
         const dataRoot = root()
         const repository = createUserDataRepository({ dataRoot })

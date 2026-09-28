@@ -42,15 +42,16 @@ beforeEach(() => {
             session.bot.outfits = session.bot.outfits.map((item: any) => ({ ...item, attachToCard: attached }))
             return true
         }),
-        saveIdentity: vi.fn(async (identity: any, asNew: boolean) => {
+        saveIdentity: vi.fn(async (identity: any, asNew: boolean, global = false) => {
             const saved = { ...identity, id: asNew || !identity.id ? 'new-person' : identity.id }
-            const index = session.bot.identities.findIndex((item: any) => item.id === saved.id)
-            if (index < 0) session.bot.identities.push(saved); else session.bot.identities[index] = saved
+            const owner = global ? session.globalLibrary : session.bot
+            const index = owner.identities.findIndex((item: any) => item.id === saved.id)
+            if (index < 0) owner.identities.push(saved); else owner.identities[index] = saved
             return saved.id
         }),
-        saveOutfitPreset: vi.fn(async (outfit: any, shared: boolean, asNew: boolean) => {
+        saveOutfitPreset: vi.fn(async (outfit: any, shared: boolean, asNew: boolean, global = false) => {
             const saved = { ...outfit, id: asNew || !outfit.id ? 'new-outfit' : outfit.id }
-            const owner = shared ? session.bot : session.data
+            const owner = global ? session.globalLibrary : shared ? session.bot : session.data
             const index = owner.outfits.findIndex((item: any) => item.id === saved.id)
             if (index < 0) owner.outfits.push(saved); else owner.outfits[index] = saved
             return saved.id
@@ -62,6 +63,88 @@ beforeEach(() => {
 afterEach(() => { component?.$destroy(); component = undefined; document.body.replaceChildren() })
 
 describe('BardPainter character and outfit manager', () => {
+    test('copies characters to global and protects unsaved edits when switching libraries', async () => {
+        session.globalLibrary = { identities: [{ id: 'global-person', name: '글로벌 인물', aliases: [], appearance: 'blue eyes' }], outfits: [] }
+        session.copyIdentityToGlobal = vi.fn().mockResolvedValue('copy')
+        session.importGlobalIdentity = vi.fn().mockResolvedValue('import')
+        mount(); await tick()
+        await click('글로벌에 복사')
+        expect(session.copyIdentityToGlobal).toHaveBeenCalledWith('person-a')
+        await change('기본 외형', 'unsaved')
+        await change('프리셋 보관함', 'global')
+        expect(document.body.textContent).toContain('저장하지 않은 변경 내용')
+        await click('변경 버리고 계속')
+        expect(document.querySelector<HTMLInputElement>('[aria-label="인물 이름"]')?.value).toBe('글로벌 인물')
+        expect(document.querySelector('[aria-label="봇에 첨부"]')).toBeNull()
+        expect([...document.querySelectorAll('button')].some(item => item.textContent === '로어 연결')).toBe(false)
+        await click('현재 봇으로 가져오기')
+        expect(session.importGlobalIdentity).toHaveBeenCalledWith('global-person')
+    })
+    test('creates independent outfits and assigns the same outfit with a default to a character', async () => {
+        session.setIdentityOutfits = vi.fn(async (id: string, ids: string[], defaultId?: string) => {
+            const identity = session.bot.identities.find((item: any) => item.id === id)
+            identity.outfitIds = ids; identity.defaultOutfitId = defaultId; return true
+        })
+        mount(); await tick()
+        await click('새 공용 의상')
+        await change('의상 이름', '학교 교복'); await change('의상 프롬프트', 'school uniform')
+        await click('저장')
+        expect(session.saveOutfitPreset).toHaveBeenCalledWith(expect.objectContaining({ subjectId: '', clothing: 'school uniform' }), true, true)
+        await click('예시 인물 B 외형 편집')
+        const checkbox = document.querySelector<HTMLInputElement>('[aria-label="학교 교복 사용"]')!
+        checkbox.click(); await tick(); await tick()
+        expect(session.setIdentityOutfits).toHaveBeenLastCalledWith('person-b', ['new-outfit'], undefined)
+        await change('기본 의상', 'new-outfit')
+        expect(session.setIdentityOutfits).toHaveBeenLastCalledWith('person-b', ['new-outfit'], 'new-outfit')
+        await change('기본 외형', 'red eyes'); await click('덮어쓰기')
+        expect(session.saveIdentity).toHaveBeenLastCalledWith(expect.objectContaining({ outfitIds: ['new-outfit'], defaultOutfitId: 'new-outfit' }), false)
+    })
+    test('edits global characters and independent outfits without changing the bot library', async () => {
+        session.globalLibrary = { identities: [{ id: 'g', name: '공통 인물', aliases: [], appearance: 'blue eyes' }], outfits: [] }
+        session.copyOutfitToGlobal = vi.fn().mockResolvedValue('copy')
+        session.importGlobalOutfit = vi.fn().mockResolvedValue('import')
+        mount(); await tick()
+        await change('프리셋 보관함', 'global')
+        await change('기본 외형', 'green eyes'); await click('덮어쓰기')
+        expect(session.saveIdentity).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'g', appearance: 'green eyes' }), false, true)
+        expect(session.bot.identities[0].appearance).toBe('short brown hair')
+        await click('새 공용 의상'); await change('의상 이름', '정장'); await change('의상 프롬프트', 'black suit'); await click('저장')
+        expect(session.saveOutfitPreset).toHaveBeenLastCalledWith(expect.objectContaining({ subjectId: '', name: '정장' }), true, true, true)
+        await click('현재 봇으로 가져오기')
+        expect(session.importGlobalOutfit).toHaveBeenCalledWith('new-outfit')
+    })
+    test('does not falsely show a failed outfit association as selected', async () => {
+        session.bot.outfits.push({ id: 'uniform', subjectId: '', name: '교복', clothing: 'school uniform', state: '' })
+        session.setIdentityOutfits = vi.fn(async () => { session.state.error = '의상 연결 저장 실패'; return false })
+        mount(); await tick()
+        const checkbox = document.querySelector<HTMLInputElement>('[aria-label="교복 사용"]')!
+        checkbox.click(); await tick(); await tick()
+        expect(checkbox.checked).toBe(false)
+        expect(document.body.textContent).toContain('의상 연결 저장 실패')
+    })
+    test('reports failed lore writes and allows unlinking after retry', async () => {
+        session.loreEntries = [{ id: 'lore-a', title: '연결한 로어', content: 'story', identityId: 'person-a' }]
+        session.setLoreIdentity = vi.fn(async () => { session.state.error = '로어 저장 실패'; return false })
+        mount(); await tick(); await click('로어 연결'); await click('연결한 로어 연결 해제')
+        expect(session.setLoreIdentity).toHaveBeenCalledWith('lore-a', undefined)
+        expect(document.body.textContent).toContain('로어 저장 실패')
+        expect(button('연결한 로어 연결 해제').getAttribute('aria-pressed')).toBe('true')
+        session.setLoreIdentity.mockImplementation(async () => { session.loreEntries[0].identityId = undefined; return true })
+        await click('연결한 로어 연결 해제')
+        expect(button('연결한 로어 연결').getAttribute('aria-pressed')).toBe('false')
+    })
+    test('opens a searchable lore picker and requires an explicit replacement action', async () => {
+        session.loreEntries = [{ id: 'lore-a', title: '등장인물 기록', content: 'story', identityId: 'person-b' }]
+        session.setLoreIdentity = vi.fn().mockResolvedValue(true)
+        mount(); await tick()
+        await click('로어 연결')
+        await change('로어 검색', '기록')
+        await click('등장인물 기록 연결 변경')
+        expect(session.setLoreIdentity).not.toHaveBeenCalled()
+        expect(document.body.textContent).toContain('예시 인물 B')
+        await click('이 인물로 연결 변경')
+        expect(session.setLoreIdentity).toHaveBeenCalledWith('lore-a', 'person-a')
+    })
     test('applies bulk attachment outside search filters while preserving unsaved editor text', async () => {
         mount(); await tick()
         await change('기본 외형', 'unsaved green eyes')

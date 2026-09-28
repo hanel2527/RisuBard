@@ -4818,10 +4818,9 @@ app.get('/api/backup/export', async (req, res, next) => {
         // Flush any pending patches to ensure export includes latest data
         await flushPendingDb();
 
-        // Settings-only re-encodes a trimmed DB up front: its byte length is
-        // needed for content-length, and the trimmed object drives the asset
-        // filter below. Safe to hold in memory — with characters gone this is
-        // orders of magnitude smaller than the live blob.
+        // Settings-only re-encodes a trimmed DB up front, and the trimmed
+        // object drives the asset filter below. Safe to hold in memory — with
+        // characters gone this is orders of magnitude smaller than the live blob.
         let settingsDbValue = null;
         let settingsAssetNames = null;
         if (settingsOnly) {
@@ -4896,9 +4895,6 @@ app.get('/api/backup/export', async (req, res, next) => {
             ...canonicalEntries,
         ].sort((a, b) => a.sortKey.localeCompare(b.sortKey));
         const dbSize = settingsOnly ? settingsDbValue.length : kvSize('database/database.bin');
-        const totalBytes = namespacedEntries.reduce((sum, entry) => {
-            return sum + 8 + Buffer.byteLength(entry.backupName, 'utf-8') + entry.size;
-        }, 0) + (dbSize ? 8 + Buffer.byteLength('database.risudat', 'utf-8') + dbSize : 0);
 
         // Settings-only files get their own name — they are kept around and
         // reused across instances, so they have to be tellable apart from a full
@@ -4907,7 +4903,10 @@ app.get('/api/backup/export', async (req, res, next) => {
         const filenameSuffix = settingsOnly ? '' : target === 'upstream' ? '-upstream' : '';
         res.setHeader('content-type', 'application/octet-stream');
         res.setHeader('content-disposition', `attachment; filename="${filenameBase}-${Date.now()}${filenameSuffix}.bin"`);
-        res.setHeader('content-length', totalBytes);
+        // These are live files, not a byte snapshot: logs, settings and the DB
+        // can change after inventory. A stale Content-Length makes the browser
+        // truncate a growing backup (or wait for bytes from a shrinking one).
+        // Let HTTP frame the stream using the bytes actually written instead.
         res.setHeader('x-risu-backup-assets', namespacedEntries.length);
 
         let closed = false;

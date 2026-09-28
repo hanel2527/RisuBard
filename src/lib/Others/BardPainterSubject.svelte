@@ -80,7 +80,7 @@
                     <select aria-label={`대상 ${index + 1} 의상 불러오기`} value={selectedOutfit} onchange={event => selectedOutfit = event.currentTarget.value}>
                         <option value="">{localOutfits.length + sharedOutfits.length ? '의상 프리셋 선택' : '저장된 의상 없음'}</option>
                         {#each localOutfits as item (item.id)}<option value={item.id}>{session.bot.identities.find(person => person.id === item.subjectId)?.name ?? '인물'} / {item.name} (현재 챗)</option>{/each}
-                        {#each sharedOutfits as item (item.id)}<option value={item.id}>{session.bot.identities.find(person => person.id === item.subjectId)?.name ?? '인물'} / {item.name} (봇 공용)</option>{/each}
+                        {#each sharedOutfits as item (item.id)}<option value={item.id}>{item.subjectId ? session.bot.identities.find(person => person.id === item.subjectId)?.name ?? '인물' : '공용 의상'} / {item.name} (봇 공용)</option>{/each}
                     </select>
                 </label>
                 <button type="button" class="paste-button" title="의상 프리셋 붙여넣기" aria-label={`대상 ${index + 1} 의상 붙여넣기`} disabled={disabled || !outfitText.trim()} onclick={() => pastePreset(outfitText)}><ClipboardPaste size={18} aria-hidden="true" /></button>

@@ -44,6 +44,19 @@ beforeEach(() => {
 afterEach(() => { component?.$destroy(); component = undefined; document.body.replaceChildren() })
 
 describe('BardPainter tools', () => {
+    test.each(['nai-diffusion-4-5-full', 'nai-diffusion-4-5-curated'])('selects and retains %s when settings reopen', async model => {
+        await mount('settings')
+        const select = [...document.querySelectorAll('select')].find(item => item.value === 'nai-diffusion-5-full')!
+        expect([...select.options].map(item => item.value)).toContain(model)
+        select.value = model
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+        await tick()
+        expect(session.updateGenerationSettings).toHaveBeenLastCalledWith(expect.objectContaining({ model }))
+        component!.$set({ mode: null }); await tick()
+        component!.$set({ mode: 'settings' }); await tick()
+        expect([...document.querySelectorAll('select')].some(item => item.value === model)).toBe(true)
+    })
+
     test('creates, edits, copies, adds and deletes saved fragments in the floating manager', async () => {
         session.fragments = []
         session.data.draft = { scene: 'night', rendering: '', negative: '', subjects: [] }

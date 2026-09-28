@@ -1,5 +1,6 @@
 <script lang="ts">
     import BardPainterPromptInput from './BardPainterPromptInput.svelte'
+    import BardPainterLorePicker from './BardPainterLorePicker.svelte'
     import { tick, untrack } from 'svelte'
     import type { getPainterSession } from 'src/ts/bardPainter/runtime.svelte'
     import type { PainterIdentity, PainterOutfit } from 'src/ts/bardPainter/types'
@@ -18,7 +19,13 @@
     let baseline = $state('')
     let query = $state('')
     let scope = $state('all')
+    let global = $state(false)
+    let loreOpen = $state(false)
+    let presets = $derived(global ? (session.globalLibrary ?? { identities: [], outfits: [] }) : session.bot)
+    let localOutfits = $derived(global ? [] : session.data.outfits)
+    let independentOutfits = $derived(presets.outfits.filter(item => !item.subjectId))
     let personLimit = $state(12)
+    let independentLimit = $state(12)
     let outfitLimits = $state<Record<string, number>>({})
     let opened = $state<string[]>([])
     let closedSearch = $state<string[]>([])
@@ -36,18 +43,25 @@
     let canCopy = $derived(!!draft && valid && (normalized(draft.name) !== normalized(draft.originalName) || (draft.kind === 'outfit' && draft.targetShared !== draft.shared)))
     let searchWords = $derived(normalized(query).split(/\s+/).filter(Boolean))
     const matches = (value: string) => searchWords.every(word => normalized(value).includes(word))
+    let matchingIndependent = $derived(independentOutfits.filter(item => matches(`${item.name} ${item.clothing} ${item.state}`)))
     let owners = $derived.by(() => {
-        const result = new Map<string, Owner>(session.bot.identities.map(person => [person.id, { id: person.id, name: person.name, aliases: person.aliases, identity: person, outfits: [] }]))
+        const result = new Map<string, Owner>(presets.identities.map(person => [person.id, { id: person.id, name: person.name, aliases: person.aliases, identity: person, outfits: [] }]))
         for (const item of [
-            ...session.data.outfits.map(outfit => ({ outfit, shared: false })),
-            ...session.bot.outfits.map(outfit => ({ outfit, shared: true })),
+            ...localOutfits.map(outfit => ({ outfit, shared: false })),
+            ...presets.outfits.map(outfit => ({ outfit, shared: true })),
         ]) {
             const id = item.outfit.subjectId
+            if (!id) continue
             if (!result.has(id)) {
                 const subject = session.data.draft?.subjects.find(person => person.id === id)
                 result.set(id, { id, name: subject?.name || `이름 미등록 (${id.slice(0, 8)})`, aliases: subject?.aliases ?? [], outfits: [] })
             }
             result.get(id)!.outfits.push(item)
+        }
+        for (const person of result.values()) {
+            for (const outfit of presets.outfits) {
+                if (person.identity?.outfitIds?.includes(outfit.id) && !person.outfits.some(item => item.outfit.id === outfit.id && item.shared)) person.outfits.push({ outfit, shared: true })
+            }
         }
         return [...result.values()]
     })
@@ -58,11 +72,12 @@
         return { ...person, outfits, visible: (scope === 'all' && personMatches) || outfits.length > 0 }
     }).filter(person => person.visible))
     let owner = $derived(owners.find(person => person.id === draft?.subjectId))
+    let linkedIds = $derived(owner?.identity ? presets.outfits.filter(item => item.subjectId === owner!.id || owner!.identity!.outfitIds?.includes(item.id)).map(item => item.id) : [])
 
     $effect(() => {
         session
         untrack(() => {
-            operation += 1; busy = false; query = ''; scope = 'all'; opened = []; pendingAction = null; feedback = ''; failed = false; resetLimits()
+            operation += 1; busy = false; global = false; loreOpen = false; query = ''; scope = 'all'; opened = []; pendingAction = null; feedback = ''; failed = false; resetLimits()
             const first = owners[0]
             if (first) selectIdentity(first); else setEditor(null)
         })
@@ -83,7 +98,7 @@
         void tick().then(() => library?.querySelector<HTMLElement>('[aria-pressed="true"]')?.scrollIntoView?.({ block: 'nearest' }))
     }
     function emptyEditor(kind: Editor['kind'], subjectId = ''): Editor {
-        return { kind, id: '', subjectId, exists: false, name: '', originalName: '', aliases: '', appearance: '', clothing: '', state: '', shared: false, targetShared: false, attachToCard: false }
+        return { kind, id: '', subjectId, exists: false, name: '', originalName: '', aliases: '', appearance: '', clothing: '', state: '', shared: global || !subjectId, targetShared: global || !subjectId, attachToCard: false }
     }
     function selectIdentity(person: Owner) {
         const source = person.identity ?? session.data.draft?.subjects.find(subject => subject.id === person.id)
@@ -91,6 +106,7 @@
     }
     function selectOutfit(item: OutfitItem) {
         const outfit = item.outfit
+        if (!outfit.subjectId) independentLimit = Math.max(independentLimit, independentOutfits.findIndex(value => value.id === outfit.id) + 1)
         setEditor({ ...emptyEditor('outfit', outfit.subjectId), id: outfit.id, exists: true, name: outfit.name, originalName: outfit.name, clothing: outfit.clothing, state: outfit.state, shared: item.shared, targetShared: item.shared, attachToCard: item.shared && outfit.attachToCard === true })
     }
     function navigate(action: () => void) {
@@ -105,10 +121,10 @@
         opened = isOpen ? opened.filter(value => value !== id) : [...opened, id]
         closedSearch = isOpen ? [...closedSearch, id] : closedSearch.filter(value => value !== id)
     }
-    function resetLimits() { personLimit = 12; outfitLimits = {}; closedSearch = [] }
+    function resetLimits() { personLimit = 12; independentLimit = 12; outfitLimits = {}; closedSearch = [] }
     function resetFilters() { query = ''; scope = 'all'; resetLimits() }
     function outfitBoundary(item: OutfitItem, direction: -1 | 1) {
-        const siblings = (item.shared ? session.bot.outfits : session.data.outfits).filter(outfit => outfit.subjectId === item.outfit.subjectId)
+        const siblings = (item.shared ? presets.outfits : localOutfits).filter(outfit => outfit.subjectId === item.outfit.subjectId)
         const target = siblings.findIndex(outfit => outfit.id === item.outfit.id) + direction
         return target < 0 || target >= siblings.length
     }
@@ -138,16 +154,18 @@
         const value = { ...draft }
         if (value.kind === 'identity') {
             const identity = { id: value.id, name: value.name.trim(), aliases: [...new Set(value.aliases.split(',').map(alias => alias.trim()).filter(Boolean))], appearance: value.appearance.trim(),
-                ...(value.attachToCard && !(asNew && value.exists) ? { attachToCard: true } : {}) }
-            void run(() => session.saveIdentity(identity, asNew || !value.id), id => {
+                ...(!asNew && owner?.identity?.outfitIds ? { outfitIds: [...owner.identity.outfitIds] } : {}),
+                ...(!asNew && owner?.identity?.defaultOutfitId ? { defaultOutfitId: owner.identity.defaultOutfitId } : {}),
+                ...(!global && value.attachToCard && !(asNew && value.exists) ? { attachToCard: true } : {}) }
+            void run(() => global ? session.saveIdentity(identity, asNew || !value.id, true) : session.saveIdentity(identity, asNew || !value.id), id => {
                 resetFilters()
                 selectIdentity({ ...identity, id, identity: { ...identity, id }, outfits: [] })
             }, asNew ? '새 인물 프리셋으로 저장했습니다.' : '인물 프리셋을 저장했습니다.')
         } else {
             const shared = asNew || !value.exists ? value.targetShared : value.shared
             const outfit = { id: value.id, subjectId: value.subjectId, name: value.name.trim(), clothing: value.clothing.trim(), state: value.state.trim(),
-                ...(shared && value.attachToCard && !(asNew && value.exists) ? { attachToCard: true } : {}) }
-            void run(() => session.saveOutfitPreset(outfit, shared, asNew || !value.exists), id => {
+                ...(!global && shared && value.attachToCard && !(asNew && value.exists) ? { attachToCard: true } : {}) }
+            void run(() => global ? session.saveOutfitPreset(outfit, shared, asNew || !value.exists, true) : session.saveOutfitPreset(outfit, shared, asNew || !value.exists), id => {
                 resetFilters(); selectOutfit({ outfit: { ...outfit, id }, shared })
             }, asNew ? '새 의상 프리셋으로 저장했습니다.' : '의상 프리셋을 저장했습니다.')
         }
@@ -155,7 +173,7 @@
     function remove() {
         if (!draft?.exists) return
         const value = { ...draft }
-        void run(() => value.kind === 'identity' ? session.removeIdentity(value.id) : session.removeOutfit(value.id, value.shared), () => {
+        void run(() => value.kind === 'identity' ? (global ? session.removeIdentity(value.id, true) : session.removeIdentity(value.id)) : (global ? session.removeOutfit(value.id, value.shared, true) : session.removeOutfit(value.id, value.shared)), () => {
             const next = owners.find(person => person.id === value.subjectId) ?? owners[0]
             if (next) selectIdentity(next); else setEditor(null)
         }, value.kind === 'identity' ? '인물과 해당 인물의 의상 프리셋을 삭제했습니다.' : '의상 프리셋을 삭제했습니다.')
@@ -164,25 +182,57 @@
         if (!draft) return
         if (draft.kind === 'identity' && owner) selectIdentity(owner)
         else if (draft.kind === 'outfit' && draft.exists) {
-            const saved = (draft.shared ? session.bot.outfits : session.data.outfits).find(item => item.id === draft!.id)
+            const saved = (draft.shared ? presets.outfits : localOutfits).find(item => item.id === draft!.id)
             if (saved) selectOutfit({ outfit: saved, shared: draft.shared })
         } else setEditor(emptyEditor(draft.kind, draft.subjectId))
     }
+    function switchLibrary(next: boolean) {
+        navigate(() => {
+            global = next; loreOpen = false; resetFilters(); opened = []
+            const first = owners[0]
+            if (first) selectIdentity(first); else setEditor(null)
+        })
+    }
+    function copyAcrossLibraries() {
+        if (!draft?.exists || dirty) return
+        const item = draft
+        void run(() => item.kind === 'identity'
+            ? global ? session.importGlobalIdentity(item.id) : session.copyIdentityToGlobal(item.id)
+            : global ? session.importGlobalOutfit(item.id) : session.copyOutfitToGlobal(item.id, item.shared), () => {},
+            global ? '현재 봇에 복사했습니다. 프리셋 보관함을 현재 봇으로 바꾸면 확인할 수 있습니다.' : '글로벌 보관함에 복사했습니다. 이후 수정은 복사본끼리 공유되지 않습니다.')
+    }
+    function linkOutfits(ids: string[], defaultId = owner?.identity?.defaultOutfitId) {
+        if (!owner?.identity) return
+        const id = owner.id
+        const selectedDefault = defaultId && ids.includes(defaultId) ? defaultId : undefined
+        void run(() => global ? session.setIdentityOutfits(id, ids, selectedDefault, true) : session.setIdentityOutfits(id, ids, selectedDefault), () => {}, '사용할 의상을 저장했습니다.')
+    }
+    function toggleOutfit(id: string, input: HTMLInputElement) {
+        const selected = input.checked
+        input.checked = linkedIds.includes(id)
+        linkOutfits(selected ? [...linkedIds, id] : linkedIds.filter(value => value !== id))
+    }
+    function movePerson(id: string, direction: -1 | 1) { return global ? session.moveIdentity(id, direction, true) : session.moveIdentity(id, direction) }
+    function moveCostume(item: OutfitItem, direction: -1 | 1) { return global ? session.moveOutfit(item.outfit.id, item.shared, direction, true) : session.moveOutfit(item.outfit.id, item.shared, direction) }
 </script>
 
 <section class="presets" class:embedded={expanded} data-painter-presets>
-    {#if !expanded}<h3 class="presets-heading">인물과 의상 프리셋 <span class="hint">인물 {session.bot.identities.length}명 / 의상 {session.data.outfits.length + session.bot.outfits.length}개</span></h3>{/if}
+    {#if !expanded}<h3 class="presets-heading">인물과 의상 프리셋 <span class="hint">인물 {presets.identities.length}명 / 의상 {localOutfits.length + presets.outfits.length}개</span></h3>{/if}
     <div class="content">
         <div class="toolbar">
+            <label>프리셋 보관함<select aria-label="프리셋 보관함" value={global ? 'global' : 'bot'} disabled={locked} onchange={event => { const next = event.currentTarget.value === 'global'; event.currentTarget.value = global ? 'global' : 'bot'; switchLibrary(next) }}><option value="bot">현재 봇</option><option value="global">글로벌</option></select></label>
             <label class="search">인물과 의상 검색<input type="search" aria-label="인물과 의상 검색" placeholder="이름, 별칭, 의상" bind:value={query} oninput={resetLimits} /></label>
-            <label>의상 저장 범위<select aria-label="의상 저장 범위" value={scope} onchange={event => { scope = event.currentTarget.value; resetLimits() }}><option value="all">전체</option><option value="local">현재 챗</option><option value="shared">봇 공용</option></select></label>
+            {#if !global}<label>의상 저장 범위<select aria-label="의상 저장 범위" value={scope} onchange={event => { scope = event.currentTarget.value; resetLimits() }}><option value="all">전체</option><option value="local">현재 챗</option><option value="shared">봇 공용</option></select></label>{/if}
             <button type="button" disabled={locked} onclick={() => navigate(() => setEditor(emptyEditor('identity')))}>새 인물</button>
+            <button type="button" disabled={locked} onclick={() => navigate(() => setEditor(emptyEditor('outfit')))}>새 공용 의상</button>
         </div>
+        {#if global}<p class="hint">모든 봇에서 가져올 수 있는 개인 보관함입니다. 가져온 프리셋은 봇의 독립된 복사본으로 저장됩니다.</p>{:else}
         <div class="actions" role="group" aria-label="카드 첨부 일괄 설정">
             <button type="button" disabled={locked || !(session.bot.identities.length || session.bot.outfits.length)} onclick={() => setAllCardAttachments(true)}>모든 항목 첨부</button>
             <button type="button" disabled={locked || !(session.bot.identities.length || session.bot.outfits.length)} onclick={() => setAllCardAttachments(false)}>모든 항목 미첨부</button>
             <span class="hint">저장된 외형과 봇 공용 의상 전체에 즉시 적용</span>
         </div>
+        {/if}
         {#if query || scope !== 'all'}<div class="filter-note"><span class="hint">인물 {folders.length}명 검색됨</span><button type="button" class="text-button" onclick={resetFilters}>검색과 필터 초기화</button></div>{/if}
         {#if pendingAction}
             <div class="confirmation" role="alert">
@@ -192,23 +242,34 @@
         {/if}
         <div class="workspace">
             <nav class="library" aria-label="인물별 프리셋 목록" bind:this={library}>
+                {#if scope !== 'local' && matchingIndependent.length}
+                    <section class="person independent">
+                        <h3>공용 의상</h3><p class="hint">여러 인물이 함께 사용할 수 있습니다.</p>
+                        {#each matchingIndependent.slice(0, independentLimit) as outfit (outfit.id)}
+                            <div class="row" class:selected={draft?.kind === 'outfit' && draft.id === outfit.id && draft.shared}>
+                                <button type="button" class="row-name" disabled={locked} aria-label={`${outfit.name} 공용 의상 편집`} aria-pressed={draft?.kind === 'outfit' && draft.id === outfit.id && draft.shared} onclick={() => navigate(() => selectOutfit({ outfit, shared: true }))}>{outfit.name}</button>
+                            </div>
+                        {/each}
+                        {#if matchingIndependent.length > independentLimit}<button type="button" class="text-button" onclick={() => independentLimit += 12}>공용 의상 더 보기 ({matchingIndependent.length - independentLimit}개)</button>{/if}
+                    </section>
+                {/if}
                 {#each folders.slice(0, personLimit) as person (person.id)}
                     {@const isOpen = opened.includes(person.id) || (searchWords.length > 0 && !closedSearch.includes(person.id))}
-                    {@const index = session.bot.identities.findIndex(item => item.id === person.id)}
+                    {@const index = presets.identities.findIndex(item => item.id === person.id)}
                     <section class="person" data-painter-person={person.id}>
                         <div class="row owner-row" class:selected={draft?.kind === 'identity' && draft.subjectId === person.id}>
                             <button type="button" class="icon-button" aria-label={`${person.name} 의상 ${isOpen ? '접기' : '펼치기'}`} aria-expanded={isOpen} onclick={() => togglePerson(person.id)}><span aria-hidden="true">{isOpen ? '▾' : '▸'}</span></button>
                             <button type="button" class="row-name" disabled={locked} aria-label={`${person.name} 외형 편집`} aria-pressed={draft?.kind === 'identity' && draft.subjectId === person.id} onclick={() => navigate(() => selectIdentity(person))}>
                                 <strong>{person.name}</strong><span class="hint">{person.aliases.join(', ') || `${person.outfits.length}개 의상`}</span>
                             </button>
-                            {#if person.identity}<div class="reorder"><button type="button" class="icon-button" aria-label={`${person.name} 위로`} title="인물 위로" disabled={locked || index === 0} onclick={() => run(() => session.moveIdentity(person.id, -1), () => {}, '인물 순서를 바꿨습니다.')}><span aria-hidden="true">↑</span></button><button type="button" class="icon-button" aria-label={`${person.name} 아래로`} title="인물 아래로" disabled={locked || index === session.bot.identities.length - 1} onclick={() => run(() => session.moveIdentity(person.id, 1), () => {}, '인물 순서를 바꿨습니다.')}><span aria-hidden="true">↓</span></button></div>{/if}
+                            {#if person.identity}<div class="reorder"><button type="button" class="icon-button" aria-label={`${person.name} 위로`} title="인물 위로" disabled={locked || index === 0} onclick={() => run(() => movePerson(person.id, -1), () => {}, '인물 순서를 바꿨습니다.')}><span aria-hidden="true">↑</span></button><button type="button" class="icon-button" aria-label={`${person.name} 아래로`} title="인물 아래로" disabled={locked || index === presets.identities.length - 1} onclick={() => run(() => movePerson(person.id, 1), () => {}, '인물 순서를 바꿨습니다.')}><span aria-hidden="true">↓</span></button></div>{/if}
                         </div>
                         {#if isOpen}
                             <div class="children">
                                 {#each person.outfits.slice(0, outfitLimits[person.id] ?? 8) as item (`${item.shared}:${item.outfit.id}`)}
                                     <div class="row outfit-row" class:selected={draft?.kind === 'outfit' && draft.id === item.outfit.id && draft.shared === item.shared} data-painter-outfit={item.outfit.id}>
-                                        <button type="button" class="row-name" disabled={locked} aria-label={`${item.outfit.name} 의상 편집`} aria-pressed={draft?.kind === 'outfit' && draft.id === item.outfit.id && draft.shared === item.shared} onclick={() => navigate(() => selectOutfit(item))}><span>{item.outfit.name}</span><span class="hint">{item.shared ? '봇 공용' : '현재 챗'}</span></button>
-                                        <div class="reorder"><button type="button" class="icon-button" aria-label={`${item.outfit.name} 위로`} title="같은 저장 범위에서 위로" disabled={locked || outfitBoundary(item, -1)} onclick={() => run(() => session.moveOutfit(item.outfit.id, item.shared, -1), () => {}, '의상 순서를 바꿨습니다.')}><span aria-hidden="true">↑</span></button><button type="button" class="icon-button" aria-label={`${item.outfit.name} 아래로`} title="같은 저장 범위에서 아래로" disabled={locked || outfitBoundary(item, 1)} onclick={() => run(() => session.moveOutfit(item.outfit.id, item.shared, 1), () => {}, '의상 순서를 바꿨습니다.')}><span aria-hidden="true">↓</span></button></div>
+                                        <button type="button" class="row-name" disabled={locked} aria-label={`${item.outfit.name} 의상 편집`} aria-pressed={draft?.kind === 'outfit' && draft.id === item.outfit.id && draft.shared === item.shared} onclick={() => navigate(() => selectOutfit(item))}><span>{item.outfit.name}</span><span class="hint">{global ? '글로벌' : item.shared ? '봇 공용' : '현재 챗'}{person.identity?.defaultOutfitId === item.outfit.id ? ' / 기본 의상' : ''}</span></button>
+                                        <div class="reorder"><button type="button" class="icon-button" aria-label={`${item.outfit.name} 위로`} title="같은 저장 범위에서 위로" disabled={locked || outfitBoundary(item, -1)} onclick={() => run(() => moveCostume(item, -1), () => {}, '의상 순서를 바꿨습니다.')}><span aria-hidden="true">↑</span></button><button type="button" class="icon-button" aria-label={`${item.outfit.name} 아래로`} title="같은 저장 범위에서 아래로" disabled={locked || outfitBoundary(item, 1)} onclick={() => run(() => moveCostume(item, 1), () => {}, '의상 순서를 바꿨습니다.')}><span aria-hidden="true">↓</span></button></div>
                                     </div>
                                 {:else}<p class="hint empty">{query || scope !== 'all' ? '조건에 맞는 의상이 없습니다.' : '저장된 의상이 없습니다.'}</p>{/each}
                                 {#if person.outfits.length > (outfitLimits[person.id] ?? 8)}<button type="button" class="text-button" onclick={() => outfitLimits[person.id] = (outfitLimits[person.id] ?? 8) + 8}>의상 더 보기 ({person.outfits.length - (outfitLimits[person.id] ?? 8)}개)</button>{/if}
@@ -220,24 +281,26 @@
             </nav>
             <div class="editor-pane">
                 {#if draft}
-                    <div class="editor-heading"><h3>{draft.kind === 'identity' ? (draft.exists ? '기본 외형' : '새 인물') : (draft.exists ? '의상 편집' : '새 의상')}</h3><span class="hint">{draft.kind === 'identity' ? '봇 공용' : owner?.name}{dirty ? ' / 저장하지 않음' : ''}</span>{#if draft.subjectId}<button type="button" class="text-button" disabled={locked} onclick={() => navigate(() => setEditor(emptyEditor('outfit', draft!.subjectId)))}>새 의상</button>{/if}</div>
+                    <div class="editor-heading"><h3>{draft.kind === 'identity' ? (draft.exists ? '기본 외형' : '새 인물') : (draft.exists ? '의상 편집' : '새 의상')}</h3><span class="hint">{global ? '글로벌' : draft.kind === 'identity' ? '봇 공용' : owner?.name ?? '공용 의상'}{dirty ? ' / 저장하지 않음' : ''}</span>{#if draft.subjectId}<button type="button" class="text-button" disabled={locked} onclick={() => navigate(() => setEditor(emptyEditor('outfit', draft!.subjectId)))}>새 의상</button>{/if}</div>
                     <fieldset disabled={locked} data-preset-editor>
                         {#if draft.kind === 'identity'}
                             <label>이름<input aria-label="인물 이름" maxlength="160" bind:value={draft.name} /></label>
                             <label>별칭 <span class="hint">쉼표로 구분</span><input aria-label="인물 별칭" bind:value={draft.aliases} /></label>
                             <label>기본 외형<BardPainterPromptInput aria-label="기본 외형" rows={6} bind:value={draft.appearance} placeholder="머리색, 눈색, 체형 등"></BardPainterPromptInput></label>
-                            <p class="hint">같은 봇의 모든 챗에서 사용할 수 있습니다. 새 이름으로 저장하면 외형과 별칭만 복사하며, 의상은 원래 인물에 남습니다.</p>
+                            <p class="hint">{global ? '다른 봇으로 가져올 수 있습니다.' : '같은 봇의 모든 챗에서 사용할 수 있습니다.'} 새 이름으로 저장하면 외형과 별칭만 복사하며, 의상은 원래 인물에 남습니다.</p>
                         {:else}
                             <label>이름<input aria-label="의상 이름" maxlength="160" bind:value={draft.name} /></label>
                             <label>의상 프롬프트<BardPainterPromptInput aria-label="의상 프롬프트" rows={6} bind:value={draft.clothing} placeholder="의상, 색상, 소재, 장신구 등"></BardPainterPromptInput></label>
                             <label>의상 상태 <span class="hint">선택 사항</span><BardPainterPromptInput aria-label="의상 상태" rows={2} bind:value={draft.state} placeholder="젖음, 찢어짐 등"></BardPainterPromptInput></label>
-                            <label>{draft.exists ? '복사할 저장 범위' : '저장 범위'}<select aria-label={draft.exists ? '복사할 저장 범위' : '새 의상 저장 범위'} value={draft.targetShared ? 'shared' : 'local'} onchange={event => { if (draft) draft.targetShared = event.currentTarget.value === 'shared' }}><option value="local">현재 챗</option><option value="shared">봇 공용</option></select></label>
+                            {#if !global && draft.subjectId}<label>{draft.exists ? '복사할 저장 범위' : '저장 범위'}<select aria-label={draft.exists ? '복사할 저장 범위' : '새 의상 저장 범위'} value={draft.targetShared ? 'shared' : 'local'} onchange={event => { if (draft) draft.targetShared = event.currentTarget.value === 'shared' }}><option value="local">현재 챗</option><option value="shared">봇 공용</option></select></label>{/if}
+                            {#if global}<p class="hint">글로벌 의상을 수정해도 이미 봇으로 가져온 복사본은 바뀌지 않습니다.</p>{:else if !draft.subjectId}<p class="hint">봇 공용으로 저장합니다. 각 인물의 사용할 의상에서 같은 의상을 선택할 수 있습니다.</p>{:else}
                             <p class="hint">{draft.exists ? `덮어쓰기는 원본(${draft.shared ? '봇 공용' : '현재 챗'})을 수정합니다. 이름이나 저장 범위를 바꾸면 별도 프리셋으로 저장할 수 있습니다.` : '현재 챗에서만 쓰거나, 같은 봇의 모든 챗에서 사용할 수 있습니다.'}</p>
+                            {/if}
                         {/if}
-                        {#if draft.kind === 'identity' || (draft.exists ? draft.shared : draft.targetShared)}
+                        {#if !global && (draft.kind === 'identity' || (draft.exists ? draft.shared : draft.targetShared))}
                             <label class="attachment"><input type="checkbox" aria-label="봇에 첨부" bind:checked={draft.attachToCard} />봇에 첨부</label>
-                            <p class="hint">체크한 뒤 저장하면 CHARX, PNG, JSON 카드에 포함됩니다. {draft.kind === 'identity' ? '의상은 각각 따로 첨부해야 합니다.' : '이 인물의 기본 외형도 첨부로 저장해야 의상이 포함됩니다.'} 복사본은 첨부 해제로 시작합니다.</p>
-                        {:else}
+                            <p class="hint">체크한 뒤 저장하면 CHARX, PNG, JSON 카드에 포함됩니다. {draft.kind === 'identity' ? '의상은 각각 따로 첨부해야 합니다.' : draft.subjectId ? '이 인물의 기본 외형도 첨부로 저장해야 의상이 포함됩니다.' : '공용 의상은 독립된 프리셋으로 포함됩니다.'} 복사본은 첨부 해제로 시작합니다.</p>
+                        {:else if !global}
                             <p class="hint">현재 챗 의상은 개인 데이터입니다. 카드에 넣으려면 봇 공용으로 복사한 뒤 첨부를 선택하세요.</p>
                         {/if}
                     </fieldset>
@@ -247,9 +310,29 @@
                         <button type="button" disabled={locked || !dirty} onclick={() => navigate(resetEditor)}>되돌리기</button>
                         {#if draft.exists}<button type="button" class="delete-button" disabled={locked} onclick={() => { deleting = true; pendingAction = null }}>삭제</button>{/if}
                     </div>
+                    {#if draft.exists}
+                        <div class="actions transfer-actions">
+                            <button type="button" disabled={locked || dirty} onclick={copyAcrossLibraries}>{global ? '현재 봇으로 가져오기' : '글로벌에 복사'}</button>
+                            {#if !global && draft.kind === 'identity'}<button type="button" disabled={locked || dirty} onclick={() => loreOpen = true}>로어 연결</button><span class="hint">{(session.loreEntries ?? []).filter(item => item.identityId === draft!.id).length}개 연결</span>{/if}
+                            {#if dirty}<span class="hint">편집 내용을 먼저 저장하세요.</span>{/if}
+                        </div>
+                        {#if draft.kind === 'identity'}<p class="hint">보관함 간 복사는 외형과 연결된 의상을 함께 가져옵니다. 로어 연결은 복사하지 않습니다.</p>{/if}
+                    {/if}
+                    {#if draft.kind === 'identity' && draft.exists}
+                        <fieldset disabled={locked} class="outfit-links">
+                            <legend>사용할 의상</legend>
+                            <p class="hint">선택 즉시 저장됩니다. 같은 의상을 여러 인물이 사용할 수 있습니다.</p>
+                            <div class="outfit-options">
+                            {#each presets.outfits as outfit (outfit.id)}
+                                <label class="attachment"><input type="checkbox" aria-label={`${outfit.name} 사용`} checked={linkedIds.includes(outfit.id)} onchange={event => toggleOutfit(outfit.id, event.currentTarget)} />{outfit.name}</label>
+                            {:else}<p class="hint">새 공용 의상을 만들면 여기에서 선택할 수 있습니다.</p>{/each}
+                            </div>
+                            <label>기본 의상<select aria-label="기본 의상" value={owner?.identity?.defaultOutfitId ?? ''} disabled={!linkedIds.length} onchange={event => { const id = event.currentTarget.value; event.currentTarget.value = owner?.identity?.defaultOutfitId ?? ''; linkOutfits(linkedIds, id) }}><option value="">지정하지 않음</option>{#each presets.outfits.filter(item => linkedIds.includes(item.id)) as outfit (outfit.id)}<option value={outfit.id}>{outfit.name}</option>{/each}</select></label>
+                        </fieldset>
+                    {/if}
                     {#if deleting}
                         <div class="confirmation" role="alert">
-                            <p>{#if draft.kind === 'identity'}「{draft.originalName}」의 외형과 이 봇의 모든 챗에 저장한 이 인물의 의상 프리셋을 삭제합니다.{:else}「{draft.originalName}」({draft.shared ? '봇 공용' : '현재 챗'}) 의상 프리셋을 삭제합니다.{/if} 기존 프롬프트와 삽화는 유지됩니다.{dirty ? ' 저장하지 않은 편집 내용도 버립니다.' : ''}</p>
+                            <p>{#if draft.kind === 'identity'}「{draft.originalName}」의 외형과 {global ? '글로벌 보관함에 저장한' : '이 봇의 모든 챗에 저장한'} 이 인물의 의상 프리셋을 삭제합니다. 다른 인물도 사용하는 공용 의상은 유지됩니다.{:else}「{draft.originalName}」({global ? '글로벌' : draft.shared ? '봇 공용' : '현재 챗'}) 의상 프리셋을 삭제합니다.{/if} 기존 프롬프트와 삽화는 유지됩니다.{dirty ? ' 저장하지 않은 편집 내용도 버립니다.' : ''}</p>
                             <div class="actions"><button type="button" class="delete-button" disabled={locked} onclick={remove}>삭제 확인</button><button type="button" disabled={locked} onclick={() => deleting = false}>삭제 취소</button></div>
                         </div>
                     {/if}
@@ -259,6 +342,9 @@
         </div>
     </div>
 </section>
+{#if !global && draft?.kind === 'identity' && draft.exists}
+    <BardPainterLorePicker {session} identityId={draft.id} identityName={draft.originalName} bind:open={loreOpen} disabled={locked} />
+{/if}
 
 <style>
     .presets { container-type: inline-size; min-width: 0; color: var(--color-textcolor); border: 1px solid var(--color-darkborderc); border-radius: .5rem; background: var(--color-darkbg); }
@@ -269,8 +355,8 @@
     .toolbar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; }
     .toolbar .search { flex: 1; min-width: 10rem; }
     label { display: flex; flex-direction: column; gap: .25rem; font-size: .82rem; min-width: 0; }
-    .attachment { flex-direction: row; align-items: center; gap: .5rem; min-height: 2.75rem; cursor: pointer; }
-    .attachment input { width: 1.1rem; min-height: 1.1rem; padding: 0; accent-color: var(--color-primary); }
+    .attachment { flex-direction: row; align-items: center; gap: .5rem; min-height: 2.75rem; cursor: pointer; overflow-wrap: anywhere; }
+    .attachment input { flex-shrink: 0; width: 1.1rem; min-height: 1.1rem; padding: 0; accent-color: var(--color-primary); }
     input, select { width: 100%; min-width: 0; border: 1px solid var(--color-darkborderc); background: var(--color-bgcolor); color: var(--color-textcolor); border-radius: .3rem; padding: .45rem .55rem; }
     input, select { min-height: 2.15rem; }
     button { min-height: 2.1rem; border: 1px solid var(--color-darkborderc); border-radius: .3rem; padding: .35rem .65rem; font-size: .82rem; overflow-wrap: anywhere; }
@@ -313,6 +399,11 @@
     .filter-note { display: flex; gap: .5rem; align-items: center; }
     .empty { padding: .4rem; }
     .editor-empty { padding: 1.2rem .2rem; }
+    .transfer-actions { margin-top: .65rem; }
+    .outfit-links { margin-top: 1rem; padding-top: .65rem; border-top: 1px solid var(--color-darkborderc); }
+    .outfit-links legend { font-size: .85rem; font-weight: 600; }
+    .outfit-options { max-height: 12rem; overflow: auto; }
+    .independent { padding: .5rem .25rem; border-bottom: 1px solid var(--color-darkborderc); margin-bottom: .5rem; }
     @container (max-width: 650px) {
         .workspace { grid-template-columns: minmax(0, 1fr); gap: .8rem; min-height: 0; }
         .embedded .workspace { display: flex; flex-direction: column; overflow: auto; }

@@ -65,9 +65,18 @@ export interface PainterContext {
     referenceAssetId?: string
 }
 
+export const PAINTER_IMAGE_MODELS = [
+    'nai-diffusion-5-full', 'nai-diffusion-5-curated',
+    'nai-diffusion-4-5-full', 'nai-diffusion-4-5-curated',
+] as const
+
+export function painterSubjectLimit(model: PainterSettings['model']): number {
+    return model === 'nai-diffusion-4-5-full' || model === 'nai-diffusion-4-5-curated' ? 6 : 22
+}
+
 export interface PainterSettings {
     styleId: string
-    model: 'nai-diffusion-5-full' | 'nai-diffusion-5-curated'
+    model: typeof PAINTER_IMAGE_MODELS[number]
     modelSlot: 'model' | 'submodel'
     width: number
     height: number
@@ -83,6 +92,8 @@ export interface PainterIdentity {
     name: string
     aliases: string[]
     appearance: string
+    outfitIds?: string[]
+    defaultOutfitId?: string
     /** Explicit opt-in for public character cards; missing means private. */
     attachToCard?: boolean
 }
@@ -101,11 +112,12 @@ export function painterGenerationSettings(settings: PainterSettings): PainterGen
 
 export interface PainterOutfit {
     id: string
+    /** Empty for an independent template; legacy values identify its owning character preset. */
     subjectId: string
     name: string
     clothing: string
     state: string
-    /** Requires an attached identity as well; chat-local outfits are never exported. */
+    /** Explicit card opt-in; legacy owned outfits also require their identity to be attached. */
     attachToCard?: boolean
 }
 
@@ -136,9 +148,12 @@ export interface PainterChatData {
     previousDraft?: PainterDraft
 }
 
-export interface PainterBotData {
+export interface PainterLibraryData {
     identities: PainterIdentity[]
     outfits: PainterOutfit[]
+}
+
+export interface PainterBotData extends PainterLibraryData {
     settings?: PainterGenerationSettings
 }
 

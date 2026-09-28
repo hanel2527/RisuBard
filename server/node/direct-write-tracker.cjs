@@ -88,7 +88,7 @@ function createDirectWriteTracker() {
             const state = pending.get(key);
             pending.delete(key);
             if (!state || state.unsafe) return null;
-            if (state.chats.size > 0 && !state.hasBotPresets) {
+            if ((state.chats.size > 0 || state.characterIds.size > 0) && !state.hasBotPresets) {
                 return { kind: 'chatState', chats: [...state.chats.values()],
                     characterIds: [...state.characterIds], includeRootSettings: state.hasRootSettings };
             }

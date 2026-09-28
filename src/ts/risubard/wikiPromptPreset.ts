@@ -15,7 +15,7 @@ export interface WikiPromptBlock {
 
 export interface WikiPromptPreset {
     schemaVersion: 1
-    writingPolicyVersion?: 1 | 2
+    writingPolicyVersion?: 1 | 2 | 3
     id: string
     name: string
     revision: number
@@ -115,6 +115,7 @@ const MODULAR_CONTINUITY = [
 ].join('\n')
 
 export const OFFICIAL_WIKI_BACKUP_ID = 'official-wiki-260922'
+export const OFFICIAL_WIKI_V2_BACKUP_ID = 'official-wiki-260922-v2'
 const OPTIONAL_BLOCKS: WikiPromptBlock[] = [
     {
         id: 'default-character-equipment', type: 'text', name: '장비와 소지품',
@@ -125,6 +126,46 @@ const OPTIONAL_BLOCKS: WikiPromptBlock[] = [
         id: 'default-length-compression', type: 'text', name: '분량 압축',
         target: 'both', enabled: false, readonly: true, analysisMode: 'all',
         content: 'Apply stronger compression when updating character canon. Consolidate repeated explanations and counterpart relationship bullets, replace obsolete current states from confirmed evidence, and group consecutive steps of the same major transition with exact event links. Keep scene details in event documents. Never drop distinct still-valid facts, current state, relationship direction or values, knowledge boundaries, secrets, unresolved promises, meaningful equipment, or causal consequences merely to shorten the document. Keep each major transition meaning as well as its link. Prefer the shortest faithful expression, but impose no fixed length or item quota. Move facts and delete redundant source sections in the same patch batch only after preserving their necessary content.',
+    },
+]
+
+// Version 3 adds recall detail without changing the archived writing policies.
+const RECALL_BLOCKS: WikiPromptBlock[] = [
+    {
+        id: 'default-evidence-scope', type: 'text', name: '사실의 출처와 지속 범위',
+        target: 'both', enabled: true, readonly: true, analysisMode: 'all',
+        content: [
+            'Keep attribution and certainty in each event or canon sentence, not only in characterKnowledge: A reported X, B suspects X, or C witnessed X. A claim, confession, self-report or prediction is not an unqualified world fact without independent confirming evidence. Preserve who actually learned it; narrator knowledge is not shared character knowledge.',
+            'When evidence corrects a belief, update only the knowledge holders supported by that evidence. Retain the former belief as history only when its existence still matters.',
+            'Affection, intimacy, jealousy, comfort and context-bound roles do not alone establish a formal relationship, permanent hierarchy, personality change or resolved psychological problem. Preserve the observed behavior and explicit commitments; name a durable status only when the narrative establishes it through naming, agreement or equivalent unambiguous evidence.',
+            'First appearance in the supplied input is not first onset in the story. Record onset, reinforcement or resolution only with evidence for that transition; leave unsupported before states unknown. Temporal sequence alone is not causation. A single outcome does not prove a universal ability, limitation or permanent effect; retain the stated scope.',
+            'Preserve supported observations and attributed uncertainty rather than deleting the whole development because its interpretation is uncertain.',
+        ].join('\n'),
+    },
+    {
+        id: 'default-recall-detail', type: 'text', name: '회수할 수 있는 사건의 구체성',
+        target: 'analysis', enabled: true, readonly: true, analysisMode: 'all',
+        content: [
+            'Write establishedEvents as a chronological story summary with enough concrete detail to recognize and retrieve each meaningful development on its own. Retain supported participants, action and target, distinctive objects or places, conditions, and consequences when they distinguish this event or explain a later choice. Preserve cause, response and result only where the source establishes their connection.',
+            'Do not replace a distinctive interaction with a generic conclusion such as increased trust. Preserve what the characters actually did or said. Small gestures, recurring nicknames, jokes and relationship-specific motifs can matter even without an external plot change; include them briefly in their scene when they provide a distinctive recall cue.',
+            'Keep one coherent development together. Separate independently meaningful decisions, revelations or consequences without fragmenting each action or padding the record count. Do not force a fixed detail quota or length increase; remove repeated description, routine action and connective prose before removing useful recall cues. Respect the existing schema and per-item limits; add no dialogue or memory fields.',
+            'When keywords are available, include grounded distinctive names, objects, actions, nicknames or short recurring expressions. Keywords aid retrieval but never replace the event facts or add unsupported details.',
+            'Keep scene detail in events. Still register or update a subject canon for independently useful durable state, knowledge, commitments, possessions or constraints, even when the event describes their origin. Store the concise current result and event link in canon instead of copying the full scene.',
+        ].join('\n'),
+    },
+    {
+        id: 'default-dialogue-recall', type: 'text', name: '핵심 대사와 문맥 보존',
+        target: 'analysis', enabled: true, readonly: true, analysisMode: 'all',
+        content: [
+            'Retain a short exact quotation inside an establishedEvents item when its wording carries a promise, condition, boundary, refusal, acceptance or distinctive relationship-specific expression that paraphrase would lose. Emotional intensity, humor or ordinary character voice alone is not enough; not every scene needs a quote.',
+            'Identify the speaker, addressee when known, situation and relevant response so the quotation remains understandable alone. Keep the shortest exchange needed when a reply changes the meaning; preserve conditions and negation.',
+            'Every quoted passage must be an exact contiguous substring of the supplied confirmed source, with original wording and punctuation. Never reconstruct, merge separate utterances, translate or improve a quotation. If literal copying is uncertain, omit direct quotation and retain only the supported meaning as attributed paraphrase. Distinguish a character quoting someone else from an independently witnessed original utterance.',
+        ].join('\n'),
+    },
+    {
+        id: 'default-recall-response', type: 'text', name: '회수한 기억의 문맥과 대사',
+        target: 'response', enabled: true, readonly: true, analysisMode: 'all',
+        content: 'Use retrieved concrete actions, objects and distinctive expressions when relevant to the current scene, without forcing callbacks. Preserve the original speaker, addressee, conditions, chronology and knowledge holders. For exact past wording, prefer retrieved source text over a summary; do not present reconstructed or paraphrased dialogue as a verbatim past quote. Missing context remains uncertain. A past claim remains attributed, and a scene-local reaction does not establish a lasting relationship or state.',
     },
 ]
 
@@ -253,7 +294,8 @@ function normalizePreset(value: unknown, idFactory: () => string): WikiPromptPre
             content: '',
         })
     }
-    const writingPolicyVersion = source.writingPolicyVersion === 2 ? 2 : 1
+    const writingPolicyVersion = source.writingPolicyVersion === 3 ? 3
+        : source.writingPolicyVersion === 2 ? 2 : 1
     return {
         schemaVersion: 1,
         writingPolicyVersion,
@@ -270,7 +312,7 @@ function normalizePreset(value: unknown, idFactory: () => string): WikiPromptPre
                     : storedCore.get(block.id)
                 return {
                     ...block,
-                    ...(block.id === 'core-character-continuity-contract' && writingPolicyVersion === 2
+                    ...(block.id === 'core-character-continuity-contract' && writingPolicyVersion >= 2
                         ? { content: MODULAR_CONTINUITY } : {}),
                     ...(stored ? {
                         name: boundedText(stored.name, 80) || block.name,
@@ -345,11 +387,19 @@ function createLegacyWikiPromptPreset(id: string): WikiPromptPreset {
     }, () => id)
 }
 
-export function createDefaultWikiPromptPreset(id: string): WikiPromptPreset {
+function createModularWikiPromptPreset(id: string): WikiPromptPreset {
     const legacy = createLegacyWikiPromptPreset(id)
     return normalizePreset({
         ...legacy, name: '공식기본', writingPolicyVersion: 2,
         blocks: [...legacy.blocks, ...OPTIONAL_BLOCKS.map(block => ({ ...block }))],
+    }, () => id)
+}
+
+export function createDefaultWikiPromptPreset(id: string): WikiPromptPreset {
+    const modular = createModularWikiPromptPreset(id)
+    return normalizePreset({
+        ...modular, writingPolicyVersion: 3, revision: 2,
+        blocks: [...modular.blocks, ...RECALL_BLOCKS.map(block => ({ ...block }))],
     }, () => id)
 }
 
@@ -376,16 +426,28 @@ export function normalizeWikiPromptPresetState(
     const presets = rawPresets.map((preset) => {
         const normalized = normalizePreset(preset, idFactory)
         // Existing official selections retain their stable ID; personal copies retain their policy.
-        return normalized.builtin && normalized.id !== OFFICIAL_WIKI_BACKUP_ID
-            && normalized.writingPolicyVersion !== 2
-            ? createDefaultWikiPromptPreset(normalized.id) : normalized
+        if (!normalized.builtin || normalized.id === OFFICIAL_WIKI_BACKUP_ID
+            || normalized.id === OFFICIAL_WIKI_V2_BACKUP_ID
+            || normalized.writingPolicyVersion === 3) return normalized
+        const current = createDefaultWikiPromptPreset(normalized.id)
+        for (const optional of OPTIONAL_BLOCKS) {
+            const stored = normalized.blocks.find(block => block.id === optional.id)
+            if (stored) current.blocks.find(block => block.id === optional.id)!.enabled = stored.enabled
+        }
+        return current
     })
     if (presets.length === 0) presets.push(createDefaultWikiPromptPreset(idFactory()))
-    if (!presets.some(preset => preset.builtin && preset.writingPolicyVersion === 2)) {
+    if (!presets.some(preset => preset.builtin && preset.writingPolicyVersion === 3)) {
         presets.push(createDefaultWikiPromptPreset('official-wiki-current'))
     }
     if (!presets.some(preset => preset.id === OFFICIAL_WIKI_BACKUP_ID)) {
         presets.push(createOfficialBackup())
+    }
+    if (!presets.some(preset => preset.id === OFFICIAL_WIKI_V2_BACKUP_ID)) {
+        presets.push({
+            ...createModularWikiPromptPreset(OFFICIAL_WIKI_V2_BACKUP_ID),
+            name: '공식기본-260922-v2',
+        })
     }
     const ids = new Set(presets.map((preset) => preset.id))
     const fallbackId = presets[0].id

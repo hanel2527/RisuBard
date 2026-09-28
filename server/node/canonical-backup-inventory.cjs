@@ -14,6 +14,11 @@ const CANONICAL_BACKUP_DIRECTORIES = [
     'model-jobs',
 ];
 
+// publishBackupRestore keeps the previous live tree here for local recovery.
+// Re-exporting these snapshots feeds entire prior generations back into the
+// next restore, including .bak copies created when old trash is overwritten.
+const RESTORE_SNAPSHOT_DIRECTORY = /^backup-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 async function listCanonicalBackupEntries(dataRoot) {
     const root = path.resolve(dataRoot);
     if ((await fs.lstat(root)).isSymbolicLink()) throw new Error('Canonical backup root uses a symbolic link');
@@ -56,6 +61,7 @@ async function listCanonicalBackupEntries(dataRoot) {
             if (child.name.includes('\\') || child.name.includes('/') || child.name === '.' || child.name === '..') throw new Error('Unsafe canonical backup path');
             if (child.isSymbolicLink()) throw new Error('Canonical backup path uses a symbolic link');
             if (child.name.endsWith('.tmp') || child.name.endsWith('.sha256')) continue;
+            if (relativeDirectory === 'trash' && child.isDirectory() && RESTORE_SNAPSHOT_DIRECTORY.test(child.name)) continue;
             const key = collisionKey(child.name);
             if (names.has(key)) throw new Error('Canonical backup filename collision');
             names.add(key);

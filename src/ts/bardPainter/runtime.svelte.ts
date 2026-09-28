@@ -3,7 +3,7 @@ import { unzip } from 'fflate'
 import { DBState, ReloadChatPointer } from '../stores.svelte'
 import { forageStorage, globalFetch, requestImmediateSave } from '../globalApi.svelte'
 import { requestChatData } from '../process/request/request'
-import { collectLoreBuilderSources } from '../loreBuilder'
+import { collectLoreBuilderSources, matchLoreBuilderCharacterLorebook } from '../loreBuilder'
 import { loadNarrativeMemoryWiki } from '../risubard/memoryWiki'
 import { getInlayAssetBlob, setInlayAsset } from '../process/files/inlays'
 import { buildPainterMessages, parsePainterDraft, buildPainterImageRequest } from './prompt'
@@ -20,6 +20,9 @@ import { resolvePersonaById } from '../personaScopes'
 import { createPainterSettings, painterGenerationSettings, type PainterSettings } from './types'
 import { painterImageToggleScope, painterPromptDatabase, painterPromptPreset } from './imagePreset'
 import type { PainterFragment } from './types'
+import type { PainterLibraryData } from './types'
+import type { loreBook } from '../storage/database.svelte'
+import { copyPainterIdentity, copyPainterOutfit, getPainterLoreIdentity, outfitsForIdentity, withPainterLoreIdentity } from './library'
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value))
 const errorText = (cause: unknown) => cause instanceof Error ? cause.message : String(cause)
@@ -59,6 +62,7 @@ export class PainterSession {
         assetSaved?: boolean
     } | null = null
     private wikiPromise: Promise<boolean> | null = null
+    private readonly loreKeys = new WeakMap<object, string>()
 
     constructor(characterId: string, chatId: string) {
         this.characterId = characterId; this.chatId = chatId
@@ -79,6 +83,107 @@ export class PainterSession {
     }
     get data() { return this.chat.bardPainter ??= createPainterChatData(this.defaultStyle.id) }
     get bot() { return this.character.bardPainter ??= { identities: [], outfits: [] } }
+    get globalLibrary(): PainterLibraryData { return DBState.db.bardPainterLibrary ?? { identities: [], outfits: [] } }
+    private libraryForWrite(global: boolean, write: PresetWrite): PainterLibraryData {
+        if (!global) return this.bot
+        if (!DBState.db.bardPainterLibrary) write(DBState.db, 'bardPainterLibrary', { identities: [], outfits: [] })
+        return DBState.db.bardPainterLibrary!
+    }
+    private loreKey(entry: loreBook): string {
+        if (entry.id) return entry.id
+        let key = this.loreKeys.get(entry)
+        if (!key) { key = `temporary:${v4()}`; this.loreKeys.set(entry, key) }
+        return key
+    }
+    get loreEntries() {
+        return (this.character.globalLore ?? []).filter(entry => entry.mode !== 'folder' && entry.mode !== 'child')
+            .map(entry => ({ id: this.loreKey(entry), title: entry.comment || entry.key || '이름 없는 로어', content: entry.content,
+                identityId: getPainterLoreIdentity(entry) }))
+    }
+    async setLoreIdentity(loreId: string, identityId?: string): Promise<boolean> {
+        return (await this.presetAction(identityId ? '로어에 캐릭터 프리셋을 연결했습니다.' : '로어 연결을 해제했습니다.', write => {
+            if (identityId && !this.bot.identities.some(item => item.id === identityId)) throw new Error('연결할 캐릭터 프리셋을 다시 선택해 주세요.')
+            const entries = this.character.globalLore ?? []
+            const matches = entries.filter(entry => this.loreKey(entry) === loreId && entry.mode !== 'folder' && entry.mode !== 'child')
+            if (matches.length !== 1) throw new Error('로어 항목이 바뀌었습니다. 목록에서 다시 선택해 주세요.')
+            const entry = matches[0]
+            const next = withPainterLoreIdentity(entry, identityId)
+            write(this.character, 'globalLore', entries.map(item => item === entry ? { ...next, id: entry.id || v4() } : item))
+            return true
+        })) === true
+    }
+    async setIdentityOutfits(identityId: string, outfitIds: string[], defaultOutfitId?: string, global = false): Promise<boolean> {
+        return (await this.presetAction('캐릭터의 의상 목록과 기본 의상을 저장했습니다.', write => {
+            const catalog = global ? this.globalLibrary : this.bot
+            if (!catalog.identities.some(item => item.id === identityId)) throw new Error('의상을 연결할 캐릭터를 다시 선택해 주세요.')
+            const ids = [...new Set(outfitIds)]
+            if (ids.some(id => !catalog.outfits.some(item => item.id === id)) || (defaultOutfitId && !ids.includes(defaultOutfitId))) {
+                throw new Error('의상 목록과 기본 의상을 다시 선택해 주세요.')
+            }
+            // Convert only explicitly managed legacy outfits; keep their original owner's association.
+            const converted = catalog.outfits.filter(item => item.subjectId && (item.subjectId === identityId || ids.includes(item.id)))
+            const identities = catalog.identities.map(item => {
+                const next = { ...item, outfitIds: [...new Set([...(item.outfitIds ?? []), ...converted.filter(outfit => outfit.subjectId === item.id).map(outfit => outfit.id)])] }
+                if (item.id === identityId) {
+                    next.outfitIds = ids
+                    if (defaultOutfitId) next.defaultOutfitId = defaultOutfitId
+                    else delete next.defaultOutfitId
+                }
+                return next
+            })
+            const names = new Set(catalog.outfits.filter(item => !item.subjectId).map(item => normalizedName(item.name)))
+            const outfits = catalog.outfits.map(item => {
+                if (!converted.includes(item)) return item
+                const base = item.name.trim()
+                let name = base, suffix = 2
+                while (names.has(normalizedName(name))) name = `${base} (${suffix++})`
+                names.add(normalizedName(name))
+                const next = { ...item, name, subjectId: '' }
+                // Sharing changes the export boundary; require an explicit attachment choice again.
+                delete next.attachToCard
+                return next
+            })
+            write(catalog, 'outfits', outfits)
+            write(catalog, 'identities', identities)
+            return true
+        })) === true
+    }
+    async copyIdentityToGlobal(id: string): Promise<string | undefined> {
+        return this.presetAction('캐릭터와 의상을 글로벌 라이브러리에 복사했습니다.', write => {
+            const copied = copyPainterIdentity(this.bot, id, this.globalLibrary)
+            const target = this.libraryForWrite(true, write)
+            write(target, 'identities', [...target.identities, copied.identity])
+            write(target, 'outfits', [...target.outfits, ...copied.outfits])
+            return copied.identity.id
+        })
+    }
+    async importGlobalIdentity(id: string): Promise<string | undefined> {
+        return this.presetAction('캐릭터와 의상을 현재 봇으로 가져왔습니다.', write => {
+            const copied = copyPainterIdentity(this.globalLibrary, id, this.bot)
+            write(this.bot, 'identities', [...this.bot.identities, copied.identity])
+            write(this.bot, 'outfits', [...this.bot.outfits, ...copied.outfits])
+            return copied.identity.id
+        })
+    }
+    async copyOutfitToGlobal(id: string, shared: boolean): Promise<string | undefined> {
+        return this.presetAction('의상을 글로벌 라이브러리에 복사했습니다.', write => {
+            const source = (shared ? this.bot : this.data).outfits.find(item => item.id === id)
+            if (!source) throw new Error('복사할 의상을 다시 선택해 주세요.')
+            const copied = copyPainterOutfit(source, this.globalLibrary.outfits)
+            const target = this.libraryForWrite(true, write)
+            write(target, 'outfits', [...target.outfits, copied])
+            return copied.id
+        })
+    }
+    async importGlobalOutfit(id: string): Promise<string | undefined> {
+        return this.presetAction('의상을 현재 봇으로 가져왔습니다.', write => {
+            const source = this.globalLibrary.outfits.find(item => item.id === id)
+            if (!source) throw new Error('가져올 의상을 다시 선택해 주세요.')
+            const copied = copyPainterOutfit(source, this.bot.outfits)
+            write(this.bot, 'outfits', [...this.bot.outfits, copied])
+            return copied.id
+        })
+    }
     get styles() { return [...PAINTER_STYLES, ...(DBState.db.bardPainterStyles ?? [])] }
     get fragments() { return DBState.db.bardPainterFragments ?? [] }
     get defaultStyle() { return this.styles.find(item => item.id === DBState.db.bardPainterDefaultStyleId) ?? PAINTER_STYLES[0] }
@@ -262,7 +367,7 @@ export class PainterSession {
         return this.wikiPromise
     }
 
-    private async context(anchor: PainterAnchor): Promise<PainterContextSource[]> {
+    private async context(anchor: PainterAnchor, instruction: string): Promise<PainterContextSource[]> {
         const chat = this.chat
         const options = this.settings.context
         const index = chat.message.findIndex((item) => item.chatId === anchor.messageId)
@@ -277,7 +382,7 @@ export class PainterSession {
         const modules = new Set([...(DBState.db.enabledModules ?? []), ...(char.modules ?? []), ...(chat.modules ?? [])])
         const source = collectLoreBuilderSources({
             database,
-            character: contextCharacter,
+            character: { ...contextCharacter, globalLore: [] },
             parsePrompt: parsePrompt ? (text, role) => parsePrompt(text, { db: database, chara: contextCharacter, role, globalChatVariables }) : undefined,
             targetEntryId: '',
             moduleLorebooks: (DBState.db.modules ?? []).filter((item) => modules.has(item.id))
@@ -285,7 +390,7 @@ export class PainterSession {
         })
         const result: PainterContextSource[] = []
         const add = (name: string, content: string | undefined) => { if (content?.trim()) result.push({ name, content }) }
-        for (const key of ['systemPrompt', 'characterDescription', 'characterLorebook', 'moduleLorebook'] as const) {
+        for (const key of ['systemPrompt', 'characterDescription', 'moduleLorebook'] as const) {
             if (key === 'systemPrompt' ? includeSystemPrompt : options[key]) add(key, source[key])
         }
         if (options.persona) {
@@ -293,10 +398,12 @@ export class PainterSession {
             const persona = personas.find((item) => item.id === chat.bindedPersona)
             add('페르소나', persona?.personaPrompt ?? DBState.db.personaPrompt)
         }
+        const scene = [anchor.text]
         if (options.surrounding && !anchor.insertionUnavailable) {
             const message = chat.message[index].data
             add('선택 구간 앞 문맥', message.slice(0, anchor.start))
             add('선택 구간 뒤 문맥', message.slice(anchor.end))
+            scene.push(message.slice(0, anchor.start), message.slice(anchor.end))
         }
         const before = Math.max(0, Math.min(50, Math.trunc(options.before || 0)))
         const after = Math.max(0, Math.min(50, Math.trunc(options.after || 0)))
@@ -305,6 +412,20 @@ export class PainterSession {
             const msg = chat.message[i]
             if (msg.disabled || msg.isComment || msg.data.includes('<!-- OOC_turn -->')) continue
             add(`${i < index ? '이전' : '이후'} 메시지 ${i + 1} (${msg.role})`, msg.data)
+            scene.push(msg.data)
+        }
+        if (options.characterLorebook) {
+            const lore = await matchLoreBuilderCharacterLorebook({
+                character: contextCharacter, targetEntryId: '',
+                userInstruction: instruction, draft: scene.join('\n\n'),
+            })
+            add('characterLorebook', lore.content)
+            const links = (lore.entries ?? []).flatMap(entry => {
+                const identityId = getPainterLoreIdentity(entry)
+                return identityId && this.bot.identities.some(item => item.id === identityId)
+                    ? [{ loreTitle: entry.comment || entry.key, loreKeys: entry.key, identityId }] : []
+            })
+            if (links.length) add('로어에 연결된 캐릭터 프리셋', JSON.stringify(links))
         }
         if (options.wikiIds.length) {
             await this.loadWiki()
@@ -342,7 +463,7 @@ export class PainterSession {
         this.controller = controller
         this.state.status = 'prompt'
         await this.action(async () => {
-            const sources = await this.context(target)
+            const sources = await this.context(target, options.instruction ?? this.settings.instruction)
             if (controller.signal.aborted) return
             this.state.sources = sources
             const settings = clone(this.settings)
@@ -352,7 +473,9 @@ export class PainterSession {
             const requestCharacter = { ...this.character, chatPage: this.character.chats.indexOf(this.chat) }
             const userName = resolvePersonaById(DBState.db, this.character, this.chat.bindedPersona)?.persona.name ?? DBState.db.username ?? 'User'
             const formated = buildPainterMessages({ anchor: target, settings, style, sources, userName,
-                identities: clone(this.bot.identities), draft, fragments: previousDraft?.fragments, outfits: clone([...this.data.outfits, ...this.bot.outfits]),
+                identities: clone(this.bot.identities), draft, fragments: previousDraft?.fragments,
+                outfits: clone([...this.data.outfits, ...this.bot.identities.flatMap(identity => outfitsForIdentity(this.bot, identity.id)
+                    .map(outfit => ({ ...outfit, subjectId: identity.id })))]),
                 conversation: sameScene && !options.fresh ? clone((this.data.conversation ?? []).slice(-12)) : [] })
             const response = await requestChatData({ formated, currentChar: requestCharacter, bias: {},
                 useStreaming: false, noMultiGen: true, tools: [], maxTokens: 4096, temperature: 0.3,
@@ -565,7 +688,7 @@ export class PainterSession {
     async applyOutfit(subjectId: string, id: string) {
         return this.presetAction('초안에 의상을 불러왔습니다.', write => {
             const subject = this.data.draft?.subjects.find((item) => item.id === subjectId)
-            const outfit = [...this.data.outfits, ...this.bot.outfits].find((item) => item.id === id && item.subjectId === subjectId)
+            const outfit = [...this.data.outfits, ...this.bot.outfits].find((item) => item.id === id && (!item.subjectId || item.subjectId === subjectId))
             if (!subject || !outfit) return
             const updated = clone(subject)
             replaceSubjectOutfit(updated, outfit.clothing, outfit.state)
@@ -573,23 +696,34 @@ export class PainterSession {
             return true
         })
     }
-    async removeOutfit(id: string, shared: boolean) {
+    async removeOutfit(id: string, shared: boolean, global = false) {
         return (await this.presetAction('의상 프리셋을 삭제했습니다.', write => {
-            const owner = shared ? this.bot : this.data
+            const owner = global ? this.globalLibrary : shared ? this.bot : this.data
             if (!owner.outfits.some(item => item.id === id)) return
             write(owner, 'outfits', owner.outfits.filter(item => item.id !== id))
+            if (global || shared) {
+                const library = global ? this.globalLibrary : this.bot
+                write(library, 'identities', library.identities.map(item => {
+                    const next = { ...item }
+                    if (next.outfitIds) next.outfitIds = next.outfitIds.filter(value => value !== id)
+                    if (next.defaultOutfitId === id) delete next.defaultOutfitId
+                    return next
+                }))
+            }
             return true
         })) === true
     }
-    async saveOutfitPreset(outfit: PainterOutfit, shared: boolean, asNew = false): Promise<string | undefined> {
+    async saveOutfitPreset(outfit: PainterOutfit, shared: boolean, asNew = false, global = false): Promise<string | undefined> {
         return this.presetAction('의상 프리셋을 저장했습니다.', write => {
-            if (!this.bot.identities.some(item => item.id === outfit.subjectId)) throw new Error('의상을 저장할 인물을 먼저 등록해 주세요.')
+            const library = global ? this.globalLibrary : this.bot
+            if (outfit.subjectId && !library.identities.some(item => item.id === outfit.subjectId)) throw new Error('의상을 저장할 인물을 먼저 등록해 주세요.')
+            if (!outfit.subjectId && !shared && !global) throw new Error('공용 의상은 봇 공용 또는 글로벌에 저장해 주세요.')
             if (!outfit.clothing.trim()) throw new Error('의상 프롬프트를 입력해 주세요.')
-            const owner = shared ? this.bot : this.data
+            const owner = global ? this.libraryForWrite(true, write) : shared ? this.bot : this.data
             const otherOwner = shared ? this.data : this.bot
-            const copyingScope = !owner.outfits.some(item => item.id === outfit.id) && otherOwner.outfits.some(item => item.id === outfit.id)
+            const copyingScope = !global && !owner.outfits.some(item => item.id === outfit.id) && otherOwner.outfits.some(item => item.id === outfit.id)
             const custom = { ...clone(outfit), id: asNew || !outfit.id || copyingScope ? v4() : outfit.id, name: outfit.name.trim() }
-            if (!shared || copyingScope || (asNew && outfit.id) || outfit.attachToCard !== true) delete custom.attachToCard
+            if (global || !shared || copyingScope || (asNew && outfit.id) || outfit.attachToCard !== true) delete custom.attachToCard
             const index = owner.outfits.findIndex(item => item.id === custom.id)
             if (index >= 0 && owner.outfits[index].subjectId !== custom.subjectId) throw new Error('다른 인물의 의상을 덮어쓸 수 없습니다.')
             uniquePresetName(custom.name, owner.outfits.filter(item => item.subjectId === custom.subjectId), custom.id)
@@ -597,9 +731,9 @@ export class PainterSession {
             return custom.id
         })
     }
-    async moveOutfit(id: string, shared: boolean, direction: -1 | 1): Promise<boolean> {
+    async moveOutfit(id: string, shared: boolean, direction: -1 | 1, global = false): Promise<boolean> {
         return (await this.presetAction('의상 순서를 변경했습니다.', write => {
-            const owner = shared ? this.bot : this.data
+            const owner = global ? this.globalLibrary : shared ? this.bot : this.data
             const subjectId = owner.outfits.find(item => item.id === id)?.subjectId
             const next = movedPreset(owner.outfits, id, direction, item => item.subjectId === subjectId)
             if (!next) return
@@ -625,20 +759,36 @@ export class PainterSession {
         if (!subject) return
         return this.saveIdentity({ id: subject.id, name: subject.name, aliases: [...subject.aliases], appearance: subject.appearance })
     }
-    async saveIdentity(identity: PainterIdentity, asNew = false): Promise<string | undefined> {
+    async saveIdentity(identity: PainterIdentity, asNew = false, global = false): Promise<string | undefined> {
         return this.presetAction('인물의 이름과 외형을 저장했습니다.', write => {
+            const library = global ? this.libraryForWrite(true, write) : this.bot
+            const previous = !asNew ? library.identities.find(item => item.id === identity.id) : undefined
+            const outfitIds = identity.outfitIds ?? previous?.outfitIds
+            const defaultOutfitId = identity.defaultOutfitId ?? previous?.defaultOutfitId
             const custom: PainterIdentity = { id: asNew || !identity.id ? v4() : identity.id, name: identity.name.trim(),
                 aliases: [...new Set(identity.aliases.map(alias => alias.trim()).filter(Boolean))], appearance: identity.appearance,
-                ...(identity.attachToCard === true && !(asNew && identity.id) ? { attachToCard: true } : {}) }
-            uniquePresetName(custom.name, this.bot.identities, custom.id)
-            const index = this.bot.identities.findIndex(item => item.id === custom.id)
-            write(this.bot, 'identities', index < 0 ? [...this.bot.identities, custom] : this.bot.identities.map((item, position) => position === index ? custom : item))
+                ...(outfitIds ? { outfitIds: [...new Set(outfitIds)] } : {}),
+                ...(defaultOutfitId ? { defaultOutfitId } : {}),
+                ...(!global && identity.attachToCard === true && !(asNew && identity.id) ? { attachToCard: true } : {}) }
+            if (custom.outfitIds?.some(id => !library.outfits.some(item => item.id === id && (!item.subjectId || item.subjectId === custom.id)))
+                || (custom.defaultOutfitId && !outfitsForIdentity({ ...library, identities: [custom] }, custom.id).some(item => item.id === custom.defaultOutfitId))) {
+                throw new Error('캐릭터의 의상 목록을 다시 선택해 주세요.')
+            }
+            uniquePresetName(custom.name, library.identities, custom.id)
+            const index = library.identities.findIndex(item => item.id === custom.id)
+            write(library, 'identities', index < 0 ? [...library.identities, custom] : library.identities.map((item, position) => position === index ? custom : item))
             return custom.id
         })
     }
-    async removeIdentity(id: string): Promise<boolean> {
+    async removeIdentity(id: string, global = false): Promise<boolean> {
         return (await this.presetAction('인물과 이 인물에 속한 의상 프리셋을 삭제했습니다.', async write => {
-            if (!this.bot.identities.some(item => item.id === id)) return
+            const library = global ? this.globalLibrary : this.bot
+            if (!library.identities.some(item => item.id === id)) return
+            if (global) {
+                write(library, 'identities', library.identities.filter(item => item.id !== id))
+                write(library, 'outfits', library.outfits.filter(item => item.subjectId !== id))
+                return true
+            }
             const character = this.character
             const chatIds = character.chats.map(chat => chat.id)
             for (const chatId of chatIds) {
@@ -651,15 +801,17 @@ export class PainterSession {
             this.assertPresetReady()
             write(this.bot, 'identities', this.bot.identities.filter(item => item.id !== id))
             write(this.bot, 'outfits', this.bot.outfits.filter(item => item.subjectId !== id))
+            write(character, 'globalLore', (character.globalLore ?? []).map(entry => getPainterLoreIdentity(entry) === id ? withPainterLoreIdentity(entry) : entry))
             for (const chat of character.chats) if (chat.bardPainter) write(chat.bardPainter, 'outfits', chat.bardPainter.outfits.filter(item => item.subjectId !== id))
             return true
         })) === true
     }
-    async moveIdentity(id: string, direction: -1 | 1): Promise<boolean> {
+    async moveIdentity(id: string, direction: -1 | 1, global = false): Promise<boolean> {
         return (await this.presetAction('인물 순서를 변경했습니다.', write => {
-            const next = movedPreset(this.bot.identities, id, direction)
+            const library = global ? this.globalLibrary : this.bot
+            const next = movedPreset(library.identities, id, direction)
             if (!next) return
-            write(this.bot, 'identities', next)
+            write(library, 'identities', next)
             return true
         })) === true
     }

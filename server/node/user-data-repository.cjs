@@ -1005,11 +1005,13 @@ function createUserDataRepository(options = {}) {
     function syncLegacyChatState(database, scope) {
         // Validate the complete identity topology before planning any write. Moves,
         // creation and deletion stay on the full-sync lane, including stale scopes.
+        // Character metadata may change without any accompanying chat body edit.
         const invalid = () => { throw Object.assign(new Error('Chat direct-write scope changed'), { code: 'CHAT_SCOPE_CHANGED' }); };
         const previousIndex = loadSidebarIndex();
         const characters = database?.characters;
         if (!Array.isArray(characters) || characters.length !== previousIndex.characters.length
-            || !Array.isArray(scope?.chats) || scope.chats.length === 0) invalid();
+            || !Array.isArray(scope?.chats)
+            || (scope.chats.length === 0 && (!Array.isArray(scope.characterIds) || scope.characterIds.length === 0))) invalid();
         const byId = new Map();
         const storedCharacterIds = new Set();
         for (let i = 0; i < characters.length; i++) {
