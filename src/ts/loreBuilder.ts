@@ -116,6 +116,8 @@ export function selectLoreBuilderMessages(
 interface LorebookSnapshot {
     content: string
     sources: RequestInjectionSource[]
+    /** Matched canonical character-scope entries, for consumers that resolve optional extensions. */
+    entries?: loreBook[]
 }
 
 function formatLorebooks(entries: Array<{ scopeId?: string; entry: loreBook }>): LorebookSnapshot {
@@ -209,9 +211,15 @@ export async function matchLoreBuilderCharacterLorebook(input: {
         character: input.character,
         text: [input.userInstruction, input.draft].join('\n\n'),
     })
-    return formatLorebooks(result.actives
+    const snapshot = formatLorebooks(result.actives
         .filter((active) => active.sourceIdentity.entry.id !== input.targetEntryId)
         .map((active) => ({ entry: { ...active.sourceIdentity.entry, content: active.prompt } })))
+    return { ...snapshot, entries: result.actives
+        .filter(active => active.sourceIdentity.scopeId === `character:${input.character!.chaId}`
+            && active.sourceIdentity.entry.id !== input.targetEntryId
+            && active.sourceIdentity.entry.mode !== 'folder' && active.sourceIdentity.entry.mode !== 'child'
+            && active.prompt.trim())
+        .map(active => active.sourceIdentity.entry) }
 }
 
 function escapeBlockClosers(value: string): string {

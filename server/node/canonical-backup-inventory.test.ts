@@ -17,6 +17,20 @@ function fixture() {
 }
 function list(dataRoot: string) { return require('./canonical-backup-inventory.cjs').listCanonicalBackupEntries(dataRoot) }
 const portable = (entries: any[]) => entries.map(entry => decodeCanonicalBackupName(entry.backupName))
+it('keeps user trash but excludes local pre-restore snapshots from subsequent backups', async () => {
+    const dataRoot = root()
+    const snapshot = 'trash/backup-12345678-1234-4123-8123-123456789abc'
+    for (const name of [
+        'settings/app.json', 'trash/deleted-character/metadata.json', 'trash/backup-not-a-restore/note.md',
+        `${snapshot}/characters/old/asset.png`, `${snapshot}/inlays/image.png`,
+        `${snapshot}/settings/app.json.bak.bak`,
+    ]) atomicWriteFile(dataRoot, name, Buffer.from(name))
+
+    expect(portable(await list(dataRoot))).toEqual([
+        'settings/app.json', 'trash/backup-not-a-restore/note.md', 'trash/deleted-character/metadata.json',
+    ])
+    expect(fs.existsSync(path.join(dataRoot, snapshot, 'characters/old/asset.png'))).toBe(true)
+})
 it('preserves the legacy inventory shape, ordering and flat names while excluding only temporary/checksum files', async () => {
     const dataRoot = root()
     for (const name of ['settings/app.json', 'secrets/key.json', 'characters/one/chats/two/draft.json', 'risubard/wiki/history/old.md', 'trash/old/file.json', 'index/sidebar.json.bak', 'model-jobs/job/state.json']) atomicWriteFile(dataRoot, name, Buffer.from(name))

@@ -236,6 +236,35 @@ describe('legacy character-card replace-global-note compatibility', () => {
 })
 
 describe('public character-card lifecycle round-trips', () => {
+    test.each([['v2', createBaseV2], ['v3', createBaseV3]] as const)('round-trips shared painter outfits and sanitizes lore links through %s', async (_spec, createCard) => {
+        const lore = (id: string) => ({ id, key: id, secondkey: '', insertorder: 10, comment: id, content: 'Unchanged lore', mode: 'normal', alwaysActive: false, selective: false,
+            extentions: { custom: { keep: true }, risubard: { other: true, bardPainter: { identityId: id } } } })
+        const char = { name: 'Preset links', globalLore: [lore('aria'), lore('private')], loreExt: {}, bardPainter: {
+            identities: [{ id: 'aria', name: 'Aria', aliases: [], appearance: 'hair', outfitIds: ['uniform', 'private-outfit'], defaultOutfitId: 'uniform', attachToCard: true },
+                { id: 'private', name: 'Private', aliases: [], appearance: 'PRIVATE_APPEARANCE' }],
+            outfits: [{ id: 'uniform', subjectId: '', name: 'Uniform', clothing: 'shirt', state: '', attachToCard: true },
+                { id: 'private-outfit', subjectId: '', name: 'PRIVATE_OUTFIT', clothing: 'PRIVATE_CLOTHES', state: '' }],
+        } } as unknown as character
+        const before = JSON.stringify({ lore: char.globalLore, painter: char.bardPainter })
+        const card = createCard(char)
+        const entries = card.data.character_book!.entries
+        expect(entries[0].extensions).toMatchObject({ custom: { keep: true }, risubard: { other: true, bardPainter: { identityId: 'aria' } } })
+        expect(entries[1].extensions).toMatchObject({ custom: { keep: true }, risubard: { other: true } })
+        expect((entries[1].extensions.risubard as any).bardPainter).toBeUndefined()
+        expect(JSON.stringify(card)).not.toContain('PRIVATE_')
+        expect(JSON.stringify(card)).not.toContain('private-outfit')
+        expect(JSON.stringify({ lore: char.globalLore, painter: char.bardPainter })).toBe(before)
+        const imported = await importFixture(card as any)
+        expect(imported.bardPainter.identities[0]).toMatchObject({ outfitIds: ['uniform'], defaultOutfitId: 'uniform' })
+        expect(imported.globalLore[0]).toMatchObject({ key: 'aria', content: 'Unchanged lore', extentions: { risubard: { bardPainter: { identityId: 'aria' } } } })
+        expect(imported.bardPainter.identities[0].attachToCard).toBeUndefined()
+        expect((state.db as any).bardPainterLibrary).toBeUndefined()
+        delete (card.data.extensions as any).risubard.bardPainter
+        const missing = await importFixture(card as any)
+        expect(missing.globalLore[0].extentions.risubard).toEqual({ other: true })
+        expect(missing.globalLore[0].content).toBe('Unchanged lore')
+    })
+
     test.each([
         ['v2', createBaseV2],
         ['v3', createBaseV3],

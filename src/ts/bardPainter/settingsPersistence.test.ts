@@ -13,9 +13,11 @@ it('retains global, bot-pinned and chat generation settings through a canonical 
     const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'risubard-painter-settings-'))
     try {
         const global = painterGenerationSettings(createPainterSettings())
-        const pinned = { ...global, width: 1024, height: 1024 }
+        global.model = 'nai-diffusion-4-5-full'
+        const pinned = { ...global, model: 'nai-diffusion-4-5-curated', width: 1024, height: 1024 }
         const local = createPainterChatData()
         local.settingsScope = 'chat'
+        local.settings.model = 'nai-diffusion-4-5-full'
         local.settings.width = 1216
         local.settings.perspective = 'first-person'
         local.imagePreset = { promptPresetId: 'prompt', name: 'Image options', values: { toggle_detail: '1' } }
@@ -28,11 +30,16 @@ it('retains global, bot-pinned and chat generation settings through a canonical 
                 chats: [{ id: 'painter-settings-chat', message: [], bardPainter: local }] }],
             botPresets: [], modules: [], personas: [], loreBook: [], bardPainterSettings: global,
             bardPainterDefaultStyleId: 'favorite-style',
+            bardPainterLibrary: {
+                identities: [{ id: 'global-aria', name: 'Aria', aliases: [], appearance: 'hair', outfitIds: ['global-uniform'], defaultOutfitId: 'global-uniform' }],
+                outfits: [{ id: 'global-uniform', subjectId: '', name: 'Uniform', clothing: 'shirt', state: '' }],
+            },
         }
         createUserDataRepository({ dataRoot }).importLegacyDatabase(database, { mode: 'sync' })
         const loaded = createUserDataRepository({ dataRoot }).exportLegacyDatabase()
         expect(loaded.bardPainterSettings).toEqual(global)
         expect(loaded.bardPainterDefaultStyleId).toBe('favorite-style')
+        expect(loaded.bardPainterLibrary).toEqual(database.bardPainterLibrary)
         expect(loaded.characters[0].bardPainter.settings).toEqual(pinned)
         expect(loaded.characters[0].bardPainter).toEqual(database.characters[0].bardPainter)
         expect(loaded.characters[0].chats[0].bardPainter).toEqual(local)

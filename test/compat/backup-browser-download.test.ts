@@ -30,7 +30,7 @@ describe('browser-managed backup downloads', () => {
       expect(response.status).toBe(200)
       expect(response.headers.get('content-disposition')).toContain('attachment;')
       expect(response.headers.get('cache-control')).toBe('private, no-store')
-      expect(Number(response.headers.get('content-length'))).toBe(bytes.length)
+      expect(response.headers.get('content-length')).toBeNull()
       expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes)
     },
   )

@@ -24,6 +24,7 @@ import { normalizeBardLoreOwnerState, type BardLoreState } from './lorebook/bard
 import { createUniqueDisplayName } from './displayName'
 import { yieldImportTask } from './importTaskYield'
 import { exportPainterBotData, normalizePainterBotData } from './bardPainter/painterCardData'
+import { filterPainterLoreLinks } from './bardPainter/library'
 import type { PainterBotData } from './bardPainter/types'
 
 
@@ -1031,6 +1032,8 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
         char.globalLore = migratedBardLore.legacyEntries
         char.bardLore = migratedBardLore.state
     }
+    char.globalLore = filterPainterLoreLinks(char.globalLore, char.bardPainter?.identities ?? [])
+    if (char.bardLore) char.bardLore.derivedEntries = filterPainterLoreLinks(char.bardLore.derivedEntries, char.bardPainter?.identities ?? [])
 
     if(returnValue){
         return char as any
@@ -1168,7 +1171,8 @@ export function convertCharbook(arg:{
 export function createBaseV2(char:character) {
     const bardLoreOwner = exportableBardLoreOwner(char)
     const bardPainter = exportPainterBotData(char.bardPainter)
-    const exportGlobalLore = bardLoreOwner?.legacyEntries ?? char.globalLore
+    const exportGlobalLore = filterPainterLoreLinks(bardLoreOwner?.legacyEntries ?? char.globalLore, bardPainter?.identities ?? [])
+    const bardLore = bardLoreOwner && { ...bardLoreOwner.state, derivedEntries: filterPainterLoreLinks(bardLoreOwner.state.derivedEntries, bardPainter?.identities ?? []) }
     let charBook:charBookEntry[] = []
     for(const lore of exportGlobalLore){
         let ext:{
@@ -1275,7 +1279,7 @@ export function createBaseV2(char:character) {
                     moduleNamespace: char.moduleNamespace ?? '',
                     defaultVariables: char.defaultVariables ?? ''
                 },
-                risubard: bardLoreOwner || bardPainter ? { bardLore: bardLoreOwner?.state, bardPainter } : undefined,
+                risubard: bardLoreOwner || bardPainter ? { bardLore, bardPainter } : undefined,
                 depth_prompt: char.depth_prompt
             }
         }
@@ -1569,7 +1573,8 @@ type RisuLorebookEntry = LorebookEntry & {
 export function createBaseV3(char:character){
     const bardLoreOwner = exportableBardLoreOwner(char)
     const bardPainter = exportPainterBotData(char.bardPainter)
-    const exportGlobalLore = bardLoreOwner?.legacyEntries ?? char.globalLore
+    const exportGlobalLore = filterPainterLoreLinks(bardLoreOwner?.legacyEntries ?? char.globalLore, bardPainter?.identities ?? [])
+    const bardLore = bardLoreOwner && { ...bardLoreOwner.state, derivedEntries: filterPainterLoreLinks(bardLoreOwner.state.derivedEntries, bardPainter?.identities ?? []) }
     let charBook:RisuLorebookEntry[] = []
     let assets:Array<{
         type: string
@@ -1718,7 +1723,7 @@ export function createBaseV3(char:character){
                     prebuiltAssetStyle: char.prebuiltAssetStyle ?? '',
                     toggles: char.customModuleToggle ?? '',
                 },
-                risubard: bardLoreOwner || bardPainter ? { bardLore: bardLoreOwner?.state, bardPainter } : undefined,
+                risubard: bardLoreOwner || bardPainter ? { bardLore, bardPainter } : undefined,
                 depth_prompt: char.depth_prompt
             },
             group_only_greetings: char.group_only_greetings ?? [],

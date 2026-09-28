@@ -61,6 +61,19 @@ describe('W1 direct-write tracker', () => {
 describe('W2 chat write scope', () => {
     const database = { characters: [{ chaId: 'char-1', chats: [{ id: 'chat-1' }, { id: 'chat-2' }] }] }
 
+    it('routes character painter presets without an accompanying chat edit to metadata-only writes', () => {
+        const tracker = createDirectWriteTracker()
+        tracker.observe('db', [{ op: 'replace', path: '/characters/0/bardPainter/identities/0/appearance', value: 'blue eyes' }], database)
+        expect(tracker.take('db')).toEqual({ kind: 'chatState', chats: [], characterIds: ['char-1'], includeRootSettings: false })
+    })
+
+    it('coalesces character metadata with global painter settings without falling back to full sync', () => {
+        const tracker = createDirectWriteTracker()
+        tracker.observe('db', [{ op: 'replace', path: '/characters/0/bardPainter', value: {} }], database)
+        tracker.observe('db', [{ op: 'replace', path: '/bardPainterLibrary', value: {} }], database)
+        expect(tracker.take('db')).toEqual({ kind: 'chatState', chats: [], characterIds: ['char-1'], includeRootSettings: true })
+    })
+
     it('coalesces chat bodies, companion metadata and root settings using stable IDs', () => {
         const tracker = createDirectWriteTracker()
         tracker.observeChat('db', 'char-1', 'chat-1')

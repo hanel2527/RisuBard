@@ -118,6 +118,29 @@ describe('BardPainter model output', () => {
 })
 
 describe('BardPainter NovelAI request', () => {
+    it.each(['nai-diffusion-4-5-full', 'nai-diffusion-4-5-curated'] as const)('uses the V4.5 protocol for %s without changing prompt blocks', model => {
+        const settings = { ...createPainterSettings(), model }
+        const request = buildPainterImageRequest(draft, style, settings, 42)
+        const v5 = buildPainterImageRequest(draft, style, createPainterSettings(), 42)
+        expect(request.model).toBe(model)
+        expect(request.parameters).toMatchObject({ params_version: 3, noise_schedule: 'karras', seed: 42, n_samples: 1 })
+        expect(request).not.toHaveProperty('use_new_shared_trial')
+        expect(request.parameters.v4_prompt).toEqual(v5.parameters.v4_prompt)
+        expect(request.parameters.v4_negative_prompt).toEqual(v5.parameters.v4_negative_prompt)
+        const messages = buildPainterMessages({ anchor, style, settings, sources: [], identities: [] })
+        expect(messages[0].content).toContain('NovelAI V4.5')
+        expect(messages[0].content).toContain('At most 6 subjects')
+        expect(messages[0].content).not.toContain('At most 22 subjects')
+    })
+
+    it('rejects oversized V4.5 character arrays rather than silently dropping subjects', () => {
+        const subjects = Array.from({ length: 7 }, (_, i) => ({ ...draft.subjects[0], id: String(i) }))
+        const settings = { ...createPainterSettings(), model: 'nai-diffusion-4-5-full' as const }
+        expect(() => buildPainterImageRequest({ ...draft, subjects }, style, settings, 42)).toThrow('6개')
+        expect(buildPainterImageRequest({ ...draft, subjects: subjects.slice(0, 6) }, style, settings, 42).parameters.characterPrompts).toHaveLength(6)
+        expect(buildPainterImageRequest({ ...draft, subjects }, style, createPainterSettings(), 42).parameters.characterPrompts).toHaveLength(7)
+    })
+
     it('assembles actual paragraphs without mixing subjects into the common scene', () => {
         expect(composePainterPrompts(draft, style)).toEqual({
             positive: '1.3::artist:test::,\n\nflat colors,\n\n1girl, night, garden',

@@ -171,6 +171,9 @@ describe('RisuBardMemoryWiki', () => {
         mounted = mount(RisuBardMemoryWiki, { target: document.body, props })
         await tick()
         document.querySelector<HTMLButtonElement>('[data-memory-view="painter"]')!.click()
+        // This test covers chat hydration, not the cold Vite transform of the lazy painter bundle.
+        await tick()
+        await vi.dynamicImportSettled()
         const instruction = () => document.querySelector<HTMLTextAreaElement>('[aria-label="프롬프트 대화 입력"]')?.value
         await vi.waitFor(() => expect(instruction()).toBe('이전 채팅의 그림'))
 

@@ -8,7 +8,7 @@ import BardPainterTools from './BardPainterTools.svelte'
 let component: ReturnType<typeof createClassComponent> | undefined
 let session: any
 let onClose = vi.fn<() => void>()
-async function mount(mode: 'style' | 'characters' | 'settings' | null, disabled = false) {
+async function mount(mode: 'style' | 'characters' | 'settings' | 'fragments' | null, disabled = false) {
     component = createClassComponent({ component: BardPainterTools, target: document.body, props: { session, mode, onClose, disabled } })
     await tick()
 }
@@ -44,6 +44,51 @@ beforeEach(() => {
 afterEach(() => { component?.$destroy(); component = undefined; document.body.replaceChildren() })
 
 describe('BardPainter tools', () => {
+    test.each(['nai-diffusion-4-5-full', 'nai-diffusion-4-5-curated'])('selects and retains %s when settings reopen', async model => {
+        await mount('settings')
+        const select = [...document.querySelectorAll('select')].find(item => item.value === 'nai-diffusion-5-full')!
+        expect([...select.options].map(item => item.value)).toContain(model)
+        select.value = model
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+        await tick()
+        expect(session.updateGenerationSettings).toHaveBeenLastCalledWith(expect.objectContaining({ model }))
+        component!.$set({ mode: null }); await tick()
+        component!.$set({ mode: 'settings' }); await tick()
+        expect([...document.querySelectorAll('select')].some(item => item.value === model)).toBe(true)
+    })
+
+    test('creates, edits, copies, adds and deletes saved fragments in the floating manager', async () => {
+        session.fragments = []
+        session.data.draft = { scene: 'night', rendering: '', negative: '', subjects: [] }
+        session.saveFragment = async (item: any, asNew: boolean) => {
+            const saved = { ...item, id: asNew || !item.id ? String(session.fragments.length + 1) : item.id }
+            session.fragments = [...session.fragments.filter((value: any) => value.id !== saved.id), saved]
+            return saved.id
+        }
+        session.addFragment = async (id: string) => { session.data.draft.fragments = [{ ...session.fragments.find((item: any) => item.id === id) }]; return true }
+        session.removeFragment = async (id: string) => { session.fragments = session.fragments.filter((item: any) => item.id !== id); return true }
+        await mount('fragments')
+        expect(document.querySelector('[role="dialog"]')?.textContent).toContain('표현 조각 관리')
+        await change('표현 조각 이름', '빛')
+        await change('표현 조각 프롬프트', 'glow')
+        button('저장').click(); await tick(); await tick()
+        await vi.waitFor(() => expect(button('복제').disabled).toBe(false))
+        expect(session.fragments[0].prompt).toBe('glow')
+        await change('표현 조각 프롬프트', 'rim light')
+        button('저장').click(); await tick(); await tick()
+        await vi.waitFor(() => expect(button('복제').disabled).toBe(false))
+        expect(session.fragments[0].prompt).toBe('rim light')
+        button('복제').click(); await tick(); await tick()
+        await vi.waitFor(() => expect(button('복제').disabled).toBe(false))
+        expect(session.fragments.map((item: any) => item.name)).toEqual(['빛', '빛 복사'])
+        document.querySelector<HTMLButtonElement>('[aria-label="빛 복사 추가"]')!.click(); await tick(); await tick()
+        await vi.waitFor(() => expect(button('복제').disabled).toBe(false))
+        expect(session.data.draft.fragments[0].prompt).toBe('rim light')
+        button('삭제').click(); await tick()
+        button('삭제 확인').click(); await tick(); await tick()
+        expect(session.fragments).toHaveLength(1)
+        expect(session.data.draft.fragments[0].prompt).toBe('rim light')
+    })
     test('sets the selected saved style as default and shows its designation', async () => {
         const favorite = { ...session.style, id: 'favorite', name: '자주 쓰는 화풍' }
         session.styles.push(favorite); session.style = favorite; session.data.settings.styleId = favorite.id

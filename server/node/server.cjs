@@ -271,16 +271,18 @@ function flushPendingDb() {
 // Call only from an operation that already owns the storage queue.
 async function flushPendingDbWithinQueue(options = {}) {
     if (await adoptSettledExternalProjection()) return;
+    const trigger = options.deferCompatibility === true ? 'canonical-flush' : 'flush';
     if (saveTimers[DB_HEX_KEY]) {
         clearTimeout(saveTimers[DB_HEX_KEY]);
         delete saveTimers[DB_HEX_KEY];
         if (dbCache[DB_HEX_KEY]) {
-            await persistDbCacheWithChats(DB_HEX_KEY, 'database/database.bin', 'flush', {
+            await persistDbCacheWithChats(DB_HEX_KEY, 'database/database.bin', trigger, {
                 directCollection: directWriteTracker.take(DB_HEX_KEY),
+                deferCompatibility: options.deferCompatibility === true,
             });
         } else if (fullChatStore && fullChatStore.size > 0) {
             // No stripped cache but chat store has data — merge and persist directly
-            await persistChatStoreWithoutCache('flush', { directCollection: directWriteTracker.take(DB_HEX_KEY) });
+            await persistChatStoreWithoutCache(trigger, { directCollection: directWriteTracker.take(DB_HEX_KEY) });
         }
         maybeCollectUnreferencedObjects();
     }
@@ -854,9 +856,9 @@ async function persistDbCacheWithChats(filePath, decodedKey, trigger = 'unknown'
         }
 
         const deferCompatibility = decodedKey === 'database/database.bin'
-            && ['chat-debounce', 'patch-debounce'].includes(trigger)
+            && (observationContext.deferCompatibility === true || (['chat-debounce', 'patch-debounce'].includes(trigger)
             && (observationContext.directCollection?.kind === 'chatState'
-                || ['botPresets', 'botPresetState'].includes(observationContext.directCollection))
+                || ['botPresets', 'botPresetState'].includes(observationContext.directCollection))))
             && canonicalProjectionReady && compatibilityCache.canDefer();
         if (!deferCompatibility) {
             errorStage = 'encode';
@@ -1141,13 +1143,23 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
 
 function adoptExternallyChangedCanonicalProjection(liveOnly = false) {
     if (!canonicalProjectionReady) return null
-    // Disabling automatic monitoring never discards an interrupted adoption.
-    if (!liveCharacterFiles.isEnabled() && !liveFilesAdoption) return null
+    // Disabling watchers/polls must not disable mandatory revision reconciliation
+    // on ordinary reads and saves (including a missing/stale acceptance record).
+    // An interrupted adoption still resumes regardless of the monitoring setting.
+    if (liveOnly && !liveCharacterFiles.isEnabled() && !liveFilesAdoption) return null
     try {
-    const fresh = liveCharacterFiles.isEnabled()
-        ? liveCharacterFiles.reconcile({ verifyMetadata: liveOnly }) || (!liveOnly && canonicalProjectionSync.loadExternalChanges())
-        : null
+    const fresh = (liveCharacterFiles.isEnabled()
+        ? liveCharacterFiles.reconcile({ verifyMetadata: liveOnly }) : null)
+        || (!liveOnly && canonicalProjectionSync.loadExternalChanges())
     if (!fresh && !liveFilesAdoption) return null
+    // The checksum-validated fallback has no old metadata baseline. It cannot
+    // safely merge acknowledged writes: leave them queued instead of replacing
+    // the cache and cancelling their save during adoption.
+    if (fresh && !liveFilesAdoption && liveFilesPendingWrites && !fresh.previous) {
+        const error = new Error('Canonical files changed while acknowledged saves are pending; a merge baseline is unavailable')
+        error.code = 'CANONICAL_FILES_CHANGED'
+        throw error
+    }
     if (!liveFilesAdoption) {
         liveFilesAdoption = {
             changed: fresh,
@@ -4403,7 +4415,10 @@ app.post('/api/db/flush', sessionAuthMiddleware, async (req, res, next) => {
                 res.send({ success: true, paused: true, etag: dbEtag ?? undefined });
                 return;
             }
-            await flushPendingDbWithinQueue();
+            // Interactive saves acknowledge durable canonical files. Legacy
+            // readers and ordinary flushes still materialize the complete DB.
+            const canonicalOnly = req.query.mode === 'canonical';
+            await flushPendingDbWithinQueue(canonicalOnly ? { materialize: false, deferCompatibility: true } : {});
             res.send({
                 success: true,
                 etag: dbEtag ?? undefined
@@ -4803,10 +4818,9 @@ app.get('/api/backup/export', async (req, res, next) => {
         // Flush any pending patches to ensure export includes latest data
         await flushPendingDb();
 
-        // Settings-only re-encodes a trimmed DB up front: its byte length is
-        // needed for content-length, and the trimmed object drives the asset
-        // filter below. Safe to hold in memory — with characters gone this is
-        // orders of magnitude smaller than the live blob.
+        // Settings-only re-encodes a trimmed DB up front, and the trimmed
+        // object drives the asset filter below. Safe to hold in memory — with
+        // characters gone this is orders of magnitude smaller than the live blob.
         let settingsDbValue = null;
         let settingsAssetNames = null;
         if (settingsOnly) {
@@ -4881,9 +4895,6 @@ app.get('/api/backup/export', async (req, res, next) => {
             ...canonicalEntries,
         ].sort((a, b) => a.sortKey.localeCompare(b.sortKey));
         const dbSize = settingsOnly ? settingsDbValue.length : kvSize('database/database.bin');
-        const totalBytes = namespacedEntries.reduce((sum, entry) => {
-            return sum + 8 + Buffer.byteLength(entry.backupName, 'utf-8') + entry.size;
-        }, 0) + (dbSize ? 8 + Buffer.byteLength('database.risudat', 'utf-8') + dbSize : 0);
 
         // Settings-only files get their own name — they are kept around and
         // reused across instances, so they have to be tellable apart from a full
@@ -4892,7 +4903,10 @@ app.get('/api/backup/export', async (req, res, next) => {
         const filenameSuffix = settingsOnly ? '' : target === 'upstream' ? '-upstream' : '';
         res.setHeader('content-type', 'application/octet-stream');
         res.setHeader('content-disposition', `attachment; filename="${filenameBase}-${Date.now()}${filenameSuffix}.bin"`);
-        res.setHeader('content-length', totalBytes);
+        // These are live files, not a byte snapshot: logs, settings and the DB
+        // can change after inventory. A stale Content-Length makes the browser
+        // truncate a growing backup (or wait for bytes from a shrinking one).
+        // Let HTTP frame the stream using the bytes actually written instead.
         res.setHeader('x-risu-backup-assets', namespacedEntries.length);
 
         let closed = false;
