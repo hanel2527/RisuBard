@@ -297,15 +297,15 @@ describe('settings-only export', () => {
     expect(normalized.characterCount).toBe(2)
   })
 
-  test('is served under its own filename and an accurate content-length', async () => {
+  test('is served under its own filename as a complete stream without a stale content-length', async () => {
     const client = await seededServer()
     const { res, bin } = await exportSettingsOnly(client)
 
     // Reused across instances, so it has to be tellable apart from a full backup.
     expect(res.headers.get('content-disposition')).toContain('risu-settings-')
-    // content-length is precomputed from the trimmed DB; a mismatch means the
-    // stream and the header disagree, which hangs or truncates real downloads.
-    expect(Number(res.headers.get('content-length'))).toBe(bin.length)
+    // Assets can change after inventory even when the DB was trimmed up front.
+    expect(res.headers.get('content-length')).toBeNull()
+    expect(normalizeBackup(bin).normalized.characterCount).toBe(0)
   })
 
   test('is smaller than the equivalent full backup', async () => {
@@ -378,7 +378,7 @@ describe('settings-only without module assets', () => {
     const withAssets = await exportSettingsOnly(client)
     const without = await exportSettingsOnly(client, { moduleAssets: false })
     expect(without.bin.length).toBeLessThan(withAssets.bin.length)
-    expect(Number(without.res.headers.get('content-length'))).toBe(without.bin.length)
+    expect(without.res.headers.get('content-length')).toBeNull()
   })
 })
 
