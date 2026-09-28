@@ -391,17 +391,18 @@ describe('resolveRequestModelBindingTarget', () => {
 })
 
 describe('resolveChatModelBinding — explicit target', () => {
-    test('uses the same main, sub, and separate memory bundle as chat', () => {
-        const sub = { id: 'p-sub', name: 'Sub' } as any
-        const memory = { id: 'p-memory', name: 'Memory' } as any
-        mockDb.modelPresets = [PRESET, sub, memory]
+    test('uses the same main, sub, and separate auxiliary bundle as chat', () => {
+        const sub = { id: 'p-sub', name: 'Sub' }
+        const memory = { id: 'p-memory', name: 'Memory' }
+        const translator = { id: 'p-translator', name: 'Translator' }
+        mockDb.modelPresets = [PRESET, sub, memory, translator]
         const target = {
             useModelPreset: true,
             modelBinding: {
                 main: PRESET.id,
                 sub: sub.id,
                 separateAux: true,
-                aux: { memory: memory.id, emotion: '', translate: '', otherAx: '' },
+                aux: { memory: memory.id, emotion: '', translate: translator.id, otherAx: '' },
             },
             usePromptPresetParams: true,
         }
@@ -409,6 +410,9 @@ describe('resolveChatModelBinding — explicit target', () => {
         expect(resolveChatModelBinding(target, 'model')).toEqual({ kind: 'modelPreset', preset: PRESET })
         expect(resolveChatModelBinding(target, 'submodel')).toEqual({ kind: 'modelPreset', preset: sub })
         expect(resolveChatModelBinding(target, 'memory')).toEqual({ kind: 'modelPreset', preset: memory })
+        expect(resolveChatModelBinding(target, 'translate')).toEqual({ kind: 'modelPreset', preset: translator })
+        target.modelBinding.separateAux = false
+        expect(resolveChatModelBinding(target, 'translate')).toEqual({ kind: 'modelPreset', preset: sub })
     })
 })
 

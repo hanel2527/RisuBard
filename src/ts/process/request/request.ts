@@ -215,26 +215,34 @@ export async function requestChatData(arg:RequestDataArgumentExtended, model:Mod
                 }
             }
             
-            try{
-                const currentChar = getCurrentCharacter()
-                if(currentChar){
-                    const perf = performance.now()
-                    const d = await runTrigger(currentChar, 'request', {
-                        chat: getCurrentChat(),
-                        displayMode: true,
-                        displayData: JSON.stringify(arg.formated)
-                    })
-        
-                    const got = JSON.parse(d.displayData)
-                    if(!got || !Array.isArray(got)){
-                        throw new Error('Invalid return')
+            // Request triggers receive the live chat while displayMode=true,
+            // so request effects such as impersonate/modifychat can append or
+            // rewrite the current conversation. Translation prompts are
+            // intentionally standalone and must not execute character request
+            // triggers against whichever chat happens to be open. Plugin
+            // replacers above still run with mode='translate' for compatibility.
+            if(model !== 'translate'){
+                try{
+                    const currentChar = getCurrentCharacter()
+                    if(currentChar){
+                        const perf = performance.now()
+                        const d = await runTrigger(currentChar, 'request', {
+                            chat: getCurrentChat(),
+                            displayMode: true,
+                            displayData: JSON.stringify(arg.formated)
+                        })
+
+                        const got = JSON.parse(d.displayData)
+                        if(!got || !Array.isArray(got)){
+                            throw new Error('Invalid return')
+                        }
+                        arg.formated = got
+                        console.log('Trigger time', performance.now() - perf)
                     }
-                    arg.formated = got
-                    console.log('Trigger time', performance.now() - perf)
                 }
-            }
-            catch(e){
-                console.error(e)
+                catch(e){
+                    console.error(e)
+                }
             }
             
     

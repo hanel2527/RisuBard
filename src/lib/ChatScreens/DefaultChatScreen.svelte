@@ -1059,12 +1059,20 @@ import { isMobile } from 'src/ts/platform'
 
     let translatingInput = $state(false)
     let inputTranslationVersion = 0
+    let activeInputTranslationVersion: number | null = null
     $effect.pre(() => {
         messageInput
         currentCharacter?.chaId
         currentChatSlot?.id
         preparingInput
         inputTranslationVersion += 1
+        // Editing the draft, switching chats, or starting a send invalidates
+        // the pending request. Clear its UI lock immediately; its completion
+        // is still guarded below and cannot overwrite the new draft.
+        if (activeInputTranslationVersion !== null) {
+            activeInputTranslationVersion = null
+            translatingInput = false
+        }
     })
     onDestroy(() => { inputTranslationVersion += 1 })
 
@@ -1074,7 +1082,9 @@ import { isMobile } from 'src/ts/platform'
         const characterId = currentCharacter.chaId
         const chatId = currentChatSlot.id
         const version = inputTranslationVersion
-        const isCurrent = () => inputTranslationVersion === version
+        activeInputTranslationVersion = version
+        const isCurrent = () => activeInputTranslationVersion === version
+            && inputTranslationVersion === version
             && currentCharacter?.chaId === characterId
             && currentChatSlot?.id === chatId
             && messageInput === original
@@ -1089,7 +1099,10 @@ import { isMobile } from 'src/ts/platform'
         } catch (cause) {
             if (isCurrent()) alertError(cause instanceof Error ? cause.message : String(cause))
         } finally {
-            translatingInput = false
+            if (activeInputTranslationVersion === version) {
+                activeInputTranslationVersion = null
+                translatingInput = false
+            }
         }
     }
 
