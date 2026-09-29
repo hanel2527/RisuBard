@@ -1,5 +1,22 @@
 import { expect, it } from 'vitest'
-const { sanitizeSegment, allocateSegment, planDirectoryMapping } = require('./friendly-paths.cjs')
+const { sanitizeSegment, allocateSegment, createSegmentAllocator, planDirectoryMapping } = require('./friendly-paths.cjs')
+
+it('reserves Unicode, case and sidecar collisions in a batch allocator', () => {
+    const allocator = createSegmentAllocator(['E\u0301.png.SHA256', 'photo.png.BAK'])
+    expect(allocator.allocate('é.png', true, ['.sha256', '.bak'])).toBe('é (2).png')
+    expect(allocator.allocate('Photo.png', true, ['.sha256', '.bak'])).toBe('Photo (2).png')
+    expect(allocator.allocate('photo (2).png.sha256', true)).toBe('photo (2).png (2).sha256')
+    allocator.reserve('PHOTO (3).png')
+    expect(allocator.allocate('Photo.png', true, ['.sha256', '.bak'])).toBe('Photo (4).png')
+})
+
+it('reads the initial occupied names once for thousands of allocations', () => {
+    let visited = 0
+    const occupied = { *[Symbol.iterator]() { for (let i = 0; i < 5000; i++) { visited++; yield `old-${i}.png` } } }
+    const allocator = createSegmentAllocator(occupied)
+    for (let i = 0; i < 5000; i++) expect(allocator.allocate('same.png', true)).toBe(i ? `same (${i + 1}).png` : 'same.png')
+    expect(visited).toBe(5000)
+})
 
 it('normalizes portable segments, reserved devices and empty names within a UTF-8 byte limit', () => {
     expect(sanitizeSegment('  A<>:"/\\|?*\u0001. ')).toBe('A__________')

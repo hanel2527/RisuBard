@@ -15,6 +15,14 @@ const { resolveDataRoot } = require('./data-root.cjs')
 
 const roots: string[] = []
 
+it('rejects a copy source changed since asset validation before publishing files', () => {
+    const root = tempRoot()
+    const source = path.join(root, 'source')
+    fs.writeFileSync(source, 'changed after validation')
+    expect(() => commitTransaction(root, [{ path: 'target', sourcePath: source, expectedChecksum: '0'.repeat(64) }])).toThrow(/source checksum mismatch/)
+    expect(fs.existsSync(path.join(root, 'target'))).toBe(false)
+})
+
 function tempRoot() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'risubard-file-store-'))
     roots.push(root)

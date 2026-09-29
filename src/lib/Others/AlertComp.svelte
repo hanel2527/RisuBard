@@ -1,7 +1,10 @@
 <script lang="ts">
     import { alertGenerationInfoStore } from "../../ts/alert";
     
-    import { DBState } from 'src/ts/stores.svelte';
+    import { DBState, loadedStore } from 'src/ts/stores.svelte';
+    import { importSession, cancelImport, retryImportRollback, checkImportRecovery } from 'src/ts/importSession';
+    import { importProgress } from 'src/ts/importProgress';
+    import ImportActivity from './ImportActivity.svelte';
     import { getCharImage } from '../../ts/characters';
     import { ParseMarkdown } from '../../ts/parser/parser.svelte';
     import BarIcon from '../SideBars/BarIcon.svelte';
@@ -41,6 +44,7 @@
     import { getMessageSize } from 'src/ts/messageSize';
 
     let showDetails = $state(false);
+    $effect(() => { if ($loadedStore) checkImportRecovery() });
     let translatedStackTrace = $state('');
     let stackTraceTranslationFailed = $state(false);
     let isTranslating = $state(false);
@@ -889,11 +893,31 @@
 </ShDialog>
 
 <ShLoadingDialog
-    open={$alertStore.type === 'wait' || $alertStore.type === 'wait2' || $alertStore.type === 'progress'}
-    message={$alertStore.msg}
+    open={$importSession.phase !== 'recovery' && ($alertStore.type === 'wait' || $alertStore.type === 'wait2' || $alertStore.type === 'progress' || $importSession.phase === 'rolling-back')}
+    message={$importSession.phase === 'rolling-back' ? language.importInstall.rollbackMessage : $importProgress.active && $importProgress.server ? (language.importInstall.stages[$importProgress.stage as keyof typeof language.importInstall.stages] ?? language.importInstall.saving) : $alertStore.msg}
     submessage={$alertStore.type !== 'progress' ? ($alertStore.submsg ?? '') : ''}
-    progress={$alertStore.type === 'progress' ? parseFloat($alertStore.submsg ?? '0') : null}
-/>
+    progress={$importProgress.active ? ($importProgress.percent ?? null) : $importSession.phase !== 'rolling-back' && $alertStore.type === 'progress' ? parseFloat($alertStore.submsg ?? '0') : null}
+    progressLabel={$importProgress.active ? language.importInstall.stageProgress : ''}
+>
+    {#snippet extra()}
+        {#if $importSession.phase === 'installing' || $importSession.phase === 'rolling-back'}
+            <ImportActivity />
+            <p class="text-sm text-textcolor2 text-center">{$importSession.phase === 'rolling-back' ? language.importInstall.rollbackWait : language.importInstall.rollbackHint}</p>
+            <ShButton variant="outline" disabled={$importSession.phase === 'rolling-back'} onclick={cancelImport}>
+                {$importSession.phase === 'rolling-back' ? language.importInstall.rollingBack : language.importInstall.cancel}
+            </ShButton>
+        {/if}
+    {/snippet}
+</ShLoadingDialog>
+
+<ShDialog open={$importSession.phase === 'recovery'} tier="top" closable={false} closeOnOutsideClick={false}>
+    {#snippet title()}{language.importInstall.recoveryTitle}{/snippet}
+    <p class="text-textcolor whitespace-pre-wrap break-words">{language.importInstall.recoveryMessage}</p>
+    {#if $importSession.error}<p class="text-sm text-textcolor2 break-words">{$importSession.error}</p>{/if}
+    {#snippet footer()}
+        <ShButton onclick={retryImportRollback}>{language.importInstall.retry}</ShButton>
+    {/snippet}
+</ShDialog>
 
 <ShAlertDialog
     open={$alertStore.type === 'tos'}

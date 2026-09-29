@@ -34,6 +34,90 @@ function chatWithLongMessages(): Chat {
 }
 
 describe('RisuBardCurrentChatSettings', () => {
+    test.each([
+        ['bardwiki-maximum-tokens', 'risuBardInquiryMaximumTokenBudget', '6000', '6570'],
+        ['bardwiki-analysis-tokens', 'risuBardAnalysisTokenLimit', '8192', '8970'],
+    ] as const)('%s shows effective limits, edits only the baseline, and cancels with Escape', async (id, key, base, effective) => {
+        const chat = chatWithLongMessages()
+        chat.message = [{ role: 'char', data: '가'.repeat(50_000) }]
+        chat.risuBardSettings = { risuBardDynamicMemoryMode: 'balanced' }
+        mounted = mount(RisuBardCurrentChatSettings, { target: document.body, props: { chat, global: {} } })
+        const input = document.querySelector<HTMLInputElement>(`#${id}`)!
+        expect(input.value).toBe(effective)
+        expect(input.classList.contains('dynamic-value')).toBe(true)
+        input.focus()
+        await tick()
+        expect(input.value).toBe(base)
+        input.blur()
+        await tick()
+        expect(chat.risuBardSettings[key]).toBeUndefined()
+        input.focus()
+        await tick()
+        input.value = '7000'
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        input.blur()
+        await tick()
+        expect(chat.risuBardSettings[key]).toBe(7000)
+        expect(input.value).toBe('7665')
+        input.focus()
+        await tick()
+        input.value = '9000'
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+        await tick()
+        expect(input.value).toBe('7665')
+        expect(chat.risuBardSettings[key]).toBe(7000)
+        expect(document.querySelector('#bardwiki-source-tokens')?.classList.contains('dynamic-value')).toBe(false)
+    })
+    test('edits global dynamic defaults independently of chat overrides', async () => {
+        const global: RisuBardChatSettings = {}
+        const chat = chatWithLongMessages()
+        chat.risuBardSettings!.risuBardDynamicMemoryMode = 'recall'
+        mounted = mount(RisuBardCurrentChatSettings, { target: document.body, props: { chat, global, globalDynamicOnly: true } })
+        const select = document.querySelector<HTMLSelectElement>('#bardwiki-dynamic-memory')!
+        expect(select.value).toBe('off')
+        select.value = 'economy'
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+        await tick()
+        expect(global.risuBardDynamicMemoryMode).toBe('economy')
+        expect(chat.risuBardSettings!.risuBardDynamicMemoryMode).toBe('recall')
+        expect(document.querySelector('#bardwiki-model-mode')).toBeNull()
+    })
+    test('stores dynamic policy, shows computed limits and restores the baseline when disabled', async () => {
+        const chat = chatWithLongMessages()
+        chat.message = Array.from({ length: 700 }, () => ({ role: 'char' as const, data: '가'.repeat(1000) }))
+        const global: RisuBardChatSettings = {}
+        mounted = mount(RisuBardCurrentChatSettings, { target: document.body, props: { chat, global } })
+        expect(document.querySelector('#bardwiki-dynamic-maximum')).toBeNull()
+        const select = document.querySelector<HTMLSelectElement>('#bardwiki-dynamic-memory')!
+        expect(select).not.toBeNull()
+        select.value = 'balanced'
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+        await tick()
+        expect(document.querySelector<HTMLInputElement>('#bardwiki-maximum-tokens')?.value).toBe('9000')
+        expect(document.querySelector<HTMLInputElement>('#bardwiki-analysis-tokens')?.value).toBe('12288')
+        expect(document.querySelector<HTMLInputElement>('#bardwiki-history-limit')?.value).toBe('8')
+        expect(document.querySelectorAll('.dynamic-value')).toHaveLength(4)
+        const maximum = document.querySelector<HTMLInputElement>('#bardwiki-dynamic-maximum')!
+        maximum.value = '8000'
+        maximum.dispatchEvent(new Event('change', { bubbles: true }))
+        await tick()
+        expect(document.querySelector<HTMLInputElement>('#bardwiki-maximum-tokens')?.value).toBe('8000')
+        expect(document.querySelector('[data-chat-setting-help="risuBardInquiryMaximumTokenBudget"]')?.getAttribute('data-help-text')).toContain('상한 적용')
+        const help = document.querySelector<HTMLButtonElement>('[data-chat-setting-help="risuBardDynamicMemoryMode"]')!
+        expect(help.getAttribute('aria-label')).toBe('장기기억 동적 한도 도움말')
+        expect(help.getAttribute('data-help-text')).toContain('50턴')
+        const saved = JSON.parse(JSON.stringify(chat))
+        await unmount(mounted)
+        mounted = mount(RisuBardCurrentChatSettings, { target: document.body, props: { chat: saved, global } })
+        expect(document.querySelector<HTMLInputElement>('#bardwiki-dynamic-maximum')!.value).toBe('8000')
+        const restored = document.querySelector<HTMLSelectElement>('#bardwiki-dynamic-memory')!
+        restored.value = 'off'
+        restored.dispatchEvent(new Event('change', { bubbles: true }))
+        await tick()
+        expect(document.querySelector('#bardwiki-dynamic-maximum')).toBeNull()
+        expect(resolveRisuBardChatSettings(global, saved.risuBardSettings).risuBardInquiryMaximumTokenBudget).toBe(6000)
+    })
     test('pins current values across existing and new chats, persists edits, and unpins locally', async () => {
         const chat = chatWithLongMessages()
         const character: { risuBardPinnedSettings?: RisuBardChatSettings } = {}
@@ -105,7 +189,7 @@ describe('RisuBardCurrentChatSettings', () => {
 
         const fields = [...document.querySelectorAll('[data-chat-setting-field]')]
         const helpButtons = [...document.querySelectorAll('[data-chat-setting-help]')]
-        expect(fields).toHaveLength(20)
+        expect(fields).toHaveLength(21)
         const ignoreOoc = document.querySelector<HTMLInputElement>('#bardwiki-ignore-ooc')
         expect(ignoreOoc?.checked).toBe(true)
         ignoreOoc!.checked = false

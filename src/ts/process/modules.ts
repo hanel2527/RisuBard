@@ -1,17 +1,19 @@
 import { language } from "src/lang"
 import { alertClear, alertConfirm, alertError, alertModuleSelect, alertNormal, alertStore, alertWait, notifySuccess } from "../alert"
 import { getCurrentCharacter, getCurrentChat, getDatabase, setCurrentCharacter, setDatabase, type customscript, type loreBook, type triggerscript } from "../storage/database.svelte"
-import { AppendableBuffer, downloadFile, forageStorage, LocalWriter, readImage, requestImmediateSave, saveAsset, VirtualWriter } from "../globalApi.svelte"
-import { checkPersonaBinded, selectSingleFile, sleep } from "../util"
+import { AppendableBuffer, downloadFile, forageStorage, LocalWriter, readImage, saveAsset, VirtualWriter } from "../globalApi.svelte"
+import { checkPersonaBinded, selectSingleFile, sleep, type ChatContext } from "../util"
 import { v4 } from "uuid"
 import { convertExternalLorebook } from "./lorebook.svelte"
 import { compressImage } from '../media'
 import { decodeRPack, decodeRPackBatch, encodeRPack } from "../rpack/rpack_js"
 import { HideIconStore, moduleBackgroundEmbedding, ReloadGUIPointer } from "../stores.svelte"
 import {get} from "svelte/store"
-import { convertCharacterToModule, convertModuleToCharacter } from "../interchangeability"
+import { convertModuleToCharacter } from "../interchangeability"
 import { exportCharacterCard, importCharacterProcess } from "../characterCards"
 import { hasher } from "../parser/parser.svelte"
+import { importAsset, runImport } from "../importSession"
+import { ImportCancelled, type ImportTransaction } from "../storage/importTransaction"
 
 export interface MCPModule{
     url: string
@@ -123,7 +125,9 @@ export async function exportModuleLegacy(module:RisuModule, arg:{
     return apb.buffer
 }
 
-export async function readModule(buf:Buffer):Promise<RisuModule> {
+export async function readModule(buf:Buffer, transaction?: ImportTransaction):Promise<RisuModule> {
+    const saveAsset = importAsset(transaction)
+    transaction?.check()
     let pos = 0
 
     const readLength = () => {
@@ -192,6 +196,7 @@ export async function readModule(buf:Buffer):Promise<RisuModule> {
     }
 
     const runAssetTasks = async (tasks: AssetTask[]) => {
+        transaction?.check()
         if (tasks.length === 0) {
             return []
         }
@@ -230,7 +235,7 @@ export async function readModule(buf:Buffer):Promise<RisuModule> {
                         value: data,
                     }
                 }))
-                await forageStorage.setItems(prepared.map(({ key, value }) => ({ key, value })))
+                await (transaction ? transaction.write(prepared.map(({ key, value }) => ({ key, value }))) : forageStorage.setItems(prepared.map(({ key, value }) => ({ key, value }))))
                 for (const { task, key } of prepared) {
                     module.assets[task.index][1] = key
                     completed += 1
@@ -253,6 +258,8 @@ export async function readModule(buf:Buffer):Promise<RisuModule> {
         }
 
         for (let offset = 0; offset < tasks.length; offset += maxAssetDecodeBatchSize) {
+            transaction?.check()
+            await new Promise(resolve => setTimeout(resolve, 0))
             const decodeGroup = tasks.slice(offset, offset + maxAssetDecodeBatchSize)
             let decoded: DecodedAssetTask[]
             try {
@@ -313,7 +320,9 @@ export async function readModule(buf:Buffer):Promise<RisuModule> {
         let failed = await runAssetTasks(tasks)
         let retryCount = 0
         while (failed.length > 0 && retryCount < maxRetries) {
+            transaction?.check()
             await sleep(retryDelayMs)
+            transaction?.check()
             retryCount += 1
             failed = await runAssetTasks(failed)
         }
@@ -321,64 +330,37 @@ export async function readModule(buf:Buffer):Promise<RisuModule> {
             throw new Error(`Failed to save ${failed.length} assets`)
         }
     } finally {
-        alertClear()
+        if (!transaction) alertClear()
     }
 
     module.id = v4()
     return module
 }
 
-export async function importRisum(data: Uint8Array): Promise<void> {
-    const module = await readModule(Buffer.from(data))
+export async function importRisum(data: Uint8Array, transaction?: ImportTransaction): Promise<void> {
+    if (!transaction) { await runImport(tx => importRisum(data, tx)); return }
+    const module = await readModule(Buffer.from(data), transaction)
     if (!module?.id || !module.name) throw new Error(language.errors.noData)
-    const db = getDatabase()
-    db.modules.push(module)
-    try {
-        await requestImmediateSave({ flushServer: true, rejectOnFailure: true })
-    } catch (error) {
-        const index = db.modules.findIndex(item => item.id === module.id)
-        if (index !== -1) db.modules.splice(index, 1)
-        throw error
-    }
-    notifySuccess(language.successImport)
+    transaction.register('module', module.id)
+    getDatabase().modules.push(module)
 }
 
 export async function importModule(){
     const f = await selectSingleFile(['json', 'lorebook', 'risum', 'charx'])
-    if(!f){
-        return
-    }
-    let fileData = f.data
+    if (!f) return
+    try { await runImport(transaction => importModuleFile(f, transaction)) }
+    catch (error) { alertError(error) }
+}
+
+async function importModuleFile(f: { name: string, data: Uint8Array }, transaction: ImportTransaction) {
+    const fileData = f.data
     const db = getDatabase()
-    if(f.name.endsWith('.charx')){
-        try {
-            const buf = Buffer.from(fileData)
-            const char = await importCharacterProcess({
-                name: f.name,
-                data: buf,
-                returnCharacter: true
-            })
-            if(!char || typeof char === 'number'){
-                alertError(language.errors.noData)
-                return
-            }
-            const module = convertCharacterToModule(char)
-            db.modules.push(module)
-            await requestImmediateSave({ flushServer: true, rejectOnFailure: true })
-            notifySuccess(language.successImport)
-        } catch (error) {
-            console.error(error)
-            alertError(language.errors.noData)
-        }
+    if (f.name.toLowerCase().endsWith('.charx')) {
+        await importCharacterProcess({ name: f.name, data: fileData, transaction, installAs: 'module' })
         return
     }
-    if(f.name.endsWith('.risum')){
-        try {
-            await importRisum(fileData)
-        } catch (error) {
-            console.error(error)
-            alertError(language.errors.noData)
-        }
+    if (f.name.toLowerCase().endsWith('.risum')) {
+        await importRisum(fileData, transaction)
         return
     }
     try {
@@ -388,20 +370,18 @@ export async function importModule(){
                 (!importData.name)
                 || (!importData.id)
             ){
-                alertError(language.errors.noData)
-                return
+                throw new Error(language.errors.noData)
             }
             importData.id = v4()
 
             if(importData.lowLevelAccess){
                 const conf = await alertConfirm(language.lowLevelAccessConfirm)
                 if(!conf){
-                    return false
+                    throw new ImportCancelled()
                 }
             }
+            transaction.register('module', importData.id)
             db.modules.push(importData)
-            await requestImmediateSave({ flushServer: true, rejectOnFailure: true })
-            notifySuccess(language.successImport)
             return
         }
         // importData.type === 'risu' in conflict with HypaV3 preset exports
@@ -414,9 +394,8 @@ export async function importModule(){
                 lorebook: lores,
                 id: v4()
             }
+            transaction.register('module', importModule.id)
             db.modules.push(importModule)
-            await requestImmediateSave({ flushServer: true, rejectOnFailure: true })
-            notifySuccess(language.successImport)
             return
         }
         if(importData.entries){
@@ -427,9 +406,8 @@ export async function importModule(){
                 lorebook: lores,
                 id: v4()
             }
+            transaction.register('module', importModule.id)
             db.modules.push(importModule)
-            await requestImmediateSave({ flushServer: true, rejectOnFailure: true })
-            notifySuccess(language.successImport)
             return
         }
         if(importData.type === 'regex'  && importData.data){
@@ -440,16 +418,15 @@ export async function importModule(){
                 regex: regexs,
                 id: v4()
             }
+            transaction.register('module', importModule.id)
             db.modules.push(importModule)
-            await requestImmediateSave({ flushServer: true, rejectOnFailure: true })
-            notifySuccess(language.successImport)
             return
         }
     } catch (error) {
-        console.error(error)
+        throw error
     }
 
-    alertNormal(language.errors.noData)
+    throw new Error(language.errors.noData)
 }
 
 function getModuleById(id:string){
@@ -530,11 +507,11 @@ export function resolveModuleIds(scopes:ModuleIdScopes):string[] {
     return resolved
 }
 
-export function getModules(){
-    const currentChat = getCurrentChat()
-    const character = getCurrentCharacter()
+export function getModules(context?:ChatContext){
+    const currentChat = context?.chat ?? getCurrentChat()
+    const character = context?.character ?? getCurrentCharacter()
     const db = getDatabase()
-    const persona = checkPersonaBinded() ?? db.personas?.[db.selectedPersona ?? 0] ?? null
+    const persona = checkPersonaBinded(context) ?? db.personas?.[db.selectedPersona ?? 0] ?? null
     const ids = resolveModuleIds({
         globalIds: db.enabledModules,
         activePersonaId: persona?.id,
@@ -570,12 +547,12 @@ export function getModules(){
 }
 
 
-export function getModuleLorebooks() {
-    return getModuleLorebooksWithSources().map((item) => item.entry)
+export function getModuleLorebooks(context?:ChatContext) {
+    return getModuleLorebooksWithSources(context).map((item) => item.entry)
 }
 
-export function getModuleLorebooksWithSources() {
-    const modules = getModules()
+export function getModuleLorebooksWithSources(context?:ChatContext) {
+    const modules = getModules(context)
     const lorebooks: { scopeId: string, entry: loreBook }[] = []
     for (const module of modules) {
         if(!module){
@@ -591,8 +568,8 @@ export function getModuleLorebooksWithSources() {
     return lorebooks
 }
 
-export function getModuleAssets() {
-    const modules = getModules()
+export function getModuleAssets(context?:ChatContext) {
+    const modules = getModules(context)
     let assets: [string,string,string][] = []
     for (const module of modules) {
         if(!module){
@@ -606,8 +583,8 @@ export function getModuleAssets() {
 }
 
 
-export function getModuleTriggers() {
-    const modules = getModules()
+export function getModuleTriggers(context?:ChatContext) {
+    const modules = getModules(context)
     let triggers: triggerscript[] = []
     for (const module of modules) {
         if(!module){
@@ -627,8 +604,8 @@ export function getModuleTriggers() {
     return triggers
 }
 
-export function getModuleRegexScripts() {
-    const modules = getModules()
+export function getModuleRegexScripts(context?:ChatContext) {
+    const modules = getModules(context)
     let customscripts: customscript[] = []
     for (const module of modules) {
         if(!module){
@@ -641,8 +618,8 @@ export function getModuleRegexScripts() {
     return customscripts
 }
 
-export function getModuleToggles() {
-    const modules = getModules()
+export function getModuleToggles(context?:ChatContext) {
+    const modules = getModules(context)
     let costomModuleToggles: string = ''
     for (const module of modules) {
         if(!module){

@@ -17,6 +17,7 @@ import {
 import { isCanonicalFilesChangedResponse } from './canonicalConflict'
 import { uploadChatContent } from './chatContentUpload'
 import { subscribeLiveFileEvents } from './liveFileEvents'
+import { boundedResponse } from './boundedResponse'
 
 const CHAT_CONTENT_TRANSFER_PAGE_SIZE = 200
 const CHAT_CONTENT_TRANSFER_CONCURRENCY = 4
@@ -114,6 +115,39 @@ export interface SettingsBackupEstimate {
 export type BackupImportPhase = 'processing' | 'validating' | 'publishing' | 'finalizing'
 
 export class NodeStorage{
+    importProgressId?: string
+
+    async observeImportProgress(id: string, onEvent: (event: import('../importProgress').ServerImportEvent) => void, onLost: () => void) {
+        this.importProgressId = id
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 5000)
+        const stop = () => { controller.abort(); if (this.importProgressId === id) this.importProgressId = undefined }
+        try {
+            const response = await this.authFetch(`/api/import-progress/${id}`, { signal: controller.signal })
+            clearTimeout(timeout)
+            if (!response.ok || !response.body) throw new Error('Progress stream unavailable')
+            const reader = response.body.getReader()
+            void (async () => {
+                const decoder = new TextDecoder()
+                let pending = ''
+                try {
+                    while (true) {
+                        const { value, done } = await reader.read()
+                        if (done) { if (!controller.signal.aborted) onLost(); break }
+                        pending += decoder.decode(value, { stream: true })
+                        const lines = pending.split('\n')
+                        pending = lines.pop() ?? ''
+                        for (const line of lines) {
+                            const event = JSON.parse(line)
+                            if (event.type === 'heartbeat' || event.type === 'progress') onEvent(event)
+                        }
+                    }
+                } catch { if (!controller.signal.aborted) onLost() }
+                finally { await reader.cancel().catch(() => {}); reader.releaseLock() }
+            })()
+        } catch { clearTimeout(timeout); onLost() }
+        return stop
+    }
     private static readonly BULK_WRITE_CLIENT_BATCH = 200
 
     // Cross-device single-writer lock identity. Persisted in sessionStorage so
@@ -143,6 +177,22 @@ export class NodeStorage{
     private liveMonitoringPending: Promise<LiveFileMonitoringStatus> | null = null
     private liveMonitoringGeneration = 0
     private liveSnapshotRequired = false
+    pendingSaveRequests = 0
+
+    private connectionFetch(path: string, init: RequestInit) {
+        return boundedResponse(signal => fetch(path, { ...init, signal }), 8_000,
+            Object.assign(new Error(language.storageConnectionTimeout), { code: 'STORAGE_CONNECTION_TIMEOUT' }))
+    }
+
+    private async saveRequest(path: string, init: RequestInit) {
+        this.pendingSaveRequests++
+        try {
+            return await boundedResponse(signal => this.authFetch(path, { ...init, signal }), 120_000,
+                Object.assign(new Error(language.storageWriteTimeout), { code: 'STORAGE_WRITE_TIMEOUT' }))
+        } finally {
+            this.pendingSaveRequests--
+        }
+    }
 
     async createAuth(){
         const now = Date.now()
@@ -164,7 +214,7 @@ export class NodeStorage{
 
     private async _doInitSession() {
         try {
-            const res = await fetch('/api/session', {
+            const res = await this.connectionFetch('/api/session', {
                 method: 'POST',
                 headers: {
                     'risu-auth': await this.createAuth(),
@@ -190,7 +240,7 @@ export class NodeStorage{
     }
 
     private async _doRefreshToken(): Promise<string> {
-        const res = await fetch('/api/token/refresh', {
+        const res = await this.connectionFetch('/api/token/refresh', {
             method: 'POST',
             headers: { 'risu-auth': this.cachedJwt?.token ?? '' }
         })
@@ -203,7 +253,7 @@ export class NodeStorage{
     }
 
     private async loginWithPassword(password: string) {
-        const response = await fetch('/api/login', {
+        const response = await this.connectionFetch('/api/login', {
             method: "POST",
             body: JSON.stringify({ password }),
             headers: {
@@ -253,22 +303,28 @@ export class NodeStorage{
     }
 
     private async authFetch(input: RequestInfo | URL, init: RequestInit = {}, retry = true) {
+        init.signal?.throwIfAborted()
         await this.checkAuth()
+        init.signal?.throwIfAborted()
         const headers = new Headers(init.headers)
         headers.set('risu-auth', await this.createAuth())
+        init.signal?.throwIfAborted()
         headers.set('x-session-id', NodeStorage.sessionId)
+        if (this.importProgressId) headers.set('x-import-id', this.importProgressId)
         if (isUserActive()) headers.set('x-user-active', '1')
 
         const response = await fetch(input, {
             ...init,
             headers
         })
+        init.signal?.throwIfAborted()
 
         if (response.status === 423) {
             window.dispatchEvent(new CustomEvent('risu-session-deactivated'))
         }
 
         if(retry && await this.shouldRetryAuth(response)){
+            init.signal?.throwIfAborted()
             this.authChecked = false
             this.cachedJwt = null
             await this.checkAuth()
@@ -286,7 +342,7 @@ export class NodeStorage{
         if (etag) {
             headers['x-if-match'] = etag
         }
-        const da = await this.authFetch('/api/write', {
+        const da = await this.saveRequest('/api/write', {
             method: "POST",
             body: value as any,
             headers
@@ -394,7 +450,7 @@ export class NodeStorage{
     private async checkAuth(){
 
         if(!this.authChecked){
-            const data = await (await fetch('/api/test_auth',{
+            const data = await (await this.connectionFetch('/api/test_auth',{
                 headers: {
                     'risu-auth': this.cachedJwt?.token ?? ''
                 }
@@ -402,7 +458,7 @@ export class NodeStorage{
 
             if(data.status === 'unset'){
                 const input = await digestPassword(await alertInput(language.setNodePassword))
-                const response = await fetch('/api/set_password',{
+                const response = await this.connectionFetch('/api/set_password',{
                     method: "POST",
                     body:JSON.stringify({
                         password: input 
@@ -485,6 +541,30 @@ export class NodeStorage{
         })
     }
 
+    // Bound metadata reconciliation reads, including auth and response-body
+    // waits. Never apply this to saves: aborting transport does not undo a write.
+    private async readLiveFileJson(path: string, init: RequestInit) {
+        const controller = new AbortController()
+        let timer: ReturnType<typeof setTimeout>
+        const expired = new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+                const error = Object.assign(new Error(language.liveFileSyncTimeout), { code: 'LIVE_FILES_TIMEOUT' })
+                reject(error)
+                controller.abort(error)
+            }, 12_000)
+        })
+        try {
+            return await Promise.race([
+                this.authFetch(path, { ...init, signal: controller.signal }).then(async response => ({
+                    response, data: await response.json(),
+                })),
+                expired,
+            ])
+        } finally {
+            clearTimeout(timer!)
+        }
+    }
+
     async getLiveFileMonitoring(force = false): Promise<LiveFileMonitoringStatus> {
         if (!force && this.liveMonitoringCache && this.liveMonitoringCache.expiresAt > Date.now()) {
             return this.liveMonitoringCache.status
@@ -492,8 +572,7 @@ export class NodeStorage{
         if (this.liveMonitoringPending) return this.liveMonitoringPending
         const generation = this.liveMonitoringGeneration
         const pending = (async () => {
-            const response = await this.authFetch('/api/live-files/monitoring', { method: 'GET' })
-            const data = await response.json()
+            const { response, data } = await this.readLiveFileJson('/api/live-files/monitoring', { method: 'GET' })
             if (!response.ok) throw new Error(data?.error || `Live file monitoring request failed (${response.status})`)
             if (generation === this.liveMonitoringGeneration) this.cacheLiveFileMonitoring(data)
             return this.liveMonitoringCache?.status ?? data
@@ -528,12 +607,11 @@ export class NodeStorage{
             return { revision: revision ?? '', etag: null, enabled: false }
         }
         const generation = this.liveMonitoringGeneration
-        const response = await this.authFetch('/api/live-files/sync', {
+        const { response, data } = await this.readLiveFileJson('/api/live-files/sync', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ revision: this.liveSnapshotRequired ? undefined : revision }),
         })
-        const data = await response.json()
         if (!response.ok) {
             if (data?.code === 'LIVE_FILES_INACTIVE') {
                 window.dispatchEvent(new CustomEvent('risu-session-deactivated'))
@@ -570,7 +648,7 @@ export class NodeStorage{
     }
 
     async patchItem(key: string, patchData: { patch: any[], expectedHash: string }): Promise<PatchItemResult> {
-        const da = await this.authFetch('/api/patch', {
+        const da = await this.saveRequest('/api/patch', {
             method: "POST",
             body: JSON.stringify(patchData),
             headers: {
@@ -646,6 +724,22 @@ export class NodeStorage{
         // Fallback: JSON+base64
         const results: {key: string, value: string}[] = await da.json()
         return results.map(r => ({ key: r.key, value: Buffer.from(r.value, 'base64') }))
+    }
+
+    async cleanupImportAssets(keys: string[], id: string) {
+        const response = await this.authFetch('/api/assets/import-rollback', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ keys, id }),
+        })
+        if (!response.ok) throw new Error(`Import rollback failed (${response.status})`)
+        return response.json()
+    }
+
+    async prepareImportRollback(id: string) {
+        const response = await this.authFetch('/api/assets/import-rollback/prepare', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }),
+        })
+        if (!response.ok) throw new Error(`Import rollback preparation failed (${response.status})`)
     }
 
     async setItems(entries: {key: string, value: Uint8Array}[]) {
@@ -987,7 +1081,7 @@ export class NodeStorage{
     async saveChatContent(chaId: string, chatIndex: number, chatId: string, chat: any): Promise<void> {
         const encoded = encodeRisuSaveLegacy(chat)
         const da = await uploadChatContent(
-            (url, init) => this.authFetch(url, init), chaId, chatIndex, chatId, encoded,
+            (url, init) => init.method === 'DELETE' ? this.authFetch(url, init) : this.saveRequest(url, init), chaId, chatIndex, chatId, encoded,
             getDatabase().chatUploadChunkMiB,
             getDatabase().chatUploadChunkEnabled === true,
         )

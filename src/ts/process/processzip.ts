@@ -5,6 +5,7 @@ import { alertStore } from "../alert";
 import { hasher } from "../parser/parser.svelte";
 import { hubURL } from "../characterCards";
 import { AssetImportBatcher } from "../storage/assetImportBatcher";
+import type { ImportTransaction } from '../storage/importTransaction';
 
 // File size and chunk size constants
 const MAX_ASSET_SIZE_BYTES = 100 * 1024 * 1024; // 100 MiB
@@ -201,7 +202,7 @@ export class CharXImporter{
     skipSaving: boolean = false  // If true, only compute hashes without saving
     hashSignal: string|undefined  // Hash to signal server for sync (when skipSaving is false)
 
-    constructor(onProgress?: (progress: CharXImportProgress) => void){
+    constructor(onProgress?: (progress: CharXImportProgress) => void, private transaction?: ImportTransaction){
         this.importProgress = onProgress
         this.unzip = new fflate.Unzip()
         // AsyncUnzipInflate creates a worker per compressed entry. Module
@@ -211,7 +212,7 @@ export class CharXImporter{
         this.unzip.onfile = (file) => this.#handleFile(file)
 
         const onStoredProgress = (done: number, total: number) => {
-            this.importProgress?.({ phase: 'saving-assets', completed: done, total })
+            this.importProgress?.({ phase: 'saving-assets', completed: done, ...(this.inputFinalized ? { total } : {}) })
             if(this.alertInfo){
                 alertStore.set({
                     type: 'wait',
@@ -220,6 +221,7 @@ export class CharXImporter{
             }
         }
         this.assetBatcher = new AssetImportBatcher({
+            transaction,
             onStored: (id, storageKey) => {
                 this.assets[id] = storageKey
             },
@@ -252,6 +254,8 @@ export class CharXImporter{
     async parse(data:Uint8Array|File|ReadableStream<Uint8Array>){
         // Create completion promise at the start of parsing
         this.completionPromise = this.#awaitCompletion()
+        // parse may fail before the caller gets to done().
+        void this.completionPromise.catch(() => {})
 
         // Convert all input types to ReadableStream for uniform processing
         this.inputTotal = data instanceof Uint8Array
@@ -262,7 +266,9 @@ export class CharXImporter{
         const stream = this.#toStream(data)
 
         const reader = stream.getReader()
+        try {
         while(true){
+            this.transaction?.check()
             const {done, value} = await reader.read()
             if(value){
                 this.inputBytes += value.byteLength
@@ -278,6 +284,16 @@ export class CharXImporter{
                 break
             }
         }
+        } catch (error) {
+            await reader.cancel().catch(() => {})
+            // Drain already queued writes before the caller rolls back.
+            await this.assetBatcher.done().catch(() => {})
+            this.completionSettled = true
+            this.completionRejecter?.(error instanceof Error ? error : new Error(String(error)))
+            throw error
+        } finally {
+            reader.releaseLock()
+        }
     }
 
     /**
@@ -285,8 +301,20 @@ export class CharXImporter{
      * When final=true, marks input as complete and finalizes the save queue.
      */
     async #feedChunk(data:Uint8Array, final:boolean = false){
-        this.unzip.push(data, final)
-        await this.assetBatcher.waitForCapacity()
+        this.transaction?.check()
+        // fflate recursively visits entries within each push. Bound every input
+        // source, including externally supplied streams, to avoid stack overflow
+        // on archives containing thousands of tiny entries.
+        const parserChunkSize = 32 * 1024
+        for (let offset = 0; offset < data.length; offset += parserChunkSize) {
+            this.transaction?.check()
+            this.unzip.push(data.subarray(offset, offset + parserChunkSize), false)
+            await this.assetBatcher.waitForCapacity()
+            // Permit cancel clicks even for in-memory or highly compressed ZIPs.
+            await new Promise(resolve => setTimeout(resolve, 0))
+        }
+        if (final) this.unzip.push(new Uint8Array(0), true)
+        this.transaction?.check()
         if(final){
             this.inputFinalized = true
             this.#tryFinalize()
@@ -380,7 +408,7 @@ export class CharXImporter{
             this.importProgress?.({
                 phase: 'extracting',
                 completed: this.extractedEntries,
-                total: this.discoveredEntries,
+                ...(this.inputFinalized ? { total: this.discoveredEntries } : {}),
             })
             this.openFiles -= 1
             this.#tryFinalize()
@@ -411,7 +439,7 @@ export class CharXImporter{
             this.importProgress?.({
                 phase: 'preparing-assets',
                 completed: Object.keys(this.assets).length + 1,
-                total: this.discoveredEntries,
+                ...(this.inputFinalized ? { total: this.discoveredEntries } : {}),
             })
             this.assetBatcher.enqueue({
                 id: fileName,
@@ -430,7 +458,7 @@ export class CharXImporter{
 
     async #finalize(){
         try {
-            this.importProgress?.({ phase: 'finalizing', completed: 1, total: 1 })
+            this.importProgress?.({ phase: 'finalizing', completed: 0 })
             await this.assetBatcher.done()
             if(this.hashSignal){
                 await saveAsset(new TextEncoder().encode(this.hashSignal))

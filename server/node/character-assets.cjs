@@ -4,9 +4,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { atomicWriteFile, atomicWriteJson, readVerifiedJson, resolveInside, commitTransaction, recoverTransactions } = require('./file-store.cjs');
-const { sanitizeSegment, allocateSegment, collisionKey } = require('./friendly-paths.cjs');
+const { sanitizeSegment, allocateSegment, createSegmentAllocator } = require('./friendly-paths.cjs');
 const { createCharacterDirectoryResolver } = require('./character-directories.cjs');
 const INDEX = 'index/character-asset-replicas.json';
+const { reportImportProgress } = require('./import-progress.cjs');
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const validFilename = value => typeof value === 'string' && value.length > 0 && sanitizeSegment(value) === value;
@@ -28,7 +29,7 @@ function candidateNames(character) {
     return names;
 }
 
-function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersion }) {
+function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersion, sourcePath }) {
     let state = { schemaVersion: 1, characters: {} };
     let routes = new Map();
     const directories = createCharacterDirectoryResolver(dataRoot);
@@ -92,7 +93,7 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
         const character = matches[0];
         const candidates = candidateNames(character);
         const directory = safePath(`${directories.characterDirectory(id)}/assets`);
-        const occupied = new Set(fs.existsSync(directory) ? fs.readdirSync(directory) : []);
+        const filenames = createSegmentAllocator(fs.existsSync(directory) ? fs.readdirSync(directory) : []);
         const previous = state.characters[id]?.entries || [];
         // Conservative snapshot: any occurrence outside this character makes the asset shared.
         const otherData = JSON.stringify({ ...database, characters: database.characters.filter(value => value !== character) }).replace(/\\\\/g, '/');
@@ -115,18 +116,14 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
                 }
                 const needsWrite = !filename;
                 if (!filename) {
-                    filename = allocateSegment(preferred, occupied, true);
-                    while ([...occupied].some(name => [filename, `${filename}.sha256`, `${filename}.bak`].some(candidate => collisionKey(candidate) === collisionKey(name)))) {
-                        occupied.add(filename);
-                        filename = allocateSegment(preferred, occupied, true);
-                    }
+                    filename = filenames.allocate(preferred, true, ['.sha256', '.bak']);
                 }
                 const relative = `${directories.characterDirectory(id)}/assets/${filename}`;
                 const target = safePath(relative);
                 if (needsWrite) atomicWriteFile(dataRoot, relative, bytes);
                 const verified = fs.readFileSync(target);
                 if (verified.length !== bytes.length || hash(verified) !== digest) throw new Error('Replica verification failed');
-                for (const name of [filename, `${filename}.sha256`, `${filename}.bak`]) occupied.add(name);
+                for (const name of [filename, `${filename}.sha256`, `${filename}.bak`]) filenames.reserve(name);
                 record.entries.push({ key, filename, sourceName: preferred, hash: digest, size: bytes.length });
                 record.copied++;
             } catch { record.failed++; }
@@ -185,7 +182,7 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
             const id = character.chaId;
             const relative = `${directories.characterDirectory(id)}/assets`;
             const directory = safePath(relative);
-            const occupied = new Set(fs.existsSync(directory) ? fs.readdirSync(directory) : []);
+            const filenames = createSegmentAllocator(fs.existsSync(directory) ? fs.readdirSync(directory) : []);
             const candidates = candidateNames(character);
             const tracked = { ...(live.characters[id] || {}) };
             for (const entry of state.characters[id]?.entries || []) {
@@ -202,6 +199,7 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
             const record = { enabled: true, copied: 0, skipped: 0, failed: 0, entries: [] };
             const kept = new Set();
             for (const [key, sourceName] of candidates) {
+                reportImportProgress('character-assets', record.copied, candidates.size, sourceName);
                 const existing = byKey.get(key);
                 const previous = previousEntries.get(key);
                 if (reusableEntry(previous, key) && existing?.[0] === previous.filename
@@ -225,14 +223,14 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
                         throw error;
                     }
                 } else {
-                    filename = allocateSegment(sourceName, occupied, true);
-                    while ([...occupied].some(name => [filename, `${filename}.sha256`, `${filename}.bak`].some(candidate => collisionKey(candidate) === collisionKey(name)))) {
-                        occupied.add(filename);
-                        filename = allocateSegment(sourceName, occupied, true);
-                    }
+                    filename = filenames.allocate(sourceName, true, ['.sha256', '.bak']);
                     safePath(`${relative}/${filename}`);
-                    operations.push({ path: `${relative}/${filename}`, data: bytes });
-                    for (const name of [filename, `${filename}.sha256`, `${filename}.bak`]) occupied.add(name);
+                    // Retain immutable source paths, not every asset's bytes, until
+                    // transaction staging. The writer verifies the expected digest
+                    // before copying and verifies staged bytes again before publish.
+                    operations.push(sourcePath
+                        ? { path: `${relative}/${filename}`, sourcePath: sourcePath(key, digest), expectedChecksum: digest }
+                        : { path: `${relative}/${filename}`, data: bytes });
                 }
                 kept.add(filename);
                 if (tracked[filename]?.key !== key || tracked[filename]?.hash !== digest) {

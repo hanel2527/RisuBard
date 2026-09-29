@@ -32,6 +32,7 @@ export interface HistoricalSourceMessage {
 }
 
 export interface HistoricalSourceMatch {
+    retrieval?: 'semantic'
     messageId: string
     role: 'user' | 'assistant'
     content: string
@@ -69,27 +70,7 @@ export function resolveHistoricalSourceMatchesById(input: {
 }): HistoricalSourceMatch[] {
     const requested = [...new Set(input.messageIds)].slice(0, MAX_SOURCE_MATCHES)
     if (requested.length === 0) return []
-    const allBeforeBoundary = input.messages.findLastIndex((message) =>
-        message.disabled === 'allBefore')
-    const excluded = oocTurnIndices(input.messages, input.ignoreOocTurns !== false)
-    const active = input.messages.flatMap((message, occurredAt) => {
-        if (excluded.has(occurredAt) || occurredAt <= allBeforeBoundary
-            || (message.role !== 'user' && message.role !== 'char')
-            || typeof message.data !== 'string'
-            || typeof message.chatId !== 'string'
-            || message.chatId.trim().length === 0
-            || message.isComment
-            || message.disabled) return []
-        return [{ message, occurredAt }]
-    })
-    const requestedRecent = Number.isSafeInteger(input.excludeRecentMessages)
-        ? input.excludeRecentMessages as number
-        : 12
-    const historical = beforeRecentAssistantTurns(
-        active,
-        requestedRecent,
-        ({ message }) => message.role
-    )
+    const historical = eligibleHistoricalSources(input.messages, input.ignoreOocTurns, input.excludeRecentMessages)
     const byId = new Map(historical.map(({ message, occurredAt }) => [
         message.chatId as string,
         { message, occurredAt },
@@ -99,20 +80,37 @@ export function resolveHistoricalSourceMatchesById(input: {
         const found = byId.get(messageId)
         if (!found) return []
         const content = found.message.data as string
-        const anchor = terms.find((term) => normalized(content).includes(term))
-            ?? ''
-        return [{
-            messageId,
-            role: found.message.role === 'user'
-                ? 'user' as const
-                : 'assistant' as const,
+        const anchor = terms.find((term) => normalized(content).includes(term)) ?? ''
+        return [{ messageId, role: found.message.role === 'user' ? 'user' as const : 'assistant' as const,
             content: input.queryByMessageId?.[messageId]?.trim()
                 ? semanticEvidenceExcerpt(content, input.queryByMessageId[messageId], MAX_SOURCE_EXCERPT_CHARACTERS)
                 : centeredExcerpt(content, anchor, MAX_SOURCE_EXCERPT_CHARACTERS),
-            score: 1_000,
-            occurredAt: found.occurredAt,
-        }]
+            score: 1_000, occurredAt: found.occurredAt }]
     })
+}
+
+export function eligibleHistoricalSources(messages: readonly HistoricalSourceMessage[], ignoreOocTurns = true, excludeRecentMessages = 12) {
+    const allBeforeBoundary = messages.findLastIndex((message) =>
+        message.disabled === 'allBefore')
+    const excluded = oocTurnIndices(messages, ignoreOocTurns)
+    const active = messages.flatMap((message, occurredAt) => {
+        if (excluded.has(occurredAt) || occurredAt <= allBeforeBoundary
+            || (message.role !== 'user' && message.role !== 'char')
+            || typeof message.data !== 'string'
+            || typeof message.chatId !== 'string'
+            || message.chatId.trim().length === 0
+            || message.isComment
+            || message.disabled) return []
+        return [{ message, occurredAt }]
+    })
+    const requestedRecent = Number.isSafeInteger(excludeRecentMessages)
+        ? excludeRecentMessages
+        : 12
+    return beforeRecentAssistantTurns(
+        active,
+        requestedRecent,
+        ({ message }) => message.role
+    )
 }
 
 function normalized(value: string): string {

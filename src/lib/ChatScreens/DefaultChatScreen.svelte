@@ -23,7 +23,7 @@
     } from 'src/ts/chatTurnNavigation';
     import { loadChatViewSession, saveChatViewSession, type ChatViewSession } from 'src/ts/chatViewSession'
     import { oocTurnIndices } from 'src/ts/risubard/oocTurns'
-    import { type Chat as ChatData, type Message } from "../../ts/storage/database.svelte";
+    import { type Chat as ChatData, type Message, type Database } from "../../ts/storage/database.svelte";
     import { DBState } from 'src/ts/stores.svelte';
     import { getCharImage } from "../../ts/characters";
     import {
@@ -40,6 +40,7 @@
         sendChat,
     } from "../../ts/process/index.svelte";
     import { abortGeneration, chatGenKey, endGeneration, generationStates, registerAbort } from "../../ts/process/generationState";
+    import { captureGenerationTarget, resolveGenerationTarget, type GenerationTarget } from '../../ts/process/generationTarget';
     import { claimPendingSend, clearPendingSend, markResumable, resumableSends, takeResumable } from "../../ts/process/request/pendingSends";
     import { ensureCurrentChatReady } from "../../ts/storage/chatStorage";
     import { sleep } from "../../ts/util";
@@ -73,7 +74,7 @@ import { isMobile } from 'src/ts/platform'
     import { postChatFile } from 'src/ts/process/files/multisend';
     import { getInlayAsset } from 'src/ts/process/files/inlays';
     import { quickMenu } from 'src/ts/hotkey';
-    import { loadChatDraft, scheduleSaveChatDraft, flushChatDraft, removeChatDraft } from 'src/ts/storage/chatDraft';
+    import { loadChatDraft, scheduleSaveChatDraft, flushChatDraft, removeChatDraftIfMatches } from 'src/ts/storage/chatDraft';
     import { blocksChatGeneration } from 'src/ts/risubard/wikiReboot';
     import {
         cancelWikiGeneration,
@@ -600,29 +601,40 @@ import { isMobile } from 'src/ts/platform'
 
         preparingInput = true
         try {
+            const target = captureGenerationTarget(DBState.db.characters[selectedChar])
+            const requestSettings = {...DBState.db}
+            const submittedInput = messageInput
+            const submittedTranslation = messageInputTranslate
+            const submittedFiles = [...fileInput]
+            const isTargetVisible = () => draftChaId === target.characterId && draftChatId === target.chatId
+            const clearSubmittedDraft = () => {
+                fileInput = fileInput.filter(file => !submittedFiles.includes(file))
+                if (isTargetVisible()) {
+                    if (messageInput !== submittedInput || messageInputTranslate !== submittedTranslation) return
+                    messageInput = ''
+                    messageInputTranslate = ''
+                }
+                removeChatDraftIfMatches(target.characterId, target.chatId, {m: submittedInput, t: submittedTranslation})
+            }
             const activeChat = await ensureActiveChatReady(selectedChar)
             if(!activeChat) return
 
             let cha = activeChat.message
 
-            if(messageInput.startsWith('/')){
-                const commandProcessed = await processMultiCommand(messageInput)
+            if(submittedInput.startsWith('/')){
+                const commandTarget = resolveGenerationTarget(DBState.db.characters, target)
+                const commandProcessed = await processMultiCommand(submittedInput, {
+                    character: commandTarget.character, chat: commandTarget.chat,
+                })
                 if(commandProcessed !== false){
-                    messageInput = ''
-                    messageInputTranslate = ''
-                    removeChatDraft(draftChaId, draftChatId)
+                    clearSubmittedDraft()
                     return
                 }
             }
 
-            if(fileInput.length > 0){
-                for(const file of fileInput){
-                    messageInput += `{{inlayed::${file}}}`
-                }
-                fileInput = []
-            }
+            const input = submittedInput + submittedFiles.map(file => `{{inlayed::${file}}}`).join('')
 
-            if(messageInput === ''){
+            if(input === ''){
                 if(cha.length === 0 || cha[cha.length - 1].role !== 'user'){
                     if(DBState.db.useSayNothing){
                         cha.push({
@@ -634,7 +646,8 @@ import { isMobile } from 'src/ts/platform'
                 }
             }
             else{
-                const char = DBState.db.characters[selectedChar]
+                const char = resolveGenerationTarget(DBState.db.characters, target)?.character
+                if (!char) return
                 if(char.type === 'character'){
                     let triggerResult = await runTrigger(char,'input', {chat: activeChat})
                     if(triggerResult){
@@ -643,7 +656,7 @@ import { isMobile } from 'src/ts/platform'
 
                     cha.push({
                         role: 'user',
-                        data: await processScript(char,messageInput,'editinput'),
+                        data: await processScript(char,input,'editinput', {}, target, requestSettings),
                         time: Date.now(),
                         name: null
                     })
@@ -651,22 +664,22 @@ import { isMobile } from 'src/ts/platform'
                 else{
                     cha.push({
                         role: 'user',
-                        data: messageInput,
+                        data: input,
                         time: Date.now(),
                         name: null
                     })
                 }
             }
-            messageInput = ''
-            messageInputTranslate = ''
-            removeChatDraft(draftChaId, draftChatId)
-            DBState.db.characters[selectedChar].chats[DBState.db.characters[selectedChar].chatPage].message = cha
-            chatPage = getLatestChatPage(cha.length, chatPageSize)
+            const destination = resolveGenerationTarget(DBState.db.characters, target)
+            if (!destination) return
+            destination.chat.message = cha
+            clearSubmittedDraft()
+            if (isTargetVisible()) chatPage = getLatestChatPage(cha.length, chatPageSize)
 
             await sleep(10)
-            updateInputSizeAll()
+            if (isTargetVisible()) updateInputSizeAll()
             preparingInput = false
-            await sendChatMain(continueResponse)
+            await sendChatMain(continueResponse, target, requestSettings)
         } catch (error) {
             console.error(error)
             alertError(error)
@@ -870,10 +883,12 @@ import { isMobile } from 'src/ts/platform'
     // switch because currentChatGenKey reads the selected char/chatPage.
     let currentChatGenerating = $derived($generationStates.has(currentChatGenKey()))
 
-    async function sendChatMain(continued:boolean = false) {
+    async function sendChatMain(continued:boolean = false, target?: GenerationTarget, requestSettings?: Database) {
         if (sendingChat) return false
-        if (wikiRebootBlocksGeneration) return false
-        const genKey = currentChatGenKey()
+        target ??= captureGenerationTarget(DBState.db.characters[$selectedCharID])
+        const destination = resolveGenerationTarget(DBState.db.characters, target)
+        if (blocksChatGeneration(destination.chat.risuBardWikiReboot)) return false
+        const genKey = chatGenKey(target.chatId)
         // Mirror sendChat's per-chat guard BEFORE any side effects: a blocked
         // send must not run the unconditional conclude below, which would tear
         // down the RUNNING generation's guard entry and tombstone (e.g. Enter
@@ -881,7 +896,6 @@ import { isMobile } from 'src/ts/platform'
         if ($generationStates.has(genKey)) {
             return false
         }
-        messageInput = ''
         sendingChat = true
         sendingChatKey = genKey
         const abortController = new AbortController()
@@ -890,7 +904,9 @@ import { isMobile } from 'src/ts/platform'
         try {
             generated = await sendChat(-1, {
                 signal:abortController.signal,
-                continue:continued
+                continue:continued,
+                target,
+                requestSettings,
             })
         } catch (error) {
             console.error(error)

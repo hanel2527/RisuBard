@@ -78,6 +78,35 @@ afterEach(async () => {
 })
 
 describe('RisuBardWikiEditor', () => {
+    it('allows editing and reopening a document longer than 18961 characters without a body limit', async () => {
+        const original = '## 라비안\n\n### 지식과 비밀\n' + '보존할 기존 기록. '.repeat(1800) + '\n[[북문 재회]]'
+        const changed = original + '\n마지막 비밀도 그대로 보존한다.'
+        const saved = { ...documents[0], content: changed, contentHash: 'long-saved-hash' }
+        mocks.saveManualWikiDocument.mockResolvedValue(saved)
+        mounted = mount(RisuBardWikiEditor, {
+            target: document.body,
+            props: { characterId: 'character', chatId: 'chat', documents: [{ ...documents[0], content: original }] },
+        })
+        await tick()
+        const editor = document.querySelector<HTMLTextAreaElement>('[aria-label="Markdown"]')!
+        expect(editor.value.length).toBeGreaterThan(18_961)
+        expect(editor.hasAttribute('maxlength')).toBe(false)
+        editor.value = changed
+        editor.dispatchEvent(new Event('input', { bubbles: true }))
+        await tick()
+        document.querySelector<HTMLButtonElement>('[aria-label="저장"]')!.click()
+        await vi.waitFor(() => expect(mocks.saveManualWikiDocument).toHaveBeenCalledWith(
+            expect.objectContaining({ markdown: changed, expectedContentHash: documents[0].contentHash })
+        ))
+        await unmount(mounted)
+        mounted = mount(RisuBardWikiEditor, {
+            target: document.body,
+            props: { characterId: 'character', chatId: 'chat', documents: [saved] },
+        })
+        await tick()
+        expect(document.querySelector<HTMLTextAreaElement>('[aria-label="Markdown"]')!.value).toBe(changed)
+    })
+
     it('adopts normalized rename receipts before another save without a parent refresh', async () => {
         const saved = { ...documents[0], title: '츠구', aliases: ['소녀'],
             content: '## 츠구\n\n기사.', contentHash: 'renamed-hash' }

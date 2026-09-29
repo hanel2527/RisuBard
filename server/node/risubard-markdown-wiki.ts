@@ -2115,6 +2115,7 @@ export function createMarkdownNarrativeWiki(
             chatId: string
             currentInput: string
             fallbackInput?: string
+            retrievalLimits?: { candidates: number; directSeeds: number }
             entityHints?: readonly { kind: 'character'; names: readonly string[] }[]
             semanticMatches?: readonly {
                 documentId: string
@@ -2124,6 +2125,7 @@ export function createMarkdownNarrativeWiki(
                 end?: number
             }[]
             sourceMatches?: readonly {
+                retrieval?: 'semantic'
                 messageId: string
                 role: 'user' | 'assistant'
                 content: string
@@ -2144,6 +2146,7 @@ export function createMarkdownNarrativeWiki(
                     input.chatId
                 ),
                 currentInput: input.currentInput,
+                ...(input.retrievalLimits ? { retrievalLimits: input.retrievalLimits } : {}),
                 ...(input.entityHints ? { entityHints: input.entityHints } : {}),
                 ...(input.fallbackInput
                     ? { fallbackInput: input.fallbackInput }

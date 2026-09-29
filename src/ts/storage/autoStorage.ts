@@ -1,6 +1,11 @@
 import { NodeStorage, type PatchItemResult, type ExportBackupOptions, type BackupImportPhase } from "./nodeStorage"
 
 export class AutoStorage{
+    get importProgressId() { return this.realStorage?.importProgressId }
+    async observeImportProgress(id: string, onEvent: (event: import('../importProgress').ServerImportEvent) => void, onLost: () => void) {
+        await this.Init()
+        return this.realStorage.observeImportProgress(id, onEvent, onLost)
+    }
     isAccount:boolean = false
 
     realStorage:NodeStorage
@@ -121,6 +126,8 @@ export class AutoStorage{
     // ── Bulk asset operations ──────────────────────────────────────────────────
     async getItems(keys: string[]) { return this.realStorage.getItems(keys) }
     async setItems(entries: {key: string, value: Uint8Array}[]) { return this.realStorage.setItems(entries) }
+    async cleanupImportAssets(keys: string[], id: string) { await this.Init(); return this.realStorage.cleanupImportAssets(keys, id) }
+    async prepareImportRollback(id: string) { await this.Init(); return this.realStorage.prepareImportRollback(id) }
 
     // ── Server-side backup ─────────────────────────────────────────────────────
     async saveServerBackup(onProgress?: (current: number, total: number, bytes: number, totalBytes: number) => void) { await this.Init(); return this.realStorage.saveServerBackup(onProgress) }

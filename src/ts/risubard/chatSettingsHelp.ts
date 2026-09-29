@@ -17,6 +17,8 @@ export interface RisuBardChatProfile {
 }
 
 export const risuBardCurrentChatSettingKeys = [
+    'risuBardDynamicMemoryMode',
+    'risuBardDynamicMemoryMaximumTokens',
     'risuBardModelMode',
     'showRequestStatus',
     'risuBardBardChanEnabled',
@@ -80,6 +82,10 @@ function recommendation(
     const longMessage = profile.averageCharacters >= 1_000
 
     switch (key) {
+        case 'risuBardDynamicMemoryMode':
+            return '절약형, 균형형, 회수 우선형 순으로 검색 한도가 더 많이 늘어납니다.'
+        case 'risuBardDynamicMemoryMaximumTokens':
+            return '장기기억 동적 한도로 늘어나는 검색 최대 토큰의 상한입니다.'
         case 'risuBardModelMode':
             return '비용을 아끼려면 보조 모델, 복잡한 장기 챗에서 검색 판단이 자주 빗나가면 메인 모델을 권장합니다.'
         case 'showRequestStatus':
@@ -142,6 +148,8 @@ function recommendation(
 }
 
 const roles: Record<RisuBardChatSettingHelpKey, string> = {
+    risuBardDynamicMemoryMode: '활성 AI 응답의 누적 본문 길이에 따라 검색 목표 토큰, 사건 검색 토큰, 검색 최대 토큰과 분석 토큰 한도를 늘립니다. 증가 폭이 점차 줄고 50만 자에서 멈춥니다.',
+    risuBardDynamicMemoryMaximumTokens: '검색 최대 토큰의 동적 증가 상한입니다. 기본값이 상한보다 크면 기본값을 유지하며, 분석 한도는 모드별 최대 증가율을 따릅니다.',
     risuBardModelMode: 'BardWiki 조회·분석 작업에 사용할 모델 경로를 정합니다.',
     showRequestStatus: '응답 요청에 포함된 위키 컨텍스트와 처리 상태를 화면에 표시합니다.',
     risuBardBardChanEnabled: '바드쨩이 검색 후보 카드만 짧게 읽고 관련도가 높은 순서로 한 번 더 좁힙니다.',

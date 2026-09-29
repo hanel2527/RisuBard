@@ -280,13 +280,14 @@ export function applyPromptPresetParams(
     preset: ModelPreset,
     chat: Pick<Chat, 'usePromptPresetParams'> | null | undefined,
     mode: ModelModeExtended,
+    source: PromptPresetParameterSource = getDatabase(),
 ): ModelPreset {
     if (mode !== 'model') return preset
     if (!chat?.usePromptPresetParams) return preset
     const schema = preset.profileSnapshot?.schema
     if (!schema || schema.length === 0) return preset
 
-    return applyPromptPresetValues(preset, getDatabase())
+    return applyPromptPresetValues(preset, source)
 }
 
 /** Apply schema-supported sampling values from one explicit prompt preset. */

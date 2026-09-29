@@ -50,6 +50,9 @@ import {
     type BardLoreAnalysisSettings,
 } from '../lorebook/bardLoreAnalysisSettings';
 import {
+    normalizeRisuBardDynamicMemoryMode,
+    normalizeRisuBardDynamicMemoryMaximum,
+    type RisuBardDynamicMemoryMode,
     normalizeRisuBardAdditionalSearchLimit,
     normalizeRisuBardAnalysisTokenLimit,
     normalizeRisuBardCanonicalCustomStyle,
@@ -974,6 +977,8 @@ export function setDatabase(data:Database){
     data.risuBardCanonicalTargetLimit = normalizeRisuBardCanonicalTargetLimit(
         data.risuBardCanonicalTargetLimit
     )
+    data.risuBardDynamicMemoryMode = normalizeRisuBardDynamicMemoryMode(data.risuBardDynamicMemoryMode)
+    data.risuBardDynamicMemoryMaximumTokens = normalizeRisuBardDynamicMemoryMaximum(data.risuBardDynamicMemoryMaximumTokens)
     const chatInquiryTokenBudget = normalizeRisuBardInquiryTokenBudget(
         data.risuBardInquiryTargetTokenBudget,
         data.risuBardInquiryMaximumTokenBudget,
@@ -1831,6 +1836,8 @@ export interface Database{
     risuBardInquiryEventTokenBudget?: number
     risuBardInquirySourceTokenBudget?: number
     risuBardInquiryMaximumTokenBudget?: number
+    risuBardDynamicMemoryMode?: RisuBardDynamicMemoryMode
+    risuBardDynamicMemoryMaximumTokens?: number
     risuBardInquiryTimeoutMs?: number
     risuBardHistoricalSourceMatchLimit?: number
     risuBardCanonicalWritingStyle?: import('../risubard/risuBardSettings').RisuBardCanonicalWritingStyle

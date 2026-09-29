@@ -1,6 +1,6 @@
 import DOMPurify from 'dompurify';
 import markdownit from 'markdown-it'
-import { appVer, getCurrentCharacter, getDatabase, type Database, type character, type customscript, type triggerscript } from '../storage/database.svelte';
+import { appVer, getCurrentCharacter, getDatabase, type Chat, type Database, type character, type customscript, type triggerscript } from '../storage/database.svelte';
 import { DBState, selIdState } from '../stores.svelte';
 import { aiWatermarkingLawApplies, getFileSrc } from '../globalApi.svelte';
 import { isNodeServer } from "src/ts/platform"
@@ -1363,7 +1363,7 @@ function blockStartMatcher(p1:string,matcherArg:matcherArg):{type:blockMatch,typ
     const getScopedGlobalChatVar = (key: string) => (
         matcherArg.globalChatVariables && Object.hasOwn(matcherArg.globalChatVariables, key)
             ? matcherArg.globalChatVariables[key]
-            : getGlobalChatVar(key)
+            : getGlobalChatVar(key, matcherArg.chat)
     )
     if(p1.startsWith('#if') || p1.startsWith('#if_pure ')){
         const statement = p1.split(' ', 2)
@@ -1458,7 +1458,7 @@ function blockStartMatcher(p1:string,matcherArg:matcherArg):{type:blockMatch,typ
                         break
                     }
                     case 'var':{
-                        const variable = getChatVar(condition)
+                        const variable = getChatVar(condition, matcherArg.chat && typeof matcherArg.chara === 'object' ? matcherArg.chara : undefined, matcherArg.chat)
                         if(isTruthy(variable)){
                             statement.push('1')
                         }
@@ -1478,7 +1478,7 @@ function blockStartMatcher(p1:string,matcherArg:matcherArg):{type:blockMatch,typ
                         break
                     }
                     case 'vis':{ //vis = variable is
-                        const variable = getChatVar(statement.pop())
+                        const variable = getChatVar(statement.pop(), matcherArg.chat && typeof matcherArg.chara === 'object' ? matcherArg.chara : undefined, matcherArg.chat)
                         if(variable === condition){
                             statement.push('1')
                         }
@@ -1488,7 +1488,7 @@ function blockStartMatcher(p1:string,matcherArg:matcherArg):{type:blockMatch,typ
                         break
                     }
                     case 'visnot':{ //visnot = variable is not
-                        const variable = getChatVar(statement.pop())
+                        const variable = getChatVar(statement.pop(), matcherArg.chat && typeof matcherArg.chara === 'object' ? matcherArg.chara : undefined, matcherArg.chat)
                         if(variable !== condition){
                             statement.push('1')
                         }
@@ -1752,6 +1752,7 @@ function blockEndMatcher(p1:string,type:{type:blockMatch,type2?:string,mode?:str
 
 export function risuChatParser(da:string, arg:{
     chatID?:number
+    chat?:Chat
     db?:Database
     chara?:string|character
     rmVar?:boolean,
@@ -1812,6 +1813,7 @@ export function risuChatParser(da:string, arg:{
 
     const matcherObj = {
         chatID: chatID,
+        chat: arg.chat,
         chara: chara,
         rmVar: arg.rmVar ?? false,
         db: db,

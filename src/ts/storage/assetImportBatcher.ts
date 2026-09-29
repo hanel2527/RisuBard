@@ -1,6 +1,7 @@
 import { v4 } from 'uuid'
 import { forageStorage, saveAsset } from '../globalApi.svelte'
 import { hasher } from '../parser/parser.svelte'
+import type { ImportTransaction } from './importTransaction'
 
 const DEFAULT_MAX_ITEMS = 200
 const DEFAULT_MAX_BYTES = 32 * 1024 * 1024
@@ -12,6 +13,7 @@ export interface AssetImportEntry {
 }
 
 interface AssetImportBatcherOptions {
+    transaction?: ImportTransaction
     maxItems?: number
     maxBytes?: number
     highWaterBytes?: number
@@ -36,7 +38,7 @@ export class AssetImportBatcher {
     private errors: Error[] = []
     private capacityWaiters: Array<() => void> = []
 
-    constructor(options: AssetImportBatcherOptions) {
+    constructor(private options: AssetImportBatcherOptions) {
         this.maxItems = options.maxItems ?? DEFAULT_MAX_ITEMS
         this.maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES
         this.highWaterBytes = options.highWaterBytes ?? DEFAULT_HIGH_WATER_BYTES
@@ -46,6 +48,7 @@ export class AssetImportBatcher {
     }
 
     enqueue(entry: AssetImportEntry): void {
+        this.options.transaction?.check()
         if (this.pending.length > 0 && this.pendingBytes + entry.data.byteLength > this.maxBytes) {
             this.schedulePending()
         }
@@ -95,8 +98,9 @@ export class AssetImportBatcher {
     }
 
     private async persistBatch(batch: AssetImportEntry[]): Promise<void> {
+        this.options.transaction?.check()
         if (this.shouldPersist() && batch.length === 1 && batch[0].data.byteLength > this.maxBytes) {
-            const storageKey = await saveAsset(batch[0].data)
+            const storageKey = await saveAsset(batch[0].data, '', '', this.options.transaction)
             this.onStored(batch[0].id, storageKey)
             return
         }
@@ -110,7 +114,9 @@ export class AssetImportBatcher {
             return { id: entry.id, key: `assets/${id}.png`, value: entry.data }
         }))
         if (this.shouldPersist()) {
-            await forageStorage.setItems(prepared.map(({ key, value }) => ({ key, value })))
+            const entries = prepared.map(({ key, value }) => ({ key, value }))
+            if (this.options.transaction) await this.options.transaction.write(entries)
+            else await forageStorage.setItems(entries)
         }
         for (const entry of prepared) this.onStored(entry.id, entry.key)
     }

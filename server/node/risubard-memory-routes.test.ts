@@ -84,6 +84,22 @@ describe('RisuBard memory routes', () => {
         expect(next).not.toHaveBeenCalled()
     })
 
+    test('accepts bounded dynamic retrieval limits and rejects unbounded values', async () => {
+        const { registerRisuBardMemoryRoutes } = require('./risubard-memory-routes.cjs')
+        const harness = createHarness()
+        const service = { inquireNarrative: vi.fn(async () => ({ sources: [] })) }
+        registerRisuBardMemoryRoutes(harness.app, { auth: async () => true, service })
+        const route = harness.routes.get('/api/risubard/memory/inquiry')!
+        const body = { characterId:'char',chatId:'chat',currentInput:'약속',retrievalLimits:{candidates:256,directSeeds:128} }
+        await route({body},harness.response,vi.fn())
+        expect(service.inquireNarrative).toHaveBeenCalledWith(body)
+        for (const limits of [{candidates:257,directSeeds:32},{candidates:64,directSeeds:128},{candidates:64,directSeeds:0},{candidates:64,directSeeds:32,extra:1}]) {
+            await route({body:{...body,retrievalLimits:limits}},harness.response,vi.fn())
+            expect(harness.response.statusCode).toBe(400)
+        }
+        expect(service.inquireNarrative).toHaveBeenCalledOnce()
+    })
+
     test('accepts verified semantic ranges and rejects partial ranges or supplied text', async () => {
         const { registerRisuBardMemoryRoutes } = require('./risubard-memory-routes.cjs')
         const harness = createHarness()
@@ -668,6 +684,7 @@ describe('RisuBard memory routes', () => {
                     }],
                     sourceMatches: [{
                         messageId: 'message-5',
+                        retrieval: 'semantic',
                         role: 'assistant',
                         content: '플러피풋의 사과 에일',
                         score: 4.2,
@@ -694,6 +711,7 @@ describe('RisuBard memory routes', () => {
             }],
             sourceMatches: [{
                 messageId: 'message-5',
+                retrieval: 'semantic',
                 role: 'assistant',
                 content: '플러피풋의 사과 에일',
                 score: 4.2,

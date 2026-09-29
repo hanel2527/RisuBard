@@ -1,5 +1,5 @@
 import { writable, type Writable } from "svelte/store"
-import { alertCardExport, alertConfirm, alertError, alertInput, alertStore, alertTOS, alertWait, notifySuccess, notifyError } from "./alert"
+import { alertCardExport, alertConfirm, alertConfirmMulti, alertError, alertInput, alertStore, alertTOS, alertWait, notifySuccess, notifyError } from "./alert"
 import { defaultSdDataFunc, type character, setDatabase, type customscript, type loreSettings, type loreBook, type triggerscript, importPreset, getDatabase, setDatabaseLite, appVer, newChatModelDefaults } from "./storage/database.svelte"
 import { resolveLorebookMatchingMode } from "./process/lorebookMatching"
 import { isLorebookEntryEnabled } from "./process/lorebookActivation"
@@ -17,7 +17,7 @@ import { reencodeImage } from "./process/files/inlays"
 import { PngChunk } from "./pngChunk"
 import type { OnnxModelFiles } from "./process/transformers"
 import { CharXImporter, CharXSkippableChecker, CharXWriter, type CharXImportProgress } from "./process/processzip"
-import { exportModuleLegacy, readModule, type RisuModule } from "./process/modules"
+import { exportModuleLegacy, importRisum, readModule, type RisuModule } from "./process/modules"
 import { pinCharacterVaultQuickAccess } from './characterVault'
 import { normalizeFirstMessageStudioProject, type FirstMessageStudioProject } from './firstMessageStudio'
 import { normalizeBardLoreOwnerState, type BardLoreState } from './lorebook/bardLore'
@@ -26,6 +26,10 @@ import { yieldImportTask } from './importTaskYield'
 import { exportPainterBotData, normalizePainterBotData } from './bardPainter/painterCardData'
 import { filterPainterLoreLinks } from './bardPainter/library'
 import type { PainterBotData } from './bardPainter/types'
+import { classifyCharx, inspectCharx } from './charxPreflight'
+import { importAsset, runImport } from './importSession'
+import { ImportCancelled, type ImportTransaction } from './storage/importTransaction'
+import { convertCharacterToModule } from './interchangeability'
 
 
 const EXTERNAL_HUB_URL = 'https://sv.risuai.xyz';
@@ -33,7 +37,8 @@ const NIGHTLY_HUB_URL = 'https://nightly.sv.risuai.xyz'
 export const hubURL = '/hub-proxy';
 const MAX_EMBEDDED_ASSET_BASE64_LENGTH = Math.ceil(100 * 1024 * 1024 * 4 / 3)
 
-async function persistImportedData() {
+async function persistImportedData(transaction?: ImportTransaction) {
+    if (transaction) { transaction.check(); return }
     await requestImmediateSave({ flushServer: true, rejectOnFailure: true })
 }
 
@@ -120,14 +125,23 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
     data: Uint8Array|File|ReadableStream<Uint8Array>
     lightningRealmImport?:boolean
     returnCharacter?:T //note That this option only works with v3 charx
+    transaction?: ImportTransaction
+    installAs?: 'module' | 'character'
 }):Promise<T extends true ? character | number | null : number | null>{
-    if(f.name.endsWith('json')){
+    if (!f.transaction && !f.returnCharacter) {
+        return await runImport(transaction => importCharacterProcess({ ...f, transaction })) as any
+    }
+    const transaction = f.transaction
+    const saveAsset = importAsset(transaction)
+    const lowerName = f.name.toLowerCase()
+    transaction?.check()
+    if(lowerName.endsWith('json')){
         if(f.data instanceof ReadableStream){
             return null
         }
         const data = f.data instanceof Uint8Array ? f.data : new Uint8Array(await f.data.arrayBuffer())
         const da = JSON.parse(Buffer.from(data).toString('utf-8'))
-        if(await importCharacterCardSpec(da)){
+        if(await importCharacterCardSpec(da, undefined, 'normal', {}, null, false, transaction)){
             let db = getDatabase()
             return db.characters.length - 1 as any
         }
@@ -135,40 +149,58 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
             let db = getDatabase()
             const character = convertOffSpecCards(da)
             character.name = createUniqueDisplayName(character.name, db.characters)
+            transaction?.register('character', character.chaId)
             db.characters.push(character)
             setDatabaseLite(db)
-            await persistImportedData()
-            notifySuccess(language.importedCharacter)
+            await persistImportedData(transaction)
+            if (!transaction) notifySuccess(language.importedCharacter)
             return
         }
         else{
-            alertError(language.errors.noData)
-            return
+            throw new Error(language.errors.noData)
         }
     }
     let db = getDatabase()
     db.statics.imports += 1
 
-    if(f.name.endsWith('charx') || f.name.endsWith('jpg') || f.name.endsWith('jpeg')){
+    if(lowerName.endsWith('charx') || lowerName.endsWith('jpg') || lowerName.endsWith('jpeg')){
+        let installAs = f.installAs ?? 'character'
+        if (lowerName.endsWith('charx') && !f.returnCharacter && !f.installAs) {
+            if (lowerName.endsWith('.module.charx')) installAs = 'module'
+            else {
+                alertWait(language.importInstall.inspecting)
+                if (f.data instanceof ReadableStream) {
+                    f.data = new File([await new Response(f.data).blob()], f.name)
+                }
+                const info = await inspectCharx(f.data, transaction?.check)
+                const kind = classifyCharx(f.name, info.bytes, info.assets)
+                if (kind === 'ask') {
+                    const choice = await alertConfirmMulti(language.importInstall.choose, [language.importInstall.module, language.importInstall.character],
+                        `${f.name}\n${(info.bytes / 1_000_000).toFixed(1)} MB / ${language.importInstall.assets} ${info.assets.toLocaleString()}\n\n${language.importInstall.heuristic}`)
+                    if (choice < 0) throw new ImportCancelled()
+                    installAs = choice === 0 ? 'module' : 'character'
+                } else installAs = kind
+            }
+        }
+        transaction?.check()
         console.log('reading charx')
-        const importer = new CharXImporter(showCharacterImportProgress)
+        const importer = new CharXImporter(showCharacterImportProgress, transaction)
         await importer.parse(f.data)
         await importer.done()
         alertWait(language.characterImportReadingMetadata)
         const cardData = importer.cardData
         if(!cardData){
-            alertError(language.errors.noData)
-            return
+            throw new Error(language.errors.noData)
         }
         const card:CharacterCardV3 = JSON.parse(cardData)
         if(card.spec !== 'chara_card_v3'){
-            alertError(language.errors.noData)
-            return
+            throw new Error(language.errors.noData)
         }
         let lorebook:loreBook[] = null
         if(importer.moduleData){
             alertWait(language.characterImportReadingModule)
-            const md = await readModule(Buffer.from(importer.moduleData))
+            const md = await readModule(Buffer.from(importer.moduleData), transaction)
+            if (!md) throw new Error(language.errors.noData)
             card.data.extensions ??= {}
             card.data.extensions.risuai ??= {}
             card.data.extensions.risuai.triggerscript = md.trigger ?? []
@@ -177,21 +209,29 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
                 lorebook = md.lorebook
             }
         }
-        let v = await importCharacterCardSpec(card, undefined, 'normal', importer.assets, lorebook, f.returnCharacter)
+        const v = await importCharacterCardSpec(card, undefined, 'normal', importer.assets, lorebook, true, transaction)
+        if (!v) throw new ImportCancelled()
         if(f.returnCharacter){
             return v as any
         }
-        let db = getDatabase()
-        const importedCharacter = db.characters[db.characters.length - 1]
-        if(v && importedCharacter){
-            pinCharacterVaultQuickAccess(db, importedCharacter.chaId)
+        transaction?.check()
+        if (installAs === 'module') {
+            const module = convertCharacterToModule(v)
+            transaction?.register('module', module.id)
+            db.modules.push(module)
+            await persistImportedData(transaction)
+            return null
         }
+        v.name = createUniqueDisplayName(v.name, db.characters)
+        transaction?.register('character', v.chaId)
+        db.characters.push(v)
+        pinCharacterVaultQuickAccess(db, v.chaId)
+        await persistImportedData(transaction)
         return db.characters.length - 1
     }
 
-    if(!f.name.endsWith('png')){
-        alertError(language.errors.noData)
-        return
+    if(!lowerName.endsWith('png')){
+        throw new Error(language.errors.noData)
     }
     
 
@@ -222,6 +262,7 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
         })
 
         for await(const chunk of prereader){
+            transaction?.check()
             if(chunk instanceof AppendableBuffer){
                 break
             }
@@ -241,6 +282,7 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
     let queueFetchKey:string[] = []
     let queueFetchData:Buffer[] = []
     for await (const chunk of readGenerator){
+        transaction?.check()
         if(!chunk){
             continue
         }
@@ -325,8 +367,7 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
     }
 
     if(!readedChara && !readedCCv3){
-        alertError(language.errors.noData)
-        return
+        throw new Error(language.errors.noData)
     }
 
     if(readedCCv3){
@@ -334,8 +375,7 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
     }
 
     if(!img){
-        alertError(language.errors.noData)
-        return
+        throw new Error(language.errors.noData)
     }
 
     if(readedChara.startsWith('rcc||')){
@@ -343,26 +383,24 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
         const type = parts[1]
         if(type === 'rccv1'){
             if(parts.length !== 5){
-                alertError(language.errors.noData)
-                return
+                throw new Error(language.errors.noData)
             }
             const encrypted = Buffer.from(parts[2], 'base64')
             const hashed = await hasher(encrypted)
             if(hashed !== parts[3]){
-                alertError(language.errors.noData)
-                return
+                throw new Error(language.errors.noData)
             }
             const metaData:RccCardMetaData = JSON.parse(Buffer.from(parts[4], 'base64').toString('utf-8'))
             if(metaData.usePassword){
                 const password = await alertInput(language.inputCardPassword)
                 if(!password){
-                    return
+                    throw new ImportCancelled()
                 }
                 else{
                     try {
                         const decrypted = await decryptBuffer(encrypted, password)         
                         const charaData:CharacterCardV2Risu = JSON.parse(Buffer.from(decrypted).toString('utf-8'))
-                        if(await importCharacterCardSpec(charaData, img, "normal", assets)){
+                        if(await importCharacterCardSpec(charaData, img, "normal", assets, null, false, transaction)){
                             let db = getDatabase()
                             return db.characters.length - 1
                         }
@@ -370,8 +408,8 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
                             throw new Error('Error while importing')
                         }
                     } catch (error) {
-                        alertError(language.errors.wrongPassword)
-                        return
+                        if (error instanceof ImportCancelled) throw error
+                        throw new Error(language.errors.wrongPassword)
                     }
                 }
             }
@@ -379,13 +417,13 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
                 const decrypted = await decryptBuffer(encrypted, 'RISU_NONE')
                 try {
                     const charaData:CharacterCardV2Risu = JSON.parse(Buffer.from(decrypted).toString('utf-8'))
-                    if(await importCharacterCardSpec(charaData, img, "normal", assets)){
+                    if(await importCharacterCardSpec(charaData, img, "normal", assets, null, false, transaction)){
                         let db = getDatabase()
                         return db.characters.length - 1
                     }   
                 } catch (error) {
-                    alertError(language.errors.noData)
-                    return
+                    if (error instanceof ImportCancelled) throw error
+                    throw new Error(language.errors.noData)
                 }
             }
 
@@ -402,13 +440,14 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
         const imgp = await saveAsset(img)
         const character = convertOffSpecCards(charaData, imgp)
         character.name = createUniqueDisplayName(character.name, db.characters)
+        transaction?.register('character', character.chaId)
         db.characters.push(character)
         setDatabaseLite(db)
-        await persistImportedData()
-        notifySuccess(language.importedCharacter)
+        await persistImportedData(transaction)
+        if (!transaction) notifySuccess(language.importedCharacter)
         return db.characters.length - 1
     }
-    await importCharacterCardSpec(parsed, img, "normal", assets)
+    await importCharacterCardSpec(parsed, img, "normal", assets, null, false, transaction)
     
     db = getDatabase()
     return db.characters.length - 1
@@ -498,9 +537,10 @@ export async function characterURLImport() {
                 return false
             }
         }
-        db.modules.push(importData)
-        await persistImportedData()
-        notifySuccess(language.successImport)
+        await runImport(async transaction => {
+            transaction.register('module', importData.id)
+            db.modules.push(importData)
+        })
         openSettings(SettingsRoute.Module)
         return
     }
@@ -531,12 +571,7 @@ export async function characterURLImport() {
             return
         }
         const module = new Uint8Array(await data.arrayBuffer())
-        const md = await readModule(Buffer.from(module))
-        md.id = v4()
-        const db = getDatabase()
-        db.modules.push(md)
-        await persistImportedData()
-        notifySuccess(language.successImport)
+        await importRisum(module)
         openSettings(SettingsRoute.Module)
     }
     if(hash.startsWith('#share_preset')){
@@ -586,12 +621,7 @@ export async function characterURLImport() {
             return
         }
         if(name.endsWith('risum')){
-            const md = await readModule(Buffer.from(data))
-            md.id = v4()
-            const db = getDatabase()
-            db.modules.push(md)
-            await persistImportedData()
-            notifySuccess(language.successImport)
+            await importRisum(data)
             openSettings(SettingsRoute.Module)
             return
         }
@@ -712,7 +742,9 @@ export async function exportChar(charaID:number):Promise<string> {
 }
 
 
-async function importCharacterCardSpec<T extends boolean = false>(card:CharacterCardV2Risu|CharacterCardV3, img?:Uint8Array, mode:'hub'|'normal' = 'normal', assetDict:{[key:string]:string} = {}, overrideLorebook: loreBook[] = null, returnValue:T = false as T):Promise<T extends true ? character|false : boolean>{
+async function importCharacterCardSpec<T extends boolean = false>(card:CharacterCardV2Risu|CharacterCardV3, img?:Uint8Array, mode:'hub'|'normal' = 'normal', assetDict:{[key:string]:string} = {}, overrideLorebook: loreBook[] = null, returnValue:T = false as T, transaction?: ImportTransaction):Promise<T extends true ? character|false : boolean>{
+    const saveAsset = importAsset(transaction)
+    transaction?.check()
     if(!card ||(card.spec !== 'chara_card_v2' && card.spec !== 'chara_card_v3' )){
         return false
     }
@@ -836,6 +868,7 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
         const data = card.data //required for type checking
         if(data.assets){
             for(let i=0;i<data.assets.length;i++){
+                transaction?.check()
                 alertStore.set({
                     type: 'progress',
                     msg: language.characterImportAssets(i + 1, data.assets.length),
@@ -873,8 +906,7 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
                         imgp = await saveAsset(Buffer.from(b64, 'base64'))
                     }
                     else{
-                        alertError(language.characterImportDataUriTooLarge)
-                        continue
+                        throw new Error(language.characterImportDataUriTooLarge)
                     }
                 }
                 else{
@@ -912,7 +944,7 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
     if(risuext && risuext?.lowLevelAccess){
         const conf = await alertConfirm(language.lowLevelAccessConfirm)
         if(!conf){
-            return false
+            throw new ImportCancelled()
         }
     }
     const charbook = data.character_book
@@ -1040,9 +1072,10 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
     }
 
     char.name = createUniqueDisplayName(char.name, db.characters)
+    transaction?.register('character', char.chaId)
     db.characters.push(char)
-    await persistImportedData()
-    notifySuccess(language.importedCharacter)
+    await persistImportedData(transaction)
+    if (!transaction) notifySuccess(language.importedCharacter)
     return true as any
 
 }
@@ -1853,7 +1886,11 @@ export async function downloadRisuHub(id:string, arg:{
 
         data.data.extensions.risuRealmImportId = id
     
-        await importCharacterCardSpec(data, await getHubResources(img), 'hub')
+        await runImport(async transaction => {
+            const result = await importCharacterCardSpec(data, await getHubResources(img), 'hub', {}, null, false, transaction)
+            if (!result) throw new Error(language.errors.noData)
+            return result
+        })
         checkCharOrder()
         let db = getDatabase()
         if(db.characters[db.characters.length-1] && (db.goCharacterOnImport || arg.forceRedirect)){

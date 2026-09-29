@@ -79,12 +79,14 @@ async function persistRemove(key: string): Promise<void> {
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+let pendingSave: {key: string; draft: ChatDraft} | null = null
 
 function cancelPending() {
     if (saveTimer) {
         clearTimeout(saveTimer)
         saveTimer = null
     }
+    pendingSave = null
 }
 
 /** Load a chat's draft, or null if none. No round trip when the index says none. */
@@ -111,8 +113,10 @@ export function scheduleSaveChatDraft(chaId: string, chatId: string, draft: Chat
     if (!chaId || !chatId) return
     const key = chatDraftKey(chaId, chatId)
     cancelPending()
+    pendingSave = {key, draft: {...draft}}
     saveTimer = setTimeout(() => {
         saveTimer = null
+        pendingSave = null
         enqueue(() => persistSave(key, draft))
     }, DEBOUNCE_MS)
 }
@@ -129,6 +133,25 @@ export function removeChatDraft(chaId: string, chatId: string): void {
     if (!chaId || !chatId) return
     cancelPending()
     enqueue(() => persistRemove(chatDraftKey(chaId, chatId)))
+}
+
+/** Remove only the submitted text, preserving later edits and other chats' debounce. */
+export function removeChatDraftIfMatches(chaId: string, chatId: string, expected: ChatDraft): void {
+    if (!chaId || !chatId) return
+    const key = chatDraftKey(chaId, chatId)
+    const submitted = {...expected}
+    const matches = (draft: ChatDraft) => draft.m === submitted.m && draft.t === submitted.t
+    if (pendingSave?.key === key && matches(pendingSave.draft)) cancelPending()
+    enqueue(async () => {
+        await ensureIndex()
+        const bytes = await forageStorage.getItem(key)
+        if (!bytes?.length) return
+        const saved = JSON.parse(new TextDecoder().decode(bytes))
+        if (!matches({m: saved.m ?? '', t: saved.t ?? ''})) return
+        await forageStorage.removeItem(key)
+        draftKeys!.delete(key)
+        maybeSaved.delete(key)
+    })
 }
 
 /**

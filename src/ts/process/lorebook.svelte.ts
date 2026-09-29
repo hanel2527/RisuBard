@@ -5,7 +5,7 @@ import { type Message, type character, type loreBook } from "../storage/database
 import { DBState } from '../stores.svelte';
 import { tokenize } from "../tokenizer";
 import { risuChatParser } from "../parser/parser.svelte";
-import { findCharacterbyId, pickHashRand, selectSingleFile } from "../util";
+import { findCharacterbyId, pickHashRand, selectSingleFile, type ChatContext } from "../util";
 import { alertError, notifySuccess } from "../alert";
 import { getCurrentLocale, language } from "../../lang";
 import { downloadFile } from "../globalApi.svelte";
@@ -84,10 +84,13 @@ export function addLorebookFolder(type:number) {
 
 // An explicit search uses only the supplied text and character lore, without
 // reading chat history/local lore or changing persistent activation flags.
-export async function loadLoreBookV3Prompt(search?: { character: character; text: string }){
-    const char = search?.character ?? DBState.db.characters[get(selectedCharID)]
+export async function loadLoreBookV3Prompt(options?: ChatContext | { character: character; text: string }){
+    const search = options && 'text' in options ? options : undefined
+    const context = options && 'chat' in options ? options : undefined
+    const char = options?.character ?? DBState.db.characters[get(selectedCharID)]
     const page = char.chatPage
-    const currentChatState = char.chats[page]
+    const currentChatState = context?.chat ?? char.chats[page]
+    const chatContext = search ? undefined : { character: char, chat: currentChatState }
     const currentChat: Message[] = search ? [{ role: 'user', data: search.text }] : currentChatState.message
     const loreDepth = search ? 1 : (char.loreSettings?.scanDepth ?? DBState.db.loreBookDepth)
     const characterScopeId = `character:${char.chaId}`
@@ -105,7 +108,7 @@ export async function loadLoreBookV3Prompt(search?: { character: character; text
     if(bardState && bardSettings){
         const tokenCounts: Record<string, number> = {}
         await Promise.all(bardEntries.filter((entry) => entry.bard.injection !== 'index-only').map(async (entry) => {
-            tokenCounts[entry.id] = await tokenize(risuChatParser(entry.content, {chara: char}))
+            tokenCounts[entry.id] = await tokenize(risuChatParser(entry.content, {chara: char, chat: chatContext?.chat}))
         }))
         const disabledThrough = currentChat.findLastIndex((message) => message.disabled === 'allBefore')
         const activeMessages = currentChat.slice(disabledThrough + 1)
@@ -123,7 +126,7 @@ export async function loadLoreBookV3Prompt(search?: { character: character; text
                 : char.alternateGreetings?.[currentChatState.fmIndex ?? 0] ?? ''
             : ''
         const firstMessageEvidence = selectedGreeting
-            ? risuChatParser(selectedGreeting, { chara: char })
+            ? risuChatParser(selectedGreeting, { chara: char, chat: chatContext?.chat })
             : ''
         const query = [firstMessageEvidence, ...recentMessages].filter(Boolean).join('\n')
         let priorityQuery = ''
@@ -180,11 +183,11 @@ export async function loadLoreBookV3Prompt(search?: { character: character; text
             scopeId: characterScopeId,
             entry,
         })),
-        ...(search ? [] : (char.chats[page].localLore ?? []).map((entry) => ({
-            scopeId: `chat:${char.chats[page].id ?? page}`,
+        ...(search ? [] : (currentChatState.localLore ?? []).map((entry) => ({
+            scopeId: `chat:${currentChatState.id ?? page}`,
             entry,
         }))),
-        ...(search ? [] : getModuleLorebooksWithSources()),
+        ...(search ? [] : getModuleLorebooksWithSources(chatContext)),
     ].filter((source) => isLorebookEntryEnabled(source.entry)
         && (!search || (source.entry.mode !== 'folder' && source.entry.content.trim().length > 0)))
     const fullLore = safeStructuredClone(loreSources.map((source) => source.entry))
@@ -426,7 +429,7 @@ export async function loadLoreBookV3Prompt(search?: { character: character; text
                         return
                     }
                     case 'keep_activate_after_match':{
-                        const vara = search ? 'null' : getChatVar('__internal_ka_' + (fullLore[i].id ?? pickHashRand(5555,fullLore[i].content).toString()))
+                        const vara = search ? 'null' : getChatVar('__internal_ka_' + (fullLore[i].id ?? pickHashRand(5555,fullLore[i].content).toString()), char, currentChatState)
                         if(vara === 'true'){
                             forceState = 'activate'
                         }
@@ -436,7 +439,7 @@ export async function loadLoreBookV3Prompt(search?: { character: character; text
                         return false
                     }
                     case 'dont_activate_after_match': {
-                        const vara = search ? 'null' : getChatVar('__internal_da_' + (fullLore[i].id ?? pickHashRand(5555,fullLore[i].content).toString()))
+                        const vara = search ? 'null' : getChatVar('__internal_da_' + (fullLore[i].id ?? pickHashRand(5555,fullLore[i].content).toString()), char, currentChatState)
                         if(vara === 'true'){
                             forceState = 'deactivate'
                         }
@@ -477,7 +480,7 @@ export async function loadLoreBookV3Prompt(search?: { character: character; text
                         if(Number.isNaN(int)){
                             return false
                         }
-                        if(search || ((char.chats[page].fmIndex ?? -1) + 1) !== int){
+                        if(search || ((currentChatState.fmIndex ?? -1) + 1) !== int){
                             activated = false
                         }
                         return
@@ -687,7 +690,7 @@ export async function loadLoreBookV3Prompt(search?: { character: character; text
                     // so cutoff reflects what actually reaches the context, not the unevaluated source.
                     // runVar is left false (matching the output path in index.svelte.ts), so this
                     // evaluation has no side effects like setvar.
-                    tokens: await tokenize(risuChatParser(content, {chara: char})),
+                    tokens: await tokenize(risuChatParser(content, {chara: char, chat: chatContext?.chat})),
                     priority: priority,
                     source: fullLore[i].comment || `lorebook ${i}`,
                     requestStatusKind,
@@ -700,10 +703,10 @@ export async function loadLoreBookV3Prompt(search?: { character: character; text
                 activatedIndexes.push(i)
 
                 if(keepActivateAfterMatch && !search){
-                    setChatVar('__internal_ka_' + (fullLore[i].id ?? pickHashRand(5555,fullLore[i].content).toString()), 'true')
+                    setChatVar('__internal_ka_' + (fullLore[i].id ?? pickHashRand(5555,fullLore[i].content).toString()), 'true', currentChatState)
                 }
                 if(dontActivateAfterMatch && !search){
-                    setChatVar('__internal_da_' + (fullLore[i].id ?? pickHashRand(5555,fullLore[i].content).toString()), 'true')
+                    setChatVar('__internal_da_' + (fullLore[i].id ?? pickHashRand(5555,fullLore[i].content).toString()), 'true', currentChatState)
                 }
 
 

@@ -118,7 +118,7 @@ test.each(['CANONICAL_FILES_CHANGED', 'EXTERNAL_EDIT_MODE'])('chat transport ret
         uploadChatContent,
         () => ({ chatUploadChunkMiB: 8 }),
     )
-    const context = { authFetch: async () => ({ status: 409, json: async () => ({ code, currentEtag: 'new', error: 'conflict' }) }) }
+    const context = { saveRequest: async () => ({ status: 409, json: async () => ({ code, currentEtag: 'new', error: 'conflict' }) }) }
     await expect(save.call(context, 'character', 0, 'chat', {})).rejects.toMatchObject({
         currentEtag: 'new',
         canonicalFilesChanged: code === 'CANONICAL_FILES_CHANGED',

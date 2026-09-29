@@ -66,7 +66,7 @@ export class WikiEmbeddingRuntime<Settings extends { enabled: boolean }> {
 
     async search(current: string, recent: string) {
         const entry = this.entry
-        const result = await entry?.index.search(current, recent)
+        const result = await entry?.index.search(current, recent, 2000, { maximumDocuments: 12, maximumPassagesPerDocument: 3 })
         return entry && this.entry === entry && result
             ? result : { matches: [], evidenceQuery: '', evidenceHints: {} as Record<string, string> }
     }

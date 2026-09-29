@@ -41,9 +41,43 @@ vi.mock('../util', () => ({
 }))
 
 import { CharXImporter } from './processzip'
+import { ImportTransaction } from '../storage/importTransaction'
 
 describe('CharXImporter asset persistence', () => {
     beforeEach(() => vi.clearAllMocks())
+
+    it('handles thousands of tiny entries delivered in one stream chunk', async () => {
+        const entries: Record<string, Uint8Array> = { 'card.json': fflate.strToU8('{}') }
+        for (let i = 0; i < 5000; i++) entries[`metadata/${i}.json`] = fflate.strToU8('{}')
+        const archive = fflate.zipSync(entries, { level: 0 })
+        const importer = new CharXImporter()
+        await importer.parse(new ReadableStream({ start(controller) { controller.enqueue(archive); controller.close() } }))
+        await importer.done()
+        expect(importer.cardData).toBe('{}')
+    })
+
+    it('drains the in-flight asset batch before cancellation rollback', async () => {
+        let finish!: () => void
+        let started!: () => void
+        const ready = new Promise<void>(resolve => { started = resolve })
+        const events: string[] = []
+        const tx = new ImportTransaction(new Set(), {
+            write: () => new Promise<void>(resolve => { started(); finish = () => { events.push('write'); resolve() } }),
+            journal: () => {}, removeOwners: async () => {},
+            cleanup: async () => { events.push('cleanup') },
+        })
+        const importer = new CharXImporter(undefined, tx)
+        const parsing = importer.parse(fflate.zipSync({ 'card.json': fflate.strToU8('{}'), 'assets/a.png': Uint8Array.of(1) }))
+        await ready
+        tx.cancel()
+        let drained = false
+        const completed = (async () => { try { await parsing; await importer.done() } catch {} drained = true; await tx.rollback() })()
+        await Promise.resolve()
+        expect(drained).toBe(false)
+        finish()
+        await completed
+        expect(events).toEqual(['write', 'cleanup'])
+    })
 
     it('stores streamed assets in server-sized batches', async () => {
         const archiveEntries: Record<string, Uint8Array> = {

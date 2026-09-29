@@ -1,5 +1,5 @@
 import { get, writable, type Writable } from "svelte/store"
-import type { Database, Message } from "./storage/database.svelte"
+import type { Chat, character, Database, Message } from "./storage/database.svelte"
 import { getDatabase } from "./storage/database.svelte"
 import { selectedCharID } from "./stores.svelte"
 import { createBlankChar, getCharImage } from "./characters"
@@ -72,12 +72,17 @@ export const replacePlaceholders = (msg:string, name:string) => {
                 .replace(/(\{\{((set)|(get))var::.+?\}\})/gu,'')
 }
 
-export function checkPersonaBinded(){
+export interface ChatContext {
+    character: character
+    chat: Chat
+}
+
+export function checkPersonaBinded(context?:ChatContext){
     try {
         let db = getDatabase()
         const selectedChar = get(selectedCharID)
-        const character = db.characters[selectedChar]
-        const chat = character.chats[character.chatPage]
+        const character = context?.character ?? db.characters[selectedChar]
+        const chat = context?.chat ?? character.chats[character.chatPage]
         if(!chat.bindedPersona){
             return null
         }
@@ -87,8 +92,8 @@ export function checkPersonaBinded(){
     }
 }
 
-export function getUserName(){
-    const bindedPersona = checkPersonaBinded()
+export function getUserName(context?:ChatContext){
+    const bindedPersona = checkPersonaBinded(context)
     if(bindedPersona){
         return bindedPersona.name
     }
@@ -105,8 +110,8 @@ export function getUserIcon(){
     return db.userIcon ?? ''
 }
 
-export function getPersonaPrompt(){
-    const bindedPersona = checkPersonaBinded()
+export function getPersonaPrompt(context?:ChatContext){
+    const bindedPersona = checkPersonaBinded(context)
     if(bindedPersona){
         return bindedPersona.personaPrompt
     }

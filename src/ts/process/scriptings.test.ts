@@ -95,9 +95,9 @@ vi.mock('wasmoon', () => ({
 }))
 
 vi.mock(import('../parser/chatVar.svelte'), () => ({
-  getChatVar: () => 'null',
-  getGlobalChatVar: () => 'null',
-  setChatVar: () => true,
+  getChatVar: vi.fn(() => 'null'),
+  getGlobalChatVar: vi.fn(() => 'null'),
+  setChatVar: vi.fn(() => true),
 }))
 
 vi.mock(import('../parser/parser.svelte'), () => ({
@@ -169,6 +169,25 @@ beforeEach(() => {
 })
 
 describe('lightweight chat scripting APIs', () => {
+  test('pins default Lua variable access to the supplied chat across initialization', async () => {
+    const { runScripted } = await loadScriptings()
+    const { setChatVar, getChatVar, getGlobalChatVar } = await import('../parser/chatVar.svelte')
+    vi.mocked(setChatVar).mockClear()
+    const chats = [{ id: 'A', message: [] }, { id: 'B', message: [] }]
+    const character = { type: 'character', chatPage: 0, chats }
+    const running = runScripted('-- STATE_CHANGE_PROBE', {
+      mode: 'stateChangeProbe', char: character as never, chat: chats[0] as never,
+    })
+    character.chatPage = 1
+    await running
+    expect(setChatVar).toHaveBeenCalledWith('__scene', '"rain"', chats[0])
+    const globals = wasm.engines[0].global.values
+    ;(globals.get('getChatVar') as Function)('id', 'owner')
+    ;(globals.get('getGlobalVar') as Function)('id', 'mode')
+    expect(getChatVar).toHaveBeenCalledWith('owner', character, chats[0])
+    expect(getGlobalChatVar).toHaveBeenCalledWith('mode', chats[0])
+  })
+
   test('exposes direct message fields without copying unrelated message data', async () => {
     const { runScripted } = await loadScriptings()
     await runScripted('', { mode: 'chatApiProbe', chat: chatWithMessages() as never })

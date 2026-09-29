@@ -37,6 +37,7 @@ import ModuleModelBindingList from 'src/lib/Setting/Pages/Model/ModuleModelBindi
 import RisuBardArcPlotterPresets from 'src/lib/Setting/Pages/RisuBardArcPlotterPresets.svelte';
 import RisuBardGrimoireLanguageSettings from 'src/lib/Setting/Pages/RisuBardGrimoireLanguageSettings.svelte';
 import WikiEmbeddingSettings from 'src/lib/Setting/Pages/WikiEmbeddingSettings.svelte';
+import RisuBardDynamicMemorySettings from 'src/lib/Setting/Pages/RisuBardDynamicMemorySettings.svelte';
 
 /**
  * Registry of custom components.
@@ -65,6 +66,7 @@ export const customComponents: Record<string, Component<any>> = {
     'RisuBardArcPlotterPresets': RisuBardArcPlotterPresets,
     'RisuBardGrimoireLanguageSettings': RisuBardGrimoireLanguageSettings,
     'WikiEmbeddingSettings': WikiEmbeddingSettings,
+    'RisuBardDynamicMemorySettings': RisuBardDynamicMemorySettings,
     // Add more as we migrate complex settings
 } as const;
 

@@ -6,6 +6,7 @@ import { getDatabase, nodeOnlyVer, type MessageGenerationInfo } from "./storage/
 import { alertStore as alertStoreImported, togglePresetsOpenStore } from "./stores.svelte"
 import { addLog } from "./log"
 import { nativeConsoleError } from "./log-capture"
+import { noteImportActivity } from './importProgress'
 import type { ShButtonVariant } from "../lib/UI/GUI/ShButton.svelte"
 import type { ShDialogTier } from "../lib/UI/GUI/ShDialog.svelte"
 
@@ -50,6 +51,7 @@ type AlertGenerationInfoStoreData = {
 export const alertGenerationInfoStore = writable<AlertGenerationInfoStoreData>(null)
 export const alertStore = {
     set: (d:alertData) => {
+        if (d.type === 'progress' || d.type === 'wait') noteImportActivity(d.msg, d.type === 'progress' ? Number(d.submsg) : undefined)
         alertStoreImported.set(d)
     }
 }
@@ -264,6 +266,7 @@ export function notifySuccess(
 }
 
 export function alertWait(msg:string){
+    noteImportActivity(msg)
     alertStoreImported.set({
         'type': 'wait',
         'msg': msg

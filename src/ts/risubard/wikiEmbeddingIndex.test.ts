@@ -13,6 +13,18 @@ const cache = () => {
 }
 
 describe('optional wiki embedding index', () => {
+    it('optionally retains independent passages and preserves them through document reranking', async () => {
+        const index = new WikiEmbeddingIndex({ identity:'passages',embed:async texts=>texts.map(()=>[1,0]) },cache())
+        await index.refresh(page([
+            {...chunk('a','first evidence'),start:0,end:14},
+            {...chunk('a','second evidence'),start:100,end:115},
+            {...chunk('b','other evidence'),start:0,end:14},
+        ]))
+        const result = await index.search('question','',2000,{ maximumDocuments:32,maximumPassagesPerDocument:3 })
+        expect(result.matches.filter(match=>match.documentId==='a')).toHaveLength(2)
+        const reranked = mergeWikiSemanticMatches(result.matches,[{documentId:'a',score:1}])
+        expect(reranked.filter(match=>match.documentId==='a').map(match=>match.start)).toEqual([0,100])
+    })
     it('reuses pre-existing body embeddings after heading-only chunks are removed', async () => {
         const content = '## 기록\n\n### 약속\n\n역에 가겠다는 약속은 하지 않았다.'
         const storage = cache()

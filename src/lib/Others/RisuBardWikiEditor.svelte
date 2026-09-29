@@ -946,7 +946,6 @@
                 bind:value={markdown}
                 bind:this={markdownTextarea}
                 readonly={readOnly}
-                maxlength="12000"
                 spellcheck="false"
             ></textarea>
         {/if}

@@ -16,6 +16,21 @@ vi.mock('../../lang', () => ({ language: {}, changeLanguage: vi.fn() }))
 const { getDatabase, newChatModelDefaults, normalizeChat, setDatabase } = await import('./database.svelte')
 
 describe('RisuBard settings persistence', () => {
+    test('persists the dynamic policy at global, chat and pinned scopes', () => {
+        setDatabase({
+            characters: [{ chaId: 'dynamic', name: 'Dynamic', chats: [{ id: 'chat', message: [], risuBardSettings: { risuBardDynamicMemoryMode: 'balanced', risuBardDynamicMemoryMaximumTokens: 16000 } }], risuBardPinnedSettings: { risuBardDynamicMemoryMode: 'recall', risuBardDynamicMemoryMaximumTokens: 20000 } }],
+            formatingOrder: ['main'], loreBook: [], personas: [], username: 'User', userIcon: '', userNote: '',
+            risuBardDynamicMemoryMode: 'economy', risuBardDynamicMemoryMaximumTokens: 9000,
+        } as any)
+        setDatabase(JSON.parse(JSON.stringify(getDatabase())))
+        expect(getDatabase().risuBardDynamicMemoryMode).toBe('economy')
+        expect(getDatabase().risuBardDynamicMemoryMaximumTokens).toBe(9000)
+        expect(getDatabase().characters[0].chats[0].risuBardSettings?.risuBardDynamicMemoryMode).toBe('balanced')
+        expect(getDatabase().characters[0].risuBardPinnedSettings?.risuBardDynamicMemoryMaximumTokens).toBe(20000)
+        setDatabase({ ...getDatabase(), risuBardDynamicMemoryMode: 'bad', risuBardDynamicMemoryMaximumTokens: NaN } as any)
+        expect(getDatabase().risuBardDynamicMemoryMode).toBe('off')
+        expect(getDatabase().risuBardDynamicMemoryMaximumTokens).toBe(12000)
+    })
     test('preserves bot-pinned wiki settings across database reloads', () => {
         setDatabase({
             characters: [{

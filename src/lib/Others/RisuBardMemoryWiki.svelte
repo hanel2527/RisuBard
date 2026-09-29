@@ -1,5 +1,6 @@
 <script lang="ts">
     import { onMount } from 'svelte'
+    import { resolveDynamicMemorySettings } from 'src/ts/risubard/dynamicMemoryBudget'
     import { painterInsertionRequest } from 'src/ts/bardPainter/selectionState'
     import {
         BookOpenIcon,
@@ -46,6 +47,7 @@
     import RisuBardWikiEditor from './RisuBardWikiEditor.svelte'
     import RisuBardMemoryActivity from './RisuBardMemoryActivity.svelte'
     import RisuBardStorySoFar from './RisuBardStorySoFar.svelte'
+    import RisuBardCharacterChronicle from './RisuBardCharacterChronicle.svelte'
     import RisuBardStoryArcPlot from './RisuBardStoryArcPlot.svelte'
     import RisuBardWikiCommandTerminal from './RisuBardWikiCommandTerminal.svelte'
     import RisuBardMemoryWikiHelp from './RisuBardMemoryWikiHelp.svelte'
@@ -172,7 +174,7 @@
     let loadedScope = ''
     let dockElement = $state<HTMLElement | null>(null)
     let workspaceSplitElement = $state<HTMLElement | null>(null)
-    let activeView = $state<'painter' | 'ooc' | 'workspace' | 'story' | 'arc-plot' | 'log'>('workspace')
+    let activeView = $state<'painter' | 'ooc' | 'workspace' | 'story' | 'chronicle' | 'arc-plot' | 'log'>('workspace')
     let painterLoadError = $state('')
     let settingsOpen = $state(false)
     let settingsPopoverElement = $state<HTMLElement | null>(null)
@@ -256,11 +258,7 @@
         && rebootStartChatIndex <= rebootLastChatIndex
     )
     let rebootAnalysisTokenLimit = $derived(
-        resolveRisuBardChatSettings(
-            DBState.db,
-            currentChat?.risuBardSettings,
-            currentCharacter?.risuBardPinnedSettings,
-        ).risuBardAnalysisTokenLimit
+        resolveDynamicMemorySettings(resolvedChatSettings, currentChat?.message ?? []).risuBardAnalysisTokenLimit
     )
     let empty = $derived(
         wiki?.mode === 'v1'
@@ -796,6 +794,14 @@
                     </button>
                     <button
                         type="button"
+                        class:active={activeView === 'chronicle'}
+                        data-memory-view="chronicle"
+                        title="인물 연대기"
+                        aria-pressed={activeView === 'chronicle'}
+                        onclick={() => activeView = 'chronicle'}
+                    ><Clock3Icon size={20} /><span>인물 연대기</span></button>
+                    <button
+                        type="button"
                         class:active={activeView === 'arc-plot'}
                         data-memory-view="arc-plot"
                         title="아크 플롯"
@@ -1080,6 +1086,16 @@
                         onNavigate={onNavigateStorySource}
                         onEdit={editStoryEntry}
                     />
+                {:else if activeView === 'chronicle'}
+                    {#key `${characterId}:${wikiChatId}`}
+                        <RisuBardCharacterChronicle
+                            documents={wiki.documents}
+                            messages={activityMessages}
+                            ignoreOocTurns={resolvedChatSettings.risuBardIgnoreOocTurns}
+                            onNavigate={onNavigateStorySource}
+                            onEdit={editStoryEntry}
+                        />
+                    {/key}
                 {:else if activeView === 'arc-plot'}
                     <RisuBardStoryArcPlot
                         documents={wiki.documents}

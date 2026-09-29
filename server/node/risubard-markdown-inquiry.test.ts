@@ -21,6 +21,40 @@ function document(
 }
 
 describe('progressive Markdown inquiry', () => {
+    test('includes verified semantic original evidence without an explicit history keyword', () => {
+        const result = inquireMarkdownDocuments({documents:[],currentInput:'그는 손가락을 만지작거린다.',
+            sourceMatches:[{messageId:'old',role:'assistant',content:'그가 전달했던 은빛 반지에는 비밀 장부의 위치가 새겨져 있다.',score:0.8,occurredAt:2,retrieval:'semantic'}],
+            tokenBudget:{target:512,events:512,perSource:256,maximum:1024}})
+        expect(result.sources.some(source=>source.content.includes('은빛 반지'))).toBe(true)
+        expect(result.metrics.selectedTokens).toBeLessThanOrEqual(1024)
+    })
+    test('expands local candidates under dynamic limits without expanding provider token budget', () => {
+        const documents = Array.from({ length: 180 }, (_, index) => document({
+            id: `record-${index}`, type: 'other', title: `약속 ${index}`, relativePath: `notes/${index}.md`,
+            content: `## 약속 ${index}\n\n북문에서 약속한 기록 ${index}.`,
+        }))
+        const input = { documents, currentInput: '북문 약속', tokenBudget: { target: 512, events: 512, perSource: 256, maximum: 1024 } }
+        const baseline = inquireMarkdownDocuments(input)
+        const expanded = inquireMarkdownDocuments({ ...input, retrievalLimits: { candidates: 256, directSeeds: 128 } })
+        expect(baseline.metrics.candidateCount).toBeLessThanOrEqual(64)
+        expect(expanded.metrics.candidateCount).toBeGreaterThan(baseline.metrics.candidateCount)
+        expect(expanded.metrics.candidateCount).toBeLessThanOrEqual(256)
+        expect(expanded.metrics.selectedTokens).toBeLessThanOrEqual(1024)
+        expect(expanded.sources.length).toBeLessThanOrEqual(12)
+    })
+
+    test('retains independent verified passages in the same long document', () => {
+        const first = '첫 약속은 북문에서 만나는 것이다.'
+        const last = '두 번째 약속은 은색 나침반을 돌려주는 것이다.'
+        const content = `## 기록\n\n### 첫 약속\n${first}\n\n` + '관련 없는 날씨. '.repeat(2000) + `\n\n### 두 번째 약속\n${last}`
+        const doc = document({ id:'promises',type:'other',title:'기록',relativePath:'notes/promises.md',content })
+        const result = inquireMarkdownDocuments({ documents:[doc], currentInput:'예전 두 약속은 무엇이었지?',
+            semanticMatches:[first,last].map((text,index)=>({documentId:doc.id,score:0.9-index*0.01,contentHash:doc.contentHash,start:content.indexOf(text),end:content.indexOf(text)+text.length})),
+            tokenBudget:{target:512,events:512,perSource:256,maximum:1024} })
+        expect(result.sources[0].content).toContain(first)
+        expect(result.sources[0].content).toContain(last)
+        expect(result.metrics.selectedTokens).toBeLessThanOrEqual(1024)
+    })
     test.each(['Why did Alice leave the fortress?', 'Did Alice leave the fortress?', 'Where was Alice before the collapse?'])('does not crowd out historical reasons for: %s', currentInput => {
         const history = 'Alice guarded the fortress. '.repeat(25) + 'Alice left because the bridge collapsed.'
         const content = '## Alice\n\n### Current State\n' + 'Alice lives in the southern village. '.repeat(40)

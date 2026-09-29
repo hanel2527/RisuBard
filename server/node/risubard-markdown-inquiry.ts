@@ -4,12 +4,11 @@ import type { MarkdownWikiDocument } from './risubard-markdown-wiki'
 import { normalizeRisuBardInquiryTokenBudget } from '../../src/ts/risubard/risuBardSettings'
 import { selectMarkdownExcerpt } from './risubard-markdown-excerpt'
 import { isStoryArcTitle } from '../../src/ts/risubard/wikiWritingLanguage'
+import { normalizeWikiRetrievalLimits, type WikiRetrievalLimits } from '../../src/ts/risubard/wikiRetrievalLimits'
 
 const MAX_SELECTED_DOCUMENTS = 12
 const MAX_SOURCE_CHARACTERS = 12_000
 const MAX_FALLBACK_CURRENT_INPUT_CHARACTERS = 128
-const MAX_CANDIDATES = 64
-const MAX_DIRECT_SEEDS = 32
 const MAX_SEMANTIC_SEEDS = 32
 const MAX_EXPANDED_DOCUMENTS_PER_HOP = 8
 const MAX_EDGES_PER_DOCUMENT = 16
@@ -87,6 +86,7 @@ function selectTokenBoundedExcerpt(
 }
 
 export interface MarkdownInquiryInput {
+    retrievalLimits?: WikiRetrievalLimits
     documents: readonly MarkdownWikiDocument[]
     currentInput: string
     fallbackInput?: string
@@ -102,6 +102,7 @@ export interface MarkdownInquiryInput {
         names: readonly string[]
     }[]
     sourceMatches?: readonly {
+        retrieval?: 'semantic'
         messageId: string
         role: 'user' | 'assistant'
         content: string
@@ -402,6 +403,7 @@ function semanticExcerpt(document: MarkdownWikiDocument, start: number, end: num
 export function inquireMarkdownDocuments(
     input: MarkdownInquiryInput
 ): MarkdownInquiryResult {
+    const { candidates: candidateLimit, directSeeds: directSeedLimit } = normalizeWikiRetrievalLimits(input.retrievalLimits)
     const currentNormalizedQuery = normalized(
         input.currentInput.slice(0, 4_096)
     )
@@ -443,7 +445,7 @@ export function inquireMarkdownDocuments(
             || right.document.updated.localeCompare(left.document.updated)
             || left.document.id.localeCompare(right.document.id))
     const semanticScores = new Map<string, number>()
-    const semanticPassages = new Map<string, { start: number; end: number; score: number }>()
+    const semanticPassages = new Map<string, Array<{ start: number; end: number; score: number }>>()
     for (const match of input.semanticMatches ?? []) {
         if (!Number.isFinite(match.score) || match.score <= 0
             || !byId.has(match.documentId)) continue
@@ -453,9 +455,14 @@ export function inquireMarkdownDocuments(
                 || !Number.isSafeInteger(match.start) || !Number.isSafeInteger(match.end)
                 || match.start! < 0 || match.end! <= match.start!
                 || match.end! > document.content.length) continue
-            if (match.score > (semanticPassages.get(match.documentId)?.score ?? 0)) {
-                semanticPassages.set(match.documentId, { start: match.start!, end: match.end!, score: match.score })
-            }
+            const ranges = semanticPassages.get(match.documentId) ?? []
+            const overlapping = ranges.find(range => match.start! <= range.end && match.end! >= range.start)
+            if (overlapping) {
+                overlapping.start = Math.min(overlapping.start, match.start!)
+                overlapping.end = Math.max(overlapping.end, match.end!)
+                overlapping.score = Math.max(overlapping.score, match.score)
+            } else ranges.push({ start: match.start!, end: match.end!, score: match.score })
+            semanticPassages.set(match.documentId, ranges.sort((a, b) => b.score - a.score || a.start - b.start).slice(0, 3))
         }
         semanticScores.set(
             match.documentId,
@@ -466,7 +473,7 @@ export function inquireMarkdownDocuments(
         .sort((left, right) => right[1] - left[1]
             || left[0].localeCompare(right[0]))
         .slice(0, MAX_SEMANTIC_SEEDS)
-    const directById = new Map(direct.slice(0, MAX_DIRECT_SEEDS).map((item) =>
+    const directById = new Map(direct.slice(0, directSeedLimit).map((item) =>
         [item.document.id, item]))
     semantic.forEach(([documentId], index) => {
         const document = byId.get(documentId)
@@ -538,7 +545,7 @@ export function inquireMarkdownDocuments(
             characterAnchorTerms = fallbackCharacterAnchorTerms
             termWeights = fallbackTermWeights
             direct = fallbackDirect
-            for (const item of direct.slice(0, MAX_DIRECT_SEEDS)) {
+            for (const item of direct.slice(0, directSeedLimit)) {
                 directById.set(item.document.id, item)
             }
         }
@@ -548,7 +555,7 @@ export function inquireMarkdownDocuments(
             right.directScore - left.directScore
             || right.document.updated.localeCompare(left.document.updated)
             || left.document.id.localeCompare(right.document.id))
-        .slice(0, MAX_DIRECT_SEEDS)
+        .slice(0, directSeedLimit)
     const candidates = new Map<string, Candidate>()
     for (const document of requiredDocuments) {
         candidates.set(document.id, {
@@ -566,7 +573,7 @@ export function inquireMarkdownDocuments(
         })
     }
     for (const item of hybridDirect) {
-        if (candidates.size >= MAX_CANDIDATES) break
+        if (candidates.size >= candidateLimit) break
         candidates.set(item.document.id, {
             ...item,
             hop: 0,
@@ -606,7 +613,7 @@ export function inquireMarkdownDocuments(
                     )
                     continue
                 }
-                if (candidates.size >= MAX_CANDIDATES) continue
+                if (candidates.size >= candidateLimit) continue
                 const neighbor = byId.get(neighborId)
                 if (!neighbor) continue
                 candidates.set(neighborId, {
@@ -678,11 +685,14 @@ export function inquireMarkdownDocuments(
         })),
         ...automatic,
     ].map((candidate) => {
-        const passage = semanticPassages.get(candidate.document.id)
-        const preferSemantic = passage && !requiredIds.has(candidate.document.id)
+        const passages = semanticPassages.get(candidate.document.id)
+        const preferSemantic = passages?.length && !requiredIds.has(candidate.document.id)
             && !(currentStateIntent && candidate.document.type === 'character')
         let content = preferSemantic ? truncateToTokenBudget(
-            semanticExcerpt(candidate.document, passage.start, passage.end),
+            passages!.map(passage => truncateToTokenBudget(
+                semanticExcerpt(candidate.document, passage.start, passage.end),
+                Math.max(1, Math.floor((tokenBudget.perSource - (passages!.length - 1) * 2) / passages!.length)),
+            )).join('\n\n'),
             tokenBudget.perSource,
         ) : selectTokenBoundedExcerpt({
             content: candidate.document.content,
@@ -833,7 +843,7 @@ export function inquireMarkdownDocuments(
             const semanticDocument = semanticDocumentId ? byId.get(semanticDocumentId) : undefined
             const semanticPassage = semanticDocumentId ? semanticPassages.get(semanticDocumentId) : undefined
             const evidenceQuery = semanticDocument && semanticPassage
-                ? semanticDocument.content.slice(semanticPassage.start, semanticPassage.end)
+                ? semanticPassage.map(passage => semanticDocument.content.slice(passage.start, passage.end)).join('\n')
                 : retrievalInput
             const excerpt = selectTokenBoundedExcerpt({
                 content: match.content,
@@ -855,7 +865,7 @@ export function inquireMarkdownDocuments(
                 tokens: countInquiryTokens(content),
             }
         })
-        .filter((match) => historicalEvidenceIntent || match.routed)
+        .filter((match) => historicalEvidenceIntent || match.routed || match.retrieval === 'semantic')
         .sort((left, right) =>
             Number(right.routed) - Number(left.routed)
             || right.effectiveScore - left.effectiveScore
@@ -909,7 +919,7 @@ export function inquireMarkdownDocuments(
                 occurredAt: match.occurredAt,
                 displayName: match.routed
                     ? `과거 원문 · 턴 ${Math.max(1, Math.floor((match.occurredAt + 1) / 2))} 응답 · 출처 기반 · ${match.eventTitle}`
-                    : `과거 원문 · 턴 ${Math.max(1, Math.floor((match.occurredAt + 1) / 2))} ${match.role === 'assistant' ? '응답' : '입력'} · 어휘 검색`,
+                    : `과거 원문 / 턴 ${Math.max(1, Math.floor((match.occurredAt + 1) / 2))} ${match.role === 'assistant' ? '응답' : '입력'} / ${match.retrieval === 'semantic' ? '의미 검색' : '어휘 검색'}`,
             })),
         ],
         evidenceRequests,

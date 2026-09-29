@@ -1,6 +1,4 @@
-import { get } from "svelte/store";
-import { getCurrentCharacter, getCurrentChat, getDatabase, setCurrentChat, setDatabase } from "../storage/database.svelte";
-import { selectedCharID } from "../stores.svelte";
+import { getCurrentCharacter, getCurrentChat, getDatabase, setDatabase, type character, type Chat } from "../storage/database.svelte";
 import { alertInput, alertMd, alertNormal, alertSelect } from "../alert";
 import { sayTTS } from "./tts";
 import { risuChatParser } from "../parser/parser.svelte";
@@ -9,7 +7,10 @@ import { chatGenKey, endGeneration } from "./generationState";
 import { loadLoreBookV3Prompt } from "./lorebook.svelte";
 import { runTrigger } from "./triggers";
 
-export async function processMultiCommand(command:string) {
+type CommandContext = { character: character; chat: Chat }
+
+export async function processMultiCommand(command:string, context?: CommandContext) {
+    context ??= { character: getCurrentCharacter(), chat: getCurrentChat() }
     let pipe = ''
     const splited:string[] = []
     let lastIndex = 0
@@ -27,7 +28,7 @@ export async function processMultiCommand(command:string) {
     splited.push(command.slice(lastIndex))
     console.log(splited)
     for(let i = 0; i<splited.length; i++){
-        const result = await processCommand(splited[i].trim(), pipe)
+        const result = await processCommand(splited[i].trim(), pipe, context)
         console.log(pipe)
         if(result === false){
             return false
@@ -40,10 +41,10 @@ export async function processMultiCommand(command:string) {
 }
 
 
-async function processCommand(command:string, pipe:string):Promise<false | string>{
+async function processCommand(command:string, pipe:string, context: CommandContext):Promise<false | string>{
     const db = getDatabase()
-    const currentChar = db.characters[get(selectedCharID)]
-    const currentChat = currentChar.chats[currentChar.chatPage]
+    const currentChar = context.character
+    const currentChat = context.chat
     let {commandName, arg, namedArg} = commandParser(command, pipe)
 
     if(!arg){
@@ -51,13 +52,13 @@ async function processCommand(command:string, pipe:string):Promise<false | strin
     }
 
     arg = risuChatParser(arg, {
-        chara: currentChar.type === 'character' ? currentChar : null
+        chara: currentChar.type === 'character' ? currentChar : null, chat: currentChat
     })
 
     const namedArgKeys = Object.keys(namedArg)
     for(const key of namedArgKeys){
         namedArg[key] = risuChatParser(namedArg[key], {
-            chara: currentChar.type === 'character' ? currentChar : null
+            chara: currentChar.type === 'character' ? currentChar : null, chat: currentChat
         })
     }
 
@@ -171,7 +172,7 @@ async function processCommand(command:string, pipe:string):Promise<false | strin
                     role: 'user',
                     data: e
                 })
-                await sendChat(-1)
+                await sendChat(-1, { target: { characterId: currentChar.chaId, chatId: currentChat.id } })
                 // sendChat leaves its generation entry for the caller to release
                 // (DefaultChatScreen does the same after its own send). Without
                 // this the per-chat guard stays held and every later iteration
@@ -182,37 +183,24 @@ async function processCommand(command:string, pipe:string):Promise<false | strin
         }
         case 'setvar':{
             console.log(namedArg, arg)
-            const db = getDatabase()
-            const selectedChar = get(selectedCharID)
-            const char = db.characters[selectedChar]
-            const chat = char.chats[char.chatPage]
+            const chat = currentChat
             chat.scriptstate = chat.scriptstate ?? {}
             chat.scriptstate['$' + namedArg['key']] = arg
             console.log(chat.scriptstate)
 
-            char.chats[char.chatPage] = chat
-            db.characters[selectedChar] = char
             setDatabase(db)
             return ''
         }
         case 'addvar':{
-            const db = getDatabase()
-            const selectedChar = get(selectedCharID)
-            const char = db.characters[selectedChar]
-            const chat = char.chats[char.chatPage]
+            const chat = currentChat
             chat.scriptstate = chat.scriptstate ?? {}
             chat.scriptstate['$' + namedArg['key']] = (Number(chat.scriptstate['$' + namedArg['key']]) + Number(arg)).toString()
 
-            char.chats[char.chatPage] = chat
-            db.characters[selectedChar] = char
             setDatabase(db)
             return ''
         }
         case 'getvar':{
-            const db = getDatabase()
-            const selectedChar = get(selectedCharID)
-            const char = db.characters[selectedChar]
-            const chat = char.chats[char.chatPage]
+            const chat = currentChat
             chat.scriptstate = chat.scriptstate ?? {}
             pipe = (chat.scriptstate['$' + namedArg['key']]).toString() ?? 'null'
             return pipe
@@ -224,14 +212,14 @@ async function processCommand(command:string, pipe:string):Promise<false | strin
             return JSON.stringify(p)
         }
         case 'trigger':{
-            const currentChar = getCurrentCharacter()
+            if (currentChar.type !== 'character') return false
             const triggerResult = await runTrigger(currentChar, 'manual', {
-                chat: getCurrentChat(),
+                chat: currentChat,
                 manualName: arg
             });
 
             if(triggerResult){
-               setCurrentChat(triggerResult.chat);
+               Object.assign(currentChat, triggerResult.chat);
             }
             return
         }

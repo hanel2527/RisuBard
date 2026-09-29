@@ -16,6 +16,8 @@ export const RISUBARD_INQUIRY_TIMEOUT_MS_DEFAULT = 10_000
 export const RISUBARD_HISTORICAL_SOURCE_MATCH_LIMIT_DEFAULT = 8
 export const RISUBARD_CANONICAL_WRITING_STYLE_DEFAULT = 'concise' as const
 export const RISUBARD_CANONICAL_CUSTOM_STYLE_MAX_LENGTH = 1_000
+export const RISUBARD_DYNAMIC_MEMORY_MAXIMUM_DEFAULT = 12_000
+export type RisuBardDynamicMemoryMode = 'off' | 'economy' | 'balanced' | 'recall'
 
 export type RisuBardCanonicalWritingStyle =
     | 'standard'
@@ -24,6 +26,8 @@ export type RisuBardCanonicalWritingStyle =
     | 'custom'
 
 export interface RisuBardChatSettings {
+    risuBardDynamicMemoryMode?: RisuBardDynamicMemoryMode
+    risuBardDynamicMemoryMaximumTokens?: number
     risuBardModelMode?: 'memory' | 'model'
     risuBardBardChanEnabled?: boolean
     risuBardBardChanModelMode?: 'memory' | 'model'
@@ -55,6 +59,8 @@ export interface RisuBardChatSettings {
 }
 
 export interface ResolvedRisuBardChatSettings {
+    risuBardDynamicMemoryMode: RisuBardDynamicMemoryMode
+    risuBardDynamicMemoryMaximumTokens: number
     risuBardModelMode: 'memory' | 'model'
     risuBardBardChanEnabled: boolean
     risuBardBardChanModelMode: 'memory' | 'model'
@@ -112,6 +118,8 @@ export function resolveRisuBardChatSettings(
         value('risuBardInquirySourceTokenBudget'),
     )
     return {
+        risuBardDynamicMemoryMode: normalizeRisuBardDynamicMemoryMode(value('risuBardDynamicMemoryMode')),
+        risuBardDynamicMemoryMaximumTokens: normalizeRisuBardDynamicMemoryMaximum(value('risuBardDynamicMemoryMaximumTokens')),
         risuBardModelMode: value('risuBardModelMode') === 'model' ? 'model' : 'memory',
         risuBardBardChanEnabled: value('risuBardBardChanEnabled') === true,
         risuBardBardChanModelMode:
@@ -167,6 +175,14 @@ export function resolveRisuBardChatSettings(
         bardChatIncludeModuleLorebook:
             value('bardChatIncludeModuleLorebook') === true,
     }
+}
+
+export function normalizeRisuBardDynamicMemoryMode(value: unknown): RisuBardDynamicMemoryMode {
+    return value === 'economy' || value === 'balanced' || value === 'recall' ? value : 'off'
+}
+
+export function normalizeRisuBardDynamicMemoryMaximum(value: unknown): number {
+    return boundedInteger(value, RISUBARD_DYNAMIC_MEMORY_MAXIMUM_DEFAULT, 256)
 }
 
 export function normalizeRisuBardAnalysisTokenLimit(value: unknown): number {

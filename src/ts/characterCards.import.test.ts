@@ -8,15 +8,19 @@ const state = vi.hoisted(() => ({
     doneCalls: 0,
     completion: Promise.resolve(),
     requestImmediateSave: vi.fn(),
+    cardPayload: undefined as unknown,
     db: {
         statics: { imports: 0 },
         characters: [],
+        modules: [],
+        characterOrder: [],
     },
 }))
 
 vi.mock('./alert', () => ({
     alertCardExport: vi.fn(),
     alertConfirm: vi.fn(),
+    alertConfirmMulti: vi.fn(async () => 0),
     alertError: vi.fn(() => state.events.push('error')),
     alertInput: vi.fn(),
     alertStore: { set: vi.fn((value) => state.alerts.push(value)) },
@@ -36,6 +40,8 @@ vi.mock('./storage/database.svelte', () => ({
     setDatabaseLite: vi.fn(),
 }))
 
+vi.mock('./charxPreflight', async (original) => ({ ...await original<typeof import('./charxPreflight')>(), inspectCharx: vi.fn(async () => ({ bytes: 1, assets: 0 })) }))
+
 vi.mock('./process/processzip', () => ({
     CharXImporter: class {
         alertInfo = false
@@ -52,7 +58,7 @@ vi.mock('./process/processzip', () => ({
             this.progress?.({ phase: 'saving-assets', completed: 5, total: 5 })
             state.completion = new Promise<void>((resolve) => {
                 setTimeout(() => {
-                    this.cardData = JSON.stringify({ spec: 'not-v3', data: {} })
+                    this.cardData = JSON.stringify(state.cardPayload ?? { spec: 'not-v3', data: {} })
                     state.events.push('assets-5/5')
                     resolve()
                 }, 0)
@@ -75,7 +81,7 @@ vi.mock('./globalApi.svelte', () => ({
     VirtualWriter: class {},
     checkCharOrder: vi.fn(),
     downloadFile: vi.fn(),
-    forageStorage: {},
+    forageStorage: { keys: vi.fn(async () => []), cleanupImportAssets: vi.fn(async () => {}), prepareImportRollback: vi.fn(async () => {}), observeImportProgress: vi.fn(async () => () => {}) },
     loadAsset: vi.fn(),
     readImage: vi.fn(),
     requestImmediateSave: state.requestImmediateSave,
@@ -93,8 +99,9 @@ vi.mock('./media', () => ({ compressImage: vi.fn(), getImageType: vi.fn() }))
 vi.mock('./parser/parser.svelte', () => ({ hasher: vi.fn(), risuChatParser: vi.fn() }))
 vi.mock('./process/files/inlays', () => ({ reencodeImage: vi.fn() }))
 vi.mock('./characterVault', () => ({ pinCharacterVaultQuickAccess: vi.fn() }))
-vi.mock('src/lang', () => ({
+vi.mock('src/lang', async () => ({
     language: {
+        importInstall: (await import('src/lang/en')).languageEnglish.importInstall,
         errors: { noData: 'invalid-data' },
         importedCharacter: 'imported',
         characterImportReadingBytes: (done: string, total: string) => `읽기 ${done}/${total}`,
@@ -107,13 +114,49 @@ vi.mock('src/lang', () => ({
 }))
 
 import { createBaseV2, createBaseV3, importCharacterProcess } from './characterCards'
+import { inspectCharx } from './charxPreflight'
+import { alertConfirmMulti } from './alert'
 import { createBardLoreSettings, fingerprintLegacyLore, upgradeLegacyLorebook } from './lorebook/bardLore'
 
 beforeEach(() => {
+    state.cardPayload = undefined
+    state.db.modules = []
     state.events = []
     state.requestImmediateSave.mockReset()
     state.requestImmediateSave.mockImplementation(async () => {
         state.events.push('saved')
+    })
+})
+
+describe('CHARX install routing', () => {
+    beforeEach(() => {
+        state.db.characters = []
+        state.doneCalls = 0
+        state.cardPayload = cardFixture('chara_card_v3', undefined)
+        vi.mocked(inspectCharx).mockResolvedValue({ bytes: 1, assets: 0 })
+        vi.mocked(alertConfirmMulti).mockClear()
+    })
+    test('automatically registers a .MODULE.CHARX as a module', async () => {
+        await importCharacterProcess({ name: 'pack.MODULE.CHARX', data: new Uint8Array() })
+        expect(state.db.characters).toHaveLength(0)
+        expect(state.db.modules).toHaveLength(1)
+        expect(alertConfirmMulti).not.toHaveBeenCalled()
+    })
+    test.each([0, 1])('uses selected installation type %s for an asset-heavy archive', async choice => {
+        vi.mocked(inspectCharx).mockResolvedValue({ bytes: 1, assets: 5000 })
+        vi.mocked(alertConfirmMulti).mockResolvedValueOnce(choice)
+        await importCharacterProcess({ name: 'pack.charx', data: new Uint8Array() })
+        expect(state.db.modules).toHaveLength(choice === 0 ? 1 : 0)
+        expect(state.db.characters).toHaveLength(choice === 1 ? 1 : 0)
+    })
+    test('cancels at classification without extracting or saving anything', async () => {
+        vi.mocked(inspectCharx).mockResolvedValue({ bytes: 150_000_000, assets: 1 })
+        vi.mocked(alertConfirmMulti).mockResolvedValueOnce(-1)
+        await importCharacterProcess({ name: 'pack.charx', data: new Uint8Array() })
+        expect(state.doneCalls).toBe(0)
+        expect(state.requestImmediateSave).not.toHaveBeenCalled()
+        expect(state.db.characters).toHaveLength(0)
+        expect(state.db.modules).toHaveLength(0)
     })
 })
 
@@ -149,14 +192,14 @@ describe('CharX import completion', () => {
     })
 
     test('waits for delayed archive completion before validating card metadata', async () => {
-        await importCharacterProcess({
+        await expect(importCharacterProcess({
             name: 'realm.charx',
             data: new Uint8Array(),
-        })
+        })).rejects.toThrow('invalid-data')
         await state.completion
 
         expect(state.doneCalls).toBe(1)
-        expect(state.events).toEqual(['assets-5/5', 'error'])
+        expect(state.events).toEqual(['assets-5/5'])
         expect(state.alerts.map((alert) => alert.msg)).toEqual(expect.arrayContaining([
             '읽기 5 B/10 B',
             '압축 2/3',
@@ -195,7 +238,7 @@ describe('legacy character-card replace-global-note compatibility', () => {
     test('persists an imported card before reporting success', async () => {
         await importFixture(cardFixture('chara_card_v3', undefined))
 
-        expect(state.requestImmediateSave).toHaveBeenCalledWith({ flushServer: true, rejectOnFailure: true })
+        expect(state.requestImmediateSave).toHaveBeenCalledWith({ flushServer: 'canonical', rejectOnFailure: true })
         expect(state.events).toEqual(['saved', 'notified'])
     })
 

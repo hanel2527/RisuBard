@@ -9,7 +9,7 @@
     import BookmarkList from './lib/Others/BookmarkList.svelte';
     import { showRealmInfoStore, importCharacterProcess } from './ts/characterCards';
     import { importPreset, getDatabase, setDatabase, nodeOnlyVer } from './ts/storage/database.svelte';
-    import { readModule } from './ts/process/modules';
+    import { importRisum } from './ts/process/modules';
     import { alertClear, alertError, alertWait, notifySuccess } from './ts/alert';
     import { language } from './lang';
     import SavePopupIconComp from './lib/Others/SavePopupIcon.svelte';
@@ -99,11 +99,7 @@
         } else if (name.endsWith('.risum')) {
             alertWait(language.fileDropImport.moduleLoading(file.name))
             const data = new Uint8Array(await file.arrayBuffer())
-            const module = await readModule(Buffer.from(data))
-            if (!module) return
-            const db = getDatabase()
-            db.modules.push(module)
-            notifySuccess(language.fileDropImport.moduleSuccess, { description: file.name })
+            await importRisum(data)
         } else if (name.endsWith('.js')) {
             alertWait(language.fileDropImport.pluginLoading(file.name))
             const source = Buffer.from(await file.arrayBuffer())

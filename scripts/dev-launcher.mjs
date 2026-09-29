@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, watch } from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,7 @@ export function createChildSpecs(projectRoot) {
   return [
     {
       label: 'SERVER',
-      args: ['--watch-path=server/node', '--watch-preserve-output', 'server/node/server.cjs'],
+      args: ['server/node/server.cjs'],
     },
     {
       label: 'WEB',
@@ -30,6 +30,20 @@ let browserOpened = false;
 let restarting = false;
 let shuttingDown = false;
 let readinessGeneration = 0;
+let serverChild;
+let serverWatcher;
+let pendingServerRestart = false;
+
+export function watchServerChanges(directory, onChange, { watchImpl = watch, delay = 250 } = {}) {
+  let timer;
+  const watcher = watchImpl(directory, { recursive: true }, (_event, filename) => {
+    if (filename && !/\.(?:cjs|mjs|js|ts|json)$/i.test(String(filename))) return;
+    clearTimeout(timer);
+    timer = setTimeout(onChange, delay);
+  });
+  watcher.on('error', error => log(`서버 파일 감시 실패: ${error.message}. R 키로 다시 시작할 수 있습니다.`));
+  return { close() { clearTimeout(timer); watcher.close(); } };
+}
 
 function log(message) {
   console.log(`\n[LAUNCHER] ${message}`);
@@ -43,6 +57,7 @@ function startChild({ label, args }) {
   });
 
   children.add(child);
+  if (label === 'SERVER') serverChild = child;
   child.on('error', (error) => {
     console.error(`[${label}] 실행 실패: ${error.message}`);
   });
@@ -87,27 +102,31 @@ function startAll() {
   void waitForWeb(generation);
 }
 
-function waitForExit(child, timeoutMs = 5000) {
+export function waitForExit(child, timeoutMs = 5000) {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
-  return new Promise((resolve) => {
-    const timeout = setTimeout(resolve, timeoutMs);
-    child.once('exit', () => {
+  return new Promise((resolve, reject) => {
+    const onExit = () => {
       clearTimeout(timeout);
       resolve();
-    });
+    };
+    const timeout = setTimeout(() => {
+      child.removeListener('exit', onExit);
+      reject(new Error(`PID ${child.pid ?? '?'}의 종료를 확인하지 못했습니다. 새 프로세스를 시작하지 않습니다.`));
+    }, timeoutMs);
+    child.once('exit', onExit);
   });
 }
 
-async function stopChild(child) {
+export async function stopChild(child) {
   if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
 
   if (process.platform === 'win32') {
-    await new Promise((resolve) => {
+    await new Promise((resolve, reject) => {
       const killer = spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
         stdio: 'ignore',
         windowsHide: true,
       });
-      killer.once('error', resolve);
+      killer.once('error', reject);
       killer.once('exit', resolve);
     });
   } else {
@@ -120,17 +139,41 @@ async function stopChild(child) {
 async function stopAll() {
   readinessGeneration += 1;
   const running = [...children];
-  await Promise.all(running.map(stopChild));
-  children.clear();
+  const results = await Promise.allSettled(running.map(stopChild));
+  const failed = results.find(result => result.status === 'rejected');
+  if (failed) throw failed.reason;
 }
 
 async function restartAll() {
   if (restarting || shuttingDown) return;
   restarting = true;
   log('프런트엔드와 서버를 다시 시작합니다...');
-  await stopAll();
-  restarting = false;
-  startAll();
+  try {
+    await stopAll();
+    if (!shuttingDown) startAll();
+  } catch (error) {
+    log(`재시작 중단: ${error.message}`);
+  } finally {
+    restarting = false;
+    if (pendingServerRestart && !shuttingDown) void restartServer();
+  }
+}
+
+async function restartServer() {
+  if (shuttingDown) return;
+  pendingServerRestart = true;
+  if (restarting) return;
+  restarting = true;
+  try {
+    do {
+      pendingServerRestart = false;
+      if (serverChild) await stopChild(serverChild);
+      if (!shuttingDown) startChild(createChildSpecs(projectRoot)[0]);
+    } while (pendingServerRestart && !shuttingDown);
+  } catch (error) {
+    pendingServerRestart = false;
+    log(`서버 재시작 중단: ${error.message}`);
+  } finally { restarting = false; }
 }
 
 function restoreTerminal() {
@@ -141,8 +184,14 @@ function restoreTerminal() {
 async function shutdown(exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
+  serverWatcher?.close();
   log('프런트엔드와 서버를 종료합니다...');
-  await stopAll();
+  try { await stopAll(); }
+  catch (error) {
+    log(`종료 실패: ${error.message}`);
+    shuttingDown = false;
+    return;
+  }
   restoreTerminal();
   process.exit(exitCode);
 }
@@ -180,6 +229,7 @@ function run() {
 
   process.once('SIGINT', () => void shutdown());
   process.once('SIGTERM', () => void shutdown());
+  serverWatcher = watchServerChanges(path.join(projectRoot, 'server', 'node'), () => void restartServer());
   startAll();
 }
 

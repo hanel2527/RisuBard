@@ -2,8 +2,9 @@ import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 import { expect, it } from 'vitest'
 import { waitForSendSync } from './sendPreparation'
+import { captureGenerationTarget, createGenerationScope } from './generationTarget'
 
-it('does not continue a send in another conversation selected during synchronization', async () => {
+it('keeps the captured send target when selection changes during synchronization', async () => {
     const source = readFileSync('src/ts/process/index.svelte.ts', 'utf8')
     const parsed = ts.createSourceFile('process.ts', source, ts.ScriptTarget.Latest, true)
     const send = parsed.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'sendChat') as ts.FunctionDeclaration
@@ -20,14 +21,14 @@ it('does not continue a send in another conversation selected during synchroniza
     const errors: string[] = []
     const dependencies = {
         DBState: {db:{characters:[character]}}, get:()=>0, selectedCharID:{},
-        refreshLiveFiles:()=>sync, waitForSendSync,
+        refreshLiveFiles:()=>sync, waitForSendSync, captureGenerationTarget, createGenerationScope,
         language:{chatSendSelectionChanged:'selection changed'}, notifyError:(error:string)=>errors.push(error),
     }
     const preflight = new Function(...Object.keys(dependencies), `${code}; return preflight`)(...Object.values(dependencies))
     const pending = preflight()
     character.chatPage = 1
     finish()
-    expect(await pending).toBe(false)
-    expect(errors).toEqual(['selection changed'])
+    expect(await pending).toBe(true)
+    expect(errors).toEqual([])
     expect(await preflight()).toBe(true)
 })

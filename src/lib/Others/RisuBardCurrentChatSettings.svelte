@@ -1,9 +1,11 @@
 <script lang="ts">
     import { language } from 'src/lang'
     import { tooltip } from 'src/ts/gui/tooltip'
+    import tippy from 'tippy.js'
     import type { Chat, character as Character } from 'src/ts/storage/database.svelte'
     import type { RisuBardChatSettings } from 'src/ts/risubard/risuBardSettings'
-    import { resolveRisuBardChatSettings } from 'src/ts/risubard/risuBardSettings'
+    import { normalizeRisuBardDynamicMemoryMode, resolveRisuBardChatSettings } from 'src/ts/risubard/risuBardSettings'
+    import { dynamicMemoryGrowth, measureActiveMemoryCharacters, resolveDynamicMemoryBudget } from 'src/ts/risubard/dynamicMemoryBudget'
     import {
         applyCurrentRisuBardSettingsToGlobal,
         buildRisuBardChatSettingHelp,
@@ -21,14 +23,15 @@
         chat?: Chat
         character?: Pick<Character, 'risuBardPinnedSettings'>
         global: RisuBardChatSettings
+        globalDynamicOnly?: boolean
     }
 
-    let { chat, global, character }: Props = $props()
+    let { chat, global, character, globalDynamicOnly = false }: Props = $props()
     let revision = $state(0)
     let globalFeedback = $state('')
     let settings = $derived.by(() => {
         revision
-        return resolveRisuBardChatSettings(global, chat?.risuBardSettings, character?.risuBardPinnedSettings)
+        return globalDynamicOnly ? resolveRisuBardChatSettings(global) : resolveRisuBardChatSettings(global, chat?.risuBardSettings, character?.risuBardPinnedSettings)
     })
     let pinned = $derived.by(() => {
         revision
@@ -40,17 +43,68 @@
             && Object.keys(chat.risuBardSettings).length > 0)
     })
     let profile = $derived(measureRisuBardChat(chat?.message ?? []))
+    let dynamicCharacters = $derived(settings.risuBardDynamicMemoryMode === 'off' ? 0 : measureActiveMemoryCharacters(chat?.message ?? [], settings.risuBardIgnoreOocTurns))
+    let dynamicBudget = $derived(resolveDynamicMemoryBudget(settings, dynamicCharacters))
+    type DynamicKey = 'risuBardInquiryTargetTokenBudget' | 'risuBardInquiryEventTokenBudget' | 'risuBardInquiryMaximumTokenBudget' | 'risuBardAnalysisTokenLimit'
+    let editingKey = $state<DynamicKey | null>(null)
+    let numberDraft = $state('')
+    const formatNumber = (value: number) => value.toLocaleString('ko-KR')
+
+    function effectiveValue(key: RisuBardChatSettingHelpKey): number | undefined {
+        switch (key) {
+            case 'risuBardInquiryTargetTokenBudget': return dynamicBudget.target
+            case 'risuBardInquiryEventTokenBudget': return dynamicBudget.events
+            case 'risuBardInquiryMaximumTokenBudget': return dynamicBudget.maximum
+            case 'risuBardAnalysisTokenLimit': return dynamicBudget.analysis
+        }
+    }
+
+    function dynamicValueHelp(key: RisuBardChatSettingHelpKey): string {
+        const effective = effectiveValue(key)
+        const base = Number(settings[key])
+        if (effective === undefined || effective === base) return ''
+        const percent = base ? ((effective - base) / base * 100).toFixed(1) : '0'
+        const capped = effective < base + Math.round(base * dynamicMemoryGrowth(settings.risuBardDynamicMemoryMode, dynamicCharacters))
+        return `기본값 ${formatNumber(base)} → 동적 한도 ${formatNumber(effective)} (+${percent}%)${capped ? '\n검색 증가 상한 적용' : ''}\n편집할 때는 기본값을 변경합니다.`
+    }
+
+    function dynamicModeHelp(): string {
+        const example = (mode: 'economy' | 'balanced' | 'recall', characters: number) => {
+            return `+${Number((dynamicMemoryGrowth(mode, characters) * 100).toFixed(1))}%`
+        }
+        return [
+            '현재 챗의 활성 AI 응답 본문 길이에 따라 검색 목표 토큰, 사건 검색 토큰, 검색 최대 토큰과 분석 토큰 한도를 늘립니다.',
+            '처음부터 조금씩 늘고 증가 폭이 점차 줄어들며, 누적 50만 자에서 멈춥니다. AI 응답이 1,000자씩일 때의 기본값 대비 증가율:',
+            `절약형: 50턴 ${example('economy', 50_000)}, 100턴 ${example('economy', 100_000)}, 500턴부터 ${example('economy', 500_000)}`,
+            `균형형: 50턴 ${example('balanced', 50_000)}, 100턴 ${example('balanced', 100_000)}, 500턴부터 ${example('balanced', 500_000)}`,
+            `회수 우선형: 50턴 ${example('recall', 50_000)}, 100턴 ${example('recall', 100_000)}, 500턴부터 ${example('recall', 500_000)}`,
+            '검색 최대 토큰에는 검색 증가 상한도 적용합니다. 파란 숫자는 계산된 한도이며, 편집할 때는 기본값이 표시됩니다.',
+        ].join('\n\n')
+    }
 
     function settingHelp(key: RisuBardChatSettingHelpKey): string {
-        return buildRisuBardChatSettingHelp(key, profile)
+        if (key === 'risuBardDynamicMemoryMode') return dynamicModeHelp()
+        if (key === 'risuBardDynamicMemoryMaximumTokens') return '검색 최대 토큰이 동적으로 늘어날 수 있는 상한입니다. 기본값이 이 값보다 크면 기본값을 유지합니다. 분석 토큰 한도는 모드별 최대 증가율을 따릅니다.'
+        return [dynamicValueHelp(key), buildRisuBardChatSettingHelp(key, profile)].filter(Boolean).join('\n\n')
+    }
+
+    function helpTooltip(node: HTMLElement, content: string) {
+        const instance = tippy(node, {
+            content, theme: 'risubard', animation: 'fade', arrow: true,
+            trigger: 'mouseenter focus click',
+        })
+        return {
+            update(content: string) { instance.setContent(content) },
+            destroy() { instance.destroy() },
+        }
     }
 
     function setValue<K extends keyof RisuBardChatSettings>(
         key: K,
         value: RisuBardChatSettings[K],
     ) {
-        if (!chat) return
-        const target = character?.risuBardPinnedSettings ?? (chat.risuBardSettings ??= {})
+        if (!chat && !globalDynamicOnly) return
+        const target = globalDynamicOnly ? global : character?.risuBardPinnedSettings ?? (chat!.risuBardSettings ??= {})
         target[key] = value
         globalFeedback = ''
         revision++
@@ -102,12 +156,43 @@
             data-chat-setting-help={key}
             data-help-text={settingHelp(key)}
             aria-label={`${title} 도움말`}
-            use:tooltip={settingHelp(key)}
+            use:helpTooltip={settingHelp(key)}
         >?</button>
     </span>
 {/snippet}
 
+{#snippet dynamicNumber(key: DynamicKey, id: string, min = 256, max?: number)}
+    <div class="dynamic-number">
+        <input {id} type="number" {min} {max}
+            class:dynamic-value={editingKey !== key && effectiveValue(key) !== settings[key]}
+            value={editingKey === key ? numberDraft : effectiveValue(key)}
+            aria-describedby={editingKey === key ? `${id}-editing` : undefined}
+            use:tooltip={dynamicValueHelp(key)}
+            onfocus={(event) => {
+                editingKey = key
+                numberDraft = String(settings[key])
+                event.currentTarget.value = numberDraft
+            }}
+            oninput={(event) => numberDraft = event.currentTarget.value}
+            onblur={() => {
+                if (editingKey !== key) return
+                const value = Number(numberDraft)
+                if (numberDraft.trim() && Number.isFinite(value)) {
+                    const next = Math.min(max ?? Infinity, Math.max(min, Math.floor(value)))
+                    if (next !== settings[key]) setValue(key, next)
+                }
+                editingKey = null
+            }}
+            onkeydown={(event) => {
+                if (event.key === 'Escape') { editingKey = null; event.currentTarget.blur() }
+                if (event.key === 'Enter') event.currentTarget.blur()
+            }} />
+        {#if editingKey === key}<small id={`${id}-editing`} class="editing-hint">기본값 편집 중</small>{/if}
+    </div>
+{/snippet}
+
 <div class="chat-settings" data-chat-risubard-settings>
+    {#if !globalDynamicOnly}
     <header class="settings-head">
         <div class="settings-title">
             <strong>현재 챗 설정</strong>
@@ -128,7 +213,29 @@
         </div>
         {#if globalFeedback}<small class="global-feedback" role="status">{globalFeedback}</small>{/if}
     </header>
+    {/if}
 
+    <section class="settings-section" aria-label="장기기억 동적 한도">
+        <div class="settings-grid">
+            <div class="setting-field dynamic-field" data-chat-setting-field="risuBardDynamicMemoryMode">
+                {@render settingTitle('risuBardDynamicMemoryMode', '장기기억 동적 한도', 'bardwiki-dynamic-memory')}
+                <select id="bardwiki-dynamic-memory" value={settings.risuBardDynamicMemoryMode} disabled={!chat && !globalDynamicOnly}
+                    onchange={(event) => setValue('risuBardDynamicMemoryMode', normalizeRisuBardDynamicMemoryMode(event.currentTarget.value))}>
+                    <option value="off">사용 안 함</option><option value="economy">절약형</option>
+                    <option value="balanced">균형형</option><option value="recall">회수 우선형</option>
+                </select>
+            </div>
+            {#if settings.risuBardDynamicMemoryMode !== 'off'}
+                <div class="setting-field" data-chat-setting-field="risuBardDynamicMemoryMaximumTokens">
+                    {@render settingTitle('risuBardDynamicMemoryMaximumTokens', '검색 증가 상한', 'bardwiki-dynamic-maximum')}
+                    <input id="bardwiki-dynamic-maximum" type="number" min="256" value={settings.risuBardDynamicMemoryMaximumTokens}
+                        onchange={(event) => setNumber('risuBardDynamicMemoryMaximumTokens', event)} />
+                </div>
+            {/if}
+        </div>
+    </section>
+
+    {#if !globalDynamicOnly}
     <section class="settings-section" aria-labelledby="bardwiki-operation-settings">
         <h3 id="bardwiki-operation-settings">작동 방식</h3>
         <div class="settings-grid">
@@ -170,11 +277,11 @@
         <div class="settings-grid">
             <div class="setting-field" data-chat-setting-field="risuBardInquiryTargetTokenBudget">
                 {@render settingTitle('risuBardInquiryTargetTokenBudget', '검색 목표 토큰', 'bardwiki-target-tokens')}
-                <input id="bardwiki-target-tokens" type="number" min="256" value={settings.risuBardInquiryTargetTokenBudget} onchange={(event) => setNumber('risuBardInquiryTargetTokenBudget', event)} />
+                {@render dynamicNumber('risuBardInquiryTargetTokenBudget', 'bardwiki-target-tokens')}
             </div>
             <div class="setting-field" data-chat-setting-field="risuBardInquiryEventTokenBudget">
                 {@render settingTitle('risuBardInquiryEventTokenBudget', '사건 검색 토큰', 'bardwiki-event-tokens')}
-                <input id="bardwiki-event-tokens" type="number" min="256" value={settings.risuBardInquiryEventTokenBudget} onchange={(event) => setNumber('risuBardInquiryEventTokenBudget', event)} />
+                {@render dynamicNumber('risuBardInquiryEventTokenBudget', 'bardwiki-event-tokens')}
             </div>
             <div class="setting-field" data-chat-setting-field="risuBardInquirySourceTokenBudget">
                 {@render settingTitle('risuBardInquirySourceTokenBudget', '자료별 검색 토큰', 'bardwiki-source-tokens')}
@@ -182,7 +289,7 @@
             </div>
             <div class="setting-field" data-chat-setting-field="risuBardInquiryMaximumTokenBudget">
                 {@render settingTitle('risuBardInquiryMaximumTokenBudget', '검색 최대 토큰', 'bardwiki-maximum-tokens')}
-                <input id="bardwiki-maximum-tokens" type="number" min="256" value={settings.risuBardInquiryMaximumTokenBudget} onchange={(event) => setNumber('risuBardInquiryMaximumTokenBudget', event)} />
+                {@render dynamicNumber('risuBardInquiryMaximumTokenBudget', 'bardwiki-maximum-tokens')}
             </div>
             <div class="setting-field" data-chat-setting-field="risuBardInquiryTimeoutMs">
                 {@render settingTitle('risuBardInquiryTimeoutMs', '위키 조회 제한 시간(ms)', 'bardwiki-timeout')}
@@ -200,7 +307,7 @@
         <div class="settings-grid">
             <div class="setting-field" data-chat-setting-field="risuBardAnalysisTokenLimit">
                 {@render settingTitle('risuBardAnalysisTokenLimit', '분석 토큰 한도', 'bardwiki-analysis-tokens')}
-                <input id="bardwiki-analysis-tokens" type="number" min="3072" value={settings.risuBardAnalysisTokenLimit} onchange={(event) => setNumber('risuBardAnalysisTokenLimit', event)} />
+                {@render dynamicNumber('risuBardAnalysisTokenLimit', 'bardwiki-analysis-tokens', 3072)}
             </div>
             <div class="setting-field" data-chat-setting-field="risuBardAdditionalSearchLimit">
                 {@render settingTitle('risuBardAdditionalSearchLimit', '추가 검색 횟수', 'bardwiki-search-count')}
@@ -274,9 +381,13 @@
             {/if}
         </div>
     </section>
+    {/if}
 </div>
 
 <style>
+    .dynamic-number { min-width: 0; position: relative; }
+    input.dynamic-value { color: var(--color-info); font-weight: 650; }
+    .editing-hint { display: block; color: var(--color-textcolor2); font-size: .7rem; margin-top: .2rem; }
     .chat-settings { container: chat-settings / inline-size; display: grid; gap: .48rem; min-width: 0; padding: .05rem; }
     .settings-head { position: sticky; z-index: 2; top: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .3rem .75rem; padding: .18rem .12rem .48rem; border-bottom: 1px solid var(--risu-theme-darkborderc); background: var(--risu-theme-bgcolor); }
     .settings-title { display: grid; min-width: 0; gap: .12rem; }

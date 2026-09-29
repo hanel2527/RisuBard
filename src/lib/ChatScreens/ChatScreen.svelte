@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onDestroy } from 'svelte';
+    import { onDestroy, untrack } from 'svelte';
     import { getCustomBackground, getEmotion } from "../../ts/util";
     
     import { DBState, risuBardGalleryOpen } from 'src/ts/stores.svelte';
@@ -24,7 +24,8 @@
     import { isWikiGenerating } from 'src/ts/risubard/wikiGenerationState';
     import { resolveChatTextSurface } from 'src/ts/gui/textTheme';
     import { chatGenKey, generationStates } from 'src/ts/process/generationState';
-    import { activateWikiEmbeddings, wikiEmbeddingRuntime } from 'src/ts/risubard/wikiEmbeddingService';
+    import { activateWikiEmbeddings, activateHistoricalSourceEmbeddings, refreshHistoricalSourceEmbeddings, stopHistoricalSourceEmbeddings, wikiEmbeddingRuntime } from 'src/ts/risubard/wikiEmbeddingService';
+    import { resolveRisuBardChatSettings } from 'src/ts/risubard/risuBardSettings';
     import { RISUBARD_MEMORY_UPDATED_EVENT, type RisuBardMemoryUpdatedDetail } from 'src/ts/risubard/memoryEvents';
     let openChatList = $state(false)
     let openModuleList = $state(false)
@@ -38,7 +39,7 @@
         currentCharacter?.type === 'character' ? currentCharacter : undefined
     )
 
-    onDestroy(() => wikiEmbeddingRuntime.stop())
+    onDestroy(() => { wikiEmbeddingRuntime.stop(); stopHistoricalSourceEmbeddings() })
 
     $effect(() => {
         const characterId = currentCharacter?.chaId
@@ -46,9 +47,17 @@
         const settings = DBState.db
         if (!characterId || !chatId) {
             wikiEmbeddingRuntime.stop()
+            stopHistoricalSourceEmbeddings()
             return
         }
         activateWikiEmbeddings(characterId, chatId, settings)
+        const chat = currentCharacter?.chats[currentCharacter.chatPage]
+        const resolved = resolveRisuBardChatSettings(settings, chat?.risuBardSettings, currentCharacter?.risuBardPinnedSettings)
+        const messageCount = chat?.message.length
+        if (chat && !chat._placeholder && resolved.risuBardHistoricalSourceMatchLimit > 0) {
+            activateHistoricalSourceEmbeddings(characterId, chatId, settings)
+            if (!chat.isStreaming && messageCount) untrack(() => refreshHistoricalSourceEmbeddings(characterId, chatId, settings, chat.message, resolved.risuBardIgnoreOocTurns))
+        } else stopHistoricalSourceEmbeddings()
         const refresh = (event: Event) => {
             const detail = (event as CustomEvent<RisuBardMemoryUpdatedDetail>).detail
             if (detail?.characterId === characterId && detail.chatId === chatId) {

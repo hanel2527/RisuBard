@@ -16,6 +16,7 @@
         message?: string;
         submessage?: string;
         progress?: number | null;
+        progressLabel?: string;
         tier?: ShDialogTier;
         contentClass?: string;
         extra?: Snippet;
@@ -26,6 +27,7 @@
         message = '',
         submessage = '',
         progress = null,
+        progressLabel = '',
         tier = 'alert',
         contentClass = '',
         extra,
@@ -91,7 +93,7 @@
                         ></div>
                     </div>
                     <div class="text-textcolor2 text-sm text-center">
-                        {clampedProgress.toFixed(0)}%
+                        {progressLabel} {clampedProgress.toFixed(0)}%
                     </div>
                 </div>
             {/if}

@@ -1,6 +1,7 @@
 import { get } from 'svelte/store'
 import { DBState, selectedCharID } from '../stores.svelte'
 import { parseKeyValue } from '../util'
+import type { Chat, character } from '../storage/database.svelte'
 
 function getSelectedChat() {
     const selectedChar = get(selectedCharID)
@@ -8,13 +9,13 @@ function getSelectedChat() {
     return char?.chats?.[char.chatPage]
 }
 
-export function getChatVar(key:string): string {
+export function getChatVar(key:string, character?:character, targetChat?:Chat): string {
     const selectedChar = get(selectedCharID)
-    const char = DBState.db.characters[selectedChar]
+    const char = character ?? DBState.db.characters[selectedChar]
     if(!char){
         return 'null'
     }
-    const chat = char.chats[char.chatPage]
+    const chat = targetChat ?? char.chats[char.chatPage]
     chat.scriptstate ??= {}
     const state = (chat.scriptstate['$' + key])
     if(state === undefined || state === null){
@@ -30,9 +31,9 @@ export function getChatVar(key:string): string {
     return state.toString()
 }
 
-export function setChatVar(key:string, value:string): boolean {
+export function setChatVar(key:string, value:string, targetChat?:Chat): boolean {
     const selectedChar = get(selectedCharID)
-    const chat = DBState.db.characters[selectedChar].chats[DBState.db.characters[selectedChar].chatPage]
+    const chat = targetChat ?? DBState.db.characters[selectedChar].chats[DBState.db.characters[selectedChar].chatPage]
     chat.scriptstate ??= {}
     const stateKey = '$' + key
     if(chat.scriptstate[stateKey] === value){
@@ -42,8 +43,8 @@ export function setChatVar(key:string, value:string): boolean {
     return true
 }
 
-export function getGlobalChatVar(key:string): string {
-    const chat = getSelectedChat()
+export function getGlobalChatVar(key:string, targetChat?:Chat): string {
+    const chat = targetChat ?? getSelectedChat()
     if(
         !DBState.db.disableToggleBinding
         && chat?.useLocallySetGlobalVariables

@@ -4,6 +4,18 @@ import { waitForSendSync } from './sendPreparation'
 afterEach(() => vi.useRealTimers())
 
 describe('send synchronization wait', () => {
+    it('reports the current pending phase without cancelling the shared operation', async () => {
+        vi.useFakeTimers()
+        let message = 'sync', finish!: () => void
+        const pending = new Promise<void>(resolve => { finish = resolve })
+        const result = waitForSendSync(() => pending, { timeoutMs: 100, timeoutMessage: () => message }).catch(e => e.message)
+        message = 'waiting for save'
+        await vi.advanceTimersByTimeAsync(100)
+        expect(await result).toBe('waiting for save')
+        finish()
+        await pending
+        expect(vi.getTimerCount()).toBe(0)
+    })
     it('times out without continuing generation when synchronization finishes late', async () => {
         vi.useFakeTimers()
         let finish!: () => void

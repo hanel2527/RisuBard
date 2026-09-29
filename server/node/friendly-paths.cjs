@@ -35,6 +35,27 @@ function allocateSegment(name, occupied = new Set(), file = false) {
     }
 }
 
+// Append-only batch allocation: normalize existing names once, and never rescan
+// previously rejected suffixes for repeated asset labels. Reservations include
+// writer sidecars so differently cased or decomposed names cannot overwrite them.
+function createSegmentAllocator(occupied = []) {
+    const used = new Set(Array.from(occupied, collisionKey));
+    const nextNumbers = new Map();
+    const reserve = name => used.add(collisionKey(name));
+    function allocate(name, file = false, sidecars = []) {
+        const cacheKey = JSON.stringify([String(name ?? '').normalize('NFC'), file, sidecars]);
+        for (let number = nextNumbers.get(cacheKey) || 1; ; number++) {
+            const candidate = numberedName(name, number, file);
+            const names = [candidate, ...sidecars.map(suffix => candidate + suffix)];
+            if (names.some(value => used.has(collisionKey(value)))) continue;
+            names.forEach(reserve);
+            nextNumbers.set(cacheKey, number + 1);
+            return candidate;
+        }
+    }
+    return { allocate, reserve };
+}
+
 // Pure candidate schema. Only the explicitly gated repository publisher consumes it.
 function planDirectoryMapping(character, characterDirectories = [], chatDirectories = []) {
     if (!character || typeof character.chaId !== 'string' || !character.chaId) throw new Error('Character ID required');
@@ -50,4 +71,4 @@ function planDirectoryMapping(character, characterDirectories = [], chatDirector
     return { schemaVersion: 1, active: false, id: character.chaId, directory: allocateSegment(character.name, new Set(characterDirectories)), chats };
 }
 
-module.exports = { sanitizeSegment, allocateSegment, collisionKey, planDirectoryMapping };
+module.exports = { sanitizeSegment, allocateSegment, createSegmentAllocator, collisionKey, planDirectoryMapping };

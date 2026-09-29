@@ -5,18 +5,72 @@ import { createWikiEmbeddingProvider } from './wikiEmbeddingProvider'
 import { resolveSharedWikiEmbeddingSettings, type SharedHypaEmbeddingSettings } from './wikiEmbeddingSettings'
 import { WikiEmbeddingRuntime, type WikiEmbeddingStatus } from './wikiEmbeddingRuntime'
 import type { WikiEmbeddingCatalog } from './wikiEmbeddingChunks'
+import { HistoricalSourceEmbeddingIndex, shareQueryEmbeddings, type HistoricalSearchOptions } from './historicalSourceEmbedding'
+import type { HistoricalSourceMessage } from './historicalSourceRecall'
+import type { RisuBardEmbeddingSettings } from './wikiEmbeddingSettings'
+import type { WikiVectorProvider } from './wikiEmbeddingIndex'
 
 export const wikiEmbeddingStatus = writable<WikiEmbeddingStatus>('disabled')
 
 const cacheKey = (key: string) => makeHashedStorageKey('cache/bardwiki-vector/', key)
+const vectorCache = {
+    read: async (key: string) => (await readPersistentJson<number[]>(await cacheKey(key))) ?? undefined,
+    write: async (key: string, vector: number[]) => writePersistentJson(await cacheKey(key), vector),
+}
+let sharedProvider: { key: string; provider: WikiVectorProvider } | undefined
+function providerFor(settings: RisuBardEmbeddingSettings): WikiVectorProvider {
+    const key = JSON.stringify(settings)
+    if (sharedProvider?.key !== key) sharedProvider = {key, provider:shareQueryEmbeddings(createWikiEmbeddingProvider(settings))}
+    return sharedProvider.provider
+}
+let historicalEntry: {key: string; index: HistoricalSourceEmbeddingIndex; revision: number} | undefined
+export const historicalSourceEmbeddingStatus = writable<WikiEmbeddingStatus>('disabled')
+
+export function stopHistoricalSourceEmbeddings(): void {
+    historicalEntry?.index.dispose()
+    historicalEntry = undefined
+    historicalSourceEmbeddingStatus.set('disabled')
+}
+
+export function activateHistoricalSourceEmbeddings(characterId: string, chatId: string, settings: SharedHypaEmbeddingSettings): void {
+    const resolved = resolveSharedWikiEmbeddingSettings(settings)
+    if (!resolved.enabled) { stopHistoricalSourceEmbeddings(); return }
+    const key = JSON.stringify([characterId, chatId, resolved])
+    try {
+        if (historicalEntry?.key !== key) {
+            stopHistoricalSourceEmbeddings()
+            historicalEntry = {key, index:new HistoricalSourceEmbeddingIndex(providerFor(resolved), vectorCache), revision:0}
+            historicalSourceEmbeddingStatus.set('preparing')
+        }
+    } catch { historicalSourceEmbeddingStatus.set('unavailable') }
+}
+
+export function refreshHistoricalSourceEmbeddings(characterId: string, chatId: string, settings: SharedHypaEmbeddingSettings,
+    messages: readonly HistoricalSourceMessage[], ignoreOocTurns = true): void {
+    activateHistoricalSourceEmbeddings(characterId, chatId, settings)
+    const entry = historicalEntry
+    if (!entry) return
+    try {
+        const revision = ++entry.revision
+        historicalSourceEmbeddingStatus.set('preparing')
+        void entry.index.refresh(messages, ignoreOocTurns).then(() => {
+            if (historicalEntry === entry && entry.revision === revision) historicalSourceEmbeddingStatus.set('ready')
+        }).catch(() => {
+            if (historicalEntry === entry && entry.revision === revision) historicalSourceEmbeddingStatus.set('unavailable')
+        })
+    } catch { historicalSourceEmbeddingStatus.set('unavailable') }
+}
+
+export async function searchHistoricalSourceEmbeddings(current: string, recent: string, messages: readonly HistoricalSourceMessage[], options: HistoricalSearchOptions) {
+    const entry = historicalEntry
+    const result = await entry?.index.search(current, recent, messages, options)
+    return entry && historicalEntry === entry ? result ?? [] : []
+}
 
 export const wikiEmbeddingRuntime = new WikiEmbeddingRuntime({
-    provider: createWikiEmbeddingProvider,
+    provider: providerFor,
     onStatus: status => wikiEmbeddingStatus.set(status),
-    cache: {
-        read: async key => (await readPersistentJson<number[]>(await cacheKey(key))) ?? undefined,
-        write: async (key, vector) => writePersistentJson(await cacheKey(key), vector),
-    },
+    cache: vectorCache,
     async load(scope, offset, revision): Promise<WikiEmbeddingCatalog> {
         const controller = new AbortController()
         const timeout = setTimeout(() => controller.abort(), 10_000)

@@ -121,6 +121,13 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
         keywords: ['Bard-chan', 'reranker', 'main model', 'auxiliary model', '바드쨩', '메인 모델', '보조 모델'],
     },
     {
+        id: 'risubard.chat.dynamicMemory',
+        type: 'custom',
+        componentId: 'RisuBardDynamicMemorySettings',
+        fallbackLabel: '장기기억 동적 한도',
+        keywords: ['dynamic memory', '장기기억', '동적 한도', '최대 허용 토큰'],
+    },
+    {
         id: 'risubard.chat.inquiryTargetTokenBudget',
         type: 'number',
         labelKey: 'risuBardInquiryTargetTokenBudget',
