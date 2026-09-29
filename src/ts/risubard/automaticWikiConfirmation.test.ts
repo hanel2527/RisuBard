@@ -34,7 +34,7 @@ describe('automatic BardWiki confirmation', () => {
         const screenSource = readFileSync('src/lib/ChatScreens/DefaultChatScreen.svelte', 'utf8')
 
         expect(processSource).toMatch(
-            /shouldAutomaticallyConfirmNarrativeTurn\(\s*DBState\.db\.risuBardAutoWikiEnabled\s*\)/
+            /shouldAutomaticallyConfirmNarrativeTurn\(\s*requestSettings\.risuBardAutoWikiEnabled\s*\)/
         )
         expect(processSource).toContain('export async function confirmCurrentNarrativeMessage(')
         expect(processSource).toContain('export async function reanalyzeNarrativeMessage(')

@@ -9,7 +9,7 @@ it('keeps embedding work alive when the screen effect reruns for the same chat',
     const cleanup = effect.slice(effect.indexOf('return () => {'))
     // Reactive chat/database replacement also runs effect cleanup. Only unmount owns stop.
     expect(cleanup).not.toContain('wikiEmbeddingRuntime.stop()')
-    expect(source).toMatch(/onDestroy\(\(\) => wikiEmbeddingRuntime\.stop\(\)\)/)
+    expect(source).toMatch(/onDestroy\(\(\) => \{\s*wikiEmbeddingRuntime\.stop\(\);\s*stopHistoricalSourceEmbeddings\(\)\s*\}\)/)
 
     let signal: AbortSignal | undefined
     const embed = vi.fn((_texts: string[], _purpose: string, abort?: AbortSignal) => {

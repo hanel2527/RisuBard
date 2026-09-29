@@ -8,9 +8,10 @@ describe('prompt block overlay runtime wiring', () => {
         const process = read('./process/index.svelte.ts')
 
         expect(process).toContain('composePromptBlockOverlay(')
-        expect(process).toContain('DBState.db.promptBlockOverlay')
-        expect(process).toContain('DBState.db.promptBlockOverlayProfiles')
-        expect(process).toContain('getActivePromptOverlayToggleTemplate()')
+        expect(process).toContain('const requestSettings = arg.requestSettings ?? { ...DBState.db }')
+        expect(process).toContain('requestSettings.promptBlockOverlay')
+        expect(process).toContain('requestSettings.promptBlockOverlayProfiles')
+        expect(process).toContain('getActivePromptOverlayToggleTemplate(requestSettings)')
     })
 
     test('uses effective overlay toggles in the sidebar and toggle persistence', () => {

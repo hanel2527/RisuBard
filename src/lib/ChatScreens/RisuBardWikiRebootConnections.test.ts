@@ -76,8 +76,8 @@ describe('BardWiki reboot connections', () => {
                 processSource.indexOf('export async function sendChat'))
         )
         expect(sendChat).not.toContain('get(isWikiGenerating)')
-        expect(sendChat).toContain('selectedConversation?.risuBardWikiReboot')
-        expect(sendChat.indexOf('selectedConversation?.risuBardWikiReboot'))
+        expect(sendChat).toContain('generationScope.chat.risuBardWikiReboot')
+        expect(sendChat.indexOf('generationScope.chat.risuBardWikiReboot'))
             .toBeLessThan(sendChat.indexOf('chatProcessStage.set(0)'))
 
         expect(chatSource).not.toContain('let wikiBlocksGeneration = $derived(')
