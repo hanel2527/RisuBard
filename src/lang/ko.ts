@@ -2795,6 +2795,9 @@ export const languageKorean = {
   bookmark: "북마크",
   branch: "분기점",
   bardWikiHistoricalBranchCreated: "바드위키는 과거로 돌릴 수 없습니다. 새로 분기한 챗에서 위키를 리부트하세요. 바드위키는 세이브/로드 기능의 사용을 적극 권장합니다.",
+  bardWikiRollbackNeedsRebuild: "이 시점은 위키 기록 시작 이전입니다. 채팅으로 위키를 다시 구성해야 합니다.",
+  bardWikiRollbackApplied: "BardWiki를 이 시점의 상태로 되돌렸습니다.",
+  bardWikiDeleteWarningStored: "삭제할 범위를 선택하세요. BardWiki 근거가 포함된 메시지를 삭제하면 연결된 사건 요약이 함께 정리되고, 위키는 남는 대화 시점으로 되돌아갑니다. 기록 시작 이전 시점이면 위키를 다시 구성합니다. 삭제한 미래 이력은 복구용으로 남습니다.",
   risuBardChatImportWikiUnavailable: "원본 BardWiki 작업공간을 찾지 못해 위키 확정 표식을 초기화했습니다. 다른 설치에서 가져온 파일이라면 전체 백업을 사용하거나 위키 리부트를 실행하세요.",
   fetchLogConsent:
     "플러그인 {} 이(가) 로그를 가져오려고 합니다. 민감한 정보가 노출될 수 있습니다. 허용하시겠습니까?",

@@ -45,7 +45,12 @@
     import { sleep } from "../../ts/util";
     import { language } from "../../lang";
     import { translate } from "../../ts/translator/translator";
-    import { alertError, alertWait, notifySuccess, notifyError } from "../../ts/alert";
+    import { alertError, alertWait, notifySuccess, notifyError, notifyInfo } from "../../ts/alert";
+    import { forageStorage, requestImmediateSave } from "../../ts/globalApi.svelte";
+    import { applyWikiRollback, preserveWikiChat } from "src/ts/risubard/wikiChatCoordinator";
+    import { checkoutWikiVersion } from "src/ts/risubard/wikiVersionClient";
+    import { rebuildNarrativeAfterChatEdit } from "src/ts/risubard/wikiChatRebuild";
+    import { cleanupWikiRebootWorkspace } from "src/ts/risubard/wikiRebootTransport";
     import { playNotificationSound } from '../../ts/notificationSound'
 import { isMobile } from 'src/ts/platform'
     import { processScript } from "src/ts/process/scripts";
@@ -761,6 +766,73 @@ import { isMobile } from 'src/ts/platform'
             let msg = cha.pop()
             if(!msg) return
         }
+        // A confirmed response already shaped the wiki. Regenerating it must use
+        // the wiki from before that response, so the new answer is written
+        // against the state it actually continues from.
+        const removedMessages = originalMessages.slice(cha.length)
+        const removedWasConfirmed = removedMessages.some((message) =>
+            message.risubardMemoryConfirmed === true
+            || message.risubardCanonicalReceipt !== undefined
+        )
+        const character = DBState.db.characters[$selectedCharID]
+        const chat = character.chats[character.chatPage]
+        const originalChat = safeStructuredClone(chat)
+        let wikiRolledBack = false
+        let previousWikiHead: string | undefined
+        if(removedWasConfirmed && character.chaId && chat.id){
+            try {
+                previousWikiHead = await preserveWikiChat({
+                    characterId: character.chaId,
+                    chatId: chat.id,
+                    fetchImpl: fetch,
+                    createAuth: () => forageStorage.createAuth(),
+                }, safeStructuredClone(chat), 'reroll')
+                const rollback = await applyWikiRollback(
+                    {
+                        characterId: character.chaId,
+                        chatId: chat.id,
+                        fetchImpl: fetch,
+                        createAuth: () => forageStorage.createAuth(),
+                    },
+                    cha,
+                    'reroll',
+                )
+                wikiRolledBack = rollback.applied
+                if(!rollback.applied){
+                    chat.message = cha
+                    await rebuildNarrativeAfterChatEdit({
+                        characterId: character.chaId,
+                        chatId: chat.id,
+                        fromIndex: 0,
+                    })
+                    wikiRolledBack = true
+                }
+            }
+            catch(error){
+                const stagingChatId = chat.risuBardWikiReboot?.stagingChatId
+                Object.assign(chat, originalChat)
+                if (!originalChat.risuBardWikiReboot) delete chat.risuBardWikiReboot
+                if (stagingChatId) await cleanupWikiRebootWorkspace({
+                    characterId: character.chaId, stagingChatId,
+                    fetchImpl: fetch, createAuth: () => forageStorage.createAuth(),
+                })
+                if (previousWikiHead) await checkoutWikiVersion({
+                    characterId: character.chaId,
+                    chatId: chat.id,
+                    commitId: previousWikiHead,
+                    reason: 'reroll',
+                    fetchImpl: fetch,
+                    createAuth: () => forageStorage.createAuth(),
+                })
+                await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+                notifyError(
+                    `BardWiki 시점 복원에 실패해 이전 응답을 유지합니다: ${error instanceof Error
+                        ? error.message
+                        : String(error)}`
+                )
+                return
+            }
+        }
         restoreScriptstateBeforeReroll(
             DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage],
             lastMsg,
@@ -776,6 +848,27 @@ import { isMobile } from 'src/ts/platform'
             const currentChat = DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage]
             if(originalScriptstate === null) delete currentChat.scriptstate
             else currentChat.scriptstate = { ...originalScriptstate }
+            // The chat is back where it started, so the wiki has to be too.
+            if(wikiRolledBack && previousWikiHead && character.chaId && chat.id){
+                try {
+                    await checkoutWikiVersion({
+                        characterId: character.chaId,
+                        chatId: chat.id,
+                        commitId: previousWikiHead,
+                        reason: 'reroll',
+                        fetchImpl: fetch,
+                        createAuth: () => forageStorage.createAuth(),
+                    })
+                }
+                catch(error){
+                    notifyError(
+                        `BardWiki 시점을 되돌리지 못했습니다: ${error instanceof Error
+                            ? error.message
+                            : String(error)}`
+                    )
+                }
+            }
+            await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
             return
         }
 

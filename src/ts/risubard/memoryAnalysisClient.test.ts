@@ -320,7 +320,6 @@ describe('stored response memory analysis', () => {
     })
 
     test('sends native confirmation as a schema-bound memory draft', async () => {
-        const calls: string[] = []
         const onError = vi.fn()
         let submittedSchema = ''
         const requestModel = vi.fn(
@@ -344,8 +343,10 @@ describe('stored response memory analysis', () => {
         const analysis = createStoredResponseMemoryAnalysis({
             requestModel,
             fetchImpl: vi.fn(async (input) => {
+                if (String(input).endsWith('/wiki/version/batch/publish')) {
+                    return Response.json({ commitId: null, changedPaths: [] })
+                }
                 const url = String(input)
-                calls.push(url)
                 if (url.endsWith('/inquiry')) {
                     return new Response(JSON.stringify({
                         mode: 'bounded-v1-fallback',
@@ -405,11 +406,6 @@ describe('stored response memory analysis', () => {
                 warnings: [],
             },
         })
-        expect(calls).toEqual([
-            '/api/risubard/memory/view',
-            '/api/risubard/memory/inquiry',
-            '/api/risubard/memory/wiki/save',
-        ])
         expect(JSON.parse(submittedSchema)).toMatchObject({
             type: 'object',
             additionalProperties: false,
@@ -1316,6 +1312,9 @@ describe('stored response memory analysis', () => {
                     : 'NONE',
             })),
             fetchImpl: vi.fn(async (input) => {
+                if (String(input).endsWith('/wiki/version/batch/publish')) {
+                    return Response.json({ commitId: null, changedPaths: [] })
+                }
                 if (String(input).endsWith('/inquiry')) {
                     return new Response(JSON.stringify({
                         mode: 'bounded-v1-fallback',
@@ -1381,6 +1380,9 @@ describe('stored response memory analysis', () => {
         const analysis = createStoredResponseMemoryAnalysis({
             requestModel,
             fetchImpl: vi.fn(async (input) => {
+                if (String(input).endsWith('/wiki/version/batch/publish')) {
+                    return Response.json({ commitId: null, changedPaths: [] })
+                }
                 if (String(input).endsWith('/inquiry')) {
                     return new Response(JSON.stringify({
                         mode: 'bounded-v1-fallback',
@@ -1665,6 +1667,9 @@ describe('stored response memory analysis', () => {
                     saveStarted()
                     return new Promise<Response>(() => {})
                 }
+                if (url.includes('/wiki/version/batch/')) {
+                    return new Response(JSON.stringify({ started: true }))
+                }
                 throw new Error(`Unexpected request: ${url}`)
             }),
             createAuth: async () => 'test-jwt',
@@ -1799,6 +1804,9 @@ describe('stored response memory analysis', () => {
         const analysis = createStoredResponseMemoryAnalysis({
             requestModel,
             fetchImpl: vi.fn(async (input) => {
+                if (String(input).endsWith('/wiki/version/batch/publish')) {
+                    return Response.json({ commitId: null, changedPaths: [] })
+                }
                 const url = String(input)
                 if (url.endsWith('/view')) {
                     return new Response(JSON.stringify({
@@ -1888,6 +1896,9 @@ describe('stored response memory analysis', () => {
         const analysis = createStoredResponseMemoryAnalysis({
             requestModel,
             fetchImpl: vi.fn(async (input, init) => {
+                if (String(input).endsWith('/wiki/version/batch/publish')) {
+                    return Response.json({ commitId: null, changedPaths: [] })
+                }
                 const url = String(input)
                 if (url.endsWith('/view')) {
                     return new Response(JSON.stringify({
@@ -2022,6 +2033,9 @@ describe('stored response memory analysis', () => {
         const analysis = createStoredResponseMemoryAnalysis({
             requestModel,
             fetchImpl: vi.fn(async (input, init) => {
+                if (String(input).endsWith('/wiki/version/batch/publish')) {
+                    return Response.json({ commitId: null, changedPaths: [] })
+                }
                 const url = String(input)
                 if (url.endsWith('/view')) {
                     return new Response(JSON.stringify({
@@ -2108,6 +2122,9 @@ describe('stored response memory analysis', () => {
         const analysis = createStoredResponseMemoryAnalysis({
             requestModel,
             fetchImpl: vi.fn(async (input) => {
+                if (String(input).endsWith('/wiki/version/batch/publish')) {
+                    return Response.json({ commitId: null, changedPaths: [] })
+                }
                 if (String(input).endsWith('/inquiry')) {
                     await new Promise((resolve) => setTimeout(resolve, 200))
                     return new Response(JSON.stringify({

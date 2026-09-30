@@ -32,6 +32,8 @@ import type {
     AutomaticWikiDocumentDescriptor,
 } from '../../src/ts/risubard/automaticWikiUpdate'
 import type { MarkdownWikiDocument } from './risubard-markdown-wiki'
+import type { WikiChatAnchor, WikiAnchorMessage } from '../../src/ts/risubard/wikiVcsContract'
+import { chatBoundaryAnchor } from '../../src/ts/risubard/wikiVcsContract'
 import { repairRebootEventLinks } from './risubard-reboot-event-links'
 import { combinedMemoryInstruction, combinedMemorySchema, parseCombinedMemory } from './risubard-combined-memory'
 import { resolveMemoryRetrievalMetadata, type MemoryRetrievalMetadata } from './risubard-memory-metadata'
@@ -176,12 +178,46 @@ export interface MemoryAnalysisMessage {
     content: string
 }
 
+/**
+ * Anchor for a write produced from this analysis. The boundary is the last
+ * evidence message the write drew on, and the prefix covers the chat up to that
+ * message, so a later checkout can match the same point in the story.
+ */
+function evidenceAnchor(
+    snapshot: MemoryAnalysisInput,
+    sourceMessageIds: readonly string[]
+): WikiChatAnchor {
+    if (snapshot.chatAnchor) return snapshot.chatAnchor
+    const anchors: WikiAnchorMessage[] = snapshot.messages.map((message) => ({
+        messageId: message.messageId,
+        role: message.role,
+        data: message.content,
+    }))
+    const boundaryIndex = anchors.findLastIndex((message) =>
+        sourceMessageIds.includes(message.messageId)
+    )
+    const prefix = boundaryIndex >= 0 ? anchors.slice(0, boundaryIndex + 1) : anchors
+    const evidence = sourceMessageIds.length > 0
+        ? anchors.filter((message) =>
+            sourceMessageIds.includes(message.messageId))
+        : anchors
+    const boundaryMessageId = prefix.at(-1)?.messageId ?? null
+    return chatBoundaryAnchor(
+        snapshot.chatId,
+        boundaryMessageId,
+        prefix,
+        evidence
+    )
+}
+
 export interface MemoryAnalysisInput {
     characterId: string
     chatId: string
     modelSessionChatId?: string
     messages: readonly MemoryAnalysisMessage[]
     contextMessages?: readonly MemoryAnalysisMessage[]
+    /** Full persisted chat prefix through the analyzed boundary. */
+    chatAnchor?: WikiChatAnchor
     autoCanonicalUpdates?: boolean
     analysisTokenLimit?: number
     additionalSearchLimit?: number
@@ -297,6 +333,8 @@ export interface NarrativeMarkdownWikiWriteService {
         append?: boolean
         writingLanguage?: WikiWritingLanguage
         retrievalMetadata?: MemoryRetrievalMetadata
+        chatAnchor?: WikiChatAnchor
+        operationId?: string
     }, signal?: AbortSignal): Promise<MarkdownWikiDocument>
     recordRebootBatchReceipt?(input: {
         characterId: string
@@ -333,7 +371,28 @@ export interface NarrativeMarkdownWikiWriteService {
         reviewStatus?: 'unreviewed' | 'reviewed'
         writingLanguage?: WikiWritingLanguage
         retrievalMetadata?: MemoryRetrievalMetadata
+        chatAnchor?: WikiChatAnchor
+        operationId?: string
     }, signal?: AbortSignal): Promise<MarkdownWikiDocument>
+    /** Optional: groups an operation's writes into a single commit. */
+    beginWriteBatch?(input: {
+        characterId: string
+        chatId: string
+        operationId: string
+        kind: 'analysis' | 'manual' | 'admin' | 'review' | 'rebuild'
+        chatAnchor?: WikiChatAnchor
+    }): void | Promise<void>
+    publishWriteBatch?(input: {
+        characterId: string
+        chatId: string
+        chatAnchor?: WikiChatAnchor
+        operationId: string
+    }): Promise<{ commitId: string | null; changedPaths: string[] }>
+    abandonWriteBatch?(input: {
+        characterId: string
+        chatId: string
+        operationId: string
+    }): void | Promise<void>
 }
 
 export interface MemoryAnalysisRunnerOptions {
@@ -1074,6 +1133,16 @@ export function createMemoryAnalysisRunner(
             })
         )
         if (options.nativeV2Analysis && options.markdownWikiService) {
+            // The newest commit produced by this analysis, recorded on the
+            // receipt so the chat can point at the exact wiki state it made.
+            let lastCommitId: string | undefined
+            // One analysis is one operation, so its events and canonical
+            // documents must land as a single commit rather than one per file.
+            const batchOperationId = `analysis:${snapshot.characterId}`
+                + `:${snapshot.chatId}:${Date.now()}:`
+                + Math.random().toString(36).slice(2, 10)
+            let batchOpen = false
+            try {
             const { previousCanonicalReceipt: priorReceipt, ...recoveryInput } = snapshot
             const recoveryHash = new Sha256()
             recoveryHash.update(JSON.stringify(recoveryInput))
@@ -1347,6 +1416,16 @@ export function createMemoryAnalysisRunner(
                     .filter((candidate) => !isStoryArcCandidate(candidate)),
             }
             if (!hasMemoryWriterContent(draft)) {
+                // The batch opened before the writes, so an empty analysis still
+                // has to close it without leaving the branch dirty.
+                if (batchOpen) {
+                    await options.markdownWikiService.abandonWriteBatch?.({
+                        characterId: snapshot.characterId,
+                        chatId: snapshot.chatId,
+                        operationId: batchOperationId,
+                    })
+                    batchOpen = false
+                }
                 if (!snapshot.rebootTurns) return emptyNativeState()
                 const canonicalReceipt: CanonicalTurnReceipt = {
                     sourceMessageIds,
@@ -1397,6 +1476,17 @@ export function createMemoryAnalysisRunner(
                 ? priorEvents.map((document) => document.retrievalMetadata?.storyTime
                     ?? { day: null, precision: 'unknown' as const })
                 : [{ day: null, precision: 'unknown' as const }]
+            const analysisAnchor = evidenceAnchor(snapshot, sourceMessageIds)
+            if (options.markdownWikiService.beginWriteBatch) {
+                await options.markdownWikiService.beginWriteBatch({
+                    characterId: snapshot.characterId,
+                    chatId: snapshot.chatId,
+                    operationId: batchOperationId,
+                    kind: snapshot.rebootTurns ? 'rebuild' : 'analysis',
+                    chatAnchor: analysisAnchor,
+                })
+                batchOpen = true
+            }
             for (const event of eventDrafts) {
                 if (snapshot.rebootTurns
                     && event.draft.establishedEvents.length === 0) continue
@@ -1430,13 +1520,23 @@ export function createMemoryAnalysisRunner(
                     characterId: snapshot.characterId,
                     chatId: snapshot.chatId,
                     sourceMessageIds: [...event.sourceMessageIds],
+                    operationId: batchOperationId,
                     markdown: serializeMemoryWriterDraft(event.draft, snapshot.wikiWritingLanguage),
                     writingLanguage: snapshot.wikiWritingLanguage,
                     ...(retrievalMetadata ? { retrievalMetadata } : {}),
                     ...(snapshot.additionalAnalysis ? { append: true } : {}),
+                    // The commit belongs to the evidence that produced it, not
+                    // to whichever message happens to be last when it lands.
+                    chatAnchor: evidenceAnchor(
+                        snapshot,
+                        event.sourceMessageIds
+                    ),
                     }, ...optionalSignalArgument(signal))
                 if (savedEvent && typeof savedEvent.id === 'string') {
                     savedEvents.push(savedEvent)
+                    if (typeof savedEvent.vcsCommitId === 'string') {
+                        lastCommitId = savedEvent.vcsCommitId
+                    }
                     priorTimeline.push(savedEvent.retrievalMetadata?.storyTime
                         ?? retrievalMetadata?.storyTime ?? { day: null, precision: 'unknown' })
                 }
@@ -1926,6 +2026,7 @@ export function createMemoryAnalysisRunner(
                                     .saveCanonicalDocument({
                                     characterId: snapshot.characterId,
                                     chatId: snapshot.chatId,
+                                    operationId: batchOperationId,
                                     ...(entry.target
                                         ? { documentId: entry.target.id }
                                         : {}),
@@ -1951,7 +2052,17 @@ export function createMemoryAnalysisRunner(
                                             keywords: entry.candidate.keywords,
                                         },
                                     } : {}),
+                                    chatAnchor: evidenceAnchor(
+                                        snapshot,
+                                        entry.storyArcPlan
+                                            ? entry.storyArcPlan.events.flatMap(
+                                                (event) => event.sourceMessageIds)
+                                            : sourceMessageIds
+                                    ),
                                     }, ...optionalSignalArgument(signal))
+                                if (typeof saved.vcsCommitId === 'string') {
+                                    lastCommitId = saved.vcsCommitId
+                                }
                                 receiptChanges.push({
                                     documentId: saved.id,
                                     type: saved.type as Exclude<
@@ -1985,6 +2096,28 @@ export function createMemoryAnalysisRunner(
                     )
                 }
             }
+            // Everything this analysis wrote is published as one commit, so a
+            // checkout at this boundary restores events and documents together.
+            if (batchOpen && options.markdownWikiService.publishWriteBatch) {
+                try {
+                    const published = await options.markdownWikiService
+                        .publishWriteBatch({
+                            characterId: snapshot.characterId,
+                            chatId: snapshot.chatId,
+                            operationId: batchOperationId,
+                            chatAnchor: analysisAnchor,
+                        })
+                    batchOpen = false
+                    if (published.commitId) {
+                        lastCommitId = published.commitId
+                    }
+                }
+                catch (error) {
+                    signal?.throwIfAborted()
+                    await reportError(error)
+                    throw error
+                }
+            }
             const canonicalReceipt: CanonicalTurnReceipt = {
                 sourceMessageIds,
                 eventIds: savedEvents.map((event) => event.id),
@@ -1992,6 +2125,7 @@ export function createMemoryAnalysisRunner(
                 warnings: receiptWarnings,
                 recordedAt: new Date().toISOString(),
                 recovery: { inputHash, deferred },
+                ...(lastCommitId ? { vcsCommitIds: [lastCommitId] } : {}),
             }
             if (rebootRecoveryStarted) {
                 if (!options.markdownWikiService.recordRebootBatchReceipt) {
@@ -2011,6 +2145,16 @@ export function createMemoryAnalysisRunner(
                 }
             }
             return emptyNativeState(canonicalReceipt)
+            }
+            finally {
+                if (batchOpen) {
+                    await options.markdownWikiService.abandonWriteBatch?.({
+                        characterId: snapshot.characterId,
+                        chatId: snapshot.chatId,
+                        operationId: batchOperationId,
+                    })
+                }
+            }
         }
         if (options.nativeV2Analysis && options.graphService?.inquire) {
             let parsedOutput: Record<string, unknown> & {

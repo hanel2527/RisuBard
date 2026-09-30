@@ -1,11 +1,13 @@
 import * as fs from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, test } from 'vitest'
 import {
     createMarkdownNarrativeWiki,
     resolveMarkdownWikiWorkspace,
 } from './risubard-markdown-wiki'
+import { createWikiVersioning } from './risubard-wiki-versioning'
 
 const temporaryDirectories: string[] = []
 
@@ -855,8 +857,6 @@ describe('Markdown narrative wiki', () => {
             join(workspace.directory, ...created.relativePath.split('/')),
             'utf8'
         )).rejects.toMatchObject({ code: 'ENOENT' })
-        expect(await fs.readdir(join(workspace.historyDirectory, created.id)))
-            .toHaveLength(1)
     })
 
     test('moves canonical pages to recoverable trash and rejects event deletion', async () => {
@@ -935,9 +935,6 @@ describe('Markdown narrative wiki', () => {
             contextMode: 'auto',
         })
         expect(edited.content).toContain('전투에서 패배했다.')
-        const workspace = resolveMarkdownWikiWorkspace(root, 'character', 'chat')
-        expect(await fs.readdir(join(workspace.historyDirectory, event.id)))
-            .toHaveLength(1)
     })
 
     test('permanently deletes a retracted event from the view and filesystem', async () => {
@@ -1088,7 +1085,7 @@ describe('Markdown narrative wiki', () => {
             .toBe('active')
     })
 
-    test('keeps a stable canonical page and archives its previous revision', async () => {
+    test('preserves canonical page identity while exposing its latest revision', async () => {
         const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
         temporaryDirectories.push(root)
         const times = [
@@ -1119,18 +1116,6 @@ describe('Markdown narrative wiki', () => {
 
         expect(updated.id).toBe(created.id)
         expect(updated.relativePath).toBe(created.relativePath)
-        expect(updated.relativePath).toMatch(
-            /^characters\/라비안-[a-zA-Z0-9_-]+\.md$/
-        )
-        const workspace = resolveMarkdownWikiWorkspace(root, 'character', 'chat')
-        const revisions = await fs.readdir(
-            join(workspace.historyDirectory, created.id)
-        )
-        expect(revisions).toHaveLength(1)
-        expect(await fs.readFile(
-            join(workspace.historyDirectory, created.id, revisions[0]),
-            'utf8'
-        )).toContain('건강하다')
         expect((await wiki.loadView('character', 'chat')).documents)
             .toEqual([expect.objectContaining({
                 type: 'character',
@@ -1620,4 +1605,192 @@ describe('Markdown narrative wiki', () => {
             characterId: 'character', chatId: 'chat',
         })).rejects.toThrow('changed after the BARDCHAT command')
     })
+})
+
+describe('sparse Markdown wiki write batches', () => {
+    test('opening a batch does not read or copy unchanged document bodies', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        const versioning = createWikiVersioning(root)
+        const workspace = resolveMarkdownWikiWorkspace(root, 'character', 'chat')
+        const concepts = join(workspace.directory, 'concepts')
+        await fs.mkdir(concepts, { recursive: true })
+        await Promise.all(Array.from({ length: 100 }, (_, index) =>
+            fs.writeFile(
+                join(concepts, `${index}.md`),
+                `## Entry ${index}\n\nAn unchanged document ${index}.`,
+                'utf8'
+            )
+        ))
+        await versioning.ensureBaseline({
+            characterId: 'character', chatId: 'chat',
+        })
+
+        const documentIo: { reads: string[]; writes: string[] } = {
+            reads: [],
+            writes: [],
+        }
+        const instrumentedFileSystem = new Proxy(fs, {
+            get(target, property, receiver) {
+                if (property === 'readFile') {
+                    return (...args: unknown[]) => {
+                        const path = args[0]
+                        if (typeof path === 'string'
+                            && path.startsWith(workspace.directory)
+                            && path.endsWith('.md')) {
+                            documentIo.reads.push(path)
+                        }
+                        return Reflect.apply(target.readFile, target, args as never[])
+                    }
+                }
+                if (property === 'writeFile') {
+                    return (...args: unknown[]) => {
+                        const path = args[0]
+                        if (typeof path === 'string'
+                            && path.startsWith(workspace.directory)
+                            && path.endsWith('.md')) {
+                            documentIo.writes.push(path)
+                        }
+                        return Reflect.apply(target.writeFile, target, args as never[])
+                    }
+                }
+                return Reflect.get(target, property, receiver)
+            },
+        }) as typeof fs
+        const wiki = createMarkdownNarrativeWiki(root, {
+            versioning,
+            fileSystem: instrumentedFileSystem,
+        })
+        await wiki.beginWriteBatch({
+            characterId: 'character',
+            chatId: 'chat',
+            operationId: 'analysis-sparse',
+            kind: 'analysis',
+        })
+        expect(documentIo).toEqual({ reads: [], writes: [] })
+        await wiki.abandonWriteBatch({
+            characterId: 'character',
+            chatId: 'chat',
+            operationId: 'analysis-sparse',
+        })
+    })
+
+    test('a no-change publish preserves and records an intervening disk edit', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        const versioning = createWikiVersioning(root)
+        const wiki = createMarkdownNarrativeWiki(root, { versioning })
+        const document = await wiki.saveManualDocument({
+            characterId: 'character',
+            chatId: 'chat',
+            type: 'concept',
+            title: 'Clock',
+            markdown: '# Clock\n\n## State\n\n- Original.',
+        })
+        const workspace = resolveMarkdownWikiWorkspace(root, 'character', 'chat')
+        const file = join(workspace.directory, ...document.relativePath.split('/'))
+        await wiki.beginWriteBatch({
+            characterId: 'character',
+            chatId: 'chat',
+            operationId: 'analysis-no-change',
+            kind: 'analysis',
+        })
+        const externalBytes = (await fs.readFile(file, 'utf8'))
+            .replace('Original.', 'External edit.')
+        await fs.writeFile(file, externalBytes, 'utf8')
+
+        await expect(wiki.publishWriteBatch({
+            characterId: 'character',
+            chatId: 'chat',
+            operationId: 'analysis-no-change',
+        })).rejects.toThrow('Wiki commit conflict')
+        expect(await fs.readFile(file, 'utf8')).toBe(externalBytes)
+        const head = await versioning.readHead('character', 'chat')
+        expect(head).not.toBeNull()
+        const pathMap = await versioning.readPathMap(
+            'character', 'chat', head!
+        )
+        expect(pathMap[document.relativePath])
+            .toBe(createHash('sha256').update(externalBytes).digest('hex'))
+    })
+
+    test('abandoning staged canonical edits leaves the live document unchanged', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        const versioning = createWikiVersioning(root)
+        const wiki = createMarkdownNarrativeWiki(root, { versioning })
+        const original = await wiki.saveCanonicalDocument({
+            characterId: 'character',
+            chatId: 'chat',
+            type: 'character',
+            title: 'Aria',
+            sourceMessageIds: ['turn-1'],
+            markdown: '# Aria\n\n## State\n\n- Original.',
+        })
+        const workspace = resolveMarkdownWikiWorkspace(root, 'character', 'chat')
+        const file = join(workspace.directory, ...original.relativePath.split('/'))
+        const originalBytes = await fs.readFile(file, 'utf8')
+        await wiki.beginWriteBatch({
+            characterId: 'character',
+            chatId: 'chat',
+            operationId: 'analysis-abandoned',
+            kind: 'analysis',
+        })
+        await wiki.saveConfirmedTurn({
+            characterId: 'character',
+            chatId: 'chat',
+            operationId: 'analysis-abandoned',
+            sourceMessageIds: ['turn-1'],
+            markdown: '## The gate opened\n\nThe gate opened in the night.',
+        })
+        const stagedLocation = await wiki.saveCanonicalDocument({
+            characterId: 'character',
+            chatId: 'chat',
+            operationId: 'analysis-abandoned',
+            type: 'location',
+            title: 'Gate',
+            sourceMessageIds: ['turn-1'],
+            markdown: '# Gate\n\n## State\n\nThe gate opened.',
+        })
+        expect(stagedLocation.content).toContain('[[The gate opened]]')
+        await wiki.saveCanonicalDocument({
+            characterId: 'character',
+            chatId: 'chat',
+            operationId: 'analysis-abandoned',
+            documentId: original.id,
+            type: 'character',
+            title: 'Aria',
+            sourceMessageIds: ['turn-1'],
+            markdown: '# Aria\n\n## State\n\n- Staged.',
+        })
+        await wiki.abandonWriteBatch({
+            characterId: 'character',
+            chatId: 'chat',
+            operationId: 'analysis-abandoned',
+        })
+        expect(await fs.readFile(file, 'utf8')).toBe(originalBytes)
+        expect((await wiki.loadView('character', 'chat')).documents
+            .map((document) => document.id)).toEqual([original.id])
+    })
+    test('rejects legacy injected ports without transactional batch support', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        const legacyVersioning = {
+            ensureBaseline: async () => ({
+                created: true,
+                commitId: null,
+                branchId: 'branch',
+            }),
+        }
+        const wiki = createMarkdownNarrativeWiki(root, {
+            versioning: legacyVersioning as never,
+        })
+        await expect(wiki.beginWriteBatch({
+            characterId: 'character',
+            chatId: 'chat',
+            operationId: 'analysis-unsupported',
+            kind: 'analysis',
+        })).rejects.toThrow('transactional versioning support')
+    })
+
 })

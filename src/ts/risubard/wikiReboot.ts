@@ -22,6 +22,8 @@ export interface WikiRebootJob {
     targetAssistantMessageIds: string[]
     completedAssistantMessageIds: string[]
     receipts: Record<string, CanonicalTurnReceipt>
+    /** Confirmed messages already present in a seeded prefix checkpoint. */
+    retainedAssistantMessageIds?: string[]
     startedAt: number
     updatedAt: number
     inFlightAssistantMessageIds?: string[]
@@ -102,6 +104,31 @@ export function projectWikiRebootTurns(
     return turns
 }
 
+/** Publishes only the rebuilt suffix's receipts; seeded prefix receipts survive. */
+export function applyWikiRebootReceipts(
+    messages: Array<{
+        chatId?: string
+        risubardMemoryConfirmed?: boolean
+        risubardCanonicalReceipt?: CanonicalTurnReceipt
+    }>,
+    job: WikiRebootJob
+): void {
+    const targets = new Set(job.targetAssistantMessageIds)
+    const retained = new Set(job.retainedAssistantMessageIds)
+    for (const message of messages) {
+        if (message.chatId && retained.has(message.chatId)) continue
+        delete message.risubardMemoryConfirmed
+        delete message.risubardCanonicalReceipt
+        if (message.chatId && targets.has(message.chatId)) {
+            const receipt = job.receipts[message.chatId]
+            if (receipt) {
+                message.risubardMemoryConfirmed = true
+                message.risubardCanonicalReceipt = receipt
+            }
+        }
+    }
+}
+
 export function createWikiRebootJob(input: {
     jobId: string
     stagingChatId: string
@@ -110,6 +137,7 @@ export function createWikiRebootJob(input: {
     now?: number
     writingLanguage?: WikiWritingLanguage
     ignoreOocTurns?: boolean
+    retainedAssistantMessageIds?: readonly string[]
 }): WikiRebootJob {
     const now = input.now ?? Date.now()
     return {
@@ -123,6 +151,9 @@ export function createWikiRebootJob(input: {
         targetAssistantMessageIds: [...input.targetAssistantMessageIds],
         completedAssistantMessageIds: [],
         receipts: {},
+        ...(input.retainedAssistantMessageIds ? {
+            retainedAssistantMessageIds: [...input.retainedAssistantMessageIds],
+        } : {}),
         startedAt: now,
         updatedAt: now,
     }
@@ -163,6 +194,9 @@ export function normalizeWikiRebootJob(value: unknown): WikiRebootJob | undefine
         || !Array.isArray(job.completedAssistantMessageIds)
         || !job.completedAssistantMessageIds.every(stableId)
         || !job.receipts || typeof job.receipts !== 'object'
+        || (job.retainedAssistantMessageIds !== undefined
+            && (!Array.isArray(job.retainedAssistantMessageIds)
+                || !job.retainedAssistantMessageIds.every(stableId)))
         || !Number.isFinite(job.startedAt) || !Number.isFinite(job.updatedAt)) {
         return undefined
     }

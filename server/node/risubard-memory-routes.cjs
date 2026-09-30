@@ -155,8 +155,35 @@ function validCanonicalReceipt(value) {
     }
 }
 
+function validWikiChatAnchor(value) {
+    return hasExactKeys(value, [
+        'sourceChatId', 'boundaryMessageId', 'prefixDigest', 'evidenceDigest',
+    ])
+        && hasBoundedId(value.sourceChatId)
+        && (value.boundaryMessageId === null
+            || hasBoundedId(value.boundaryMessageId))
+        && typeof value.prefixDigest === 'string'
+        && value.prefixDigest.length <= 64
+        && typeof value.evidenceDigest === 'string'
+        && value.evidenceDigest.length <= 64
+}
+
+function validWikiPrefixes(value) {
+    return Array.isArray(value) && value.length <= 50_000
+        && value.every((prefix) =>
+            hasExactKeys(prefix, ['messageId', 'prefixDigest'])
+            && hasBoundedId(prefix.messageId)
+            && typeof prefix.prefixDigest === 'string'
+            && /^[a-f0-9]{16}$/u.test(prefix.prefixDigest))
+}
+
 function createRisuBardMemoryJsonParser(express) {
-    return express.json({ limit: '512kb', strict: true })
+    const ordinary = express.json({ limit: '512kb', strict: true })
+    const prefixes = express.json({ limit: '8mb', strict: true })
+    return (req, res, next) => (
+        /(?:^|\/)wiki\/version\/(?:prefix|preview)\/?$/u.test(req.path)
+            ? prefixes : ordinary
+    )(req, res, next)
 }
 
 function requestHeader(req, name) {
@@ -173,7 +200,27 @@ function decodeBoundedHeaderText(value) {
     return decoded.length > 0 && decoded.length <= 512 ? decoded : undefined
 }
 
+function sendWikiFailure(error, res, next) {
+    if (error instanceof Error && (
+        error.message.startsWith('Wiki chat conflict:')
+        || error.message.startsWith('Wiki commit conflict:')
+        || error.message.startsWith('Wiki operation pending:')
+        || error.message === 'Wiki write batch is already active'
+        || error.message === 'Wiki write batch is owned by another operation'
+        || error.message === 'Wiki document changed since the draft was created'
+    )) {
+        res.status(409).send({ error: error.message })
+        return
+    }
+    next(error)
+}
+
 function registerRisuBardMemoryRoutes(app, options) {
+    const wikiRefKinds = ['save', 'recovery', 'autosave']
+    const wikiRecoveryReasons = [
+        'truncate', 'reroll', 'chat-delete', 'save-load',
+        'reboot', 'purge-restore', 'fork',
+    ]
     app.post('/api/risubard/memory/save-slot', async (req, res, next) => {
         try {
             if (!await options.auth(req, res)) return
@@ -226,7 +273,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                 res.status(409).send({ error: error.message })
                 return
             }
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -242,7 +289,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             res.send(await options.service.listMemorySaves(req.body))
         }
         catch (error) {
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -260,7 +307,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             res.send(bytes)
         }
         catch (error) {
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -280,7 +327,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             }))
         }
         catch (error) {
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -297,7 +344,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             res.status(204).send()
         }
         catch (error) {
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -328,7 +375,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                 res.status(409).send({ error: error.message })
                 return
             }
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -343,7 +390,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             }
             res.send(await options.service.inheritWiki(req.body))
         }
-        catch (error) { next(error) }
+        catch (error) { sendWikiFailure(error, res, next) }
     })
 
     app.post('/api/risubard/memory/wiki/import', async (req, res, next) => {
@@ -364,7 +411,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             if (error instanceof Error && error.message.includes('충돌')) {
                 res.status(409).send({ error: error.message }); return
             }
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -421,7 +468,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                 res.status(409).send({ error: error.message })
                 return
             }
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -442,7 +489,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             res.send(await options.service.replaceMemory(req.body))
         }
         catch (error) {
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -459,7 +506,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             res.send(await options.service.removeRebootMemory(req.body))
         }
         catch (error) {
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -488,7 +535,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             res.send(await options.service.recoverWikiRebootBatch(req.body))
         }
         catch (error) {
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -515,7 +562,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                 res.status(409).send({ error: error.message })
                 return
             }
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -540,7 +587,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                 res.status(409).send({ error: error.message })
                 return
             }
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -653,7 +700,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                 res.send({ ok: true })
             }
             catch (error) {
-                next(error)
+                sendWikiFailure(error, res, next)
             }
         }
     )
@@ -673,7 +720,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             ))
         }
         catch (error) {
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -696,7 +743,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             res.send(await options.service.replaceWikiText(req.body))
         }
         catch (error) {
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -709,12 +756,18 @@ function registerRisuBardMemoryRoutes(app, options) {
                 'sourceMessageIds',
                 'markdown',
             ]
-            const optionalKeys = ['append', 'writingLanguage', 'retrievalMetadata']
-                .filter((key) => req.body?.[key] !== undefined)
+            const optionalKeys = [
+                'append', 'writingLanguage', 'retrievalMetadata', 'chatAnchor',
+                'operationId',
+            ].filter((key) => req.body?.[key] !== undefined)
             if (!hasExactKeys(req.body, [...keys, ...optionalKeys])
                 || !validRetrievalMetadata(req.body.retrievalMetadata)
                 || (req.body.writingLanguage !== undefined
                     && !validWikiWritingLanguage(req.body.writingLanguage))
+                || (req.body.chatAnchor !== undefined
+                    && !validWikiChatAnchor(req.body.chatAnchor))
+                || (req.body.operationId !== undefined
+                    && !hasBoundedId(req.body.operationId))
                 || !hasBoundedId(req.body.characterId)
                 || !hasBoundedId(req.body.chatId)
                 || !Array.isArray(req.body.sourceMessageIds)
@@ -730,7 +783,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             res.send(await options.service.saveMarkdownWikiTurn(req.body))
         }
         catch (error) {
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -750,6 +803,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                 const optionalKeys = [
                     'documentId', 'expectedContentHash', 'reviewStatus',
                     'writingLanguage', 'aliases', 'retrievalMetadata',
+                    'chatAnchor', 'operationId',
                 ].filter((key) => req.body?.[key] !== undefined)
                 const validShape = hasExactKeys(req.body, [
                     ...keys, ...optionalKeys,
@@ -758,6 +812,10 @@ function registerRisuBardMemoryRoutes(app, options) {
                     || !validRetrievalMetadata(req.body.retrievalMetadata)
                     || (req.body.writingLanguage !== undefined
                         && !validWikiWritingLanguage(req.body.writingLanguage))
+                    || (req.body.chatAnchor !== undefined
+                        && !validWikiChatAnchor(req.body.chatAnchor))
+                    || (req.body.operationId !== undefined
+                        && !hasBoundedId(req.body.operationId))
                     || !hasBoundedId(req.body.characterId)
                     || !hasBoundedId(req.body.chatId)
                     || (req.body.documentId !== undefined
@@ -797,7 +855,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                 ))
             }
             catch (error) {
-                next(error)
+                sendWikiFailure(error, res, next)
             }
         }
     )
@@ -855,7 +913,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                     res.status(409).send({ error: 'Wiki document changed since the draft was created' })
                     return
                 }
-                next(error)
+                sendWikiFailure(error, res, next)
             }
         }
     )
@@ -882,7 +940,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                     res.send(await options.service[method](req.body))
                 }
                 catch (error) {
-                    next(error)
+                    sendWikiFailure(error, res, next)
                 }
             }
         )
@@ -911,7 +969,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                     .reviewCanonicalWikiDocument(req.body))
             }
             catch (error) {
-                next(error)
+                sendWikiFailure(error, res, next)
             }
         }
     )
@@ -942,7 +1000,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                 ))
             }
             catch (error) {
-                next(error)
+                sendWikiFailure(error, res, next)
             }
         }
     )
@@ -969,7 +1027,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                     .retractWikiEventsBySourceMessages(req.body))
             }
             catch (error) {
-                next(error)
+                sendWikiFailure(error, res, next)
             }
         }
     )
@@ -995,7 +1053,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                 res.send(await options.service.retractWikiEvent(req.body))
             }
             catch (error) {
-                next(error)
+                sendWikiFailure(error, res, next)
             }
         }
     )
@@ -1019,7 +1077,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                 res.send(await options.service.trashWikiDocument(req.body))
             }
             catch (error) {
-                next(error)
+                sendWikiFailure(error, res, next)
             }
         }
     )
@@ -1043,7 +1101,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                 res.send(await options.service.revealWikiDocument(req.body))
             }
             catch (error) {
-                next(error)
+                sendWikiFailure(error, res, next)
             }
         }
     )
@@ -1073,7 +1131,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                     res.status(409).send({ error: error.message })
                     return
                 }
-                next(error)
+                sendWikiFailure(error, res, next)
             }
         }
     )
@@ -1098,7 +1156,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                 res.send(await options.service.recordWikiRebootBatch(req.body))
             }
             catch (error) {
-                next(error)
+                sendWikiFailure(error, res, next)
             }
         }
     )
@@ -1126,7 +1184,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                     res.status(409).send({ error: error.message })
                     return
                 }
-                next(error)
+                sendWikiFailure(error, res, next)
             }
         }
     )
@@ -1146,7 +1204,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             ))
         }
         catch (error) {
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -1181,7 +1239,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             res.send(await options.service.applyDelta(req.body))
         }
         catch (error) {
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -1202,7 +1260,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             ))
         }
         catch (error) {
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -1243,7 +1301,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             res.send({ revision: state.revision })
         }
         catch (error) {
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -1282,7 +1340,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                 })
                 return
             }
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -1306,7 +1364,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                 res.send({ revision: state.revision })
             }
             catch (error) {
-                next(error)
+                sendWikiFailure(error, res, next)
             }
         }
     )
@@ -1333,7 +1391,503 @@ function registerRisuBardMemoryRoutes(app, options) {
             ))
         }
         catch (error) {
-            next(error)
+            sendWikiFailure(error, res, next)
+        }
+    })
+
+    // ── Wiki version store ───────────────────────────────────────────────
+    // The client never invents commit IDs; every ID here comes from history.
+    app.post('/api/risubard/memory/wiki/version/ensure', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            const allowed = ['characterId', 'chatId', 'chatAnchor']
+            if (!isRecord(req.body)
+                || Object.keys(req.body).some((key) => !allowed.includes(key))
+                || !hasBoundedId(req.body.characterId)
+                || !hasBoundedId(req.body.chatId)
+                || (req.body.chatAnchor !== undefined
+                    && !validWikiChatAnchor(req.body.chatAnchor))) {
+                res.status(400).send({ error: 'Invalid wiki version request' })
+                return
+            }
+            res.send(await options.service.ensureWikiVersion({
+                characterId: req.body.characterId,
+                chatId: req.body.chatId,
+                ...(req.body.chatAnchor
+                    ? { chatAnchor: req.body.chatAnchor } : {}),
+            }))
+        }
+        catch (error) {
+            sendWikiFailure(error, res, next)
+        }
+    })
+
+    app.post('/api/risubard/memory/wiki/version/history', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            if (!hasExactKeys(req.body, ['characterId', 'chatId'])
+                || !hasBoundedId(req.body.characterId)
+                || !hasBoundedId(req.body.chatId)) {
+                res.status(400).send({ error: 'Invalid wiki history request' })
+                return
+            }
+            res.send(await options.service.wikiHistory(req.body))
+        }
+        catch (error) {
+            sendWikiFailure(error, res, next)
+        }
+    })
+
+    app.post('/api/risubard/memory/wiki/version/capture', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            if (!hasExactKeys(req.body, ['characterId', 'chatId'])
+                || !hasBoundedId(req.body.characterId)
+                || !hasBoundedId(req.body.chatId)) {
+                res.status(400).send({ error: 'Invalid wiki capture request' })
+                return
+            }
+            res.send(await options.service.captureWikiExternalChanges(req.body))
+        }
+        catch (error) {
+            sendWikiFailure(error, res, next)
+        }
+    })
+
+    app.post('/api/risubard/memory/wiki/version/preview', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            const keys = ['characterId', 'chatId', 'commitId']
+            if (req.body?.prefixes !== undefined) keys.push('prefixes')
+            if (!hasExactKeys(req.body, keys)
+                || !hasBoundedId(req.body.characterId)
+                || !hasBoundedId(req.body.chatId)
+                || !hasBoundedId(req.body.commitId)
+                || (req.body.prefixes !== undefined
+                    && !validWikiPrefixes(req.body.prefixes))) {
+                res.status(400).send({ error: 'Invalid wiki checkout preview' })
+                return
+            }
+            res.send(await options.service.previewWikiCheckout(req.body))
+        }
+        catch (error) {
+            sendWikiFailure(error, res, next)
+        }
+    })
+
+    app.post('/api/risubard/memory/wiki/version/checkout', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            const keys = ['characterId', 'chatId', 'commitId']
+            const allowed = [...keys, 'reason']
+            if (!isRecord(req.body)
+                || Object.keys(req.body).some((key) => !allowed.includes(key))
+                || !keys.every((key) => hasBoundedId(req.body[key]))
+                || (req.body.reason !== undefined
+                    && !wikiRecoveryReasons.includes(req.body.reason))) {
+                res.status(400).send({ error: 'Invalid wiki checkout request' })
+                return
+            }
+            res.send(await options.service.wikiCheckout(req.body))
+        }
+        catch (error) {
+            if (error instanceof Error && error.message.includes('missing or corrupt')) {
+                res.status(409).send({ error: 'Wiki history is incomplete' })
+                return
+            }
+            sendWikiFailure(error, res, next)
+        }
+    })
+
+    app.post('/api/risubard/memory/wiki/version/fork', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            if (!hasExactKeys(req.body, [
+                'characterId', 'sourceChatId', 'destinationChatId', 'commitId',
+            ])
+                || !hasBoundedId(req.body.characterId)
+                || !hasBoundedId(req.body.sourceChatId)
+                || !hasBoundedId(req.body.destinationChatId)
+                || !hasBoundedId(req.body.commitId)
+                || req.body.sourceChatId === req.body.destinationChatId) {
+                res.status(400).send({ error: 'Invalid wiki fork request' })
+                return
+            }
+            res.send(await options.service.wikiFork(req.body))
+        }
+        catch (error) {
+            if (error instanceof Error
+                && error.message.includes('destination already exists')) {
+                res.status(409).send({ error: error.message })
+                return
+            }
+            sendWikiFailure(error, res, next)
+        }
+    })
+
+    app.post('/api/risubard/memory/wiki/version/refs', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            const allowed = ['characterId', 'chatId', 'kind']
+            if (!isRecord(req.body)
+                || Object.keys(req.body).some((key) => !allowed.includes(key))
+                || !hasBoundedId(req.body.characterId)
+                || !hasBoundedId(req.body.chatId)
+                || (req.body.kind !== undefined
+                    && !wikiRefKinds.includes(req.body.kind))) {
+                res.status(400).send({ error: 'Invalid wiki refs request' })
+                return
+            }
+            res.send(await options.service.wikiRefs(req.body))
+        }
+        catch (error) {
+            sendWikiFailure(error, res, next)
+        }
+    })
+
+    app.post('/api/risubard/memory/wiki/version/ref', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            const allowed = [
+                'characterId', 'chatId', 'commitId', 'kind', 'reason', 'label',
+                'chatBase64',
+            ]
+            if (!isRecord(req.body)
+                || Object.keys(req.body).some((key) => !allowed.includes(key))
+                || !hasBoundedId(req.body.characterId)
+                || !hasBoundedId(req.body.commitId)
+                || !wikiRefKinds.includes(req.body.kind)
+                || (req.body.chatId !== undefined
+                    && !hasBoundedId(req.body.chatId))
+                || (req.body.reason !== undefined
+                    && !wikiRecoveryReasons.includes(req.body.reason))
+                || (req.body.chatBase64 !== undefined
+                    && (typeof req.body.chatBase64 !== 'string'
+                        || req.body.chatBase64.length > 64 * 1024 * 1024))
+                || (req.body.label !== undefined
+                    && !hasBoundedName(req.body.label))) {
+                res.status(400).send({ error: 'Invalid wiki ref request' })
+                return
+            }
+            res.send({ id: await options.service.createWikiRef(req.body) })
+        }
+        catch (error) {
+            sendWikiFailure(error, res, next)
+        }
+    })
+
+    app.post('/api/risubard/memory/wiki/version/recovery/read', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            if (!hasExactKeys(req.body, ['characterId', 'chatId', 'id'])
+                || !hasBoundedId(req.body.characterId)
+                || !hasBoundedId(req.body.chatId)
+                || !hasBoundedId(req.body.id)) {
+                res.status(400).send({ error: 'Invalid Wiki recovery request' })
+                return
+            }
+            res.send(await options.service.readWikiRecovery(req.body))
+        }
+        catch (error) {
+            sendWikiFailure(error, res, next)
+        }
+    })
+
+    app.post('/api/risubard/memory/wiki/version/recovery/deleted', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            if (!hasExactKeys(req.body, ['characterId'])
+                || !hasBoundedId(req.body.characterId)) {
+                res.status(400).send({ error: 'Invalid deleted recovery request' })
+                return
+            }
+            res.send(await options.service.deletedWikiRecovery(req.body))
+        }
+        catch (error) { sendWikiFailure(error, res, next) }
+    })
+
+    app.post('/api/risubard/memory/wiki/version/fork/discard', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            if (!hasExactKeys(req.body, ['characterId', 'chatId'])
+                || !hasBoundedId(req.body.characterId)
+                || !hasBoundedId(req.body.chatId)) {
+                res.status(400).send({ error: 'Invalid Wiki fork discard request' })
+                return
+            }
+            await options.service.discardWikiFork(req.body)
+            res.send({ discarded: true })
+        }
+        catch (error) { sendWikiFailure(error, res, next) }
+    })
+
+    app.post('/api/risubard/memory/wiki/version/ref/delete', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            if (!hasExactKeys(req.body, ['characterId', 'chatId', 'kind', 'id'])
+                || !hasBoundedId(req.body.characterId)
+                || !hasBoundedId(req.body.chatId)
+                || !hasBoundedId(req.body.id)
+                || !wikiRefKinds.includes(req.body.kind)) {
+                res.status(400).send({ error: 'Invalid wiki ref delete request' })
+                return
+            }
+            await options.service.deleteWikiRef(req.body)
+            res.status(204).send()
+        }
+        catch (error) {
+            sendWikiFailure(error, res, next)
+        }
+    })
+
+    app.post('/api/risubard/memory/wiki/version/prefix', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            const keys = ['characterId', 'chatId', 'prefixes']
+            if (req.body?.minimumBoundaryMessageId !== undefined) {
+                keys.push('minimumBoundaryMessageId')
+            }
+            if (!hasExactKeys(req.body, keys)
+                || !hasBoundedId(req.body.characterId)
+                || !hasBoundedId(req.body.chatId)
+                || (req.body.minimumBoundaryMessageId !== undefined
+                    && req.body.minimumBoundaryMessageId !== null
+                    && !hasBoundedId(req.body.minimumBoundaryMessageId))
+                || !validWikiPrefixes(req.body.prefixes)) {
+                res.status(400).send({ error: 'Invalid wiki prefix request' })
+                return
+            }
+            res.send({
+                commitId: await options.service.findWikiCommitByPrefix(
+                    req.body
+                ),
+            })
+        }
+        catch (error) {
+            sendWikiFailure(error, res, next)
+        }
+    })
+
+    app.post('/api/risubard/memory/save-slot/reference', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            if (!Buffer.isBuffer(req.body)
+                || req.body.byteLength === 0
+                || req.body.byteLength > 100 * 1024 * 1024) {
+                res.status(400).send({ error: 'Invalid reference save body' })
+                return
+            }
+            const characterId = requestHeader(
+                req, 'x-risubard-character-id'
+            )
+            const sourceChatId = requestHeader(
+                req, 'x-risubard-source-chat-id'
+            )
+            const saveId = requestHeader(req, 'x-risubard-save-id')
+            const sourceChatName = decodeBoundedHeaderText(requestHeader(
+                req, 'x-risubard-chat-name'
+            ))
+            const turnCount = Number(requestHeader(
+                req, 'x-risubard-turn-count'
+            ))
+            if (!hasBoundedId(characterId)
+                || !hasBoundedId(sourceChatId)
+                || !hasBoundedId(saveId)
+                || !sourceChatName
+                || !Number.isSafeInteger(turnCount)
+                || turnCount < 0) {
+                res.status(400).send({ error: 'Invalid reference save request' })
+                return
+            }
+            const latestMessageId = requestHeader(
+                req, 'x-risubard-latest-message-id'
+            )
+            res.send(await options.service.writeReferenceAutosave({
+                characterId,
+                sourceChatId,
+                saveId,
+                sourceChatName,
+                turnCount,
+                chatBytes: req.body,
+                ...(hasBoundedId(latestMessageId) ? { latestMessageId } : {}),
+            }))
+        }
+        catch (error) {
+            sendWikiFailure(error, res, next)
+        }
+    })
+
+    app.post('/api/risubard/memory/save-slot/reference/load', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            if (!hasExactKeys(req.body, [
+                'characterId', 'saveId', 'destinationChatId',
+            ])
+                || !hasBoundedId(req.body.characterId)
+                || !hasBoundedId(req.body.saveId)
+                || !hasBoundedId(req.body.destinationChatId)) {
+                res.status(400).send({ error: 'Invalid reference load request' })
+                return
+            }
+            const prepared = await options.service.prepareReferenceSaveLoad(
+                req.body
+            )
+            if (!prepared.reference) {
+                res.status(404).send({
+                    error: 'Memory reference save does not exist',
+                })
+                return
+            }
+            res.send({
+                save: {
+                    saveId: prepared.reference.saveId,
+                    sourceChatId: prepared.reference.sourceChatId,
+                    sourceChatName: prepared.reference.sourceChatName,
+                    createdAt: prepared.reference.createdAt,
+                    turnCount: prepared.reference.turnCount,
+                    ...(prepared.reference.latestMessageId
+                        ? { latestMessageId: prepared.reference.latestMessageId }
+                        : {}),
+                    ...(prepared.reference.latestEvent
+                        ? { latestEvent: prepared.reference.latestEvent }
+                        : {}),
+                },
+                chatBase64: prepared.chatBytes.toString('base64'),
+                wikiForked: prepared.wikiForked === true,
+                wikiCheckedOut: prepared.wikiCheckedOut === true,
+                ...(prepared.previousWikiHead
+                    ? { previousWikiHead: prepared.previousWikiHead } : {}),
+                ...(prepared.reference.wikiCommitId
+                    ? { wikiCommitId: prepared.reference.wikiCommitId } : {}),
+            })
+        }
+        catch (error) {
+            if (error instanceof Error
+                && error.message.includes('is missing')) {
+                res.status(409).send({ error: error.message })
+                return
+            }
+            sendWikiFailure(error, res, next)
+        }
+    })
+
+    app.post('/api/risubard/memory/save-slot/reference/export', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            const allowed = [
+                'characterId', 'saveId', 'targetSaveId', 'sourceChatName',
+            ]
+            if (!isRecord(req.body)
+                || Object.keys(req.body).some((key) => !allowed.includes(key))
+                || !hasBoundedId(req.body.characterId)
+                || !hasBoundedId(req.body.saveId)
+                || !hasBoundedId(req.body.targetSaveId)
+                || (req.body.sourceChatName !== undefined
+                    && !hasBoundedName(req.body.sourceChatName))) {
+                res.status(400).send({
+                    error: 'Invalid reference save export request',
+                })
+                return
+            }
+            res.send(await options.service.exportReferenceSaveCompat(req.body))
+        }
+        catch (error) {
+            if (error instanceof Error
+                && error.message.includes('is missing')) {
+                res.status(409).send({ error: error.message })
+                return
+            }
+            sendWikiFailure(error, res, next)
+        }
+    })
+
+    app.post('/api/risubard/memory/save-slot/list-all', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            if (!hasExactKeys(req.body, ['characterId', 'sourceChatId'])
+                || !hasBoundedId(req.body.characterId)
+                || !hasBoundedId(req.body.sourceChatId)) {
+                res.status(400).send({ error: 'Invalid save list request' })
+                return
+            }
+            res.send(await options.service.listAllMemorySaves(req.body))
+        }
+        catch (error) {
+            sendWikiFailure(error, res, next)
+        }
+    })
+
+    app.post('/api/risubard/memory/wiki/version/batch/begin', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            const allowed = [
+                'characterId', 'chatId', 'operationId', 'kind', 'chatAnchor',
+            ]
+            if (!isRecord(req.body)
+                || Object.keys(req.body).some((key) => !allowed.includes(key))
+                || !hasBoundedId(req.body.characterId)
+                || !hasBoundedId(req.body.chatId)
+                || !hasBoundedId(req.body.operationId)
+                || !['analysis', 'manual', 'admin', 'review', 'rebuild']
+                    .includes(req.body.kind)
+                || (req.body.chatAnchor !== undefined
+                    && !validWikiChatAnchor(req.body.chatAnchor))) {
+                res.status(400).send({ error: 'Invalid write batch request' })
+                return
+            }
+            await options.service.beginWikiWriteBatch(req.body)
+            res.send({ started: true })
+        }
+        catch (error) {
+            sendWikiFailure(error, res, next)
+        }
+    })
+
+    app.post('/api/risubard/memory/wiki/version/batch/publish', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            const allowed = [
+                'characterId', 'chatId', 'operationId', 'chatAnchor',
+            ]
+            if (!isRecord(req.body)
+                || Object.keys(req.body).some((key) => !allowed.includes(key))
+                || !hasBoundedId(req.body.characterId)
+                || !hasBoundedId(req.body.chatId)
+                || !hasBoundedId(req.body.operationId)
+                || (req.body.chatAnchor !== undefined
+                    && !validWikiChatAnchor(req.body.chatAnchor))) {
+                res.status(400).send({ error: 'Invalid write batch publish' })
+                return
+            }
+            res.send(await options.service.publishWikiWriteBatch(req.body))
+        }
+        catch (error) {
+            if (error instanceof Error
+                && error.message === 'Wiki write batch was not started') {
+                res.status(409).send({ error: error.message })
+                return
+            }
+            sendWikiFailure(error, res, next)
+        }
+    })
+
+    app.post('/api/risubard/memory/wiki/version/batch/abandon', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            if (!hasExactKeys(req.body, [
+                'characterId', 'chatId', 'operationId',
+            ])
+                || !hasBoundedId(req.body.characterId)
+                || !hasBoundedId(req.body.chatId)
+                || !hasBoundedId(req.body.operationId)) {
+                res.status(400).send({ error: 'Invalid write batch abandon' })
+                return
+            }
+            await options.service.abandonWikiWriteBatch(req.body)
+            res.send({ abandoned: true })
+        }
+        catch (error) {
+            sendWikiFailure(error, res, next)
         }
     })
 
@@ -1358,7 +1912,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             })
         }
         catch (error) {
-            next(error)
+            sendWikiFailure(error, res, next)
         }
     })
 }

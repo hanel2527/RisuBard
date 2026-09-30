@@ -41,6 +41,7 @@ import {
 import { get_encoding, type Tiktoken } from '@dqbd/tiktoken'
 import { saveCanonicalWikiDocument } from './markdownWikiWriter'
 import type { WikiWritingLanguage } from './wikiWritingLanguage'
+import type { WikiChatAnchor } from './wikiVcsContract'
 import {
     RISUBARD_ANALYSIS_TOKEN_LIMIT_DEFAULT,
     RISUBARD_INQUIRY_TIMEOUT_MS_DEFAULT,
@@ -890,6 +891,8 @@ export function createStoredResponseMemoryAnalysis(
             reviewStatus?: 'unreviewed' | 'reviewed'
             writingLanguage?: WikiWritingLanguage
             retrievalMetadata?: import('../../../server/node/risubard-memory-metadata').MemoryRetrievalMetadata
+            chatAnchor?: WikiChatAnchor
+            operationId?: string
         }, signal?: AbortSignal) {
             return saveCanonicalWikiDocument({
                 ...input,
@@ -906,12 +909,29 @@ export function createStoredResponseMemoryAnalysis(
             append?: boolean
             writingLanguage?: WikiWritingLanguage
             retrievalMetadata?: import('../../../server/node/risubard-memory-metadata').MemoryRetrievalMetadata
+            chatAnchor?: WikiChatAnchor
+            operationId?: string
         }, signal?: AbortSignal) {
             const document = await readJson(await postJson(
                 options.fetchImpl,
                 options.createAuth,
                 '/api/risubard/memory/wiki/save',
-                input,
+                {
+                    characterId: input.characterId,
+                    chatId: input.chatId,
+                    sourceMessageIds: input.sourceMessageIds,
+                    markdown: input.markdown,
+                    ...(input.append === undefined
+                        ? {} : { append: input.append }),
+                    ...(input.writingLanguage
+                        ? { writingLanguage: input.writingLanguage } : {}),
+                    ...(input.retrievalMetadata
+                        ? { retrievalMetadata: input.retrievalMetadata } : {}),
+                    ...(input.chatAnchor
+                        ? { chatAnchor: input.chatAnchor } : {}),
+                    ...(input.operationId
+                        ? { operationId: input.operationId } : {}),
+                },
                 signal
             )) as import('./memoryWiki').NarrativeMemoryWikiMarkdown[
                 'documents'
@@ -934,6 +954,83 @@ export function createStoredResponseMemoryAnalysis(
                 createAuth: options.createAuth,
                 signal,
             })
+        },
+        /**
+         * Batches this operation's wiki writes into one commit. The batch lives
+         * on the server, so a checkout or receipt lookup during the analysis
+         * still sees a single consistent commit at the end.
+         */
+        async beginWriteBatch(input: {
+            characterId: string
+            chatId: string
+            operationId: string
+            kind: 'analysis' | 'manual' | 'admin' | 'review' | 'rebuild'
+            chatAnchor?: WikiChatAnchor
+        }, signal?: AbortSignal) {
+            await readJson(await postJson(
+                options.fetchImpl,
+                options.createAuth,
+                '/api/risubard/memory/wiki/version/batch/begin',
+                {
+                    characterId: input.characterId,
+                    chatId: input.chatId,
+                    operationId: input.operationId,
+                    kind: input.kind,
+                    ...(input.chatAnchor ? { chatAnchor: input.chatAnchor } : {}),
+                },
+                signal
+            ))
+        },
+        async publishWriteBatch(input: {
+            characterId: string
+            chatId: string
+            chatAnchor?: WikiChatAnchor
+            operationId: string
+        }, signal?: AbortSignal) {
+            const value = await readJson(await postJson(
+                options.fetchImpl,
+                options.createAuth,
+                '/api/risubard/memory/wiki/version/batch/publish',
+                {
+                    characterId: input.characterId,
+                    chatId: input.chatId,
+                    operationId: input.operationId,
+                    ...(input.chatAnchor ? { chatAnchor: input.chatAnchor } : {}),
+                },
+                signal
+            ))
+            if (typeof value !== 'object' || value === null
+                || !('commitId' in value)
+                || !(value.commitId === null || typeof value.commitId === 'string')
+                || !('changedPaths' in value)
+                || !Array.isArray(value.changedPaths)
+                || !value.changedPaths.every((path) => typeof path === 'string')) {
+                throw new Error('Invalid Wiki batch publication response')
+            }
+            return {
+                commitId: typeof value.commitId === 'string' ? value.commitId : null,
+                changedPaths: value.changedPaths,
+            }
+        },
+        async abandonWriteBatch(
+            input: {
+                characterId: string
+                chatId: string
+                operationId: string
+            },
+            signal?: AbortSignal
+        ) {
+            await readJson(await postJson(
+                options.fetchImpl,
+                options.createAuth,
+                '/api/risubard/memory/wiki/version/batch/abandon',
+                {
+                    characterId: input.characterId,
+                    chatId: input.chatId,
+                    operationId: input.operationId,
+                },
+                signal
+            ))
         },
     }
     const runner = createMemoryAnalysisRunner({

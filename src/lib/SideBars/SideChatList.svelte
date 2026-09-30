@@ -28,6 +28,7 @@
     import { changeChatTo, createChatCopyName, requestImmediateSave } from "src/ts/globalApi.svelte";
     import { forageStorage } from "src/ts/globalApi.svelte";
     import { completeMemoryWikiFork, forkMemoryWiki } from "src/ts/risubard/memoryWikiFork";
+    import { preserveWikiChat } from "src/ts/risubard/wikiChatCoordinator";
     import { mergeCharacterChats } from "src/ts/risubard/chatMerge";
     import { createUniqueDisplayName } from 'src/ts/displayName';
     import { doingChat, isAnyGenerating } from "src/ts/process/generationState";
@@ -155,23 +156,38 @@
                 return
             }
             await preservePainterChatGallery(chat)
+            for (const message of chat.message) message.chatId ||= v4()
+            await preserveWikiChat({
+                characterId: targetCharacter.chaId,
+                chatId: targetChatId,
+                fetchImpl: fetch,
+                createAuth: () => forageStorage.createAuth(),
+            }, $state.snapshot(chat), 'chat-delete')
             if (isPainterChatBusy(targetCharacter.chaId, targetChatId)) {
                 notifyError('바드페인터 작업이나 이미지 저장을 마친 뒤 챗을 삭제해 주세요.')
                 return
             }
         } catch (error) {
-            notifyError(`그림의 생성 기록을 보존하지 못해 챗 삭제를 중단했습니다: ${String(error)}`)
+            notifyError(`복구 기록을 보존하지 못해 챗 삭제를 중단했습니다: ${String(error)}`)
             return
         }
         const deletionIndex = targetCharacter.chats.findIndex(chat => chat.id === targetChatId)
         if (deletionIndex < 0) return
         if (targetCharacter.chats.length === 1) { notifyError(language.errors.onlyOneChat); return }
-        targetCharacter.chats.splice(deletionIndex, 1)
+        const [deletedChat] = targetCharacter.chats.splice(deletionIndex, 1)
         targetCharacter.chats = targetCharacter.chats
+        try {
+            await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+        }
+        catch (error) {
+            targetCharacter.chats.splice(deletionIndex, 0, deletedChat)
+            targetCharacter.chats = targetCharacter.chats
+            notifyError(`챗 삭제 저장에 실패했습니다: ${String(error)}`)
+            return
+        }
         if (chara.chaId === targetCharacter.chaId) changeChatTo(0)
         else targetCharacter.chatPage = Math.max(0, Math.min(targetCharacter.chatPage, targetCharacter.chats.length - 1))
         $ReloadGUIPointer += 1
-        void requestImmediateSave()
     }
 
     async function copyChatWithMemory(chat: Chat): Promise<void> {

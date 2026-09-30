@@ -61,6 +61,22 @@ const canonicalBatch = (...markdown: string[]): string => JSON.stringify({
     })),
 })
 
+/**
+ * Anchor of the most recent write. The runner now passes one, so assertions
+ * check the boundary it records rather than the exact argument object.
+ */
+function lastCallAnchor(
+    spy: { mock: { calls: unknown[][] } }
+): { sourceChatId?: string; boundaryMessageId?: string | null } | undefined {
+    const call = spy.mock.calls.at(-1)?.[0]
+    if (!call || typeof call !== 'object' || !('chatAnchor' in call)) {
+        return undefined
+    }
+    const anchor = call.chatAnchor
+    if (!anchor || typeof anchor !== 'object') return undefined
+    return anchor as { sourceChatId?: string; boundaryMessageId?: string | null }
+}
+
 const canonicalPatchBatch = (...sections: Array<Array<{
     heading: string
     operation: 'upsert' | 'delete'
@@ -701,12 +717,18 @@ describe('memory analysis runner', () => {
             ],
         })
 
-        expect(saveConfirmedTurn).toHaveBeenCalledWith({
+        expect(saveConfirmedTurn).toHaveBeenCalledWith(expect.objectContaining({
             characterId: 'character-1',
             chatId: 'chat-1',
             sourceMessageIds: ['user-1', 'assistant-1'],
             markdown: '## 다리의 붕괴\n\n### 이야기 요약\n\n- 다리가 무너졌다.',
             writingLanguage: 'ko',
+        }))
+        // The commit is anchored to the evidence boundary, not to whichever
+        // message happened to be last when the analysis landed.
+        expect(lastCallAnchor(saveConfirmedTurn)).toMatchObject({
+            sourceChatId: 'chat-1',
+            boundaryMessageId: 'assistant-1',
         })
         expect(applyDelta).not.toHaveBeenCalled()
     })
@@ -1084,13 +1106,17 @@ describe('memory analysis runner', () => {
         expect(inquiry).toHaveBeenCalledWith(expect.objectContaining({
             currentInput: expect.stringContaining('북쪽으로 떠났다'),
         }))
-        expect(saveCanonicalDocument).toHaveBeenCalledWith({
+        expect(saveCanonicalDocument).toHaveBeenCalledWith(expect.objectContaining({
             characterId: 'character-1', chatId: 'chat-1',
             documentId: 'character.lavian', type: 'character',
             title: '라비안', sourceMessageIds: ['user-2', 'assistant-2'],
             markdown: '# 라비안\n\n## 현재 상태\n\n- 현재 케사리아에 있다.',
             expectedContentHash: 'hash-old', reviewStatus: 'reviewed',
             writingLanguage: 'ko',
+        }))
+        expect(lastCallAnchor(saveCanonicalDocument)).toMatchObject({
+            sourceChatId: 'chat-1',
+            boundaryMessageId: 'assistant-2',
         })
     })
 
@@ -1675,13 +1701,13 @@ describe('memory analysis runner', () => {
                 content: '성문 앞에 도착했다.' }],
             autoCanonicalUpdates: true,
         })
-        expect(saveCanonicalDocument).toHaveBeenCalledWith({
+        expect(saveCanonicalDocument).toHaveBeenCalledWith(expect.objectContaining({
             characterId: 'character', chatId: 'chat', type: 'scene',
             title: '현재 장면', sourceMessageIds: ['assistant-1'],
             markdown: '## 현재 장면\n\n성문 앞에 도착했다.',
             reviewStatus: 'reviewed',
             writingLanguage: 'ko',
-        })
+        }))
     })
 
     test('rewrites all canonical candidates in one batch with original evidence', async () => {

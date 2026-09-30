@@ -56,6 +56,18 @@ describe('cumulative canonical turn receipt', () => {
         expect(result.changes).toEqual([{ ...updated, action: 'create' }])
     })
 
+    test('retains every commit link across additional and empty analysis passes', () => {
+        const first = 'a'.repeat(64)
+        const second = 'b'.repeat(64)
+        const old = parseCanonicalTurnReceipt({ ...saved, vcsCommitId: first })
+        const additional = mergeCanonicalTurnReceipts(old, {
+            ...latest, vcsCommitIds: [first, second],
+        })
+        const emptyPass = mergeCanonicalTurnReceipts(additional, latest)
+        expect(parseCanonicalTurnReceipt(JSON.parse(JSON.stringify(emptyPass))).vcsCommitIds)
+            .toEqual([first, second])
+    })
+
     test('accepts a first receipt including a genuine no-change result', () => {
         expect(mergeCanonicalTurnReceipts(undefined, latest)).toEqual(latest)
     })

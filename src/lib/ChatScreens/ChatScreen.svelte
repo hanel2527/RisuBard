@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onDestroy } from 'svelte';
+    import { onDestroy, untrack } from 'svelte';
     import { getCustomBackground, getEmotion } from "../../ts/util";
     
     import { DBState, risuBardGalleryOpen } from 'src/ts/stores.svelte';
@@ -18,14 +18,17 @@
     import { ensureChatHydrated } from 'src/ts/storage/chatStorage';
     import { alertConfirm, notifyInfo, notifySuccess } from 'src/ts/alert';
     import { changeChatTo, createChatCopyName, forageStorage, requestImmediateSave } from 'src/ts/globalApi.svelte';
+    import type { Chat } from 'src/ts/storage/database.svelte';
     import { completeMemoryWikiFork } from 'src/ts/risubard/memoryWikiFork';
-    import { countChatTurns, createMemorySaveSlot, deleteMemorySaveSlot, latestChatMessageId, listMemorySaveSlots, prepareMemorySaveLoad, shouldConfirmMemorySaveLoad, type MemorySaveSlotSummary } from 'src/ts/risubard/memorySaveSlots';
+    import { countChatTurns, createMemorySaveSlot, deleteMemorySaveSlot, latestChatMessageId, listMemorySaveSlots, prepareMemorySaveLoad, prepareReferenceSaveLoad, shouldConfirmMemorySaveLoad, writeReferenceAutosave, type MemorySaveSlotSummary } from 'src/ts/risubard/memorySaveSlots';
+    import { ensureWikiBaselineForChat } from 'src/ts/risubard/wikiChatCoordinator';
+    import { checkoutWikiVersion, captureWikiVersion, listWikiHistory, discardWikiFork } from 'src/ts/risubard/wikiVersionClient';
     import { autoSaveId, normalizeAutosaveInterval, normalizeAutosaveRetention, obsoleteAutosaveIds, quickSaveId, shouldCreateAutosave } from 'src/ts/risubard/memorySavePolicy';
     import { isWikiGenerating } from 'src/ts/risubard/wikiGenerationState';
     import { resolveChatTextSurface } from 'src/ts/gui/textTheme';
     import { chatGenKey, generationStates } from 'src/ts/process/generationState';
     import { activateWikiEmbeddings, wikiEmbeddingRuntime } from 'src/ts/risubard/wikiEmbeddingService';
-    import { RISUBARD_MEMORY_UPDATED_EVENT, type RisuBardMemoryUpdatedDetail } from 'src/ts/risubard/memoryEvents';
+    import { RISUBARD_MEMORY_UPDATED_EVENT, announceRisuBardMemoryUpdated, type RisuBardMemoryUpdatedDetail } from 'src/ts/risubard/memoryEvents';
     let openChatList = $state(false)
     let openModuleList = $state(false)
     let saveSlotsOpen = $state(false)
@@ -58,6 +61,60 @@
         window.addEventListener(RISUBARD_MEMORY_UPDATED_EVENT, refresh)
         return () => {
             window.removeEventListener(RISUBARD_MEMORY_UPDATED_EVENT, refresh)
+        }
+    })
+
+    $effect(() => {
+        const character = currentCharacter
+        const chat = character?.chats[character.chatPage]
+        if (!character?.chaId || !chat?.id || chat._placeholder) return
+        const characterId = character.chaId
+        const chatId = chat.id
+        let disposed = false
+        let running = false
+        let initialized = false
+        let previousHead: string | null | undefined
+        const context = {
+            characterId, chatId, fetchImpl: fetch,
+            createAuth: () => forageStorage.createAuth(),
+        }
+        const synchronize = async () => {
+            if (disposed || !initialized || running || document.visibilityState === 'hidden') return
+            running = true
+            try {
+                const captured = await captureWikiVersion(context)
+                const head = (await listWikiHistory(context))[0]?.commitId ?? null
+                if (!disposed && (captured.commitId
+                    || (previousHead !== undefined && previousHead !== head))) {
+                    announceRisuBardMemoryUpdated({ characterId, chatId })
+                }
+                previousHead = head
+            }
+            catch (error) {
+                console.warn('[BardWiki synchronization]', error)
+            }
+            finally { running = false }
+        }
+        untrack(() => {
+            void (async () => {
+                let changed = false
+                for (const item of chat.message) {
+                    if (!item.chatId) { item.chatId = v4(); changed = true }
+                }
+                if (changed) await requestImmediateSave({
+                    forceFullWrite: true, rejectOnFailure: true,
+                })
+                await ensureWikiBaselineForChat(context, $state.snapshot(chat.message))
+                initialized = true
+                await synchronize()
+            })().catch((error) => console.warn('[BardWiki baseline]', error))
+        })
+        const timer = window.setInterval(synchronize, 3000)
+        window.addEventListener('focus', synchronize)
+        return () => {
+            disposed = true
+            window.clearInterval(timer)
+            window.removeEventListener('focus', synchronize)
         }
     })
 
@@ -170,11 +227,15 @@
                 return
             }
             const saveId = autoSaveId(chatId, turnCount, interval, retention)
-            await saveCurrentChat(
+            // Reference autosave: the wiki is referenced by the commit it sits
+            // at, so no workspace copy happens here.
+            await writeReferenceAutosave({
+                characterId,
+                chat,
                 saveId,
-                slots.some((slot) => slot.saveId === saveId),
-                { silent: true },
-            )
+                fetchImpl: fetch,
+                createAuth: () => forageStorage.createAuth(),
+            })
             for (const obsoleteId of obsoleteAutosaveIds(
                 slots.map((slot) => slot.saveId),
                 chatId,
@@ -210,7 +271,9 @@
             throw new Error('응답 생성이 끝난 뒤 저장 파일을 불러와 주세요.')
         }
         const destinationChatId = asNewChat ? v4() : currentChat.id
-        const prepared = await prepareMemorySaveLoad({
+        // Reference saves carry no wiki copy: their wiki is materialized from
+        // the pinned commit, so they take a different load path.
+        const reference = await prepareReferenceSaveLoad({
             characterId: character.chaId,
             saveId,
             currentChat,
@@ -218,7 +281,23 @@
             fetchImpl: fetch,
             createAuth: () => forageStorage.createAuth(),
         })
-        const loadedChat = prepared.chat
+        let loadedChat: Chat
+        let forkToken: string | null = null
+        if(reference){
+            loadedChat = reference.chat
+        }
+        else {
+            const prepared = await prepareMemorySaveLoad({
+                characterId: character.chaId,
+                saveId,
+                currentChat,
+                destinationChatId,
+                fetchImpl: fetch,
+                createAuth: () => forageStorage.createAuth(),
+            })
+            loadedChat = prepared.chat
+            forkToken = prepared.forkToken
+        }
         loadedChat.id = destinationChatId
         loadedChat.isStreaming = false
         delete loadedChat.activeStreamingDisplayOptimizationMode
@@ -245,28 +324,50 @@
                 character.chats[chatIdx] = currentChat
             }
             character.chats = character.chats
-            await completeMemoryWikiFork({
-                characterId: character.chaId,
-                destinationChatId,
-                forkToken: prepared.forkToken,
-                action: 'discard',
-                fetchImpl: fetch,
-                createAuth: () => forageStorage.createAuth(),
-            }).catch(() => undefined)
+            if(forkToken){
+                await completeMemoryWikiFork({
+                    characterId: character.chaId,
+                    destinationChatId,
+                    forkToken,
+                    action: 'discard',
+                    fetchImpl: fetch,
+                    createAuth: () => forageStorage.createAuth(),
+                }).catch(() => undefined)
+            }
+            if(reference?.wikiForked){
+                await discardWikiFork({
+                    characterId: character.chaId,
+                    chatId: destinationChatId,
+                    fetchImpl: fetch,
+                    createAuth: () => forageStorage.createAuth(),
+                })
+            }
+            if(reference?.wikiCheckedOut && reference.previousWikiHead){
+                await checkoutWikiVersion({
+                    characterId: character.chaId,
+                    chatId: destinationChatId,
+                    commitId: reference.previousWikiHead,
+                    reason: 'save-load',
+                    fetchImpl: fetch,
+                    createAuth: () => forageStorage.createAuth(),
+                }).catch(() => undefined)
+            }
             await requestImmediateSave({
                 forceFullWrite: true,
                 rejectOnFailure: true,
             })
             throw error
         }
-        await completeMemoryWikiFork({
-            characterId: character.chaId,
-            destinationChatId,
-            forkToken: prepared.forkToken,
-            action: 'finalize',
-            fetchImpl: fetch,
-            createAuth: () => forageStorage.createAuth(),
-        })
+        if(forkToken){
+            await completeMemoryWikiFork({
+                characterId: character.chaId,
+                destinationChatId,
+                forkToken,
+                action: 'finalize',
+                fetchImpl: fetch,
+                createAuth: () => forageStorage.createAuth(),
+            })
+        }
         changeChatTo(asNewChat ? 0 : chatIdx)
         saveSlotsOpen = false
         notifySuccess('스토리 불러오기 완료', { duration: 3000 })

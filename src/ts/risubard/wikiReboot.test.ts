@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import {
     blocksChatGeneration,
     createWikiRebootJob,
+    applyWikiRebootReceipts,
     nextWikiRebootBatch,
     normalizeWikiRebootJob,
     projectWikiRebootTurns,
@@ -111,6 +112,35 @@ describe('BardWiki reboot domain', () => {
         expect(blocksChatGeneration(job)).toBe(true)
         expect(normalizeWikiRebootJob({ ...job, batchSize: 3 })).toBeUndefined()
         expect(blocksChatGeneration(undefined)).toBe(false)
+    })
+
+    test('keeps seeded prefix receipts and invalidates superseded suffix receipts', () => {
+        const oldReceipt = {
+            sourceMessageIds: ['a1'], eventIds: ['old-event'], changes: [],
+            warnings: [], recordedAt: '2026-01-01T00:00:00.000Z',
+        }
+        const newReceipt = {
+            ...oldReceipt, sourceMessageIds: ['a2'], eventIds: ['new-event'],
+        }
+        const stored: Parameters<typeof applyWikiRebootReceipts>[0] = [
+            { chatId: 'a1', risubardMemoryConfirmed: true, risubardCanonicalReceipt: oldReceipt },
+            { chatId: 'a2', risubardMemoryConfirmed: true, risubardCanonicalReceipt: oldReceipt },
+            { chatId: 'a3', risubardMemoryConfirmed: true, risubardCanonicalReceipt: oldReceipt },
+            { chatId: 'candidate' },
+        ]
+        const job = createWikiRebootJob({
+            jobId: 'edit', stagingChatId: 'reboot-edit', batchSize: 1,
+            targetAssistantMessageIds: ['a2'], retainedAssistantMessageIds: ['a1'],
+        })
+        job.receipts.a2 = newReceipt
+        const resumed = normalizeWikiRebootJob(JSON.parse(JSON.stringify(job)))!
+        applyWikiRebootReceipts(stored, resumed)
+        expect(stored[0].risubardCanonicalReceipt).toBe(oldReceipt)
+        expect(stored[0].risubardMemoryConfirmed).toBe(true)
+        expect(stored[1].risubardCanonicalReceipt).toEqual(newReceipt)
+        expect(stored[1].risubardMemoryConfirmed).toBe(true)
+        expect(stored[2]).toEqual({ chatId: 'a3' })
+        expect(stored[3]).toEqual({ chatId: 'candidate' })
     })
 
     test('shows the staging wiki while a reboot job exists', () => {

@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module'
-import { access, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, readFile, writeFile, rm, rename } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test, vi } from 'vitest'
@@ -10,94 +10,178 @@ import { resolveMarkdownWikiWorkspace } from './risubard-markdown-wiki'
 const require = createRequire(import.meta.url)
 
 describe('RisuBard memory CommonJS runtime', () => {
-    test('wires save creation, listing, and prepared loading to storage', async () => {
+    test('restores a v1 save at its pinned Wiki head after a runtime restart', async () => {
+        const { createRuntimeMemoryService } = require('./risubard-memory-runtime.cjs')
+        const root = await mkdtemp(join(tmpdir(), 'risubard-runtime-save-restore-'))
+        try {
+            let service = createRuntimeMemoryService(root)
+            const savedDocument = await service.saveManualWikiDocument({
+                characterId: 'character', chatId: 'chat-1', type: 'concept',
+                title: 'Clock', markdown: '# Clock\n\n## State\n\n- Before the gate.',
+            })
+            const savedHead = (await service.wikiHistory({
+                characterId: 'character', chatId: 'chat-1',
+            }))[0].commitId
+            await service.createMemorySave({
+                characterId: 'character', sourceChatId: 'chat-1',
+                saveId: 'save-1', sourceChatName: 'Story', turnCount: 1,
+                chatBytes: Buffer.from([1, 2]),
+            })
+            await service.saveManualWikiDocument({
+                characterId: 'character', chatId: 'chat-1', type: 'concept',
+                documentId: savedDocument.id, title: 'Clock',
+                markdown: '# Clock\n\n## State\n\n- After the gate.',
+            })
+            const prepared = await service.prepareMemorySaveLoad({
+                characterId: 'character', saveId: 'save-1', destinationChatId: 'chat-1',
+            })
+            expect((await service.loadView('character', 'chat-1')).documents[0].content)
+                .toContain('After the gate.')
+            service = createRuntimeMemoryService(root)
+            await service.completeMemoryFork({
+                characterId: 'character', destinationChatId: 'chat-1',
+                forkToken: prepared.fork.forkToken, action: 'finalize',
+            })
+            expect((await service.wikiHistory({
+                characterId: 'character', chatId: 'chat-1',
+            }))[0].commitId).toBe(savedHead)
+            expect((await service.loadView('character', 'chat-1')).documents[0].content)
+                .toContain('Before the gate.')
+            await service.deleteMemorySave({ characterId: 'character', saveId: 'save-1' })
+            expect(await service.listMemorySaves({
+                characterId: 'character', sourceChatId: 'chat-1',
+            })).toEqual([])
+        }
+        finally { await rm(root, { recursive: true, force: true }) }
+    })
+
+    test('overwriting a reference save publishes the v1 slot and removes its autosave pin', async () => {
         const { createRuntimeMemoryService } = require(
             './risubard-memory-runtime.cjs'
         )
-        const userDataDirectory = await mkdtemp(
-            join(tmpdir(), 'risubard-runtime-save-slot-')
-        )
-        const summary = {
-            saveId: 'save-1', sourceChatId: 'chat-1', sourceChatName: '모험',
-            createdAt: '2026-08-14T08:00:00.000Z', turnCount: 4,
+        const root = await mkdtemp(join(tmpdir(), 'risubard-runtime-ref-overwrite-'))
+        try {
+            const service = createRuntimeMemoryService(root)
+            await service.writeReferenceAutosave({
+                characterId: 'character',
+                sourceChatId: 'chat-1',
+                saveId: 'save-1',
+                sourceChatName: 'Story',
+                turnCount: 1,
+                chatBytes: Buffer.from('reference chat'),
+            })
+            expect(await service.wikiRefs({
+                characterId: 'character', chatId: 'chat-1', kind: 'autosave',
+            })).toContainEqual(expect.objectContaining({ id: 'autosave:save-1' }))
+
+            await service.createMemorySave({
+                characterId: 'character',
+                sourceChatId: 'chat-1',
+                saveId: 'save-1',
+                overwrite: true,
+                sourceChatName: 'Story',
+                turnCount: 2,
+                chatBytes: Buffer.from('new v1 chat'),
+            })
+            expect(await service.listAllMemorySaves({
+                characterId: 'character', sourceChatId: 'chat-1',
+            })).toContainEqual(expect.objectContaining({
+                saveId: 'save-1', saveFormat: 'v1-snapshot',
+            }))
+            expect(await service.previewMemorySave({
+                characterId: 'character', saveId: 'save-1',
+            })).toEqual(Buffer.from('new v1 chat'))
+            expect(await service.wikiRefs({
+                characterId: 'character', chatId: 'chat-1', kind: 'autosave',
+            })).not.toContainEqual(expect.objectContaining({
+                id: 'autosave:save-1',
+            }))
+            const prepared = await service.prepareMemorySaveLoad({
+                characterId: 'character',
+                saveId: 'save-1',
+                destinationChatId: 'loaded',
+            })
+            expect(prepared.chatBytes).toEqual(Buffer.from('new v1 chat'))
+            await service.completeMemoryFork({
+                characterId: 'character',
+                destinationChatId: 'loaded',
+                forkToken: prepared.fork.forkToken,
+                action: 'finalize',
+            })
         }
-        const createSaveSlot = vi.fn(async (input) => ({
-            ...summary,
-            latestEvent: input.latestEvent,
-        }))
-        const listSaveSlots = vi.fn(async () => [summary])
-        const prepareSaveLoad = vi.fn(async (input) => ({
-            chatBytes: Buffer.from([9]), save: summary,
-            fork: {
-                mode: 'copy', sourceExists: true,
-                destinationChatId: input.destinationChatId,
-                warnings: [], forkToken: 'token',
-            },
-        }))
-        const previewSaveSlot = vi.fn(async () => Buffer.from([8]))
-        const renameSaveSlot = vi.fn(async (input) => ({
-            ...summary, sourceChatName: input.name,
-        }))
-        const deleteSaveSlot = vi.fn(async () => undefined)
-        const service = createRuntimeMemoryService(userDataDirectory, {
-            createSaveSlot, listSaveSlots, prepareSaveLoad,
-            previewSaveSlot, renameSaveSlot, deleteSaveSlot,
-        })
+        finally {
+            await rm(root, { recursive: true, force: true })
+        }
+    })
 
-        await service.saveMarkdownWikiTurn({
-            characterId: 'character', chatId: 'chat-1',
-            sourceMessageIds: ['assistant-1'],
-            markdown: '# 성문이 열렸다\n\n경비병이 통행을 허락했다.',
-        })
-        await expect(service.createMemorySave({
-            characterId: 'character', sourceChatId: 'chat-1',
-            saveId: 'save-1', sourceChatName: '모험', turnCount: 4,
-            chatBytes: Buffer.from([1, 2]),
-        })).resolves.toMatchObject({
-            saveId: 'save-1',
-            latestEvent: { title: '성문이 열렸다' },
-        })
-        expect(createSaveSlot).toHaveBeenCalledWith(expect.objectContaining({
-            userDataDirectory,
-            latestEvent: expect.objectContaining({ title: '성문이 열렸다' }),
-        }))
+    test('repeated compatibility exports replace the target with the newest pinned source', async () => {
+        const { createRuntimeMemoryService } = require(
+            './risubard-memory-runtime.cjs'
+        )
+        const root = await mkdtemp(join(tmpdir(), 'risubard-runtime-compat-export-'))
+        try {
+            const service = createRuntimeMemoryService(root)
+            const document = await service.saveManualWikiDocument({
+                characterId: 'character',
+                chatId: 'chat-1',
+                type: 'concept',
+                title: 'Clock',
+                markdown: '# Clock\n\n## State\n\n- First snapshot.',
+            })
+            const referenceInput = {
+                characterId: 'character',
+                sourceChatId: 'chat-1',
+                saveId: 'reference',
+                sourceChatName: 'Story',
+                turnCount: 1,
+            }
+            await service.writeReferenceAutosave({
+                ...referenceInput,
+                chatBytes: Buffer.from('first chat state'),
+            })
+            await service.exportReferenceSaveCompat({
+                characterId: 'character',
+                saveId: 'reference',
+                targetSaveId: '__compat',
+            })
 
-        await expect(service.listMemorySaves({
-            characterId: 'character', sourceChatId: 'chat-1',
-        }))
-            .resolves.toEqual([summary])
-        expect(listSaveSlots).toHaveBeenCalledWith({
-            userDataDirectory, characterId: 'character', sourceChatId: 'chat-1',
-        })
+            await service.saveManualWikiDocument({
+                characterId: 'character',
+                chatId: 'chat-1',
+                documentId: document.id,
+                type: 'concept',
+                title: 'Clock',
+                markdown: '# Clock\n\n## State\n\n- Newest snapshot.',
+            })
+            const newestReference = await service.writeReferenceAutosave({
+                ...referenceInput,
+                chatBytes: Buffer.from('newest chat state'),
+            })
+            await expect(service.exportReferenceSaveCompat({
+                characterId: 'character',
+                saveId: 'reference',
+                targetSaveId: '__compat',
+            })).resolves.toMatchObject({ saveId: '__compat' })
+            expect(await service.wikiRefs({
+                characterId: 'character', chatId: 'chat-1', kind: 'save',
+            })).toContainEqual(expect.objectContaining({
+                id: 'save-slot:__compat',
+                commitId: newestReference.wikiCommitId,
+            }))
 
-        await expect(service.prepareMemorySaveLoad({
-            characterId: 'character', saveId: 'save-1',
-            destinationChatId: 'loaded',
-        })).resolves.toMatchObject({ fork: { forkToken: 'token' } })
-        expect(prepareSaveLoad).toHaveBeenCalledWith({
-            userDataDirectory, characterId: 'character',
-            saveId: 'save-1', destinationChatId: 'loaded',
-        })
-
-        await expect(service.previewMemorySave({
-            characterId: 'character', saveId: 'save-1',
-        })).resolves.toEqual(Buffer.from([8]))
-        await expect(service.renameMemorySave({
-            characterId: 'character', saveId: 'save-1', name: '새 이름',
-        })).resolves.toMatchObject({ sourceChatName: '새 이름' })
-        await expect(service.deleteMemorySave({
-            characterId: 'character', saveId: 'save-1',
-        })).resolves.toBeUndefined()
-        expect(previewSaveSlot).toHaveBeenCalledWith({
-            userDataDirectory, characterId: 'character', saveId: 'save-1',
-        })
-        expect(renameSaveSlot).toHaveBeenCalledWith({
-            userDataDirectory, characterId: 'character', saveId: 'save-1',
-            name: '새 이름',
-        })
-        expect(deleteSaveSlot).toHaveBeenCalledWith({
-            userDataDirectory, characterId: 'character', saveId: 'save-1',
-        })
+            const target = resolveMemoryWorkspace(
+                root, 'character', 'save-slot:__compat'
+            )
+            await expect(service.previewMemorySave({
+                characterId: 'character', saveId: '__compat',
+            })).resolves.toEqual(Buffer.from('newest chat state'))
+            await expect(readFile(join(
+                target.directory, 'wiki', document.relativePath
+            ), 'utf8')).resolves.toContain('Newest snapshot.')
+        }
+        finally {
+            await rm(root, { recursive: true, force: true })
+        }
     })
 
     test('serializes source writes behind a workspace fork', async () => {
@@ -256,7 +340,7 @@ describe('RisuBard memory CommonJS runtime', () => {
         ))
     })
 
-    test('does not create a workspace when viewing an empty chat', async () => {
+    test('loads an empty chat without inventing wiki documents', async () => {
         const { createRuntimeMemoryService } = require(
             './risubard-memory-runtime.cjs'
         )
@@ -264,11 +348,6 @@ describe('RisuBard memory CommonJS runtime', () => {
             join(tmpdir(), 'risubard-runtime-empty-')
         )
         const service = createRuntimeMemoryService(userDataDirectory)
-        const workspace = resolveMemoryWorkspace(
-            userDataDirectory,
-            'character',
-            'empty-chat'
-        )
 
         await expect(service.loadView(
             'character',
@@ -287,9 +366,7 @@ describe('RisuBard memory CommonJS runtime', () => {
             },
             documents: [],
         })
-        await expect(access(workspace.directory)).rejects.toMatchObject({
-            code: 'ENOENT',
-        })
+        await rm(userDataDirectory, { recursive: true, force: true })
     })
 
     test('loads the TypeScript persistence service from the production runtime', async () => {
@@ -656,5 +733,32 @@ describe('RisuBard memory CommonJS runtime', () => {
             'character',
             'chat'
         )).resolves.toMatchObject({ facts: [], events: [] })
+    })
+})
+
+describe('interrupted legacy Wiki directory swaps', () => {
+    test('restores a unique original tree before exposing a restarted chat', async () => {
+        const { createRuntimeMemoryService } = require('./risubard-memory-runtime.cjs')
+        const root = await mkdtemp(join(tmpdir(), 'risubard-legacy-swap-'))
+        try {
+            const input = { characterId: 'character', chatId: 'chat' }
+            let service = createRuntimeMemoryService(root)
+            const saved = await service.saveManualWikiDocument({
+                ...input, type: 'concept', title: 'Clock',
+                markdown: '## Clock\n\nOriginal state.',
+            })
+            const workspace = resolveMarkdownWikiWorkspace(root, input.characterId, input.chatId)
+            const file = join(workspace.directory, saved.relativePath)
+            const externalBytes = (await readFile(file, 'utf8')).replace('Original state.', 'External fact before interruption.')
+            await writeFile(file, externalBytes)
+            await rename(workspace.directory,
+                `${workspace.directory}.write-backup-11111111-1111-4111-8111-111111111111`)
+            service = createRuntimeMemoryService(root)
+            const restored = await service.loadView(input.characterId, input.chatId)
+            expect(restored.documents.find((document: { id: string }) => document.id === saved.id)?.content)
+                .toContain('External fact before interruption.')
+            expect(await readFile(file, 'utf8')).toBe(externalBytes)
+        }
+        finally { await rm(root, { recursive: true, force: true }) }
     })
 })

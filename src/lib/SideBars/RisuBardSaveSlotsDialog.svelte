@@ -1,12 +1,13 @@
 <script lang="ts">
     import { ArrowDownIcon, ArrowUpIcon, Clock3Icon, LoaderCircleIcon, PencilIcon, PlusIcon, SaveIcon, Trash2Icon, ZapIcon } from '@lucide/svelte'
     import loadIcon from 'src/assets/solar-bold/undo-left-square-bold.svg'
-    import { alertConfirm, alertInput } from 'src/ts/alert'
+    import { alertConfirm, alertInput, notifySuccess } from 'src/ts/alert'
     import { forageStorage } from 'src/ts/globalApi.svelte'
     import { classifyMemorySaveId, quickSaveId } from 'src/ts/risubard/memorySavePolicy'
     import {
         deleteMemorySaveSlot,
-        listMemorySaveSlots,
+        exportReferenceSaveCompat,
+        listAllMemorySaveSlots,
         previewMemorySaveSlot,
         renameMemorySaveSlot,
         shouldConfirmMemorySaveLoad,
@@ -44,7 +45,7 @@
         onSave,
     }: Props = $props()
 
-    let slots = $state<MemorySaveSlotSummary[]>([])
+    let slots = $state<Array<MemorySaveSlotSummary & { saveFormat?: string }>>([])
     let selectedId = $state('')
     let sortAscending = $state(false)
     let loading = $state(false)
@@ -117,7 +118,7 @@
         loading = true
         error = ''
         try {
-            const next = await listMemorySaveSlots({ characterId, sourceChatId: currentChatId, fetchImpl: fetch, createAuth: () => forageStorage.createAuth() })
+            const next = await listAllMemorySaveSlots({ characterId, sourceChatId: currentChatId, fetchImpl: fetch, createAuth: () => forageStorage.createAuth() })
             if (sequence !== requestSequence) return
             slots = next
             selectedId = firstSelectedId(next)
@@ -215,6 +216,33 @@
     }
 
     function savedAt(value: string): string { return new Date(value).toLocaleString() }
+
+    /**
+     * Converts a reference save into a v1-compatible one. The slot keeps its
+     * label so the exported copy is recognizable in older builds.
+     */
+    async function exportCompat(target: MemorySaveSlotSummary): Promise<void> {
+        if (loadingId) return
+        const targetSaveId = `${target.saveId}__compat`
+        loadingId = target.saveId
+        error = ''
+        try {
+            await exportReferenceSaveCompat({
+                characterId,
+                saveId: target.saveId,
+                targetSaveId,
+                fetchImpl: fetch,
+                createAuth: () => forageStorage.createAuth(),
+            })
+            await refresh()
+            notifySuccess('구버전에서 읽을 수 있는 세이브로 내보냈습니다.')
+        } catch (cause) {
+            error = cause instanceof Error ? cause.message : String(cause)
+        } finally {
+            loadingId = ''
+        }
+    }
+
     function setPreviewShare(value: number): void { previewShare = Math.min(60, Math.max(25, Math.round(value))) }
     function startPreviewResize(event: PointerEvent): void {
         if (!workspaceElement || event.button !== 0) return
@@ -244,7 +272,7 @@
     })
 </script>
 
-{#snippet slotCard(slot: MemorySaveSlotSummary, kind: 'auto' | 'quick' | 'manual')}
+{#snippet slotCard(slot: MemorySaveSlotSummary & { saveFormat?: string }, kind: 'auto' | 'quick' | 'manual')}
     <li data-save-slot-kind={kind} class:save-slot--selected={slot.saveId === selectedId} class="save-slot">
         <button type="button" class="save-slot__select risu-button-lift" aria-pressed={slot.saveId === selectedId} onclick={() => selectSlot(slot.saveId)}>
             <strong>{slotLabel(slot)}</strong>
@@ -253,6 +281,9 @@
         </button>
         {#if kind === 'manual'}
             <ShButton data-save-file-rename variant="ghost" className="save-slot__rename" size="icon-xs" aria-label={`${slotLabel(slot)} 이름 변경`} title="파일 이름 변경" disabled={Boolean(loadingId)} onclick={(event) => { event.stopPropagation(); selectSlot(slot.saveId); void renameSlot(slot) }}><PencilIcon size={15} /></ShButton>
+        {/if}
+        {#if slot.saveFormat === 'commit-reference'}
+            <ShButton data-save-file-export variant="ghost" className="save-slot__export" size="icon-xs" aria-label={`${slotLabel(slot)} 호환 세이브로 내보내기`} title="구버전에서 읽을 수 있는 세이브로 내보내기" disabled={Boolean(loadingId)} onclick={(event) => { event.stopPropagation(); void exportCompat(slot) }}><ArrowDownIcon size={15} /></ShButton>
         {/if}
         <ShButton data-save-file-load={mode === 'load' ? true : undefined} data-save-file-overwrite={mode === 'save' ? true : undefined} className="save-slot__action" size="icon-sm" aria-label={`${slotLabel(slot)} ${mode === 'save' ? '덮어쓰기' : '불러오기'}`} title={mode === 'save' ? '현재 채팅으로 덮어쓰기' : '선택한 저장 파일 불러오기'} disabled={Boolean(loadingId) || (mode === 'save' && !onSave)} onclick={(event) => { event.stopPropagation(); if (mode === 'save') void save(slot.saveId); else void load(slot.saveId) }}>
             {#if loadingId === slot.saveId}<LoaderCircleIcon size={20} class="animate-spin" />{:else if mode === 'save'}<SaveIcon size={18} />{:else}<SolarAssetIcon src={loadIcon} name="undo-left-square-bold" size={22} />{/if}

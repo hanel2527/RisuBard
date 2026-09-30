@@ -34,7 +34,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function boundedId(value: string, label: string): string {
+function boundedId(value: unknown, label: string): string {
     if (typeof value !== 'string'
         || value.trim().length === 0
         || value.length > 1_024) {
@@ -97,6 +97,82 @@ function parseSummary(value: unknown): MemorySaveSlotSummary {
             ),
         } : {}),
         ...(hasEvent ? { latestEvent: parseEvent(value.latestEvent) } : {}),
+    }
+}
+
+function projectEndpointSummary(
+    value: unknown,
+    extraFields: readonly string[]
+): MemorySaveSlotSummary {
+    if (!isRecord(value)) throw new Error('Invalid memory save summary')
+    const summaryFields = [
+        'saveId', 'sourceChatId', 'sourceChatName', 'createdAt', 'turnCount',
+        'latestMessageId', 'latestEvent',
+    ]
+    const allowedFields = Object.fromEntries(
+        [...summaryFields, ...extraFields].map((key) => [key, true])
+    )
+    if (Object.keys(value).some((key) => !Object.hasOwn(allowedFields, key))) {
+        throw new Error('Invalid memory save summary')
+    }
+    return parseSummary(Object.fromEntries(
+        Object.entries(value).filter(([key]) => summaryFields.includes(key))
+    ))
+}
+
+function validateEndpointIdFields(
+    value: Record<string, unknown>,
+    fields: readonly string[]
+): void {
+    for (const field of fields) {
+        if (Object.hasOwn(value, field)) {
+            const id = value[field]
+            if (typeof id !== 'string') throw new Error(`Invalid saved ${field}`)
+            boundedId(id, `Saved ${field}`)
+        }
+    }
+}
+
+function parseCreateSaveResponse(value: unknown): MemorySaveSlotSummary {
+    if (!isRecord(value)) throw new Error('Invalid memory save summary')
+    validateEndpointIdFields(value, [
+        'wikiCommitId', 'wikiRefId', 'capturedCommitId',
+    ])
+    return projectEndpointSummary(value, [
+        'wikiCommitId', 'wikiRefId', 'capturedCommitId',
+    ])
+}
+
+function parseReferenceAutosaveResponse(
+    value: unknown
+): MemorySaveSlotSummary {
+    if (!isRecord(value)
+        || value.schemaVersion !== 1
+        || value.mode !== 'commit-reference'
+        || typeof value.chatStateRef !== 'string') {
+        throw new Error('Invalid memory reference save summary')
+    }
+    validateEndpointIdFields(value, [
+        'chatStateRef', 'wikiCommitId', 'branchId', 'wikiRevision',
+        'chatHash', 'wikiRefId', 'capturedCommitId',
+    ])
+    return projectEndpointSummary(value, [
+        'schemaVersion', 'mode', 'chatStateRef', 'wikiCommitId', 'branchId',
+        'wikiRevision', 'chatHash', 'wikiRefId', 'capturedCommitId',
+    ])
+}
+
+function parseListAllSummary(
+    value: unknown
+): MemorySaveSlotSummary & { saveFormat: 'v1-snapshot' | 'commit-reference' } {
+    if (!isRecord(value)
+        || (value.saveFormat !== 'v1-snapshot'
+            && value.saveFormat !== 'commit-reference')) {
+        throw new Error('Invalid memory save format')
+    }
+    return {
+        ...projectEndpointSummary(value, ['saveFormat']),
+        saveFormat: value.saveFormat,
     }
 }
 
@@ -266,7 +342,7 @@ export async function createMemorySaveSlot(input: {
             + await failureDetail(response)
         )
     }
-    return parseSummary(await response.json())
+    return parseCreateSaveResponse(await response.json())
 }
 
 export async function listMemorySaveSlots(input: {
@@ -484,4 +560,238 @@ export async function prepareMemorySaveLoad(input: {
     // scenes to that same destination without changing the decoded snapshot's ID.
     rebindPainterChatScope({ id: input.destinationChatId, bardPainter: chat.bardPainter }, input.characterId)
     return { chat, forkToken }
+}
+
+export interface MemoryReferenceSaveSummary extends MemorySaveSlotSummary {
+    saveFormat: 'commit-reference'
+}
+
+/**
+ * Reference autosave: records the chat and the wiki commit it belongs to
+ * without copying the wiki tree. The server deduplicates the chat bytes by
+ * hash, so an unchanged chat adds no storage.
+ */
+export async function writeReferenceAutosave(input: {
+    characterId: string
+    chat: Chat
+    saveId: string
+    fetchImpl: typeof fetch
+    createAuth(): Promise<string>
+}): Promise<MemorySaveSlotSummary> {
+    const characterId = boundedId(input.characterId, 'Character ID')
+    const sourceChatId = boundedId(input.chat.id ?? '', 'Chat ID')
+    const saveId = boundedId(input.saveId, 'Save slot ID')
+    if (typeof input.chat.name !== 'string'
+        || input.chat.name.trim().length === 0
+        || input.chat.name.length > 512) {
+        throw new Error('Chat name must be a non-empty bounded string')
+    }
+    const snapshot = structuredClone(input.chat)
+    applyMemorySavePromptSettings(snapshot)
+    delete snapshot._placeholder
+    snapshot.isStreaming = false
+    delete snapshot.activeStreamingDisplayOptimizationMode
+    const latestMessageId = latestChatMessageId(snapshot.message)
+    const response = await withMemorySaveTimeout(async (signal) =>
+        invokeBrowserFetch(
+            input.fetchImpl,
+            '/api/risubard/memory/save-slot/reference',
+            {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'content-type': 'application/octet-stream',
+                    'risu-auth': await input.createAuth(),
+                    'x-risubard-character-id': characterId,
+                    'x-risubard-source-chat-id': sourceChatId,
+                    'x-risubard-save-id': saveId,
+                    'x-risubard-chat-name': encodeBase64Url(snapshot.name),
+                    'x-risubard-turn-count': String(
+                        countChatTurns(snapshot.message)
+                    ),
+                    ...(latestMessageId ? {
+                        'x-risubard-latest-message-id': latestMessageId,
+                    } : {}),
+                },
+                body: requestBody(encodeMemorySaveChat(snapshot)),
+                signal,
+            }
+        )
+    )
+    if (!response.ok) {
+        throw new Error(
+            `Reference autosave failed with status ${response.status}`
+            + await failureDetail(response)
+        )
+    }
+    return parseReferenceAutosaveResponse(await response.json())
+}
+
+/**
+ * Loads a reference save. The wiki is materialized in the destination chat from
+ * the pinned commit rather than copied, so both the chat and the wiki land at
+ * the recorded point in the story.
+ */
+export async function prepareReferenceSaveLoad(input: {
+    characterId: string
+    saveId: string
+    destinationChatId: string
+    currentChat: Chat
+    fetchImpl: typeof fetch
+    createAuth(): Promise<string>
+}): Promise<{
+    chat: Chat
+    wikiCommitId?: string
+    wikiForked: boolean
+    wikiCheckedOut: boolean
+    previousWikiHead?: string
+} | null> {
+    const response = await withMemorySaveTimeout(async (signal) =>
+        invokeBrowserFetch(
+            input.fetchImpl,
+            '/api/risubard/memory/save-slot/reference/load',
+            {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'content-type': 'application/json',
+                    'risu-auth': await input.createAuth(),
+                },
+                body: JSON.stringify({
+                    characterId: boundedId(input.characterId, 'Character ID'),
+                    saveId: boundedId(input.saveId, 'Save slot ID'),
+                    destinationChatId: boundedId(
+                        input.destinationChatId, 'Destination chat ID'
+                    ),
+                }),
+                signal,
+            }
+        )
+    )
+    // No reference save for this slot: the caller falls back to the v1 format.
+    if (response.status === 404) return null
+    if (!response.ok) {
+        throw new Error(
+            `Reference save load failed with status ${response.status}`
+            + await failureDetail(response)
+        )
+    }
+    const value: unknown = await response.json()
+    if (!isRecord(value)
+        || typeof value.chatBase64 !== 'string'
+        || value.chatBase64.length === 0) {
+        throw new Error('Reference save load returned an invalid response')
+    }
+    const bytes = Uint8Array.from(
+        Buffer.from(value.chatBase64, 'base64')
+    )
+    const decoded: unknown = decodeMemorySaveChat(bytes)
+    if (!isRecord(decoded)
+        || !Array.isArray(decoded.message)
+        || typeof decoded.name !== 'string') {
+        throw new Error('Reference save load returned an invalid chat snapshot')
+    }
+    const chat = decoded as unknown as Chat
+    applyMemorySavePromptSettings(chat, input.currentChat)
+    if (typeof chat.note !== 'string') chat.note = ''
+    if (!Array.isArray(chat.localLore)) chat.localLore = []
+    rebindPainterChatScope(
+        { id: input.destinationChatId, bardPainter: chat.bardPainter },
+        input.characterId
+    )
+    return {
+        chat,
+        wikiForked: value.wikiForked === true,
+        wikiCheckedOut: value.wikiCheckedOut === true,
+        ...(typeof value.previousWikiHead === 'string'
+            ? { previousWikiHead: value.previousWikiHead } : {}),
+        ...(typeof value.wikiCommitId === 'string'
+            ? { wikiCommitId: value.wikiCommitId } : {}),
+    }
+}
+
+/** Lists v1 snapshots and reference saves together for the save dialog. */
+export async function listAllMemorySaveSlots(input: {
+    characterId: string
+    sourceChatId: string
+    fetchImpl: typeof fetch
+    createAuth(): Promise<string>
+}): Promise<Array<
+    MemorySaveSlotSummary & {
+        saveFormat: 'v1-snapshot' | 'commit-reference'
+    }
+>> {
+    const response = await invokeBrowserFetch(
+        input.fetchImpl,
+        '/api/risubard/memory/save-slot/list-all',
+        {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'content-type': 'application/json',
+                'risu-auth': await input.createAuth(),
+            },
+            body: JSON.stringify({
+                characterId: boundedId(input.characterId, 'Character ID'),
+                sourceChatId: boundedId(input.sourceChatId, 'Chat ID'),
+            }),
+        }
+    )
+    if (!response.ok) {
+        throw new Error(
+            `Memory save list failed with status ${response.status}`
+            + await failureDetail(response)
+        )
+    }
+    const value: unknown = await response.json()
+    if (!Array.isArray(value) || value.length > 10_000) {
+        throw new Error('Invalid memory save list')
+    }
+    return value.map(parseListAllSummary)
+}
+
+/**
+ * Converts a reference save into a v1-compatible save. Reference saves keep the
+ * wiki as a commit pointer, which builds predating the version store cannot
+ * read, so handing a save to an older build needs this explicit conversion.
+ */
+export async function exportReferenceSaveCompat(input: {
+    characterId: string
+    saveId: string
+    targetSaveId: string
+    sourceChatName?: string
+    fetchImpl: typeof fetch
+    createAuth(): Promise<string>
+}): Promise<MemorySaveSlotSummary> {
+    const response = await withMemorySaveTimeout(async (signal) =>
+        invokeBrowserFetch(
+            input.fetchImpl,
+            '/api/risubard/memory/save-slot/reference/export',
+            {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'content-type': 'application/json',
+                    'risu-auth': await input.createAuth(),
+                },
+                body: JSON.stringify({
+                    characterId: boundedId(input.characterId, 'Character ID'),
+                    saveId: boundedId(input.saveId, 'Save slot ID'),
+                    targetSaveId: boundedId(
+                        input.targetSaveId, 'Target save slot ID'
+                    ),
+                    ...(input.sourceChatName
+                        ? { sourceChatName: input.sourceChatName } : {}),
+                }),
+                signal,
+            }
+        )
+    )
+    if (!response.ok) {
+        throw new Error(
+            `Reference save export failed with status ${response.status}`
+            + await failureDetail(response)
+        )
+    }
+    return parseSummary(await response.json())
 }

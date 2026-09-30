@@ -16,6 +16,8 @@ export interface CanonicalTurnReceipt {
     changes: CanonicalTurnReceiptChange[]
     warnings: string[]
     recordedAt: string
+    /** Ordered commits published by all analyses of this turn. */
+    vcsCommitIds?: string[]
     recovery?: {
         inputHash: string
         deferred: Array<{
@@ -47,6 +49,10 @@ export function mergeCanonicalTurnReceipts(
         sourceMessageIds: [...new Set([...previous.sourceMessageIds, ...latest.sourceMessageIds])],
         eventIds: [...new Set([...previous.eventIds, ...latest.eventIds])],
         changes: [...changes.values()],
+        vcsCommitIds: [...new Set([
+            ...(previous.vcsCommitIds ?? []),
+            ...(latest.vcsCommitIds ?? []),
+        ])],
     }
 }
 
@@ -137,8 +143,13 @@ const documentTypes: readonly CanonicalReceiptDocumentType[] = [
 export function parseCanonicalTurnReceipt(
     value: unknown
 ): CanonicalTurnReceipt {
-    if (!isRecord(value)
-        || Object.keys(value).length !== (value.recovery === undefined ? 5 : 6)
+    if (!isRecord(value)) throw new Error('Invalid wiki turn receipt')
+    const hasVcsCommit = value.vcsCommitId !== undefined
+    const hasVcsCommits = value.vcsCommitIds !== undefined
+    if (Object.keys(value).length !== 5
+            + (value.recovery === undefined ? 0 : 1)
+            + (hasVcsCommit ? 1 : 0)
+            + (hasVcsCommits ? 1 : 0)
         || !['sourceMessageIds', 'eventIds', 'changes', 'warnings',
             'recordedAt'].every((key) => Object.hasOwn(value, key))
         || !Array.isArray(value.sourceMessageIds)
@@ -148,6 +159,11 @@ export function parseCanonicalTurnReceipt(
         || !Array.isArray(value.warnings)
         || !value.warnings.every((warning) => typeof warning === 'string')
         || typeof value.recordedAt !== 'string'
+        || (hasVcsCommit && (typeof value.vcsCommitId !== 'string'
+            || !/^[a-f0-9]{64}$/u.test(value.vcsCommitId)))
+        || (hasVcsCommits && (!Array.isArray(value.vcsCommitIds)
+            || !value.vcsCommitIds.every((id) =>
+                typeof id === 'string' && /^[a-f0-9]{64}$/u.test(id))))
         || !Array.isArray(value.changes)) {
         throw new Error('Invalid wiki turn receipt')
     }
@@ -194,6 +210,12 @@ export function parseCanonicalTurnReceipt(
         changes,
         warnings: [...value.warnings] as string[],
         recordedAt: value.recordedAt,
+        ...(hasVcsCommits || hasVcsCommit ? {
+            vcsCommitIds: [...new Set([
+                ...(hasVcsCommit ? [value.vcsCommitId as string] : []),
+                ...(hasVcsCommits ? value.vcsCommitIds as string[] : []),
+            ])],
+        } : {}),
         ...(recovery ? { recovery } : {}),
     }
 }

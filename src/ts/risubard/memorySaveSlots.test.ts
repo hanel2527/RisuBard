@@ -1,3 +1,7 @@
+import { createRequire } from 'node:module'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, test, vi } from 'vitest'
 import type { Chat } from '../storage/database.svelte'
 import { createPainterChatData, createPainterSettings, type PainterResult } from '../bardPainter/types'
@@ -7,13 +11,17 @@ import {
     decodeMemorySaveChat,
     encodeMemorySaveChat,
     listMemorySaveSlots,
+    listAllMemorySaveSlots,
     deleteMemorySaveSlot,
     previewMemorySaveSlot,
     prepareMemorySaveLoad,
     renameMemorySaveSlot,
     latestChatMessageId,
     shouldConfirmMemorySaveLoad,
+    writeReferenceAutosave,
 } from './memorySaveSlots'
+
+const require = createRequire(import.meta.url)
 
 const chat: Chat = {
     id: 'chat-1', name: '성문 앞', note: '', localLore: [],
@@ -390,5 +398,86 @@ describe('memory save slot client', () => {
             { role: 'char', data: '최신 답변' },
         ])
         expect(fetchImpl).toHaveBeenCalledOnce()
+    })
+
+    test('accepts real runtime save responses through the client APIs', async () => {
+        const runtime = require('../../../server/node/risubard-memory-runtime.cjs')
+        const root = await mkdtemp(join(tmpdir(), 'risubard-save-client-contract-'))
+        try {
+            const service = runtime.createRuntimeMemoryService(root)
+            const manualRuntimeResult = await service.createMemorySave({
+                characterId: 'character',
+                sourceChatId: 'chat-1',
+                saveId: 'manual',
+                sourceChatName: chat.name,
+                turnCount: countChatTurns(chat.message),
+                latestMessageId: latestChatMessageId(chat.message),
+                chatBytes: Buffer.from(encodeMemorySaveChat(chat)),
+            })
+            const referenceRuntimeResult = await service.writeReferenceAutosave({
+                characterId: 'character',
+                sourceChatId: 'chat-1',
+                saveId: 'reference',
+                sourceChatName: chat.name,
+                turnCount: countChatTurns(chat.message),
+                latestMessageId: latestChatMessageId(chat.message),
+                chatBytes: Buffer.from(encodeMemorySaveChat(chat)),
+            })
+            const manualListRuntimeResult = await service.listMemorySaves({
+                characterId: 'character',
+                sourceChatId: 'chat-1',
+            })
+            const listRuntimeResult = await service.listAllMemorySaves({
+                characterId: 'character',
+                sourceChatId: 'chat-1',
+            })
+            const respondWith = (value: unknown) =>
+                vi.fn(async () => new Response(JSON.stringify(value), {
+                    headers: { 'content-type': 'application/json' },
+                })) as unknown as typeof fetch
+
+            const manual = await createMemorySaveSlot({
+                characterId: 'character', chat, saveId: 'manual',
+                fetchImpl: respondWith(manualRuntimeResult),
+                createAuth: async () => 'auth',
+            })
+            expect(manual).toMatchObject({
+                saveId: 'manual', sourceChatId: 'chat-1',
+                sourceChatName: chat.name, turnCount: 1,
+            })
+            expect(manual).not.toHaveProperty('wikiCommitId')
+            await expect(createMemorySaveSlot({
+                characterId: 'character', chat, saveId: 'unexpected',
+                fetchImpl: respondWith({
+                    ...manualRuntimeResult, unexpectedField: true,
+                }),
+                createAuth: async () => 'auth',
+            })).rejects.toThrow('Invalid memory save summary')
+
+            const reference = await writeReferenceAutosave({
+                characterId: 'character', chat, saveId: 'reference',
+                fetchImpl: respondWith(referenceRuntimeResult),
+                createAuth: async () => 'auth',
+            })
+            expect(reference).toMatchObject({
+                saveId: 'reference', sourceChatId: 'chat-1',
+                sourceChatName: chat.name, turnCount: 1,
+            })
+            expect(reference).not.toHaveProperty('chatStateRef')
+
+            await expect(listMemorySaveSlots({
+                characterId: 'character', sourceChatId: 'chat-1',
+                fetchImpl: respondWith(manualListRuntimeResult),
+                createAuth: async () => 'auth',
+            })).resolves.toEqual(manualListRuntimeResult)
+            await expect(listAllMemorySaveSlots({
+                characterId: 'character', sourceChatId: 'chat-1',
+                fetchImpl: respondWith(listRuntimeResult),
+                createAuth: async () => 'auth',
+            })).resolves.toEqual(listRuntimeResult)
+        }
+        finally {
+            await rm(root, { recursive: true, force: true })
+        }
     })
 })

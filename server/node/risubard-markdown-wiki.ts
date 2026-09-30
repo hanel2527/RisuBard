@@ -1,7 +1,8 @@
 import { chunkWikiDocument, type WikiEmbeddingCatalog } from '../../src/ts/risubard/wikiEmbeddingChunks'
 import * as nodeFs from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
-import { basename, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { resolveMemoryWorkspace } from './risubard-memory-workspace'
 import { inquireMarkdownDocuments } from './risubard-markdown-inquiry'
 import { detectWikiWritingLanguage, isWikiHeadingLabel, localizeWikiHeadings, normalizeWikiWritingLanguage, wikiHeadingLabelsPattern, wikiWritingHeadings, wikiWritingLocales, type WikiWritingLanguage } from '../../src/ts/risubard/wikiWritingLanguage'
@@ -13,6 +14,12 @@ import {
     normalizeMemoryRetrievalMetadata,
     type MemoryRetrievalMetadata,
 } from './risubard-memory-metadata'
+import type {
+    WikiAnchorMessage,
+    WikiChatAnchor,
+    WikiCommitKind,
+} from '../../src/ts/risubard/wikiVcsContract'
+import type { WikiVersioningPort } from './risubard-wiki-versioning'
 
 export interface MarkdownWikiDocument {
     id: string
@@ -33,6 +40,8 @@ export interface MarkdownWikiDocument {
     reviewStatus?: 'unreviewed' | 'reviewed'
     reviewBaseContent?: string
     retrievalMetadata?: MemoryRetrievalMetadata
+    /** Commit this write was published as, when versioning is enabled. */
+    vcsCommitId?: string
 }
 
 export type MarkdownWikiContextMode = 'always' | 'auto' | 'never'
@@ -89,6 +98,13 @@ type WikiFileSystem = Pick<
     'lstat' | 'mkdir' | 'readFile' | 'readdir' | 'realpath' | 'rename'
     | 'rm' | 'writeFile'
 >
+
+type WikiBatchOverlay = {
+    workspace: MarkdownWikiWorkspace
+    liveWorkspace: MarkdownWikiWorkspace
+    touchedPaths: Set<string>
+    deletedPaths: Set<string>
+}
 
 function required(value: string, label: string): string {
     if (typeof value !== 'string' || value.trim().length === 0) {
@@ -616,20 +632,7 @@ async function writeAtomically(
     }
 }
 
-export function resolveMarkdownWikiWorkspace(
-    userDataDirectory: string,
-    characterId: string,
-    chatId: string
-): MarkdownWikiWorkspace {
-    if (!isAbsolute(required(userDataDirectory, 'userDataDirectory'))) {
-        throw new Error('userDataDirectory must be absolute')
-    }
-    const memory = resolveMemoryWorkspace(
-        userDataDirectory,
-        characterId,
-        chatId
-    )
-    const directory = resolve(memory.directory, 'wiki')
+function markdownWikiWorkspaceAt(directory: string): MarkdownWikiWorkspace {
     return {
         directory,
         eventsDirectory: resolve(directory, 'events'),
@@ -645,18 +648,308 @@ export function resolveMarkdownWikiWorkspace(
     }
 }
 
+export function resolveMarkdownWikiWorkspace(
+    userDataDirectory: string,
+    characterId: string,
+    chatId: string
+): MarkdownWikiWorkspace {
+    if (!isAbsolute(required(userDataDirectory, 'userDataDirectory'))) {
+        throw new Error('userDataDirectory must be absolute')
+    }
+    const memory = resolveMemoryWorkspace(
+        userDataDirectory,
+        characterId,
+        chatId
+    )
+    return markdownWikiWorkspaceAt(resolve(memory.directory, 'wiki'))
+}
+
 export function createMarkdownNarrativeWiki(
     userDataDirectory: string,
     options: {
         fileSystem?: WikiFileSystem
         now?: () => Date
+        /** Reports every completed working-tree change as one commit. */
+        versioning?: WikiVersioningPort
     } = {}
 ) {
-    const fileSystem = options.fileSystem ?? nodeFs
+    const baseFileSystem = options.fileSystem ?? nodeFs
     const now = options.now ?? (() => new Date())
-    const workspaceFor = (characterId: string, chatId: string) =>
+    const versioning = options.versioning
+    const liveWorkspaceFor = (characterId: string, chatId: string) =>
         resolveMarkdownWikiWorkspace(userDataDirectory, characterId, chatId)
+    const workspaceContext = new AsyncLocalStorage<{
+        characterId: string
+        chatId: string
+        workspace: MarkdownWikiWorkspace
+        overlay?: WikiBatchOverlay
+    }>()
+    const overlayPath = (path: unknown) => {
+        const overlay = workspaceContext.getStore()?.overlay
+        if (!overlay || typeof path !== 'string') return undefined
+        const stagedPath = resolve(path)
+        const relativePath = relative(
+            overlay.workspace.directory,
+            stagedPath
+        )
+        if (relativePath === '..'
+            || relativePath.startsWith(`..${sep}`)
+            || isAbsolute(relativePath)) {
+            return undefined
+        }
+        return {
+            overlay,
+            stagedPath,
+            livePath: join(overlay.liveWorkspace.directory, relativePath),
+            relativePath,
+        }
+    }
+    const isOverlayDeleted = (overlay: WikiBatchOverlay, path: string) => {
+        for (const deleted of overlay.deletedPaths) {
+            if (path === deleted || path.startsWith(`${deleted}${sep}`)) {
+                return true
+            }
+        }
+        return false
+    }
+    const markOverlayWrite = (
+        overlay: WikiBatchOverlay,
+        relativePath: string
+    ) => {
+        overlay.touchedPaths.add(relativePath)
+        overlay.deletedPaths.delete(relativePath)
+    }
+    const invokeFileSystem = (
+        method: (...args: never[]) => unknown,
+        args: unknown[]
+    ) => Reflect.apply(method, baseFileSystem, args as never[])
+    const fileSystem = new Proxy(baseFileSystem, {
+        get(target, property, receiver) {
+            if (property === 'readFile') {
+                return async (path: string, ...args: unknown[]) => {
+                    const mapped = overlayPath(path)
+                    if (!mapped) {
+                        return invokeFileSystem(target.readFile, [path, ...args])
+                    }
+                    if (isOverlayDeleted(
+                        mapped.overlay,
+                        mapped.relativePath
+                    )) {
+                        return invokeFileSystem(target.readFile, [
+                            mapped.stagedPath,
+                            ...args,
+                        ])
+                    }
+                    try {
+                        return await invokeFileSystem(target.readFile, [
+                            mapped.stagedPath,
+                            ...args,
+                        ])
+                    }
+                    catch (error) {
+                        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+                            throw error
+                        }
+                        return invokeFileSystem(target.readFile, [
+                            mapped.livePath,
+                            ...args,
+                        ])
+                    }
+                }
+            }
+            if (property === 'readdir') {
+                return async (path: string, ...args: unknown[]) => {
+                    const mapped = overlayPath(path)
+                    if (!mapped || args.length > 0) {
+                        return invokeFileSystem(target.readdir, [path, ...args])
+                    }
+                    const readEntries = async (directory: string) => {
+                        try {
+                            return await invokeFileSystem(
+                                target.readdir,
+                                [directory]
+                            ) as Array<string | { name: string }>
+                        }
+                        catch (error) {
+                            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+                                throw error
+                            }
+                            return null
+                        }
+                    }
+                    if (isOverlayDeleted(
+                        mapped.overlay,
+                        mapped.relativePath
+                    )) {
+                        return invokeFileSystem(
+                            target.readdir,
+                            [mapped.stagedPath]
+                        )
+                    }
+                    const [staged, live] = await Promise.all([
+                        readEntries(mapped.stagedPath),
+                        readEntries(mapped.livePath),
+                    ])
+                    if (staged === null && live === null) {
+                        return invokeFileSystem(
+                            target.readdir,
+                            [mapped.stagedPath]
+                        )
+                    }
+                    const names = new Map<string, string | { name: string }>()
+                    for (const entry of live ?? []) {
+                        const name = typeof entry === 'string'
+                            ? entry : entry.name
+                        const relativeChild = mapped.relativePath
+                            ? join(mapped.relativePath, name) : name
+                        if (!isOverlayDeleted(
+                            mapped.overlay,
+                            relativeChild
+                        )) {
+                            names.set(name, entry)
+                        }
+                    }
+                    for (const entry of staged ?? []) {
+                        const name = typeof entry === 'string'
+                            ? entry : entry.name
+                        names.set(name, entry)
+                    }
+                    return [...names.values()]
+                }
+            }
+            if (property === 'lstat' || property === 'realpath') {
+                return async (path: string, ...args: unknown[]) => {
+                    const mapped = overlayPath(path)
+                    if (!mapped) {
+                        return invokeFileSystem(
+                            Reflect.get(target, property, receiver),
+                            [path, ...args]
+                        )
+                    }
+                    if (isOverlayDeleted(
+                        mapped.overlay,
+                        mapped.relativePath
+                    )) {
+                        return Promise.reject(Object.assign(
+                            new Error('File does not exist'),
+                            { code: 'ENOENT' }
+                        ))
+                    }
+                    try {
+                        return await invokeFileSystem(
+                            Reflect.get(target, property, receiver),
+                            [mapped.stagedPath, ...args]
+                        )
+                    }
+                    catch (error) {
+                        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+                            throw error
+                        }
+                        return invokeFileSystem(
+                            Reflect.get(target, property, receiver),
+                            [mapped.livePath, ...args]
+                        )
+                    }
+                }
+            }
+            if (property === 'mkdir') {
+                return (path: string, ...args: unknown[]) => {
+                    const mapped = overlayPath(path)
+                    return invokeFileSystem(
+                        target.mkdir,
+                        [mapped?.stagedPath ?? path, ...args]
+                    )
+                }
+            }
+            if (property === 'writeFile') {
+                return (path: string, ...args: unknown[]) => {
+                    const mapped = overlayPath(path)
+                    if (mapped) markOverlayWrite(
+                        mapped.overlay,
+                        mapped.relativePath
+                    )
+                    return invokeFileSystem(
+                        target.writeFile,
+                        [mapped?.stagedPath ?? path, ...args]
+                    )
+                }
+            }
+            if (property === 'rm') {
+                return async (path: string, ...args: unknown[]) => {
+                    const mapped = overlayPath(path)
+                    if (!mapped) {
+                        return invokeFileSystem(target.rm, [path, ...args])
+                    }
+                    const options = args[0] as { force?: boolean } | undefined
+                    try {
+                        await invokeFileSystem(
+                            target.rm,
+                            [mapped.stagedPath, ...args]
+                        )
+                    }
+                    catch (error) {
+                        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+                            throw error
+                        }
+                        if (!options?.force) {
+                            try {
+                                await invokeFileSystem(
+                                    target.lstat,
+                                    [mapped.livePath]
+                                )
+                            }
+                            catch {
+                                throw error
+                            }
+                        }
+                    }
+                    mapped.overlay.deletedPaths.add(mapped.relativePath)
+                    mapped.overlay.touchedPaths.delete(mapped.relativePath)
+                }
+            }
+            if (property === 'rename') {
+                return async (source: string, destination: string) => {
+                    const sourcePath = overlayPath(source)
+                    const destinationPath = overlayPath(destination)
+                    if (!sourcePath && !destinationPath) {
+                        return invokeFileSystem(target.rename, [
+                            source, destination,
+                        ])
+                    }
+                    if (!sourcePath || !destinationPath) {
+                        throw new Error('Wiki batch rename escaped its staging tree')
+                    }
+                    await invokeFileSystem(target.rename, [
+                        sourcePath.stagedPath,
+                        destinationPath.stagedPath,
+                    ])
+                    sourcePath.overlay.touchedPaths.delete(
+                        sourcePath.relativePath
+                    )
+                    sourcePath.overlay.deletedPaths.delete(
+                        sourcePath.relativePath
+                    )
+                    markOverlayWrite(
+                        destinationPath.overlay,
+                        destinationPath.relativePath
+                    )
+                }
+            }
+            return Reflect.get(target, property, receiver)
+        },
+    }) as WikiFileSystem
+    const workspaceFor = (characterId: string, chatId: string) => {
+        const context = workspaceContext.getStore()
+        return context?.characterId === characterId
+            && context.chatId === chatId
+            ? context.workspace
+            : liveWorkspaceFor(characterId, chatId)
+    }
     const documentCache = new Map<string, MarkdownWikiDocument[]>()
+    const parsedDocuments = new Map<string, Map<string, {
+        stamp: string
+        document: MarkdownWikiDocument
+    }>>()
     const embeddingCatalogCache = new WeakMap<MarkdownWikiDocument[], Omit<WikiEmbeddingCatalog, 'nextOffset'>>()
     type BardChatUndoFile = { relativePath: string; contents: string }
     type BardChatUndoSnapshot = {
@@ -665,9 +958,18 @@ export function createMarkdownNarrativeWiki(
         files: BardChatUndoFile[]
         signature: string
     }
+    /** Commit-based undo: only the pre-operation head and diff are retained. */
+    type BardChatUndoCommit = {
+        characterId: string
+        chatId: string
+        baseHead: string | null
+        signature: string
+    }
     let bardChatUndoSnapshot: BardChatUndoSnapshot | null = null
+    let bardChatUndoCommit: BardChatUndoCommit | null = null
     let pendingBardChatUndo: Omit<BardChatUndoSnapshot, 'signature'> & {
         beforeSignature: string
+        baseHead: string | null
     } | null = null
 
     const cleanupLegacySnapshots = async (
@@ -769,6 +1071,32 @@ export function createMarkdownNarrativeWiki(
         return true
     }
 
+    const readDocument = async (
+        workspace: MarkdownWikiWorkspace,
+        file: string,
+        relativePath: string
+    ): Promise<MarkdownWikiDocument> => {
+        const status = await fileSystem.lstat(file)
+        if (status.isSymbolicLink() || !status.isFile()) {
+            throw new Error('Wiki document path is unsafe')
+        }
+        const metadata = [status.dev, status.ino, status.size, status.mtimeMs, status.ctimeMs]
+        const stamp = metadata.every((value) => typeof value === 'number' && Number.isFinite(value))
+            ? metadata.join(':') : undefined
+        const mapped = overlayPath(file)
+        const directory = mapped && !mapped.overlay.touchedPaths.has(mapped.relativePath)
+            ? mapped.overlay.liveWorkspace.directory : workspace.directory
+        let cache = parsedDocuments.get(directory)
+        const existing = cache?.get(relativePath)
+        if (stamp !== undefined && existing?.stamp === stamp) return existing.document
+        const document = parseDocument(await fileSystem.readFile(file, 'utf8'), relativePath)
+        if (stamp !== undefined) {
+            if (!cache) parsedDocuments.set(directory, cache = new Map())
+            cache.set(relativePath, { stamp, document })
+        }
+        return document
+    }
+
     const readDocuments = async (
         characterId: string,
         chatId: string
@@ -786,9 +1114,8 @@ export function createMarkdownNarrativeWiki(
             [workspace.eventsDirectory, 'events'],
         ] as const
         try {
-            documents.push(parseDocument(
-                await fileSystem.readFile(workspace.sceneFile, 'utf8'),
-                'current-scene.md'
+            documents.push(await readDocument(
+                workspace, workspace.sceneFile, 'current-scene.md'
             ))
         }
         catch (error) {
@@ -807,12 +1134,8 @@ export function createMarkdownNarrativeWiki(
             }
             const loaded = await Promise.all(files.map(async (file) => ({
                 file: join(directory, basename(file)),
-                document: parseDocument(
-                    await fileSystem.readFile(
-                        join(directory, basename(file)),
-                        'utf8'
-                    ),
-                    `${prefix}/${file}`
+                document: await readDocument(
+                    workspace, join(directory, basename(file)), `${prefix}/${file}`
                 ),
             })))
             for (const item of loaded) {
@@ -822,6 +1145,13 @@ export function createMarkdownNarrativeWiki(
                     continue
                 }
                 documents.push(item.document)
+            }
+        }
+        const cache = parsedDocuments.get(workspace.directory)
+        if (cache) {
+            const present = new Set(documents.map((document) => document.relativePath))
+            for (const path of cache.keys()) {
+                if (!present.has(path)) cache.delete(path)
             }
         }
         return documents
@@ -901,12 +1231,293 @@ export function createMarkdownNarrativeWiki(
             ),
             '',
         ].join('\n')
+        await fileSystem.mkdir(workspace.directory, { recursive: true })
         await writeAtomically(fileSystem, workspace.indexFile, index)
     }
+
+    /**
+     * Records a completed working-tree change as one commit. `index.md` is
+     * derived output, so it is regenerated after the commit rather than being
+     * versioned itself; the commit therefore sees only tracked documents.
+     */
+    const commitWrite = async (input: {
+        characterId: string
+        chatId: string
+        kind: WikiCommitKind
+        operationId?: string
+        chatAnchor?: WikiChatAnchor
+    }): Promise<string | null> => {
+        if (!versioning) return null
+        // Inside an open batch the individual writes stay uncommitted: the
+        // batch owner publishes one commit covering the whole operation.
+        if (openBatchFor(input.characterId, input.chatId)) {
+            return null
+        }
+        const result = await versioning.afterWrite(input)
+        return result.commitId
+    }
+
+    const batchKey = (characterId: string, chatId: string) =>
+        `${characterId}\u0000${chatId}`
+    type WriteBatch = {
+        operationId: string
+        kind: WikiCommitKind
+        chatAnchor?: WikiChatAnchor
+        expectedHead: string | null
+    } & WikiBatchOverlay
+    const writeBatches = new Map<string, WriteBatch>()
+    const openBatchFor = (characterId: string, chatId: string) =>
+        writeBatches.get(batchKey(characterId, chatId))
+
+    const trackedWikiPath = (path: string) =>
+        path === 'current-scene.md'
+        || /^(?:characters|locations|factions|creatures|items|concepts|notes|events)\/[^/]+\.md$/.test(path)
+        || /^\.risubard-review\/[^/]+\.md$/.test(path)
+    type TransactionalWikiVersioningPort = WikiVersioningPort & {
+        captureExternalChanges(input: {
+            characterId: string
+            chatId: string
+            chatAnchor?: WikiChatAnchor
+        }): Promise<{ commitId: string | null; changedPaths: string[] }>
+        publishChanges(input: {
+            characterId: string
+            chatId: string
+            operationId: string
+            kind: WikiCommitKind
+            chatAnchor?: WikiChatAnchor
+            expectedHead: string | null
+            changes: Array<{ path: string; contents: string | null }>
+        }): Promise<{ commitId: string | null; changedPaths: string[] }>
+    }
+    const requireTransactionalVersioning = (): TransactionalWikiVersioningPort => {
+        const port = versioning as Partial<TransactionalWikiVersioningPort>
+            | undefined
+        if (!port
+            || typeof port.ensureBaseline !== 'function'
+            || typeof port.captureExternalChanges !== 'function'
+            || typeof port.publishChanges !== 'function') {
+            throw new Error(
+                'Wiki write batches require transactional versioning support'
+            )
+        }
+        return port as TransactionalWikiVersioningPort
+    }
+    const persistBatchAuxiliaryFiles = async (
+        batch: WriteBatch
+    ): Promise<void> => {
+        const paths = new Set([
+            ...batch.touchedPaths,
+            ...batch.deletedPaths,
+        ])
+        for (const relativePath of [...paths].sort()) {
+            if (trackedWikiPath(relativePath.replaceAll(sep, '/'))) continue
+            const livePath = join(batch.liveWorkspace.directory, relativePath)
+            if (isOverlayDeleted(batch, relativePath)) {
+                await fileSystem.rm(livePath, {
+                    recursive: true,
+                    force: true,
+                })
+                continue
+            }
+            let contents: string
+            try {
+                contents = await baseFileSystem.readFile(join(
+                    batch.workspace.directory,
+                    relativePath
+                ), 'utf8')
+            }
+            catch (error) {
+                if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+                    continue
+                }
+                throw error
+            }
+            await fileSystem.mkdir(resolve(livePath, '..'), {
+                recursive: true,
+            })
+            await writeAtomically(fileSystem, livePath, contents)
+        }
+    }
+    const inBatchWorkspace = async <T>(
+        input: { characterId: string; chatId: string; operationId?: string },
+        operation: () => Promise<T>
+    ): Promise<T> => {
+        const batch = openBatchFor(input.characterId, input.chatId)
+        if (!batch) return operation()
+        if (input.operationId !== batch.operationId) {
+            throw new Error('Wiki write batch is owned by another operation')
+        }
+        return workspaceContext.run({
+            characterId: input.characterId,
+            chatId: input.chatId,
+            workspace: batch.workspace,
+            overlay: batch,
+        }, operation)
+    }
+
 
     return {
         invalidateCache(characterId: string, chatId: string): void {
             documentCache.delete(workspaceFor(characterId, chatId).directory)
+        },
+
+        assertWriteOwnership(input: {
+            characterId: string
+            chatId: string
+            operationId?: string
+        }): void {
+            const batch = openBatchFor(input.characterId, input.chatId)
+            if (batch && input.operationId !== batch.operationId) {
+                throw new Error('Wiki write batch is owned by another operation')
+            }
+        },
+
+        async rebuildDerivedFiles(
+            characterId: string,
+            chatId: string
+        ): Promise<void> {
+            documentCache.delete(workspaceFor(characterId, chatId).directory)
+            await rebuildIndex(characterId, chatId)
+        },
+
+        /**
+         * Opens an operation batch. Writes inside it are not committed
+         * individually; `publishWriteBatch` records all of them as one commit.
+         */
+        async beginWriteBatch(input: {
+            characterId: string
+            chatId: string
+            operationId: string
+            kind: WikiCommitKind
+            chatAnchor?: WikiChatAnchor
+        }): Promise<{ expectedHead: string | null }> {
+            const key = batchKey(input.characterId, input.chatId)
+            if (writeBatches.has(key)) {
+                throw new Error('Wiki write batch is already active')
+            }
+            const port = requireTransactionalVersioning()
+            const live = liveWorkspaceFor(input.characterId, input.chatId)
+            const suffix = createHash('sha256')
+                .update(input.operationId).digest('hex').slice(0, 20)
+            const staging = markdownWikiWorkspaceAt(
+                `${live.directory}.write-${suffix}`
+            )
+            await fileSystem.rm(staging.directory, {
+                recursive: true,
+                force: true,
+            })
+            await port.captureExternalChanges({
+                characterId: input.characterId,
+                chatId: input.chatId,
+                ...(input.chatAnchor ? { chatAnchor: input.chatAnchor } : {}),
+            })
+            const baseline = await port.ensureBaseline({
+                characterId: input.characterId,
+                chatId: input.chatId,
+                operationId: `baseline:${input.operationId}`,
+                ...(input.chatAnchor
+                    ? { chatAnchor: input.chatAnchor } : {}),
+            })
+            const batch: WriteBatch = {
+                operationId: input.operationId,
+                kind: input.kind,
+                expectedHead: baseline.commitId,
+                workspace: staging,
+                liveWorkspace: live,
+                touchedPaths: new Set(),
+                deletedPaths: new Set(),
+                ...(input.chatAnchor ? { chatAnchor: input.chatAnchor } : {}),
+            }
+            writeBatches.set(key, batch)
+            return { expectedHead: batch.expectedHead }
+        },
+
+        /** Publishes everything written since `beginWriteBatch` as one commit. */
+        async publishWriteBatch(input: {
+            characterId: string
+            chatId: string
+            operationId: string
+            chatAnchor?: WikiChatAnchor
+        }): Promise<{ commitId: string | null; changedPaths: string[] }> {
+            const key = batchKey(input.characterId, input.chatId)
+            const batch = writeBatches.get(key)
+            if (!batch || batch.operationId !== input.operationId) {
+                throw new Error('Wiki write batch was not started')
+            }
+            const port = requireTransactionalVersioning()
+            const anchor = input.chatAnchor ?? batch.chatAnchor
+            const paths = new Set([
+                ...batch.touchedPaths,
+                ...batch.deletedPaths,
+            ])
+            const changes: Array<{
+                path: string
+                contents: string | null
+            }> = []
+            for (const relativePath of [...paths].sort()) {
+                const path = relativePath.replaceAll(sep, '/')
+                if (!trackedWikiPath(path)) continue
+                if (isOverlayDeleted(batch, relativePath)) {
+                    changes.push({ path, contents: null })
+                    continue
+                }
+                try {
+                    changes.push({
+                        path,
+                        contents: await baseFileSystem.readFile(join(
+                            batch.workspace.directory,
+                            relativePath
+                        ), 'utf8'),
+                    })
+                }
+                catch (error) {
+                    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+                        continue
+                    }
+                    throw error
+                }
+            }
+            try {
+                const result = await port.publishChanges({
+                    characterId: input.characterId,
+                    chatId: input.chatId,
+                    operationId: batch.operationId,
+                    kind: batch.kind,
+                    expectedHead: batch.expectedHead,
+                    changes,
+                    ...(anchor ? { chatAnchor: anchor } : {}),
+                })
+                await persistBatchAuxiliaryFiles(batch)
+                return result
+            }
+            finally {
+                writeBatches.delete(key)
+                documentCache.delete(batch.workspace.directory)
+                parsedDocuments.delete(batch.workspace.directory)
+                documentCache.delete(batch.liveWorkspace.directory)
+                await fileSystem.rm(batch.workspace.directory, {
+                    recursive: true,
+                    force: true,
+                })
+            }
+        },
+
+        /** Drops an open batch without publishing, used on failed operations. */
+        async abandonWriteBatch(input: {
+            characterId: string
+            chatId: string
+            operationId: string
+        }): Promise<void> {
+            const key = batchKey(input.characterId, input.chatId)
+            const batch = writeBatches.get(key)
+            if (!batch || batch.operationId !== input.operationId) return
+            writeBatches.delete(key)
+            documentCache.delete(batch.workspace.directory)
+            parsedDocuments.delete(batch.workspace.directory)
+            await fileSystem.rm(batch.workspace.directory, {
+                recursive: true,
+                force: true,
+            })
         },
         async beginBardChatUndo(input: {
             characterId: string
@@ -915,11 +1526,17 @@ export function createMarkdownNarrativeWiki(
             const characterId = required(input.characterId, 'Character ID')
             const chatId = required(input.chatId, 'Chat ID')
             const captured = await captureBardChatFiles(characterId, chatId)
+            // The head is captured so undo can return to it without keeping a
+            // second full copy of every document in memory.
+            const baseHead = versioning
+                ? await versioning.readHead(characterId, chatId)
+                : null
             pendingBardChatUndo = {
                 characterId,
                 chatId,
                 files: captured.files,
                 beforeSignature: captured.signature,
+                baseHead,
             }
             return { started: true }
         },
@@ -936,18 +1553,33 @@ export function createMarkdownNarrativeWiki(
             }
             const current = await captureBardChatFiles(characterId, chatId)
             if (current.signature !== pending.beforeSignature) {
-                bardChatUndoSnapshot = {
-                    characterId,
-                    chatId,
-                    files: pending.files,
-                    signature: current.signature,
+                if (versioning && pending.baseHead) {
+                    bardChatUndoCommit = {
+                        characterId,
+                        chatId,
+                        baseHead: pending.baseHead,
+                        signature: current.signature,
+                    }
+                    bardChatUndoSnapshot = null
+                }
+                else {
+                    // Without version history the in-memory copy is the only
+                    // way to undo, so it is retained.
+                    bardChatUndoSnapshot = {
+                        characterId,
+                        chatId,
+                        files: pending.files,
+                        signature: current.signature,
+                    }
                 }
             }
             pendingBardChatUndo = null
-            return {
-                available: bardChatUndoSnapshot?.characterId === characterId
-                    && bardChatUndoSnapshot.chatId === chatId,
-            }
+            const available = bardChatUndoCommit
+                ? bardChatUndoCommit.characterId === characterId
+                    && bardChatUndoCommit.chatId === chatId
+                : bardChatUndoSnapshot?.characterId === characterId
+                    && bardChatUndoSnapshot.chatId === chatId
+            return { available }
         },
         async getBardChatUndoStatus(input: {
             characterId: string
@@ -956,8 +1588,11 @@ export function createMarkdownNarrativeWiki(
             const characterId = required(input.characterId, 'Character ID')
             const chatId = required(input.chatId, 'Chat ID')
             return {
-                available: bardChatUndoSnapshot?.characterId === characterId
-                    && bardChatUndoSnapshot.chatId === chatId,
+                available: bardChatUndoCommit
+                    ? bardChatUndoCommit.characterId === characterId
+                        && bardChatUndoCommit.chatId === chatId
+                    : bardChatUndoSnapshot?.characterId === characterId
+                        && bardChatUndoSnapshot.chatId === chatId,
             }
         },
         async restoreBardChatUndo(input: {
@@ -966,13 +1601,31 @@ export function createMarkdownNarrativeWiki(
         }): Promise<{ restored: true }> {
             const characterId = required(input.characterId, 'Character ID')
             const chatId = required(input.chatId, 'Chat ID')
+            const current = await refreshDocuments(characterId, chatId)
+            if (versioning && bardChatUndoCommit
+                && bardChatUndoCommit.characterId === characterId
+                && bardChatUndoCommit.chatId === chatId) {
+                if (snapshotSignature(current) !== bardChatUndoCommit.signature) {
+                    throw new Error('Wiki changed after the BARDCHAT command')
+                }
+                await versioning.checkout({
+                    characterId,
+                    chatId,
+                    commitId: bardChatUndoCommit.baseHead,
+                    reason: 'truncate',
+                })
+                documentCache.delete(workspaceFor(characterId, chatId).directory)
+                await rebuildIndex(characterId, chatId)
+                bardChatUndoCommit = null
+                pendingBardChatUndo = null
+                return { restored: true }
+            }
             const snapshot = bardChatUndoSnapshot
             if (!snapshot || snapshot.characterId !== characterId
                 || snapshot.chatId !== chatId) {
                 throw new Error('No BARDCHAT undo snapshot is available')
             }
             const workspace = workspaceFor(characterId, chatId)
-            const current = await refreshDocuments(characterId, chatId)
             if (snapshotSignature(current) !== snapshot.signature) {
                 throw new Error('Wiki changed after the BARDCHAT command')
             }
@@ -995,6 +1648,11 @@ export function createMarkdownNarrativeWiki(
                 ), { force: true })
             }
             await rebuildIndex(characterId, chatId)
+            await commitWrite({
+                characterId,
+                chatId,
+                kind: 'rebuild',
+            })
             bardChatUndoSnapshot = null
             pendingBardChatUndo = null
             return { restored: true }
@@ -1112,6 +1770,11 @@ export function createMarkdownNarrativeWiki(
             await fileSystem.rm(recoveryDirectory, {
                 recursive: true,
                 force: true,
+            })
+            await commitWrite({
+                characterId: input.characterId,
+                chatId: input.chatId,
+                kind: 'rebuild',
             })
             return null
         },
@@ -1329,7 +1992,11 @@ export function createMarkdownNarrativeWiki(
             append?: boolean
             writingLanguage?: WikiWritingLanguage
             retrievalMetadata?: MemoryRetrievalMetadata
+            /** Chat boundary this evidence belongs to; resolved by the caller. */
+            chatAnchor?: WikiChatAnchor
+            operationId?: string
         }): Promise<MarkdownWikiDocument> {
+            return inBatchWorkspace(input, async () => {
             const sourceMessageIds = input.sourceMessageIds.map((id) =>
                 required(id, 'sourceMessageId')
             )
@@ -1401,7 +2068,17 @@ export function createMarkdownNarrativeWiki(
                 prepared.contents
             )
             await rebuildIndex(input.characterId, input.chatId, writingLanguage)
-            return prepared.document
+            const vcsCommitId = await commitWrite({
+                characterId: input.characterId,
+                chatId: input.chatId,
+                kind: 'analysis',
+                ...(input.operationId ? { operationId: input.operationId } : {}),
+                ...(input.chatAnchor ? { chatAnchor: input.chatAnchor } : {}),
+            })
+            return vcsCommitId
+                ? { ...prepared.document, vcsCommitId }
+                : prepared.document
+            })
         },
 
         async saveCanonicalDocument(input: {
@@ -1417,7 +2094,11 @@ export function createMarkdownNarrativeWiki(
             reviewStatus?: 'unreviewed' | 'reviewed'
             writingLanguage?: WikiWritingLanguage
             retrievalMetadata?: MemoryRetrievalMetadata
+            /** Chat boundary this evidence belongs to; resolved by the caller. */
+            chatAnchor?: WikiChatAnchor
+            operationId?: string
         }): Promise<MarkdownWikiDocument> {
+            return inBatchWorkspace(input, async () => {
             const title = required(input.title, 'Title').trim().slice(0, 160)
             const incomingSources = input.sourceMessageIds.map((id) =>
                 required(id, 'sourceMessageId')
@@ -1486,16 +2167,6 @@ export function createMarkdownNarrativeWiki(
                     existing ? await fileSystem.readFile(file, 'utf8') : ''
                 )
             }
-            if (existing) {
-                const history = join(workspace.historyDirectory, existing.id)
-                await fileSystem.mkdir(history, { recursive: true })
-                const stamp = operationTime.replace(/[:.]/g, '-')
-                await writeAtomically(
-                    fileSystem,
-                    join(history, `${stamp}-${randomUUID().slice(0, 8)}.md`),
-                    await fileSystem.readFile(file, 'utf8')
-                )
-            }
             let normalized = normalizeMarkdown(input.markdown)
             const writingLanguage = normalizeWikiWritingLanguage(input.writingLanguage
                 ?? detectWikiWritingLanguage(normalized.content))
@@ -1545,7 +2216,17 @@ export function createMarkdownNarrativeWiki(
             })
             await writeAtomically(fileSystem, file, prepared.contents)
             await rebuildIndex(input.characterId, input.chatId, writingLanguage)
-            return prepared.document
+            const vcsCommitId = await commitWrite({
+                characterId: input.characterId,
+                chatId: input.chatId,
+                kind: input.reviewStatus === 'unreviewed' ? 'review' : 'analysis',
+                ...(input.operationId ? { operationId: input.operationId } : {}),
+                chatAnchor: input.chatAnchor,
+            })
+            return vcsCommitId
+                ? { ...prepared.document, vcsCommitId }
+                : prepared.document
+            })
         },
 
         async reviewCanonicalDocument(input: {
@@ -1601,19 +2282,17 @@ export function createMarkdownNarrativeWiki(
                     await fileSystem.rm(file)
                     await fileSystem.rm(reviewFile, { force: true })
                     await rebuildIndex(input.characterId, input.chatId)
+                    await commitWrite({
+                        characterId: input.characterId,
+                        chatId: input.chatId,
+                        kind: 'review',
+                    })
                     return {
                         id: document.id,
                         reverted: true as const,
                         deleted: true as const,
                     }
                 }
-                const history = join(workspace.historyDirectory, document.id)
-                await fileSystem.mkdir(history, { recursive: true })
-                await writeAtomically(
-                    fileSystem,
-                    join(history, `${now().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}.md`),
-                    await fileSystem.readFile(file, 'utf8')
-                )
                 await writeAtomically(fileSystem, file, baseline)
             }
             else {
@@ -1628,6 +2307,11 @@ export function createMarkdownNarrativeWiki(
             }
             await fileSystem.rm(reviewFile, { force: true })
             await rebuildIndex(input.characterId, input.chatId)
+            await commitWrite({
+                characterId: input.characterId,
+                chatId: input.chatId,
+                kind: 'review',
+            })
             const reviewed = (await loadDocuments(
                 input.characterId,
                 input.chatId
@@ -1648,6 +2332,7 @@ export function createMarkdownNarrativeWiki(
             markdown: string
             expectedContentHash?: string
             retrievalMetadata?: MemoryRetrievalMetadata
+            chatAnchor?: WikiChatAnchor
         }): Promise<MarkdownWikiDocument> {
             const title = required(input.title, 'Title').trim().slice(0, 160)
             const allowed: MarkdownWikiDocumentType[] = [
@@ -1709,16 +2394,6 @@ export function createMarkdownNarrativeWiki(
                 throw new Error('A wiki document already owns that path')
             }
             await fileSystem.mkdir(resolve(file, '..'), { recursive: true })
-            if (existing && oldFile) {
-                const history = join(workspace.historyDirectory, existing.id)
-                await fileSystem.mkdir(history, { recursive: true })
-                const stamp = operationTime.replace(/[:.]/g, '-')
-                await writeAtomically(
-                    fileSystem,
-                    join(history, `${stamp}-${randomUUID().slice(0, 8)}.md`),
-                    await fileSystem.readFile(oldFile, 'utf8')
-                )
-            }
             const normalized = normalizeMarkdown(input.markdown)
             const content = normalized.content.replace(
                 /^##\s+.+$/m,
@@ -1775,16 +2450,6 @@ export function createMarkdownNarrativeWiki(
                         links: linksFrom(changed),
                         updated: operationTime,
                     }
-                    const linkedHistory = join(
-                        workspace.historyDirectory,
-                        linked.id
-                    )
-                    await fileSystem.mkdir(linkedHistory, { recursive: true })
-                    await writeAtomically(
-                        fileSystem,
-                        join(linkedHistory, `${operationTime.replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}.md`),
-                        await fileSystem.readFile(linkedFile, 'utf8')
-                    )
                     await writeAtomically(
                         fileSystem,
                         linkedFile,
@@ -1793,7 +2458,15 @@ export function createMarkdownNarrativeWiki(
                 }
             }
             await rebuildIndex(input.characterId, input.chatId)
-            return prepared.document
+            const vcsCommitId = await commitWrite({
+                characterId: input.characterId,
+                chatId: input.chatId,
+                kind: 'manual',
+                ...(input.chatAnchor ? { chatAnchor: input.chatAnchor } : {}),
+            })
+            return vcsCommitId
+                ? { ...prepared.document, vcsCommitId }
+                : prepared.document
         },
 
         async setDocumentContextMode(input: {
@@ -1831,13 +2504,6 @@ export function createMarkdownNarrativeWiki(
                 ...document.relativePath.split('/')
             )
             const operationTime = now().toISOString()
-            const history = join(workspace.historyDirectory, document.id)
-            await fileSystem.mkdir(history, { recursive: true })
-            await writeAtomically(
-                fileSystem,
-                join(history, `${operationTime.replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}.md`),
-                await fileSystem.readFile(file, 'utf8')
-            )
             const { contentHash: _contentHash, ...stored } = document
             const prepared = prepareDocument({
                 ...stored,
@@ -1846,6 +2512,11 @@ export function createMarkdownNarrativeWiki(
             })
             await writeAtomically(fileSystem, file, prepared.contents)
             await rebuildIndex(input.characterId, input.chatId)
+            await commitWrite({
+                characterId: input.characterId,
+                chatId: input.chatId,
+                kind: 'policy',
+            })
             return prepared.document
         },
 
@@ -1872,6 +2543,11 @@ export function createMarkdownNarrativeWiki(
             )
             await fileSystem.rm(file)
             await rebuildIndex(input.characterId, input.chatId)
+            await commitWrite({
+                characterId: input.characterId,
+                chatId: input.chatId,
+                kind: 'manual',
+            })
             return { id: document.id, trashed: true as const }
         },
 
@@ -1917,6 +2593,11 @@ export function createMarkdownNarrativeWiki(
             } catch {
                 documentCache.delete(workspace.directory)
             }
+            await commitWrite({
+                characterId: input.characterId,
+                chatId: input.chatId,
+                kind: 'manual',
+            })
             return prepared.document
         },
 
@@ -1951,6 +2632,11 @@ export function createMarkdownNarrativeWiki(
             }
             if (matches.length > 0) {
                 await rebuildIndex(input.characterId, input.chatId)
+                await commitWrite({
+                    characterId: input.characterId,
+                    chatId: input.chatId,
+                    kind: 'manual',
+                })
             }
             return { retractedIds: matches.map((document) => document.id) }
         },
@@ -1969,6 +2655,11 @@ export function createMarkdownNarrativeWiki(
                 await writeAtomically(fileSystem, join(workspace.directory, ...document.relativePath.split('/')), prepared.contents)
             }
             await rebuildIndex(characterId, chatId)
+            await commitWrite({
+                characterId,
+                chatId,
+                kind: 'import',
+            })
         },
 
         async loadView(
@@ -2087,6 +2778,11 @@ export function createMarkdownNarrativeWiki(
                 throw error
             }
             await rebuildIndex(input.characterId, input.chatId)
+            await commitWrite({
+                characterId: input.characterId,
+                chatId: input.chatId,
+                kind: 'manual',
+            })
             return {
                 matches: staged.reduce(
                     (total, item) => total + item.matches,

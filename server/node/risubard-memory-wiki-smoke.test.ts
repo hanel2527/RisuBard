@@ -17,6 +17,9 @@ import {
 import {
     resolveMarkdownWikiWorkspace,
 } from './risubard-markdown-wiki'
+import { chatBoundaryAnchor } from '../../src/ts/risubard/wikiVcsContract'
+import type { MemoryAnalysisInput } from './risubard-memory-analysis'
+import { listWikiHistory } from '../../src/ts/risubard/wikiVersionClient'
 
 const require = createRequire(import.meta.url)
 
@@ -79,11 +82,21 @@ describe('RisuBard Markdown wiki full-stack smoke', () => {
         const userDataDirectory = await mkdtemp(
             join(tmpdir(), 'risubard-markdown-wiki-smoke-')
         )
+        const messages: MemoryAnalysisInput['messages'] = [
+            { messageId: 'user-e2e', role: 'user', content: 'Light the lantern.' },
+            { messageId: 'assistant-e2e', role: 'assistant',
+                content: 'The Archivist lit the moon lantern, opening the sealed vault.' },
+        ]
+        const canonicalAnchor = chatBoundaryAnchor('chat-e2e', 'assistant-e2e',
+            messages.map(message => ({ messageId: message.messageId,
+                role: message.role, data: message.content })))
         let server: Awaited<ReturnType<typeof startMemoryViewServer>>
             | undefined
         try {
             server = await startMemoryViewServer(
-                createRuntimeMemoryService(userDataDirectory)
+                createRuntimeMemoryService(userDataDirectory, {
+                    loadChatAnchor: async () => canonicalAnchor,
+                })
             )
             const fetchImpl = smokeFetch(server.baseUrl)
             const providerInputs: unknown[] = []
@@ -112,23 +125,16 @@ describe('RisuBard Markdown wiki full-stack smoke', () => {
                 nativeV2Analysis: true,
             })
 
-            await analysis.confirm({
+            const receipt = await analysis.confirm({
                 characterId: 'character-e2e',
                 chatId: 'chat-e2e',
-                messages: [
-                    {
-                        messageId: 'user-e2e',
-                        role: 'user',
-                        content: 'Light the lantern.',
-                    },
-                    {
-                        messageId: 'assistant-e2e',
-                        role: 'assistant',
-                        content:
-                            'The Archivist lit the moon lantern, opening the sealed vault.',
-                    },
-                ],
+                messages,
             })
+            const publishedHistory = await listWikiHistory({
+                characterId: 'character-e2e', chatId: 'chat-e2e',
+                fetchImpl, createAuth: async () => 'smoke-token',
+            })
+            expect(receipt?.vcsCommitIds).toEqual([publishedHistory[0].commitId])
 
             expect(providerInputs).toHaveLength(1)
             for (const providerInput of providerInputs) {

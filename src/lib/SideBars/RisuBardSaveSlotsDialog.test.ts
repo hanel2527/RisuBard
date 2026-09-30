@@ -6,7 +6,8 @@ import RisuBardSaveSlotsDialog from './RisuBardSaveSlotsDialog.svelte'
 import type { MemorySaveSlotSummary } from 'src/ts/risubard/memorySaveSlots'
 
 const mocks = vi.hoisted(() => ({
-    listMemorySaveSlots: vi.fn(),
+    listAllMemorySaveSlots: vi.fn(),
+    exportReferenceSaveCompat: vi.fn(),
     previewMemorySaveSlot: vi.fn(),
     renameMemorySaveSlot: vi.fn(),
     deleteMemorySaveSlot: vi.fn(),
@@ -16,7 +17,8 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('src/ts/risubard/memorySaveSlots', () => ({
-    listMemorySaveSlots: mocks.listMemorySaveSlots,
+    listAllMemorySaveSlots: mocks.listAllMemorySaveSlots,
+    exportReferenceSaveCompat: mocks.exportReferenceSaveCompat,
     previewMemorySaveSlot: mocks.previewMemorySaveSlot,
     renameMemorySaveSlot: mocks.renameMemorySaveSlot,
     deleteMemorySaveSlot: mocks.deleteMemorySaveSlot,
@@ -37,8 +39,7 @@ let mounted: ReturnType<typeof mount> | undefined
 
 describe('RisuBardSaveSlotsDialog', () => {
     beforeEach(() => {
-        localStorage.clear()
-        mocks.listMemorySaveSlots.mockReset().mockResolvedValue([{
+        mocks.listAllMemorySaveSlots.mockReset().mockResolvedValue([{
             saveId: 'save-1', sourceChatId: 'chat-1',
             sourceChatName: '성문 앞',
             createdAt: '2026-08-14T08:00:00.000Z', turnCount: 7,
@@ -165,7 +166,7 @@ describe('RisuBardSaveSlotsDialog', () => {
         }
         expect(onSave).not.toHaveBeenCalled()
         expect(onLoad).not.toHaveBeenCalled()
-        expect(mocks.listMemorySaveSlots).toHaveBeenCalledOnce()
+        expect(mocks.listAllMemorySaveSlots).toHaveBeenCalledOnce()
         expect(mocks.previewMemorySaveSlot).toHaveBeenCalledOnce()
     })
 
@@ -177,7 +178,7 @@ describe('RisuBardSaveSlotsDialog', () => {
     })
 
     test('keeps autosaves in a one-row strip and quicksave first in the regular grid', async () => {
-        mocks.listMemorySaveSlots.mockResolvedValue([
+        mocks.listAllMemorySaveSlots.mockResolvedValue([
             {
                 saveId: 'manual-1', sourceChatId: 'chat-1', sourceChatName: '성문 앞',
                 createdAt: '2026-08-14T08:00:00.000Z', turnCount: 7,
@@ -201,7 +202,7 @@ describe('RisuBardSaveSlotsDialog', () => {
     })
 
     test('opens save mode without saving and creates a slot from an empty list', async () => {
-        mocks.listMemorySaveSlots.mockResolvedValue([])
+        mocks.listAllMemorySaveSlots.mockResolvedValue([])
         const onSave = vi.fn(async () => ({
             saveId: 'new-save', sourceChatId: 'chat-1', sourceChatName: '새 저장',
             createdAt: '2026-08-26T08:00:00.000Z', turnCount: 8,

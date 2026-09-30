@@ -8,6 +8,8 @@ import Chat from './Chat.svelte'
 import Chats from './Chats.svelte'
 import { DBState, selIdState } from 'src/ts/stores.svelte'
 import { ParseMarkdown } from 'src/ts/parser/parser.svelte'
+import { rebuildNarrativeAfterChatEdit } from 'src/ts/risubard/wikiChatRebuild'
+import { notifyError } from 'src/ts/alert'
 
 vi.mock('src/ts/stores.svelte', () => ({
     DBState: { db: {} },
@@ -35,6 +37,14 @@ vi.mock('src/ts/risubard/memoryEvents', async importOriginal => ({
     announceRisuBardMemoryUpdated: vi.fn(),
 }))
 vi.mock('src/ts/risubard/memoryWikiFork', () => ({ completeMemoryWikiFork: vi.fn(), forkMemoryWiki: vi.fn() }))
+vi.mock('src/ts/risubard/wikiChatCoordinator', () => ({
+    applyWikiRollback: vi.fn(), createWikiBranchAt: vi.fn(),
+    preserveWikiChat: vi.fn(async () => 'saved-head'),
+}))
+vi.mock('src/ts/risubard/wikiChatRebuild', () => ({
+    rebuildNarrativeAfterChatEdit: vi.fn(async () => undefined),
+}))
+vi.mock('src/ts/risubard/wikiVersionClient', () => ({ checkoutWikiVersion: vi.fn() }))
 vi.mock('src/ts/gui/colorscheme', () => ({ ColorSchemeTypeStore: writable('dark') }))
 vi.mock('src/ts/model/modellist', () => ({ getModelInfo: vi.fn(() => null) }))
 vi.mock('src/ts/process/scriptings', () => ({ runLuaButtonTrigger: vi.fn() }))
@@ -117,12 +127,39 @@ describe('message edit button', () => {
                 expect(buttons).toHaveLength(0)
             } else {
                 buttons[buttons.length - 1]!.click()
-                await tick()
+                await vi.waitFor(() => expect(msg.data).toBe(
+                    mode === 'normal' ? 'Before {{inlay::scene}} middle  after' : data
+                ))
             }
             expect(msg.data).toBe(mode === 'normal' ? 'Before {{inlay::scene}} middle  after' : data)
             expect(msg.swipes).toEqual(['untouched swipe', msg.data])
             expect(document.querySelector('.message-edit-area')).toBeNull()
         } finally {
+            vi.mocked(ParseMarkdown).mockImplementation(async value => value)
+        }
+    })
+    test('restores message and swipes when the Wiki rebuild rejects an edit', async () => {
+        const data = 'Before {{inlay::scene}} after'
+        const chat = DBState.db.characters[0].chats[0]
+        chat.message = [{ role: 'char', data, chatId: 'message-1',
+            swipes: ['earlier', data], swipeId: 1 }]
+        DBState.db.clickToEdit = true
+        vi.mocked(notifyError).mockClear()
+        vi.mocked(rebuildNarrativeAfterChatEdit).mockRejectedValueOnce(new Error('Concurrent edit'))
+        vi.mocked(ParseMarkdown).mockImplementation(async () =>
+            '<p><img data-inlay-image-id="scene" data-inlay-occurrence="0" src="/scene.png"></p>')
+        try {
+            mounted = mount(Chat, { target: document.body, props: {
+                message: data, name: 'Character', isLastMemory: false, idx: 0, role: 'char',
+            } })
+            await tick(); await tick(); await tick()
+            await vi.waitFor(() => expect(document.querySelector('.inlay-image-remove')).not.toBeNull())
+            document.querySelector<HTMLButtonElement>('.inlay-image-remove')!.click()
+            await vi.waitFor(() => expect(vi.mocked(notifyError).mock.calls.length).toBe(1))
+            expect(chat.message[0].data).toBe(data)
+            expect(chat.message[0].swipes).toEqual(['earlier', data])
+        }
+        finally {
             vi.mocked(ParseMarkdown).mockImplementation(async value => value)
         }
     })

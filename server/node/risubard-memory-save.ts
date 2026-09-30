@@ -8,9 +8,15 @@ import {
     type MemoryForkReceipt,
 } from './risubard-memory-fork'
 import { resolveMemoryWorkspace } from './risubard-memory-workspace'
+import { resolveWikiVcsRepository } from './risubard-wiki-vcs'
 
 const SAVE_MANIFEST = 'risubard-save.json'
 const SAVE_CHAT = 'chat.bin'
+/**
+ * VCS metadata lives beside the v1 manifest, never inside it: the manifest
+ * parser rejects unknown keys and older builds must keep reading these saves.
+ */
+const SAVE_VCS_SIDECAR = 'risubard-save-vcs.json'
 const SAVE_PREFIX = 'save-slot:'
 const SAVE_DIRECTORY_PREFIX = `id-${Buffer.from(
     SAVE_PREFIX.slice(0, -1), 'utf8'
@@ -34,6 +40,54 @@ export interface MemorySaveSlotSummary {
 interface StoredMemorySaveManifest extends MemorySaveSlotSummary {
     schemaVersion: 1
 }
+
+export type MemorySaveMode = 'v1-snapshot' | 'commit-reference'
+
+/**
+ * Sidecar describing how a save relates to the version store. Absence means a
+ * plain v1 snapshot, which is always a valid save.
+ */
+export interface MemorySaveVcsSidecar {
+    schemaVersion: 1
+    mode: MemorySaveMode
+    saveId: string
+    sourceChatId: string
+    /** Commit the wiki working tree was at when the save was written. */
+    commitId?: string
+    branchId?: string
+    head?: string
+    chatStateRef?: string
+    wikiRefId?: string
+    manifestHash?: string
+    chatHash?: string
+    createdAt: string
+}
+
+/**
+ * Reference save written next to the chat instead of copying the whole
+ * workspace. It points at a wiki commit and a deduplicated chat state object,
+ * so periodic autosaves stop paying full-copy cost. Files in this format are
+ * not readable by builds that predate the version store; those builds get a
+ * v1 export instead.
+ */
+export interface MemorySaveReferenceRecord {
+    schemaVersion: 1
+    mode: 'commit-reference'
+    saveId: string
+    sourceChatId: string
+    sourceChatName: string
+    createdAt: string
+    turnCount: number
+    latestMessageId?: string
+    latestEvent?: MemorySaveEventPreview
+    wikiCommitId?: string
+    branchId?: string
+    chatStateRef?: string
+    /** Wiki tree revision pinned with the chat state. */
+    wikiRevision?: string
+}
+
+const SAVE_REFERENCE_MANIFEST = 'risubard-save-reference.json'
 
 type SaveFileSystem = Pick<
     typeof nodeFs,
@@ -172,6 +226,8 @@ export async function createMemorySaveSlot(input: {
     userDataDirectory: string
     characterId: string
     sourceChatId: string
+    /** Internal export source; the manifest still belongs to sourceChatId. */
+    workspaceSourceChatId?: string
     saveId: string
     overwrite?: boolean
     sourceChatName: string
@@ -180,17 +236,30 @@ export async function createMemorySaveSlot(input: {
     chatBytes: Uint8Array
     createdAt?: string
     latestEvent?: MemorySaveEventPreview
+    /** Optional version-store linkage; absent writes a plain v1 save. */
+    vcs?: Omit<MemorySaveVcsSidecar, 'schemaVersion' | 'saveId' | 'sourceChatId' | 'createdAt'>
 }, options: { fileSystem?: SaveFileSystem } = {}): Promise<MemorySaveSlotSummary> {
     const fileSystem = options.fileSystem ?? nodeFs
     const saveId = required(input.saveId, 'saveId')
     const sourceChatId = required(input.sourceChatId, 'sourceChatId')
     let sourceChatName = required(input.sourceChatName, 'sourceChatName', 512)
     if (input.overwrite) {
-        const saved = await validatedSave(fileSystem, input)
-        if (saved.manifest.sourceChatId !== sourceChatId) {
-            throw new Error('Cannot overwrite a save from a different chat')
+        const reference = await readMemorySaveReference(input, { fileSystem })
+        if (reference) {
+            if (reference.sourceChatId !== sourceChatId) {
+                throw new Error('Cannot overwrite a save from a different chat')
+            }
+            sourceChatName = required(
+                reference.sourceChatName, 'saved chat name', 512
+            )
         }
-        sourceChatName = saved.manifest.sourceChatName
+        else {
+            const saved = await validatedSave(fileSystem, input)
+            if (saved.manifest.sourceChatId !== sourceChatId) {
+                throw new Error('Cannot overwrite a save from a different chat')
+            }
+            sourceChatName = saved.manifest.sourceChatName
+        }
     }
     if (!Number.isSafeInteger(input.turnCount) || input.turnCount < 0) {
         throw new Error('turnCount must be a non-negative safe integer')
@@ -226,7 +295,9 @@ export async function createMemorySaveSlot(input: {
         const forkInput = {
             userDataDirectory: input.userDataDirectory,
             characterId: required(input.characterId, 'characterId'),
-            sourceChatId,
+            sourceChatId: input.workspaceSourceChatId
+                ? required(input.workspaceSourceChatId, 'workspaceSourceChatId')
+                : sourceChatId,
             destinationChatId,
         }
         receipt = input.overwrite
@@ -248,6 +319,23 @@ export async function createMemorySaveSlot(input: {
             JSON.stringify(manifest),
             { encoding: 'utf8', flag: 'wx', mode: 0o600 }
         )
+        // The sidecar records how the snapshot relates to version history but
+        // never changes what a v1 reader sees.
+        if (input.vcs) {
+            const sidecar: MemorySaveVcsSidecar = {
+                schemaVersion: 1,
+                mode: 'v1-snapshot',
+                saveId,
+                sourceChatId,
+                ...input.vcs,
+                createdAt,
+            }
+            await fileSystem.writeFile(
+                join(directory, SAVE_VCS_SIDECAR),
+                JSON.stringify(sidecar),
+                { encoding: 'utf8', flag: 'wx', mode: 0o600 }
+            )
+        }
         await completeMemoryWorkspaceFork({
             userDataDirectory: input.userDataDirectory,
             characterId: input.characterId,
@@ -336,6 +424,71 @@ export async function readMemorySaveChat(input: {
     return Buffer.from(await fileSystem.readFile(saved.chatPath))
 }
 
+/**
+ * Reads the optional version sidecar. A missing or unreadable sidecar is not an
+ * error: that save is simply a plain v1 snapshot.
+ */
+export async function readMemorySaveVcsSidecar(input: {
+    userDataDirectory: string
+    characterId: string
+    saveId: string
+}, options: { fileSystem?: SaveFileSystem } = {}): Promise<MemorySaveVcsSidecar | null> {
+    const fileSystem = options.fileSystem ?? nodeFs
+    const saveId = required(input.saveId, 'saveId')
+    const workspace = workspaceFor(input.userDataDirectory, input.characterId, saveId)
+    const sidecarPath = join(workspace.directory, SAVE_VCS_SIDECAR)
+    let contents: string
+    try {
+        contents = await fileSystem.readFile(sidecarPath, 'utf8')
+    }
+    catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+        throw error
+    }
+    const value: unknown = JSON.parse(contents)
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        return null
+    }
+    const sidecar = value as Partial<MemorySaveVcsSidecar>
+    if (sidecar.schemaVersion !== 1
+        || sidecar.mode !== 'v1-snapshot'
+        || sidecar.saveId !== saveId
+        || typeof sidecar.sourceChatId !== 'string') {
+        return null
+    }
+    return sidecar as MemorySaveVcsSidecar
+}
+
+/**
+ * True when the sidecar references version-store objects that are missing
+ * locally, so callers can fall back to the embedded Markdown instead of
+ * claiming exact history.
+ */
+export async function memorySaveVcsObjectsAvailable(input: {
+    userDataDirectory: string
+    characterId: string
+    saveId: string
+}, options: { fileSystem?: SaveFileSystem } = {}): Promise<boolean> {
+    const sidecar = await readMemorySaveVcsSidecar(input, options)
+    if (!sidecar?.commitId) return false
+    const fileSystem = options.fileSystem ?? nodeFs
+    const repository = resolveWikiVcsRepository(
+        input.userDataDirectory,
+        input.characterId,
+        memorySaveWorkspaceId(input.saveId)
+    )
+    try {
+        await fileSystem.lstat(join(
+            repository.commitsDirectory, `${sidecar.commitId}.json`
+        ))
+        return true
+    }
+    catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+        throw error
+    }
+}
+
 export async function renameMemorySaveSlot(input: {
     userDataDirectory: string
     characterId: string
@@ -363,8 +516,256 @@ export async function deleteMemorySaveSlot(input: {
     saveId: string
 }, options: { fileSystem?: SaveFileSystem } = {}): Promise<void> {
     const fileSystem = options.fileSystem ?? nodeFs
-    const saved = await validatedSave(fileSystem, input)
-    await fileSystem.rm(saved.directory, { recursive: true, force: false })
+    try {
+        const saved = await validatedSave(fileSystem, input)
+        await fileSystem.rm(saved.directory, { recursive: true, force: false })
+        return
+    }
+    catch (error) {
+        // A reference-only slot has no v1 manifest; remove it by directory.
+        if (!(error instanceof Error)
+            || !error.message.startsWith('Invalid memory save')) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        }
+    }
+    const workspace = workspaceFor(
+        input.userDataDirectory, input.characterId, input.saveId
+    )
+    await fileSystem.rm(workspace.directory, { recursive: true, force: true })
+}
+
+/**
+ * Writes a reference autosave: a manifest beside the chat plus a deduplicated
+ * chat-state object in the version repository. No wiki tree is copied, which is
+ * what makes periodic autosave affordable on long chats.
+ */
+export async function writeMemorySaveReference(input: {
+    userDataDirectory: string
+    characterId: string
+    sourceChatId: string
+    saveId: string
+    sourceChatName: string
+    turnCount: number
+    chatStateRef: string
+    wikiCommitId?: string
+    branchId?: string
+    wikiRevision?: string
+    latestMessageId?: string
+    latestEvent?: MemorySaveEventPreview
+    createdAt?: string
+}, options: { fileSystem?: SaveFileSystem } = {}): Promise<MemorySaveReferenceRecord> {
+    const fileSystem = options.fileSystem ?? nodeFs
+    const saveId = required(input.saveId, 'saveId')
+    const sourceChatId = required(input.sourceChatId, 'sourceChatId')
+    if (!Number.isSafeInteger(input.turnCount) || input.turnCount < 0) {
+        throw new Error('turnCount must be a non-negative safe integer')
+    }
+    const createdAt = input.createdAt ?? new Date().toISOString()
+    if (!Number.isFinite(Date.parse(createdAt))) {
+        throw new Error('createdAt must be an ISO-compatible date')
+    }
+    const record: MemorySaveReferenceRecord = {
+        schemaVersion: 1,
+        mode: 'commit-reference',
+        saveId,
+        sourceChatId,
+        sourceChatName: required(input.sourceChatName, 'sourceChatName', 512),
+        createdAt,
+        turnCount: input.turnCount,
+        chatStateRef: required(input.chatStateRef, 'chatStateRef'),
+        ...(input.wikiCommitId ? { wikiCommitId: input.wikiCommitId } : {}),
+        ...(input.branchId ? { branchId: input.branchId } : {}),
+        ...(input.wikiRevision ? { wikiRevision: input.wikiRevision } : {}),
+        ...(input.latestMessageId ? {
+            latestMessageId: required(
+                input.latestMessageId, 'latestMessageId'
+            ),
+        } : {}),
+        ...(input.latestEvent
+            ? { latestEvent: parseEventPreview(input.latestEvent) }
+            : {}),
+    }
+    const workspace = workspaceFor(
+        input.userDataDirectory, input.characterId, saveId
+    )
+    await fileSystem.mkdir(workspace.directory, { recursive: true })
+    await fileSystem.writeFile(
+        join(workspace.directory, SAVE_REFERENCE_MANIFEST),
+        JSON.stringify(record),
+        { encoding: 'utf8', flag: 'w', mode: 0o600 }
+    )
+    return record
+}
+
+/**
+ * Renames a reference save in place. The v1 path keeps its own rename; this is
+ * only for slots that store their label in the reference manifest.
+ */
+export async function renameMemorySaveReference(input: {
+    userDataDirectory: string
+    characterId: string
+    saveId: string
+    name: string
+}, options: { fileSystem?: SaveFileSystem } = {}): Promise<MemorySaveReferenceRecord> {
+    const fileSystem = options.fileSystem ?? nodeFs
+    const existing = await readMemorySaveReference(input, options)
+    if (!existing) {
+        throw new Error('Memory reference save does not exist')
+    }
+    const name = required(input.name, 'Saved file name', 512)
+    const record: MemorySaveReferenceRecord = {
+        ...existing,
+        sourceChatName: name,
+    }
+    const workspace = workspaceFor(
+        input.userDataDirectory, input.characterId, existing.saveId
+    )
+    await fileSystem.writeFile(
+        join(workspace.directory, SAVE_REFERENCE_MANIFEST),
+        JSON.stringify(record),
+        { encoding: 'utf8', flag: 'w', mode: 0o600 }
+    )
+    return record
+}
+
+export async function readMemorySaveReference(input: {
+    userDataDirectory: string
+    characterId: string
+    saveId: string
+}, options: { fileSystem?: SaveFileSystem } = {}): Promise<MemorySaveReferenceRecord | null> {
+    const fileSystem = options.fileSystem ?? nodeFs
+    const workspace = workspaceFor(
+        input.userDataDirectory,
+        input.characterId,
+        required(input.saveId, 'saveId')
+    )
+    let contents: string
+    try {
+        contents = await fileSystem.readFile(
+            join(workspace.directory, SAVE_REFERENCE_MANIFEST), 'utf8'
+        )
+    }
+    catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+        throw error
+    }
+    const value: unknown = JSON.parse(contents)
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        return null
+    }
+    const record = value as Partial<MemorySaveReferenceRecord>
+    if (record.schemaVersion !== 1
+        || record.mode !== 'commit-reference'
+        || typeof record.saveId !== 'string'
+        || typeof record.sourceChatId !== 'string'
+        || typeof record.chatStateRef !== 'string') {
+        return null
+    }
+    return record as MemorySaveReferenceRecord
+}
+
+/**
+ * Reference saves and v1 saves are listed together so the save dialog keeps
+ * working unchanged; the summary shape is shared.
+ */
+export async function listMemorySaveReferences(input: {
+    userDataDirectory: string
+    characterId: string
+    sourceChatId: string
+}, options: { fileSystem?: SaveFileSystem } = {}): Promise<MemorySaveSlotSummary[]> {
+    const fileSystem = options.fileSystem ?? nodeFs
+    const sourceChatId = required(input.sourceChatId, 'sourceChatId')
+    const probe = resolveMemoryWorkspace(
+        input.userDataDirectory,
+        required(input.characterId, 'characterId'),
+        'save-list-probe'
+    )
+    const chatsDirectory = dirname(probe.directory)
+    let entries
+    try {
+        entries = await fileSystem.readdir(chatsDirectory, { withFileTypes: true })
+    }
+    catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+        throw error
+    }
+    const summaries: MemorySaveSlotSummary[] = []
+    for (const entry of entries) {
+        if (!entry.isDirectory()
+            || entry.isSymbolicLink()
+            || !entry.name.startsWith(SAVE_DIRECTORY_PREFIX)) continue
+        const referencePath = join(
+            chatsDirectory, entry.name, SAVE_REFERENCE_MANIFEST
+        )
+        let contents: string
+        try {
+            await safeFile(fileSystem, referencePath, 'Memory save reference')
+            contents = await fileSystem.readFile(referencePath, 'utf8')
+        }
+        catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+            if (error instanceof Error
+                && error.message.startsWith('Memory save reference')) continue
+            throw error
+        }
+        let record: unknown
+        try {
+            record = JSON.parse(contents)
+        }
+        catch {
+            continue
+        }
+        if (typeof record !== 'object' || record === null) continue
+        const value = record as Partial<MemorySaveReferenceRecord>
+        if (value.schemaVersion !== 1
+            || value.mode !== 'commit-reference'
+            || value.sourceChatId !== sourceChatId
+            || typeof value.saveId !== 'string'
+            || typeof value.createdAt !== 'string') {
+            continue
+        }
+        summaries.push({
+            saveId: value.saveId,
+            sourceChatId: value.sourceChatId,
+            sourceChatName: String(value.sourceChatName ?? ''),
+            createdAt: value.createdAt,
+            turnCount: Number.isSafeInteger(value.turnCount)
+                ? value.turnCount as number
+                : 0,
+            ...(typeof value.latestMessageId === 'string'
+                ? { latestMessageId: value.latestMessageId } : {}),
+            ...(value.latestEvent ? { latestEvent: value.latestEvent } : {}),
+        })
+    }
+    return summaries
+}
+
+/**
+ * Merges both save formats for one chat. Reference entries win when a slot
+ * exists in both, because that is the newer write for the same slot ID.
+ */
+export async function listAllMemorySaveSlots(input: {
+    userDataDirectory: string
+    characterId: string
+    sourceChatId: string
+}, options: { fileSystem?: SaveFileSystem } = {}): Promise<Array<
+    MemorySaveSlotSummary & { saveFormat: MemorySaveMode }
+>> {
+    const [versioned, references] = await Promise.all([
+        listMemorySaveSlots(input, options),
+        listMemorySaveReferences(input, options),
+    ])
+    const byId = new Map<string, MemorySaveSlotSummary & { saveFormat: MemorySaveMode }>()
+    for (const slot of versioned) {
+        byId.set(slot.saveId, { ...slot, saveFormat: 'v1-snapshot' })
+    }
+    for (const slot of references) {
+        byId.set(slot.saveId, { ...slot, saveFormat: 'commit-reference' })
+    }
+    return [...byId.values()].sort((left, right) =>
+        right.createdAt.localeCompare(left.createdAt)
+        || left.saveId.localeCompare(right.saveId)
+    )
 }
 
 export async function prepareMemorySaveLoad(input: {
@@ -376,6 +777,8 @@ export async function prepareMemorySaveLoad(input: {
     chatBytes: Buffer
     save: MemorySaveSlotSummary
     fork: MemoryForkReceipt
+    /** Wiki commit the save pinned, when it was a reference save. */
+    wikiCommitId?: string
 }> {
     const fileSystem = options.fileSystem ?? nodeFs
     const sourceChatId = memorySaveWorkspaceId(input.saveId)
@@ -384,6 +787,14 @@ export async function prepareMemorySaveLoad(input: {
     )
     const manifestPath = join(workspace.directory, SAVE_MANIFEST)
     const chatPath = join(workspace.directory, SAVE_CHAT)
+    const reference = await readMemorySaveReference(input, options)
+    if (reference) {
+        // Reference saves carry no wiki copy. The runtime materializes the
+        // destination from the pinned commit instead of this v1 path.
+        throw new Error(
+            'Memory save reference is loaded through its pinned commit'
+        )
+    }
     await safeFile(fileSystem, manifestPath, 'Memory save manifest')
     await safeFile(fileSystem, chatPath, 'Memory save chat')
     const manifest = parseManifest(JSON.parse(
@@ -423,4 +834,37 @@ export async function prepareMemorySaveLoad(input: {
         }).catch(() => undefined)
         throw error
     }
+}
+
+/** All save slots are GC roots, including references written before ref metadata. */
+export async function memorySaveChatStateRoots(input: {
+    userDataDirectory: string
+    characterId: string
+}): Promise<string[]> {
+    const directory = dirname(resolveMemoryWorkspace(
+        input.userDataDirectory, input.characterId, 'save-list-probe'
+    ).directory)
+    const roots: string[] = []
+    let entries
+    try { entries = await nodeFs.readdir(directory, { withFileTypes: true }) }
+    catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return roots
+        throw error
+    }
+    for (const entry of entries) {
+        if (!entry.isDirectory() || !entry.name.startsWith(SAVE_DIRECTORY_PREFIX)) continue
+        for (const name of [SAVE_REFERENCE_MANIFEST, SAVE_VCS_SIDECAR]) {
+            const file = join(directory, entry.name, name)
+            try {
+                await safeFile(nodeFs, file, 'Memory save GC root')
+                const record = JSON.parse(await nodeFs.readFile(file, 'utf8'))
+                if (typeof record.chatStateRef === 'string') roots.push(record.chatStateRef)
+            }
+            catch (error) {
+                if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+                throw error
+            }
+        }
+    }
+    return roots
 }

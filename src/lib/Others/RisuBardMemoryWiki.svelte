@@ -10,6 +10,7 @@
         PanelRightCloseIcon,
         NetworkIcon,
         RefreshCwIcon,
+        RotateCcwIcon,
         ChevronDownIcon,
         SquareTerminalIcon,
         MonitorIcon,
@@ -41,12 +42,14 @@
         type RisuBardMemoryUpdatedDetail,
     } from 'src/ts/risubard/memoryEvents'
     import { DBState } from 'src/ts/stores.svelte'
+    import { ensureWikiBaselineForChat } from 'src/ts/risubard/wikiChatCoordinator'
     import RisuBardNarrativeGraph from './RisuBardNarrativeGraph.svelte'
     import RisuBardWriterWorkbench from './RisuBardWriterWorkbench.svelte'
     import RisuBardWikiEditor from './RisuBardWikiEditor.svelte'
     import RisuBardMemoryActivity from './RisuBardMemoryActivity.svelte'
     import RisuBardStorySoFar from './RisuBardStorySoFar.svelte'
     import RisuBardStoryArcPlot from './RisuBardStoryArcPlot.svelte'
+    import RisuBardWikiHistory from './RisuBardWikiHistory.svelte'
     import RisuBardWikiCommandTerminal from './RisuBardWikiCommandTerminal.svelte'
     import RisuBardMemoryWikiHelp from './RisuBardMemoryWikiHelp.svelte'
     import RisuBardCurrentChatSettings from './RisuBardCurrentChatSettings.svelte'
@@ -172,7 +175,7 @@
     let loadedScope = ''
     let dockElement = $state<HTMLElement | null>(null)
     let workspaceSplitElement = $state<HTMLElement | null>(null)
-    let activeView = $state<'painter' | 'ooc' | 'workspace' | 'story' | 'arc-plot' | 'log'>('workspace')
+    let activeView = $state<'painter' | 'ooc' | 'workspace' | 'story' | 'arc-plot' | 'history' | 'log'>('workspace')
     let painterLoadError = $state('')
     let settingsOpen = $state(false)
     let settingsPopoverElement = $state<HTMLElement | null>(null)
@@ -381,6 +384,17 @@
         loading = true
         error = ''
         try {
+            // First access records the current wiki as a legacy baseline, so
+            // existing chats gain history without their files being touched.
+            await ensureWikiBaselineForChat(
+                {
+                    characterId,
+                    chatId: wikiChatId,
+                    fetchImpl: fetch,
+                    createAuth: () => forageStorage.createAuth(),
+                },
+                activityMessages,
+            ).catch(() => undefined)
             const loaded = await loadNarrativeMemoryWiki({
                 characterId,
                 chatId: wikiChatId,
@@ -801,6 +815,13 @@
                         title="아크 플롯"
                         onclick={() => activeView = 'arc-plot'}
                     ><NetworkIcon size={20} /><span>아크 플롯</span></button>
+                    <button
+                        type="button"
+                        class:active={activeView === 'history'}
+                        data-memory-view="history"
+                        title="이력"
+                        onclick={() => activeView = 'history'}
+                    ><RotateCcwIcon size={20} /><span>이력</span></button>
                 {/if}
                 <button
                     type="button"
@@ -1086,6 +1107,12 @@
                         checkpointSize={arcPlotterSettings.checkpointSize}
                         enabled={arcPlotterSettings.enabled}
                         onOpenDocument={editStoryEntry}
+                    />
+                {:else if activeView === 'history'}
+                    <RisuBardWikiHistory
+                        {characterId}
+                        chatId={wikiChatId}
+                        onChanged={() => loadWiki()}
                     />
                 {:else}
                     <div class="activity-log-scroll" data-memory-activity-scroll>

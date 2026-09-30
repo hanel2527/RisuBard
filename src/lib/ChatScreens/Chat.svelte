@@ -9,7 +9,10 @@
     import { announceRisuBardMemoryUpdated } from "src/ts/risubard/memoryEvents"
     import { completeMemoryWikiFork, forkMemoryWiki } from "src/ts/risubard/memoryWikiFork"
     import { canBranchFromMessage, isHistoricalBranch } from "src/ts/risubard/chatHistoryPolicy"
-    import { resetImportedBardWikiState } from "src/ts/risubard/chatImportMemory"
+    import { applyWikiRollback, createWikiBranchAt, preserveWikiChat } from "src/ts/risubard/wikiChatCoordinator"
+    import { checkoutWikiVersion, discardWikiFork } from "src/ts/risubard/wikiVersionClient"
+    import { cleanupWikiRebootWorkspace } from "src/ts/risubard/wikiRebootTransport"
+    import { rebuildNarrativeAfterChatEdit } from "src/ts/risubard/wikiChatRebuild"
     import { ColorSchemeTypeStore } from "src/ts/gui/colorscheme"
     import { getModelInfo } from "src/ts/model/modellist"
     import { runLuaButtonTrigger } from 'src/ts/process/scriptings'
@@ -168,66 +171,114 @@
                 variant: 'destructive',
             })
         }
-        const sel = await alertConfirmMulti(language.bardWikiDeleteWarning, actions)
+        const sel = await alertConfirmMulti(language.bardWikiDeleteWarningStored, actions)
         if(sel < 0) return
         const currentCharacter = DBState.db.characters[selIdState.selId]
         const currentChat = currentCharacter.chats[currentCharacter.chatPage]
-        let msg = currentChat.message
-        const removedMessages = sel === 1 ? msg.slice(idx) : [msg[idx]]
-        const sourceMessageIds = removedMessages.filter((message) =>
-            typeof message?.chatId === 'string'
-            && message.chatId.length > 0
-        ).map((message) => message.chatId as string)
-        if(sourceMessageIds.length > 0 && currentCharacter.chaId && currentChat.id){
-            try {
-                const { retractedIds } = await retractWikiEventsBySourceMessages({
+        currentChat.id ||= v4()
+        for (const item of currentChat.message) item.chatId ||= v4()
+        const original = $state.snapshot(currentChat)
+        const context = {
+            characterId: currentCharacter.chaId,
+            chatId: currentChat.id,
+            fetchImpl: fetch,
+            createAuth: () => forageStorage.createAuth(),
+        }
+        let previousHead: string | undefined
+        try {
+            previousHead = await preserveWikiChat(context, original, 'truncate')
+            const truncated = sel === 1
+            currentChat.message = truncated
+                ? currentChat.message.slice(0, idx)
+                : currentChat.message.filter((_, index) => index !== idx)
+            await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+            const rollback = truncated
+                ? await applyWikiRollback(context, currentChat.message, 'truncate')
+                : { applied: false }
+            if (!rollback.applied) {
+                await rebuildNarrativeAfterChatEdit({
                     characterId: currentCharacter.chaId,
                     chatId: currentChat.id,
-                    sourceMessageIds,
+                    fromIndex: idx,
+                })
+            }
+            await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+            notifySuccess(truncated
+                ? language.messagesRemoved.replace('{}', cascadeCount.toString())
+                : language.messageRemoved)
+        }
+        catch (error) {
+            const stagingChatId = currentChat.risuBardWikiReboot?.stagingChatId
+            Object.assign(currentChat, original)
+            if (!original.risuBardWikiReboot) delete currentChat.risuBardWikiReboot
+            if (previousHead) {
+                await checkoutWikiVersion({
+                    ...context, commitId: previousHead, reason: 'truncate',
+                })
+            }
+            await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+            if (stagingChatId) {
+                await cleanupWikiRebootWorkspace({
+                    characterId: currentCharacter.chaId,
+                    stagingChatId,
                     fetchImpl: fetch,
                     createAuth: () => forageStorage.createAuth(),
                 })
-                if(retractedIds.length > 0){
-                    announceRisuBardMemoryUpdated({
-                        characterId: currentCharacter.chaId,
-                        chatId: currentChat.id,
-                    })
-                }
             }
-            catch(error){
-                notifyInfo(`연결된 BardWiki 사건을 철회하지 못해 메시지 삭제를 중단했습니다: ${error instanceof Error ? error.message : String(error)}`)
-                return
-            }
+            notifyError(`삭제를 취소하고 이전 상태를 복원했습니다: ${error instanceof Error
+                ? error.message : String(error)}`)
         }
-        if(sel === 1){
-            msg = msg.slice(0, idx)
-            notifySuccess(language.messagesRemoved.replace('{}', cascadeCount.toString()))
-        }
-        else{
-            msg.splice(idx, 1)
-            notifySuccess(language.messageRemoved)
-        }
-        DBState.db.characters[selIdState.selId].chats[DBState.db.characters[selIdState.selId].chatPage].message = msg
     }
 
     async function edit(){
-        const msg = DBState.db.characters[selIdState.selId].chats[DBState.db.characters[selIdState.selId].chatPage].message[idx]
-        msg.data = message
-        if (msg.swipes && msg.swipeId !== undefined) {
-            msg.swipes[msg.swipeId] = message
+        const character = DBState.db.characters[selIdState.selId]
+        const chat = character.chats[character.chatPage]
+        const target = chat.message[idx]
+        if (!target || target.data === message) return
+        chat.id ||= v4()
+        for (const item of chat.message) item.chatId ||= v4()
+        const original = $state.snapshot(chat)
+        const context = {
+            characterId: character.chaId,
+            chatId: chat.id,
+            fetchImpl: fetch,
+            createAuth: () => forageStorage.createAuth(),
+        }
+        let head: string | undefined
+        try {
+            head = await preserveWikiChat(context, original, 'truncate')
+            target.data = message
+            if (target.swipes && target.swipeId !== undefined) {
+                target.swipes[target.swipeId] = message
+            }
+            await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+            await rebuildNarrativeAfterChatEdit({
+                characterId: character.chaId, chatId: chat.id, fromIndex: idx,
+            })
+            await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+        }
+        catch (error) {
+            const stagingChatId = chat.risuBardWikiReboot?.stagingChatId
+            Object.assign(chat, original)
+            if (!original.risuBardWikiReboot) delete chat.risuBardWikiReboot
+            message = original.message[idx].data
+            if (head) await checkoutWikiVersion({
+                ...context, commitId: head, reason: 'truncate',
+            })
+            await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+            if (stagingChatId) await cleanupWikiRebootWorkspace({
+                characterId: character.chaId, stagingChatId,
+                fetchImpl: fetch, createAuth: () => forageStorage.createAuth(),
+            })
+            notifyError(`편집을 취소했습니다: ${error instanceof Error ? error.message : String(error)}`)
         }
     }
 
-    function handlePartialEditSave(e: CustomEvent<{ newData: string }>) {
-        if (idx >= 0) {
-            message = e.detail.newData
-            const msg = DBState.db.characters[selIdState.selId].chats[DBState.db.characters[selIdState.selId].chatPage].message[idx]
-            msg.data = e.detail.newData
-            if (msg.swipes && msg.swipeId !== undefined) {
-                msg.swipes[msg.swipeId] = e.detail.newData
-            }
-            displaya(e.detail.newData)
-        }
+    async function handlePartialEditSave(e: CustomEvent<{ newData: string }>) {
+        if (idx < 0) return
+        message = e.detail.newData
+        await edit()
+        displaya(message)
     }
 
     function removeInlayImage(id: string, occurrence: number) {
@@ -1259,27 +1310,55 @@
         newChat.name = createChatCopyName(newChat.name, 'Branch')
         newChat.id = v4()
         newChat.message = newChat.message.slice(0, idx + 1)
-        if(historicalBranch){
-            resetImportedBardWikiState(newChat)
-        }
-        const messageIds = currentChat.message.flatMap(
-            (message) => typeof message.chatId === 'string'
-                && message.chatId.length > 0
-                ? [message.chatId]
-                : []
-        )
-        const retainedMessageIds = newChat.message.flatMap(
-            (message) => typeof message.chatId === 'string'
-                && message.chatId.length > 0
-                ? [message.chatId]
-                : []
-        )
+        delete newChat.risuBardWikiReboot
+        delete newChat.risuBardLastAutosaveTurn
         if(!currentCharacter.chaId || !currentChat.id){
             notifyError('Memory Wiki branch requires stable chat and character IDs.')
             return
         }
+        // The destination wiki is created from the exact commit that matches
+        // this fork point. When history does not cover the point, the branch is
+        // created without wiki state instead of attaching later story state.
+        let versionForked = false
+        let requiresRebuild = false
+        try {
+            const branch = await createWikiBranchAt({
+                characterId: currentCharacter.chaId,
+                sourceChatId: currentChat.id,
+                destinationChatId: newChat.id,
+                forkMessages: newChat.message,
+                fetchImpl: fetch,
+                createAuth: () => forageStorage.createAuth(),
+            })
+            if(branch){
+                versionForked = true
+            }
+            else if(historicalBranch){
+                requiresRebuild = true
+            }
+        }
+        catch(error){
+            notifyError(
+                `Memory Wiki branch failed: ${error instanceof Error
+                    ? error.message
+                    : String(error)}`
+            )
+            return
+        }
         let forkReceipt: Awaited<ReturnType<typeof forkMemoryWiki>> | undefined
-        if(!historicalBranch){
+        if(!versionForked && !historicalBranch){
+            const messageIds = currentChat.message.flatMap(
+                (message) => typeof message.chatId === 'string'
+                    && message.chatId.length > 0
+                    ? [message.chatId]
+                    : []
+            )
+            const retainedMessageIds = newChat.message.flatMap(
+                (message) => typeof message.chatId === 'string'
+                    && message.chatId.length > 0
+                    ? [message.chatId]
+                    : []
+            )
             try {
                 forkReceipt = await forkMemoryWiki({
                     characterId: currentCharacter.chaId,
@@ -1329,6 +1408,13 @@
                 forceFullWrite: true,
                 rejectOnFailure: true,
             })
+            if (requiresRebuild) {
+                await rebuildNarrativeAfterChatEdit({
+                    characterId: currentCharacter.chaId,
+                    chatId: newChat.id,
+                    fromIndex: 0,
+                })
+            }
         }
         catch(error){
             currentCharacter.chats.splice(
@@ -1355,6 +1441,20 @@
                 catch(discardError){
                     cleanupError = discardError
                 }
+            }
+            try {
+                const stagingChatId = newChat.risuBardWikiReboot?.stagingChatId
+                if (stagingChatId) await cleanupWikiRebootWorkspace({
+                    characterId: currentCharacter.chaId, stagingChatId,
+                    fetchImpl: fetch, createAuth: () => forageStorage.createAuth(),
+                })
+                if (versionForked || requiresRebuild) await discardWikiFork({
+                    characterId: currentCharacter.chaId, chatId: newChat.id,
+                    fetchImpl: fetch, createAuth: () => forageStorage.createAuth(),
+                })
+            }
+            catch(discardError){
+                cleanupError ??= discardError
             }
             void requestImmediateSave({ forceFullWrite: true })
             notifyError(

@@ -6,10 +6,13 @@ import { completeMemoryWorkspaceFork } from './risubard-memory-fork'
 import {
     createMemorySaveSlot,
     deleteMemorySaveSlot,
+    listAllMemorySaveSlots,
     listMemorySaveSlots,
     readMemorySaveChat,
+    readMemorySaveReference,
     renameMemorySaveSlot,
     prepareMemorySaveLoad,
+    writeMemorySaveReference,
 } from './risubard-memory-save'
 import { resolveMemoryWorkspace } from './risubard-memory-workspace'
 
@@ -84,6 +87,68 @@ describe('memory save slots', () => {
         })).rejects.toThrow('different chat')
         expect(await listMemorySaveSlots(input)).toEqual([saved])
         expect(await readMemorySaveChat(input)).toEqual(Buffer.from('old'))
+    })
+
+    test('atomically overwrites a reference slot as a v1 save without losing ownership', async () => {
+        const root = await createRoot()
+        const input = {
+            userDataDirectory: root,
+            characterId: 'character',
+            sourceChatId: 'chat-source',
+            saveId: 'save-reference',
+            sourceChatName: 'Current chat name',
+            turnCount: 3,
+            chatBytes: Buffer.from('new chat state'),
+        }
+        const source = resolveMemoryWorkspace(root, 'character', 'chat-source')
+        const scene = join(source.directory, 'wiki', 'current-scene.md')
+        await fs.mkdir(dirname(scene), { recursive: true })
+        await fs.writeFile(scene, 'current wiki')
+        await writeMemorySaveReference({
+            userDataDirectory: root,
+            characterId: input.characterId,
+            sourceChatId: input.sourceChatId,
+            saveId: input.saveId,
+            sourceChatName: 'Renamed saved story',
+            turnCount: 2,
+            chatStateRef: 'chat-state-hash',
+        })
+
+        await expect(createMemorySaveSlot({
+            ...input,
+            sourceChatId: 'another-chat',
+            overwrite: true,
+        })).rejects.toThrow('different chat')
+        expect(await readMemorySaveReference({
+            userDataDirectory: root,
+            characterId: input.characterId,
+            saveId: input.saveId,
+        })).not.toBeNull()
+
+        const saved = await createMemorySaveSlot({ ...input, overwrite: true })
+        expect(saved.sourceChatName).toBe('Renamed saved story')
+        expect(await readMemorySaveReference({
+            userDataDirectory: root,
+            characterId: input.characterId,
+            saveId: input.saveId,
+        })).toBeNull()
+        expect(await listAllMemorySaveSlots({
+            userDataDirectory: root,
+            characterId: input.characterId,
+            sourceChatId: input.sourceChatId,
+        })).toEqual([{ ...saved, saveFormat: 'v1-snapshot' }])
+        expect(await readMemorySaveChat(input)).toEqual(input.chatBytes)
+        const prepared = await prepareMemorySaveLoad({
+            ...input,
+            destinationChatId: 'loaded-reference-save',
+        })
+        expect(prepared.chatBytes).toEqual(input.chatBytes)
+        await completeMemoryWorkspaceFork({
+            ...input,
+            destinationChatId: 'loaded-reference-save',
+            forkToken: prepared.fork.forkToken,
+            action: 'finalize',
+        })
     })
 
     test.each(['chat.bin', 'risubard-save.json', 'publish'])(

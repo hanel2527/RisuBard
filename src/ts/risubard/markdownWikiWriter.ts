@@ -1,6 +1,7 @@
 import { invokeBrowserFetch } from './browserFetch'
 import { modelOutputRepairInstruction, runValidatedModelRequest, type ModelResponse } from '../../../packages/risubard-core/src/modelResponse'
 import type { WikiWritingLanguage } from './wikiWritingLanguage'
+import type { WikiChatAnchor } from './wikiVcsContract'
 import { normalizeMemoryRetrievalMetadata, type MemoryRetrievalMetadata } from '../../../server/node/risubard-memory-metadata'
 
 export type CanonicalWikiDocumentType = 'character' | 'location' | 'scene'
@@ -211,6 +212,8 @@ export async function saveCanonicalWikiDocument(input: {
     sourceMessageIds: string[]
     markdown: string
     writingLanguage?: WikiWritingLanguage
+    chatAnchor?: WikiChatAnchor
+    operationId?: string
     fetchImpl: typeof fetch
     createAuth(): Promise<string>
     signal?: AbortSignal
@@ -242,6 +245,8 @@ export async function saveCanonicalWikiDocument(input: {
             retrievalMetadata: normalizeMemoryRetrievalMetadata(input.retrievalMetadata),
         }),
         ...(input.writingLanguage ? { writingLanguage: input.writingLanguage } : {}),
+        ...(input.chatAnchor ? { chatAnchor: input.chatAnchor } : {}),
+        ...(input.operationId ? { operationId: input.operationId } : {}),
     }
     const response = await invokeBrowserFetch(
         input.fetchImpl,

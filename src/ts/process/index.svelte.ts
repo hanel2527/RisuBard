@@ -74,6 +74,9 @@ import {
     trashWikiDocument,
 } from '../risubard/memoryWiki';
 import { announceRisuBardMemoryUpdated } from '../risubard/memoryEvents';
+import { anchorMessagesFromChat } from '../risubard/wikiChatCoordinator';
+import { chatBoundaryAnchor } from '../risubard/wikiVcsContract';
+import { findWikiCommitForPrefix, previewWikiCheckout, forkWikiVersion, ensureWikiVersion } from '../risubard/wikiVersionClient';
 import {
     executeDirectWikiCommand,
     type DirectWikiContextSelection,
@@ -107,6 +110,7 @@ import {
 import { saveChatToServer } from '../storage/chatStorage';
 import {
     createWikiRebootJob,
+    applyWikiRebootReceipts,
     nextWikiRebootBatch,
     projectWikiRebootTurns,
     type WikiRebootBatchSize,
@@ -245,6 +249,22 @@ async function confirmProjectedNarrativeTurn(input: {
         if (settings.risuBardIgnoreOocTurns && input.messages.some((message) =>
             message.role === 'assistant' && isOocAssistantTurn({ role: 'char', data: message.content })
         )) return false
+        if (character && chat) {
+            for (const message of chat.message) {
+                if (!message.chatId) message.chatId = v4()
+            }
+            const chatIndex = character.chats.indexOf(chat)
+            if (chatIndex < 0) return false
+            // The server validates this exact persisted prefix immediately
+            // before publishing, so another client cannot make this analysis
+            // land on a stale chat revision.
+            await saveChatToServer(
+                character.chaId,
+                chatIndex,
+                input.chatId,
+                chat
+            )
+        }
         const wikiPromptPreset = resolveWikiPromptPreset(
             DBState.db.risuBardWikiPromptPresets,
             DBState.db.risuBardChatWikiPromptPresetId
@@ -284,6 +304,22 @@ async function confirmProjectedNarrativeTurn(input: {
                 settings.risuBardIgnoreOocTurns
             )
             : confirmedMessages
+        const targetIndex = chat?.message.findIndex((message) =>
+            message.chatId === input.targetMessageId
+        ) ?? -1
+        const fullPrefix = chat && targetIndex >= 0
+            ? anchorMessagesFromChat(chat.message.slice(0, targetIndex + 1))
+            : []
+        const chatAnchor = fullPrefix.length > 0
+            ? chatBoundaryAnchor(
+                input.chatId,
+                input.targetMessageId,
+                fullPrefix,
+                fullPrefix.filter((message) =>
+                    input.messages.some((evidence) =>
+                        evidence.messageId === message.messageId))
+            )
+            : undefined
         const receipt = await storedResponseMemoryAnalysis.confirm({
             characterId: input.characterId,
             chatId: input.chatId,
@@ -292,6 +328,7 @@ async function confirmProjectedNarrativeTurn(input: {
                 contextMessages,
                 firstMessageEvidence
             ),
+            ...(chatAnchor ? { chatAnchor } : {}),
             analysisTokenLimit: settings.risuBardAnalysisTokenLimit,
             additionalSearchLimit: settings.risuBardAdditionalSearchLimit,
             canonicalTargetLimit: settings.risuBardCanonicalTargetLimit,
@@ -559,16 +596,7 @@ async function finalizeWikiReboot(
         fetchImpl: fetch,
         createAuth: () => forageStorage.createAuth(),
     })
-    const targetIds = new Set(job.targetAssistantMessageIds)
-    for (const message of chat.message) {
-        delete message.risubardMemoryConfirmed
-        delete message.risubardCanonicalReceipt
-        if (message.chatId && targetIds.has(message.chatId)) {
-            message.risubardMemoryConfirmed = true
-            const receipt = job.receipts[message.chatId]
-            if (receipt) message.risubardCanonicalReceipt = receipt
-        }
-    }
+    applyWikiRebootReceipts(chat.message, job)
     const stagingChatId = job.stagingChatId
     delete chat.risuBardWikiReboot
     await persistWikiReboot(character, chat, chatIndex)
@@ -685,6 +713,15 @@ async function runWikiReboot(
                 !settings.risuBardAnalysisExcludeUserMessages,
                 ignoreOocTurns
             )
+            const rebootBoundaryId = batch.at(-1)?.assistantMessageId
+            const rebootBoundaryIndex = chat.message.findIndex((message) =>
+                message.chatId === rebootBoundaryId
+            )
+            const rebootPrefix = rebootBoundaryIndex >= 0
+                ? anchorMessagesFromChat(
+                    chat.message.slice(0, rebootBoundaryIndex + 1)
+                )
+                : []
             const receipt = await storedResponseMemoryAnalysis.confirm({
                 characterId: character.chaId,
                 chatId: job.stagingChatId,
@@ -694,6 +731,16 @@ async function runWikiReboot(
                     contextMessages,
                     firstMessageEvidence
                 ),
+                ...(rebootPrefix.length > 0 ? {
+                    chatAnchor: chatBoundaryAnchor(
+                        chatId,
+                        rebootBoundaryId ?? null,
+                        rebootPrefix,
+                        rebootPrefix.filter((message) =>
+                            projected.messages.some((evidence) =>
+                                evidence.messageId === message.messageId))
+                    ),
+                } : {}),
                 rebootTurns: projected.rebootTurns,
                 analysisTokenLimit: settings.risuBardAnalysisTokenLimit,
                 additionalSearchLimit: settings.risuBardAdditionalSearchLimit,
@@ -766,6 +813,91 @@ async function runWikiReboot(
         endWikiGeneration(operationId)
         activeWikiReboots.delete(operationId)
     }
+}
+
+export async function rebuildWikiForChat(
+    characterId: string,
+    chatId: string,
+    fromIndex = 0
+): Promise<boolean> {
+    const character = DBState.db.characters.find((item) =>
+        item.chaId === characterId)
+    const chatIndex = character?.chats.findIndex((item) => item.id === chatId) ?? -1
+    const chat = character?.chats[chatIndex]
+    if (!character || !chat || chat._placeholder || chat.isStreaming) return false
+    if (!chat.risuBardWikiReboot) {
+        for (const message of chat.message) message.chatId ||= v4()
+        const settings = resolvedRisuBardSettings(chat)
+        const jobId = v4()
+        const stagingChatId = `reboot-${jobId}`
+        let startIndex = 0
+        let seeded = false
+        if (fromIndex > 0) {
+            const prefix = anchorMessagesFromChat(chat.message.slice(0, fromIndex))
+            const context = {
+                characterId, chatId, fetchImpl: fetch,
+                createAuth: () => forageStorage.createAuth(),
+            }
+            const commitId = await findWikiCommitForPrefix({
+                ...context, messages: prefix, minimumBoundaryMessageId: null,
+            })
+            if (commitId) {
+                const preview = await previewWikiCheckout({
+                    ...context, commitId, messages: prefix,
+                })
+                const boundary = preview.chatAnchor.boundaryMessageId
+                const boundaryIndex = boundary === null ? -1
+                    : chat.message.findIndex((message) => message.chatId === boundary)
+                if (preview.exact && (boundary === null || boundaryIndex >= 0)
+                    && boundaryIndex < fromIndex) {
+                    await forkWikiVersion({
+                        characterId, sourceChatId: chatId, destinationChatId: stagingChatId,
+                        commitId, fetchImpl: fetch,
+                        createAuth: () => forageStorage.createAuth(),
+                    })
+                    startIndex = boundaryIndex + 1
+                    seeded = true
+                }
+            }
+        }
+        if (!seeded) {
+            await ensureWikiVersion({
+                characterId, chatId: stagingChatId,
+                chatAnchor: chatBoundaryAnchor(chatId, null, []),
+                fetchImpl: fetch, createAuth: () => forageStorage.createAuth(),
+            })
+        }
+        const lastAssistant = chat.message.findLast((message) =>
+            message.role === 'char' && !message.isComment && !message.disabled
+        )
+        const unconfirmedId = lastAssistant && !lastAssistant.risubardMemoryConfirmed
+            && !lastAssistant.risubardCanonicalReceipt ? lastAssistant.chatId : undefined
+        const turns = projectWikiRebootTurns(
+            chat.message, startIndex, !settings.risuBardAnalysisExcludeUserMessages,
+            settings.risuBardIgnoreOocTurns
+        ).filter((turn) => turn.assistantMessageId !== unconfirmedId)
+        chat.risuBardWikiReboot = createWikiRebootJob({
+            jobId,
+            stagingChatId,
+            writingLanguage: settings.risuBardWikiWritingLanguage,
+            ignoreOocTurns: settings.risuBardIgnoreOocTurns,
+            batchSize: 1,
+            targetAssistantMessageIds: turns.map((turn) => turn.assistantMessageId),
+            ...(seeded ? {
+                retainedAssistantMessageIds: chat.message.slice(0, startIndex)
+                    .filter((message) => message.risubardMemoryConfirmed
+                        || message.risubardCanonicalReceipt)
+                    .flatMap((message) => message.chatId ? [message.chatId] : []),
+            } : {}),
+        })
+    }
+    else {
+        chat.risuBardWikiReboot.status = 'running'
+        delete chat.risuBardWikiReboot.lastError
+    }
+    await persistWikiReboot(character, chat, chatIndex)
+    await runWikiReboot(character, chat, chatIndex)
+    return !chat.risuBardWikiReboot
 }
 
 export async function startCurrentWikiReboot(
