@@ -952,6 +952,63 @@ describe('RisuBard memory routes', () => {
         }
     })
 
+    test('accepts large raw-base64 recovery refs within the route limit', async () => {
+        const express = require('express')
+        const {
+            createRisuBardMemoryJsonParser,
+            registerRisuBardMemoryRoutes,
+        } = require('./risubard-memory-routes.cjs')
+        const createWikiRef = vi.fn(async () => 'recovery-ref')
+        const app = express()
+        app.use(createRisuBardMemoryJsonParser(express))
+        registerRisuBardMemoryRoutes(app, {
+            auth: async () => true,
+            service: { createWikiRef },
+        })
+        app.use((
+            error: { type?: string },
+            _req: unknown,
+            res: { status(code: number): { send(body: unknown): void } },
+            _next: (error?: unknown) => void
+        ) => {
+            res.status(error.type === 'entity.too.large' ? 413 : 500)
+                .send({ error: error.type })
+        })
+        const server = app.listen(0)
+        try {
+            const address = server.address()
+            if (!address || typeof address === 'string') {
+                throw new Error('Test server did not bind a TCP port')
+            }
+            const response = await fetch(
+                `http://127.0.0.1:${address.port}/api/risubard/memory/wiki/version/ref`,
+                {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({
+                        characterId: 'character', chatId: 'chat',
+                        commitId: 'a'.repeat(64), kind: 'recovery',
+                        reason: 'truncate',
+                        chatBase64: 'A'.repeat(600 * 1_024),
+                    }),
+                }
+            )
+            expect(response.status).toBe(200)
+            expect(await response.json()).toEqual({ id: 'recovery-ref' })
+            expect(createWikiRef).toHaveBeenCalledWith(expect.objectContaining({
+                chatBase64: 'A'.repeat(600 * 1_024),
+            }))
+        }
+        finally {
+            await new Promise<void>((resolve, reject) => {
+                server.close((error?: Error) => {
+                    if (error) reject(error)
+                    else resolve()
+                })
+            })
+        }
+    })
+
     test('authenticates and returns current state without exposing a path', async () => {
         const { registerRisuBardMemoryRoutes } = require(
             './risubard-memory-routes.cjs'

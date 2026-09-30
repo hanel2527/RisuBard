@@ -38,6 +38,7 @@ const {
     memorySaveWorkspaceId,
     prepareMemorySaveLoad,
     readMemorySaveChat,
+    readMemorySaveSummary,
     readMemorySaveReference: readReferenceSave,
     readMemorySaveVcsSidecar: readSaveSidecar,
     renameMemorySaveReference: renameReferenceSave,
@@ -284,6 +285,9 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
         if (wikiRecoveryReady.has(key)) return
         await recoverLegacyWikiSwap(characterId, chatId)
         const recovered = await versioning.recoverOperations({ characterId, chatId })
+        if (recovered.conflicts?.length > 0) {
+            throw new Error(recovered.conflicts.join('\n'))
+        }
         if (recovered.unresolved.length > 0) {
             throw new Error('Wiki operation pending: recovery must complete before access')
         }
@@ -650,32 +654,45 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
                     userDataDirectory,
                     characterId: input.characterId,
                     saveId: input.saveId,
-                }).catch(() => null)
+                })
                 const sidecar = await readSaveSidecar({
                     userDataDirectory, characterId: input.characterId, saveId: input.saveId,
                 })
+                let legacySave
+                try {
+                    legacySave = await readMemorySaveSummary({
+                        userDataDirectory,
+                        characterId: input.characterId,
+                        saveId: input.saveId,
+                    })
+                }
+                catch (error) {
+                    if (error.code !== 'ENOENT') throw error
+                }
                 const chatId = reference?.sourceChatId
                     ?? sidecar?.sourceChatId
+                    ?? legacySave?.sourceChatId
                     ?? input.sourceChatId
-                    ?? memorySaveWorkspaceId(input.saveId)
                 const deleted = await deleteSaveSlot({ userDataDirectory, ...input })
-                await versioning.deleteRef({
-                    characterId: input.characterId,
-                    chatId,
-                    kind: reference ? 'autosave' : 'save',
-                    id: reference
-                        ? `autosave:${input.saveId}`
-                        : `save-slot:${input.saveId}`,
-                })
-                await repository.collectChatState({
-                    characterId: input.characterId, chatId,
-                    referencedHashes: await memorySaveChatStateRoots({
-                        userDataDirectory, characterId: input.characterId,
-                    }),
-                })
-                await repository.collectGarbage({
-                    characterId: input.characterId, chatId,
-                })
+                if (chatId) {
+                    await versioning.deleteRef({
+                        characterId: input.characterId,
+                        chatId,
+                        kind: reference ? 'autosave' : 'save',
+                        id: reference
+                            ? `autosave:${input.saveId}`
+                            : `save-slot:${input.saveId}`,
+                    })
+                    await repository.collectChatState({
+                        characterId: input.characterId, chatId,
+                        referencedHashes: await memorySaveChatStateRoots({
+                            userDataDirectory, characterId: input.characterId,
+                        }),
+                    })
+                    await repository.collectGarbage({
+                        characterId: input.characterId, chatId,
+                    })
+                }
                 return deleted
             }
         ),

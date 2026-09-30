@@ -5,6 +5,7 @@ import { get_encoding } from '@dqbd/tiktoken'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { ModelOutputError } from '../../packages/risubard-core/src/modelResponse'
 import { canonicalTurnNeedsRetry } from '../../src/ts/risubard/canonicalTurnReceipt'
+import { chatBoundaryAnchor } from '../../src/ts/risubard/wikiVcsContract'
 import type {
     MemoryAnalysisInput,
     MemoryAnalysisModelRequest,
@@ -768,6 +769,95 @@ describe('memory analysis runner', () => {
             boundaryMessageId: 'assistant-1',
         })
         expect(applyDelta).not.toHaveBeenCalled()
+    })
+
+    test('preserves a persisted anchor and body-free event order in the real runner', async () => {
+        const prefix = [
+            { messageId: 'user-1', role: 'user', data: '계속해.' },
+            { messageId: 'assistant-1', role: 'assistant', data: '다리가 무너졌다.' },
+        ] as const
+        const anchor = chatBoundaryAnchor(
+            'chat-1', 'assistant-1', prefix, prefix
+        )
+        const saveConfirmedTurn = vi.fn(async () => undefined)
+        const analyze = vi.fn(async (request: MemoryAnalysisModelRequest) => {
+            expect(request.input).not.toContain('sourceMessageOrder')
+            expect(request.input).not.toContain(anchor.prefixDigest)
+            return JSON.stringify({
+                schemaVersion: 1, title: '다리의 붕괴',
+                establishedEvents: ['다리가 무너졌다.'],
+                stateChanges: [], characterKnowledge: [], persistentFacts: [],
+                openContinuity: [], canonicalUpdateCandidates: [],
+            })
+        })
+        const runner = createMemoryAnalysisRunner({
+            memoryService: { loadState: vi.fn(), applyDelta: vi.fn() },
+            nativeV2Analysis: true,
+            markdownWikiService: {
+                inquire: vi.fn(async () => ({ graphRevision: 0, sources: [] })),
+                saveConfirmedTurn,
+            },
+            onError: vi.fn(),
+            analyze,
+        })
+
+        await runner.run({
+            characterId: 'character-1', chatId: 'chat-1',
+            chatAnchor: anchor,
+            sourceMessageOrder: [
+                { chatId: 'user-1', role: 'user' },
+                { chatId: 'assistant-1', role: 'char' },
+            ],
+            messages: [
+                { messageId: 'user-1', role: 'user', content: '계속해.' },
+                { messageId: 'assistant-1', role: 'assistant', content: '다리가 무너졌다.' },
+            ],
+        })
+
+        expect(saveConfirmedTurn).toHaveBeenCalledWith(expect.objectContaining({
+            chatAnchor: anchor,
+        }))
+        expect(analyze).toHaveBeenCalledOnce()
+    })
+
+    test('does not turn a persisted-anchor conflict into an analysis success', async () => {
+        const prefix = [
+            { messageId: 'user-1', role: 'user', data: '계속해.' },
+            { messageId: 'assistant-1', role: 'assistant', data: '다리가 무너졌다.' },
+        ] as const
+        const anchor = chatBoundaryAnchor(
+            'chat-1', 'assistant-1', prefix, prefix
+        )
+        const saveConfirmedTurn = vi.fn(async () => {
+            throw new Error('Wiki chat conflict: persisted prefix changed')
+        })
+        const runner = createMemoryAnalysisRunner({
+            memoryService: { loadState: vi.fn(), applyDelta: vi.fn() },
+            nativeV2Analysis: true,
+            markdownWikiService: {
+                inquire: vi.fn(async () => ({ graphRevision: 0, sources: [] })),
+                saveConfirmedTurn,
+            },
+            onError: vi.fn(),
+            analyze: async () => JSON.stringify({
+                schemaVersion: 1, title: '다리의 붕괴',
+                establishedEvents: ['다리가 무너졌다.'],
+                stateChanges: [], characterKnowledge: [], persistentFacts: [],
+                openContinuity: [], canonicalUpdateCandidates: [],
+            }),
+        })
+
+        await expect(runner.run({
+            characterId: 'character-1', chatId: 'chat-1',
+            chatAnchor: anchor,
+            messages: [
+                { messageId: 'user-1', role: 'user', content: '계속해.' },
+                { messageId: 'assistant-1', role: 'assistant', content: '다리가 무너졌다.' },
+            ],
+        })).rejects.toThrow('Wiki chat conflict: persisted prefix changed')
+        expect(saveConfirmedTurn).toHaveBeenCalledWith(expect.objectContaining({
+            chatAnchor: anchor,
+        }))
     })
 
     test.each(['truncated', 'malformed', 'incomplete', 'incomplete-single', 'provider'] as const)('bounds failed canonical batch recovery: %s', async (failure) => {

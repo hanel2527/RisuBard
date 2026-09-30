@@ -128,9 +128,9 @@ test.each(['saved', 'conflict', 'pending'])('enabling monitoring settles acknowl
     expect(status).toBe(outcome === 'pending' ? 409 : 200)
 })
 
-test.each(['before-publication', 'after-publication'])('failed adoption retries without watcher events: %s', (failureStage) => {
+test.each(['before-publication', 'after-publication'])('failed adoption retries without watcher events: %s', async (failureStage) => {
     const source = fs.readFileSync(path.join(import.meta.dirname, 'server.cjs'), 'utf8')
-    const body = source.slice(source.indexOf('function adoptExternallyChangedCanonicalProjection('), source.indexOf('\nexternalEditSession = createExternalEditSession'))
+    const body = source.slice(source.indexOf('async function adoptExternallyChangedCanonicalProjection('), source.indexOf('\nexternalEditSession = createExternalEditSession'))
     const before = { characters: [{ chaId: 'one', desc: 'C', chats: [] }], loreBook: [] }
     const pending = structuredClone(before); pending.characters[0].desc = 'A'
     const external = structuredClone(before); external.characters[0].desc = 'B'
@@ -158,16 +158,16 @@ test.each(['before-publication', 'after-publication'])('failed adoption retries 
         saveTimers: {}, directWriteTracker: { clear: () => {} }, encodeRisuSaveLegacyBuffer: JSON.stringify,
         kvSet: () => {}, initChatStore: () => {}, computeBufferEtag: () => 'etag', nodeCrypto: { randomUUID: () => 'new' }, logger: { info: () => {} },
     })
-    expect(() => run(true)).toThrow('disk full')
+    await expect(run(true)).rejects.toThrow('disk full')
     expect(cache.db.characters[0].desc).toBe('A')
-    expect(run(true)).toMatchObject({ revision: published ? 'published' : 'revision' })
+    expect(await run(true)).toMatchObject({ revision: published ? 'published' : 'revision' })
     expect(cache.db.characters[0].desc).toBe('B')
     expect(archives[0].conflicts[0].local).toBe('A')
 })
 
-test.each([false, true])('canonical fallback preserves pending writes when no merge baseline exists (monitoring %s)', enabled => {
+test.each([false, true])('canonical fallback preserves pending writes when no merge baseline exists (monitoring %s)', async enabled => {
     const source = fs.readFileSync(path.join(import.meta.dirname, 'server.cjs'), 'utf8')
-    const body = source.slice(source.indexOf('function adoptExternallyChangedCanonicalProjection('), source.indexOf('\nexternalEditSession = createExternalEditSession'))
+    const body = source.slice(source.indexOf('async function adoptExternallyChangedCanonicalProjection('), source.indexOf('\nexternalEditSession = createExternalEditSession'))
     const pending = { characters: [{ chaId: 'one', desc: 'Acknowledged app edit', chats: [] }], loreBook: [] }
     const external = { characters: [{ chaId: 'one', desc: 'External edit', chats: [] }], loreBook: [] }
     const cache = { db: pending }
@@ -185,7 +185,7 @@ test.each([false, true])('canonical fallback preserves pending writes when no me
         liveFileRecovery: { complete: () => {} }, logger: { info: () => {} },
     }
     const run = new Function('deps', `with (deps) { ${body}; return adoptExternallyChangedCanonicalProjection; }`)(deps)
-    expect(() => run()).toThrow(expect.objectContaining({ code: 'CANONICAL_FILES_CHANGED' }))
+    await expect(run()).rejects.toMatchObject({ code: 'CANONICAL_FILES_CHANGED' })
     expect(cache.db).toBe(pending)
     expect(cache.db.characters[0].desc).toBe('Acknowledged app edit')
     expect(timers.db).toBe('pending-save')

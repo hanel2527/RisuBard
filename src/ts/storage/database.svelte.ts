@@ -63,6 +63,7 @@ import {
     normalizeRisuBardInquiryTimeoutMs,
 } from '../risubard/risuBardSettings';
 import { normalizeWikiRebootJob } from '../risubard/wikiReboot';
+import type { WikiRebootJob } from '../risubard/wikiReboot';
 import { normalizeWikiWritingLanguage } from '../risubard/wikiWritingLanguage';
 import {
     normalizeRisuBardEmbeddingSettings,
@@ -2730,6 +2731,37 @@ interface ComfyConfig{
 
 export type FormatingOrderItem = 'main'|'jailbreak'|'chats'|'lorebook'|'globalNote'|'authorNote'|'lastChat'|'description'|'postEverything'|'personaPrompt'
 
+function isWikiChatRecoveryStep(value: unknown): value is WikiChatRecoveryStep {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+    const step = value as Record<string, unknown>
+    return (step.kind === 'checkout'
+        || step.kind === 'discard-fork'
+        || step.kind === 'discard-memory-fork'
+        || step.kind === 'cleanup-workspace'
+        || step.kind === 'save-chat')
+        && typeof step.chatId === 'string'
+        && (step.commitId === undefined || typeof step.commitId === 'string')
+        && (step.reason === undefined || step.reason === 'truncate'
+            || step.reason === 'reroll' || step.reason === 'save-load')
+        && (step.forkToken === undefined || typeof step.forkToken === 'string')
+        && (step.stagingChatId === undefined || typeof step.stagingChatId === 'string')
+}
+
+function normalizeWikiChatRecoveryPending(
+    value: unknown,
+): WikiChatRecoveryPending | undefined {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+    const pending = value as Record<string, unknown>
+    if (typeof pending.id !== 'string' || typeof pending.error !== 'string'
+        || !Array.isArray(pending.steps)) return undefined
+    const steps: WikiChatRecoveryStep[] = []
+    for (const step of pending.steps) {
+        if (!isWikiChatRecoveryStep(step)) return undefined
+        steps.push({ ...step })
+    }
+    return { id: pending.id, error: pending.error, steps }
+}
+
 /**
  * Ensure a Chat object has all required fields.
  * Call at trust boundaries: after hydration, before assigning to character.chats, etc.
@@ -2753,7 +2785,25 @@ export function normalizeChat(chat: Partial<Chat>): Chat {
         c.togglePresetBaseline = createTogglePresetBaseline(c.GLGlobalVariables)
     }
     c.risuBardWikiReboot = normalizeWikiRebootJob(c.risuBardWikiReboot)
+    c.risuBardWikiRecoveryPending = normalizeWikiChatRecoveryPending(
+        c.risuBardWikiRecoveryPending,
+    )
     return c
+}
+
+export interface WikiChatRecoveryStep {
+    kind: 'checkout' | 'discard-fork' | 'discard-memory-fork' | 'cleanup-workspace' | 'save-chat'
+    chatId: string
+    commitId?: string
+    reason?: 'truncate' | 'reroll' | 'save-load'
+    forkToken?: string
+    stagingChatId?: string
+}
+
+export interface WikiChatRecoveryPending {
+    id: string
+    error: string
+    steps: WikiChatRecoveryStep[]
 }
 
 export interface Chat{
@@ -2768,7 +2818,8 @@ export interface Chat{
     risuBardGallery?:RisuBardGallery
     risuBardWikiGuide?: string
     risuBardSettings?: import('../risubard/risuBardSettings').RisuBardChatSettings
-    risuBardWikiReboot?: import('../risubard/wikiReboot').WikiRebootJob
+    risuBardWikiReboot?: WikiRebootJob
+    risuBardWikiRecoveryPending?: WikiChatRecoveryPending
     risuBardLastAutosaveTurn?: number
     sdData?:string
     suggestMessages?:string[]

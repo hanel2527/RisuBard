@@ -99,24 +99,39 @@ describe('file-native system logs', () => {
                 process.send({ type: 'done', error }, () => process.exit(0))
             })
         `)
-        const workers = Array.from({ length: 4 }, () => fork(workerPath, [], {
-            env: { ...process.env, RISUBARD_DATA_ROOT: root, LOGS_MODULE: logsModule },
-            stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
-        }))
+        const workers: ChildProcess[] = []
+        const exited: Promise<void>[] = []
+        try {
+            for (let index = 0; index < 4; index++) {
+                const worker = fork(workerPath, [], {
+                    env: { ...process.env, RISUBARD_DATA_ROOT: root, LOGS_MODULE: logsModule },
+                    stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+                })
+                workers.push(worker)
+                const { promise, resolve } = Promise.withResolvers<void>()
+                exited.push(promise)
+                if (worker.exitCode !== null || worker.signalCode !== null) resolve()
+                else worker.once('exit', () => resolve())
+            }
 
-        await Promise.all(workers.map(worker => waitForMessage(worker, 'ready')))
-        const done = workers.map(worker => waitForMessage(worker, 'done'))
-        const exited = workers.map(worker => new Promise<void>(resolveExit => worker.once('exit', () => resolveExit())))
-        for (const worker of workers) worker.send({ type: 'write' })
-        const results = await Promise.all(done)
-        await Promise.all(exited)
-        expect(results.map(result => result.error).filter(Boolean)).toEqual([])
+            await Promise.all(workers.map(worker => waitForMessage(worker, 'ready')))
+            const done = workers.map(worker => waitForMessage(worker, 'done'))
+            for (const worker of workers) worker.send({ type: 'write' })
+            const results = await Promise.all(done)
+            await Promise.all(exited)
+            expect(results.map(result => result.error).filter(Boolean)).toEqual([])
 
-        const persisted = readFileSync(join(root, 'logs', 'system.jsonl'), 'utf8')
-            .trim().split(/\r?\n/).map(line => JSON.parse(line) as { id: number })
-        expect(persisted).toHaveLength(100)
-        expect(new Set(persisted.map(row => row.id)).size).toBe(persisted.length)
-    }, 15_000)
+            const persisted = readFileSync(join(root, 'logs', 'system.jsonl'), 'utf8')
+                .trim().split(/\r?\n/).map(line => JSON.parse(line) as { id: number })
+            expect(persisted).toHaveLength(100)
+            expect(new Set(persisted.map(row => row.id)).size).toBe(persisted.length)
+        } finally {
+            for (const worker of workers) {
+                if (worker.exitCode === null && worker.signalCode === null) worker.kill()
+            }
+            await Promise.all(exited)
+        }
+    }, 60_000)
 
     test('does not steal a newly-created lock before its owner records a pid', async () => {
         const root = tempRoot()

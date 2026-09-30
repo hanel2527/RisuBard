@@ -1,5 +1,7 @@
 'use strict';
 const { AsyncLocalStorage } = require('node:async_hooks');
+const { Worker } = require('node:worker_threads');
+const path = require('node:path');
 const context = new AsyncLocalStorage();
 const tasks = new Map();
 function task(id) {
@@ -13,6 +15,38 @@ function task(id) {
     return tasks.get(id);
 }
 function withImportProgress(id, work) { return context.run(id, work); }
+function isActive() { return context.getStore() !== undefined; }
+function runImportWork(moduleFile, method, input) {
+    const id = context.getStore();
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(path.join(__dirname, 'import-progress-worker.cjs'), {
+            workerData: { id, moduleFile, method, input },
+        });
+        let outcome;
+        worker.on('message', message => {
+            if (message.type === 'progress') {
+                if (id === undefined) return;
+                const state = task(id);
+                state.latest = message.row;
+                for (const listener of state.listeners) {
+                    try { listener(message.row); } catch {}
+                }
+            } else {
+                outcome = message;
+            }
+        });
+        worker.once('error', reject);
+        worker.once('exit', code => {
+            if (code !== 0 || !outcome) {
+                reject(new Error(`Import worker exited without a result (code ${code})`));
+            } else if (outcome.type === 'failure') {
+                reject(Object.assign(new Error(outcome.error.message), outcome.error));
+            } else {
+                resolve(outcome.result);
+            }
+        });
+    });
+}
 function reportImportProgress(stage, completed, total, detail) {
     const id = context.getStore();
     if (!id) return;
@@ -45,9 +79,7 @@ function stream(id, req, res) {
     const send = row => {
         if (res.destroyed || res.writableLength > 65536) return;
         res.write(JSON.stringify(row) + '\n');
-        // Disk transactions are synchronous. Do not leave progress corked until
-        // the transaction returns to the event loop, possibly minutes later.
-        res.socket?.uncork();
+        // Import disk work runs on a separate event loop; this stream stays live.
     };
     send({ type: 'heartbeat' });
     const stop = listen(id, send);
@@ -55,4 +87,4 @@ function stream(id, req, res) {
     timer.unref?.();
     res.once('close', () => { clearInterval(timer); stop(); });
 }
-module.exports = { withImportProgress, reportImportProgress, listen, stream };
+module.exports = { withImportProgress, reportImportProgress, listen, stream, isActive, runImportWork };

@@ -59,12 +59,19 @@ function screen(overrides: Record<string, unknown> = {}) {
         ${code}
         return {sendMain, sendChatMain,
             selectOther: (text = 'B draft') => {
-                persistVisibleDraft(draftChatId, {m: messageInput, t: messageInputTranslate});
+                persistVisibleDraft(draftChatId, {m: messageInput, t: ''});
                 DBState.db.characters[0].chatPage = 1;
                 draftChatId = 'chat-2'; messageInput = text;
             },
             setInput: (text) => { messageInput = text },
             setFiles: (files) => {fileInput = files},
+            setWikiRecoveryPending: () => {
+                DBState.db.characters[0].chats[0].risuBardWikiRecoveryPending = {
+                    id: 'recovery-1',
+                    error: 'Wiki operation pending: restore external file',
+                    steps: [{kind: 'save-chat', chatId: 'chat-1'}],
+                }
+            },
             setModel: (model, preset) => {DBState.db.aiModel = model; DBState.db.botPresetsId = preset},
             state: () => ({messageInput, fileInput, preparingInput, sendingChat})};
     `)(...Object.values(dependencies))
@@ -212,6 +219,15 @@ describe('chat send preparation', () => {
         expect(chat.chat.message).toHaveLength(1)
     })
 
+    it('blocks a send against a chat with pending Wiki recovery', async () => {
+        const chat = screen()
+        chat.setWikiRecoveryPending()
+
+        expect(await chat.sendChatMain()).toBe(false)
+        expect(chat.calls).toEqual([])
+        expect(chat.requests).toEqual([])
+        expect(chat.state()).toMatchObject({sendingChat: false})
+    })
     it('blocks duplicate requests before generation registration and unlocks on failure', async () => {
         const pending = deferred<boolean>()
         let requests = 0

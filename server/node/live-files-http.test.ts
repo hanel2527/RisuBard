@@ -8,6 +8,48 @@ const { createUserDataRepository } = require('./user-data-repository.cjs')
 const { createFileKv } = require('./file-kv.cjs')
 const { encodeRisuSaveLegacyBuffer, decodeRisuSave } = require('./utils.cjs')
 
+test.each(['legacy', 'v3'])('ordinary reconciliation detects settled chat edits without a watcher event: %s', layout => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bard-live-read-'))
+    const repository = createUserDataRepository({
+        dataRoot: root,
+        allowDirectoryMapping: true,
+        newCharacterPackages: layout === 'v3',
+    })
+    repository.importLegacyDatabase({
+        botPresets: [], modules: [], personas: [], loreBook: [],
+        characters: [{
+            chaId: 'one', type: 'character', name: 'One', additionalAssets: [], emotionImages: [],
+            chats: [{ id: 'chat', name: 'Chat', message: [{ role: 'user', data: 'Keep me' }] }],
+        }],
+    }, { mode: 'sync' })
+    const resolver = require('./character-directories.cjs').createCharacterDirectoryResolver(root)
+    const chatMetadata = path.join(root, resolver.chatDirectory('one', 'chat'), 'metadata.json')
+    const liveFiles = require('./live-character-files.cjs').createLiveCharacterFiles({
+        repository, writeAsset: () => {}, watch: false,
+    })
+    try {
+        liveFiles.reconcile()
+        const edited = JSON.parse(fs.readFileSync(chatMetadata, 'utf8'))
+        edited.note = 'External note'
+        fs.writeFileSync(chatMetadata, JSON.stringify(edited))
+
+        // With no watcher, the old ordinary-read path did not request a
+        // revision check and fell through to strict checksum validation.
+        expect(liveFiles.reconcile({ verifyMetadata: false })).toBeNull()
+        const adopted = liveFiles.reconcile({ verifyMetadata: true })
+        expect(adopted.database.characters[0].chats[0]).toMatchObject({
+            id: 'chat', note: 'External note', message: [{ role: 'user', data: 'Keep me' }],
+        })
+
+        const bytes = fs.readFileSync(chatMetadata)
+        const checksum = fs.readFileSync(`${chatMetadata}.sha256`, 'utf8').trim()
+        expect(checksum).toBe(require('node:crypto').createHash('sha256').update(bytes).digest('hex'))
+    } finally {
+        liveFiles.close()
+        fs.rmSync(root, { recursive: true, force: true })
+    }
+})
+
 test.each(['legacy', 'v3'])('running server adopts editor saves, chat lore deletion and assets without reloading: %s', async (layout) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bard-live-http-'))
     const dataRoot = path.join(root, 'save')

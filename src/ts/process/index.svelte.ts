@@ -1289,6 +1289,8 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     const requestSettings = arg.requestSettings ?? { ...DBState.db }
     const target = arg.target ?? captureGenerationTarget(DBState.db.characters[get(selectedCharID)])
     const generationScope = createGenerationScope(() => DBState.db.characters, target)
+    if (generationScope.chat.risuBardWikiReboot
+        || generationScope.chat.risuBardWikiRecoveryPending) return false
     try {
         await waitForSendSync(refreshLiveFiles, {
             signal: arg.signal,
@@ -1309,7 +1311,8 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         processScriptFull(char, text, mode, index, conditions, target, requestSettings)
 
     // Selection may have changed during synchronization; continue in the captured chat.
-    if (generationScope.chat.risuBardWikiReboot) return false
+    if (generationScope.chat.risuBardWikiReboot
+        || generationScope.chat.risuBardWikiRecoveryPending) return false
 
     chatProcessStage.set(0)
     const abortSignal = arg.signal ?? (new AbortController()).signal

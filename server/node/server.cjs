@@ -56,6 +56,7 @@ const { createDirectWriteTracker } = require('./direct-write-tracker.cjs');
 const { writeCanonicalProjection } = require('./canonical-projection-writer.cjs');
 const { reclaimDeletedCharacterAssets } = require('./deleted-character-assets.cjs');
 const importProgress = require('./import-progress.cjs');
+const { resetCharacterDirectoryMappings } = require('./character-directories.cjs');
 const { reportImportProgress } = importProgress;
 const { kvDelManyAndCollect } = require('./db.cjs');
 const { createExternalEditSession } = require('./external-edit-session.cjs');
@@ -115,6 +116,7 @@ function computeDatabaseEtagFromObject(databaseObject) {
 }
 
 let storageOperationQueue = Promise.resolve();
+let pendingImportWork = null;
 function queueStorageOperation(operation) {
     const operationRun = storageOperationQueue.then(operation, operation);
     storageOperationQueue = operationRun.catch(() => {});
@@ -386,14 +388,14 @@ async function decodeDatabaseWithPersistentChatIds(raw, options = {}) {
 
     if (needsPersist) {
         kvSet('database/database.bin', encodeRisuSaveLegacyBuffer(dbObj));
-        persistCanonicalProjection(dbObj, { preserveCharacterLayout: true });
+        await persistCanonicalProjection(dbObj, { preserveCharacterLayout: true });
         if (runMaintenance) maybeCollectUnreferencedObjects();
     }
     if (migrationResult) {
         migrationResult.coldStorageFailed = coldRestoreResult.failed;
     }
     if (!canonicalProjectionReady) {
-        persistCanonicalProjection(dbObj, { preserveCharacterLayout: true });
+        await persistCanonicalProjection(dbObj, { preserveCharacterLayout: true });
     }
     return dbObj;
 }
@@ -794,7 +796,7 @@ async function persistChatStoreWithoutCache(trigger, observationContext = {}) {
         metrics.kvWriteMs = elapsedMs(phaseStartedAt);
         errorStage = 'canonical-sync';
         phaseStartedAt = performance.now();
-        persistCanonicalProjection(fullDb, { operationId, trigger, directCollection: observationContext.directCollection });
+        await persistCanonicalProjection(fullDb, { operationId, trigger, directCollection: observationContext.directCollection });
         metrics.canonicalSyncMs = elapsedMs(phaseStartedAt);
         saveObservation.record({
             kind: 'compatibility-persist', trigger, outcome: 'success', operationId,
@@ -880,7 +882,7 @@ async function persistDbCacheWithChats(filePath, decodedKey, trigger = 'unknown'
         if (decodedKey === 'database/database.bin') {
             errorStage = 'canonical-sync';
             phaseStartedAt = performance.now();
-            persistCanonicalProjection(fullDb, {
+            await persistCanonicalProjection(fullDb, {
                 operationId,
                 trigger,
                 directCollection: observationContext.directCollection,
@@ -975,6 +977,19 @@ app.use((req, res, next) => {
     const id = req.headers['x-import-id'];
     importProgress.withImportProgress(typeof id === 'string' && /^[a-f0-9-]{36}$/i.test(id) ? id : undefined, next);
 });
+app.use(async (req, res, next) => {
+    // Retain the old serialization boundary while import disk work is off-thread.
+    // Progress is the only API allowed to observe an in-flight publication.
+    if (req.method !== 'GET' || !req.path.startsWith('/api/import-progress/')) {
+        while (pendingImportWork) {
+            await pendingImportWork.catch(() => {});
+            // Cache reload and revision acceptance finish in the owner's continuation.
+            // Yield instead of spinning on an already-settled worker promise.
+            await new Promise(resolve => setImmediate(resolve));
+        }
+    }
+    next();
+});
 app.use((req, res, next) => {
     // Skip express.raw() for backup import — it must stream, not buffer into memory
     if (req.path === '/api/backup/import') return next();
@@ -1046,7 +1061,31 @@ function preserveLiveFileRecovery(record) {
     // failed write aborts adoption; recovery does not depend on browser storage.
     return liveFileRecovery.save(record);
 }
-function persistCanonicalProjection(databaseObject, observationContext = {}) {
+async function runImportStorageWork(method, input) {
+    const operation = importProgress.runImportWork(
+        path.join(__dirname, 'import-storage-work.cjs'), method, { ...input, dataRoot: savePath }
+    );
+    pendingImportWork = operation;
+    let failure;
+    try {
+        return await operation;
+    } catch (error) {
+        failure = error;
+        throw error;
+    } finally {
+        try {
+            resetCharacterDirectoryMappings(savePath);
+            reloadManifest();
+        } catch (reloadError) {
+            if (!failure) throw reloadError;
+            failure.message += `; import cache reload failed: ${reloadError.message}`;
+        } finally {
+            if (pendingImportWork === operation) pendingImportWork = null;
+        }
+    }
+}
+
+async function persistCanonicalProjection(databaseObject, observationContext = {}) {
     const startedAt = performance.now()
     const operationId = observationContext.operationId || nodeCrypto.randomUUID()
     const trigger = observationContext.trigger || 'unspecified'
@@ -1063,9 +1102,10 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
             error.code = 'EXTERNAL_EDIT_MODE'
             throw error
         }
+        const expectedRevision = userDataRepository.getProjectionRevision();
         if (observationContext.externalRevision
-            ? userDataRepository.getProjectionRevision() !== observationContext.externalRevision
-            : canonicalProjectionSync.hasExternalChanges()) {
+            ? expectedRevision !== observationContext.externalRevision
+            : canonicalProjectionSync.hasExternalChanges(expectedRevision)) {
             const error = new Error('Canonical entity files changed outside RisuBard before projection save')
             error.code = 'CANONICAL_FILES_CHANGED'
             throw error
@@ -1082,29 +1122,44 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
         errorStage = 'transaction'
         phaseMetrics.compatibilityInvalidateMs = elapsedMs(phaseStartedAt)
         phaseStartedAt = performance.now()
-        reportImportProgress('canonical-files');
-        const write = writeCanonicalProjection({
-            repository: userDataRepository,
-            database: databaseObject,
-            directCollection: observationContext.directCollection,
-            preserveCharacterLayout: observationContext.preserveCharacterLayout || !canonicalProjectionReady,
-        })
-        const result = write.result
-        strategy = write.strategy
-        fallbackUsed = write.fallbackUsed
-        fallbackCode = write.fallbackCode
-        phaseMetrics.transactionMs = elapsedMs(phaseStartedAt)
-        phaseStartedAt = performance.now()
-        errorStage = 'character-assets'
-        reportImportProgress('character-assets');
-        characterAssets.sync(databaseObject)
-        phaseMetrics.assetSyncMs = elapsedMs(phaseStartedAt)
+        let write;
+        let publishedRevision;
+        if (importProgress.isActive()) {
+            const workerResult = await runImportStorageWork('persistProjection', {
+                database: databaseObject,
+                directCollection: observationContext.directCollection,
+                preserveCharacterLayout: observationContext.preserveCharacterLayout || !canonicalProjectionReady,
+                expectedRevision,
+            });
+            write = workerResult.write;
+            publishedRevision = workerResult.revision;
+            phaseMetrics.transactionMs = workerResult.transactionMs;
+            phaseMetrics.assetSyncMs = workerResult.assetSyncMs;
+        } else {
+            reportImportProgress('canonical-files');
+            write = writeCanonicalProjection({
+                repository: userDataRepository,
+                database: databaseObject,
+                directCollection: observationContext.directCollection,
+                preserveCharacterLayout: observationContext.preserveCharacterLayout || !canonicalProjectionReady,
+            });
+            phaseMetrics.transactionMs = elapsedMs(phaseStartedAt);
+            phaseStartedAt = performance.now();
+            errorStage = 'character-assets';
+            reportImportProgress('character-assets');
+            characterAssets.sync(databaseObject);
+            phaseMetrics.assetSyncMs = elapsedMs(phaseStartedAt);
+        }
+        const result = write.result;
+        strategy = write.strategy;
+        fallbackUsed = write.fallbackUsed;
+        fallbackCode = write.fallbackCode;
         phaseStartedAt = performance.now()
         errorStage = 'revision-accept'
         reportImportProgress('verify-save');
-        canonicalProjectionSync.accept()
+        canonicalProjectionSync.accept(publishedRevision)
         if (!observationContext.adoptingLiveFiles) {
-            liveCharacterFiles.accept(databaseObject)
+            liveCharacterFiles.accept(databaseObject, publishedRevision)
             liveFilesPendingWrites = false
         }
         phaseMetrics.revisionAcceptMs = elapsedMs(phaseStartedAt)
@@ -1142,6 +1197,7 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
         })
         return result
     } catch (error) {
+        errorStage = error?.importStage || errorStage;
         const writeMeta = error?.canonicalWriteMeta
         if (writeMeta) {
             strategy = writeMeta.strategy || strategy
@@ -1158,15 +1214,17 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
     }
 }
 
-function adoptExternallyChangedCanonicalProjection(liveOnly = false) {
+async function adoptExternallyChangedCanonicalProjection(liveOnly = false) {
     if (!canonicalProjectionReady) return null
     // Disabling watchers/polls must not disable mandatory revision reconciliation
     // on ordinary reads and saves (including a missing/stale acceptance record).
     // An interrupted adoption still resumes regardless of the monitoring setting.
     if (liveOnly && !liveCharacterFiles.isEnabled() && !liveFilesAdoption) return null
     try {
+    // Watch events are only a prompt to scan. An ordinary read/save must also
+    // notice a settled edit if the filesystem watcher has not delivered one.
     const fresh = (liveCharacterFiles.isEnabled()
-        ? liveCharacterFiles.reconcile({ verifyMetadata: liveOnly }) : null)
+        ? liveCharacterFiles.reconcile({ verifyMetadata: true }) : null)
         || (!liveOnly && canonicalProjectionSync.loadExternalChanges())
     if (!fresh && !liveFilesAdoption) return null
     // The checksum-validated fallback has no old metadata baseline. It cannot
@@ -1200,7 +1258,7 @@ function adoptExternallyChangedCanonicalProjection(liveOnly = false) {
             liveFilesAdoption.recovery = preserveLiveFileRecovery({ pending, baseline, conflicts, externalRevision: changed.revision })
             liveFilesAdoption.recoverySaved = true
         }
-        persistCanonicalProjection(fullDb, { trigger: 'live-files-merge', externalRevision: changed.revision, adoptingLiveFiles: true })
+        await persistCanonicalProjection(fullDb, { trigger: 'live-files-merge', externalRevision: changed.revision, adoptingLiveFiles: true })
     }
     liveFilesAdoption.readyDb = fullDb
     if (saveTimers[DB_HEX_KEY]) {
@@ -1235,7 +1293,7 @@ function adoptExternallyChangedCanonicalProjection(liveOnly = false) {
 
 async function adoptSettledExternalProjection(liveOnly = false) {
     for (let attempt = 0; ; attempt++) {
-        try { return adoptExternallyChangedCanonicalProjection(liveOnly) }
+        try { return await adoptExternallyChangedCanonicalProjection(liveOnly) }
         catch (error) {
             if (error?.code !== 'LIVE_FILES_SETTLING' || attempt >= 7) throw error
             await new Promise(resolve => setTimeout(resolve, 275))
@@ -4373,7 +4431,7 @@ app.post('/api/write', async (req, res, next) => {
                     metrics.kvWriteMs = elapsedMs(phaseStartedAt);
                     errorStage = 'canonical-sync';
                     phaseStartedAt = performance.now();
-                    persistCanonicalProjection(fullDb, { operationId, trigger: 'full-write' });
+                    await persistCanonicalProjection(fullDb, { operationId, trigger: 'full-write' });
                     metrics.canonicalSyncMs = elapsedMs(phaseStartedAt);
                     saveObservation.record({
                         kind: 'compatibility-persist', trigger: 'full-write', outcome: 'success',
@@ -4720,13 +4778,15 @@ app.post('/api/assets/bulk-write', async (req, res, next) => {
             res.status(400).send({ error: 'Body must be a JSON array of {key, value}' });
             return;
         }
-        for(let i = 0; i < entries.length; i += BULK_WRITE_BATCH){
-            const batch = entries.slice(i, i + BULK_WRITE_BATCH);
-            await kvSetManyAsync(batch.map(({ key, value }) => ({
-                key,
-                value: Buffer.from(value, 'base64'),
-            })));
-        }
+        await queueStorageOperation(async () => {
+            for(let i = 0; i < entries.length; i += BULK_WRITE_BATCH){
+                const batch = entries.slice(i, i + BULK_WRITE_BATCH);
+                await kvSetManyAsync(batch.map(({ key, value }) => ({
+                    key,
+                    value: Buffer.from(value, 'base64'),
+                })));
+            }
+        });
         res.json({ success: true, count: entries.length });
     } catch(error){ next(error); }
 });
@@ -6403,6 +6463,9 @@ app.post('/api/assets/import-rollback', async (req, res, next) => {
         }
         const result = await queueStorageOperation(async () => {
             await flushPendingDbWithinQueue({ materialize: false, deferCompatibility: true });
+            if (importProgress.isActive()) {
+                return await runImportStorageWork('rollbackAssets', { keys, marker });
+            }
             reportImportProgress('cleanup-assets', 0, keys.length);
             const cleanup = reclaimDeletedCharacterAssets({
                 candidates: keys.map(key => key.slice('assets/'.length)),

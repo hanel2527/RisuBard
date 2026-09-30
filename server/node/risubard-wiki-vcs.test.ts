@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import * as fs from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -11,6 +12,7 @@ import {
     createWikiVcsRepository,
     resolveWikiVcsRepository,
 } from './risubard-wiki-vcs'
+import { createWikiVersioning } from './risubard-wiki-versioning'
 
 const roots: string[] = []
 
@@ -214,7 +216,7 @@ describe('wiki VCS repository', () => {
             .toContain(published.commitId)
     })
 
-    test('recovery preserves a new external edit made after checkout failure', async () => {
+    test('recovery leaves external edits pending until the conflicted path is resolved', async () => {
         const root = await createRoot()
         const repository = createWikiVcsRepository(root)
         await writeWorkingTree(root, 'chat-1', {
@@ -253,13 +255,41 @@ describe('wiki VCS repository', () => {
         )
 
         const restarted = createWikiVcsRepository(root)
-        await restarted.recoverOperations({
+        const conflicted = await restarted.recoverOperations({
             characterId: 'character',
             chatId: 'chat-1',
         })
+        expect(conflicted.completed).toEqual([])
+        expect(conflicted.unresolved).toHaveLength(1)
+        expect(conflicted.conflicts).toHaveLength(1)
+        expect(conflicted.conflicts?.[0]).toContain('locations/two.md')
+        expect(conflicted.conflicts?.[0]).toContain('Restore the path')
         expect(await fs.readFile(
             join(workspace.workingTreeDirectory, 'locations/two.md'), 'utf8'
         )).toBe('external-after-crash')
+        await expect(restarted.ensureRepository(
+            'character', 'chat-1'
+        )).rejects.toThrow('Wiki operation pending:')
+
+        // Restoring the journal's before-state lets recovery safely finish.
+        await fs.writeFile(
+            join(workspace.workingTreeDirectory, 'locations/two.md'), 'two-v2'
+        )
+        const recovered = await restarted.recoverOperations({
+            characterId: 'character',
+            chatId: 'chat-1',
+        })
+        expect(recovered.completed).toEqual(conflicted.unresolved)
+        expect(recovered.unresolved).toEqual([])
+        expect(recovered.conflicts).toBeUndefined()
+        expect(await fs.readFile(
+            join(workspace.workingTreeDirectory, 'locations/two.md'), 'utf8'
+        )).toBe('two-v1')
+
+        await fs.writeFile(
+            join(workspace.workingTreeDirectory, 'locations/two.md'),
+            'external-after-recovery'
+        )
         const captured = await restarted.captureExternalChanges({
             characterId: 'character',
             chatId: 'chat-1',
@@ -312,7 +342,9 @@ describe('wiki VCS repository', () => {
         expect(await restarted.recoverOperations({
             characterId: 'character',
             chatId: 'chat-b',
-        })).toEqual({ completed: [], discarded: [], unresolved: [] })
+        })).toEqual({
+            completed: [], discarded: [], unresolved: [],
+        })
         const workspaceB = resolveWikiVcsRepository(root, 'character', 'chat-b')
         expect(await fs.readFile(
             join(workspaceB.workingTreeDirectory, 'characters/one.md'), 'utf8'
@@ -391,6 +423,130 @@ describe('wiki VCS repository', () => {
             chatAnchor: anchor('chat-1'),
             changes: [{ path: 'characters/aria.md', contents: 'v3' }],
         })).rejects.toThrow(/conflict/)
+    })
+
+    test('retains valid path maps through a long commit sequence', async () => {
+        const root = await createRoot()
+        const repository = createWikiVcsRepository(root)
+        await writeWorkingTree(root, 'chat-1', {
+            'characters/sequence.md': 'version-0',
+        })
+        const baseline = await repository.ensureBaseline({
+            characterId: 'character',
+            chatId: 'chat-1',
+            chatAnchor: anchor('chat-1', null),
+        })
+        let expectedHead = baseline.commitId!
+        const commits: string[] = []
+        for (let version = 1; version <= 40; version += 1) {
+            const receipt = await repository.commit({
+                characterId: 'character',
+                chatId: 'chat-1',
+                operationId: `sequence-${version}`,
+                expectedHead,
+                kind: 'manual',
+                chatAnchor: anchor('chat-1', `message-${version}`),
+                changes: [{
+                    path: 'characters/sequence.md',
+                    contents: `version-${version}`,
+                }],
+            })
+            expectedHead = receipt.commitId
+            commits.push(receipt.commitId)
+        }
+
+        expect((await repository.readPathMap(
+            'character', 'chat-1', commits[0]
+        ))['characters/sequence.md']).toBe(
+            createHash('sha256').update('version-1').digest('hex')
+        )
+        expect((await repository.readPathMap(
+            'character', 'chat-1', commits[19]
+        ))['characters/sequence.md']).toBe(
+            createHash('sha256').update('version-20').digest('hex')
+        )
+        const restarted = createWikiVcsRepository(root)
+        expect((await restarted.readPathMap(
+            'character', 'chat-1', commits[0]
+        ))['characters/sequence.md']).toBe(
+            createHash('sha256').update('version-1').digest('hex')
+        )
+        expect((await restarted.readPathMap(
+            'character', 'chat-1', commits[19]
+        ))['characters/sequence.md']).toBe(
+            createHash('sha256').update('version-20').digest('hex')
+        )
+        expect((await restarted.readPathMap(
+            'character', 'chat-1', commits[39]
+        ))['characters/sequence.md']).toBe(
+            createHash('sha256').update('version-40').digest('hex')
+        )
+        expect((await restarted.ensureRepository(
+            'character', 'chat-1'
+        )).head).toBe(commits[39])
+        await restarted.checkout({
+            characterId: 'character',
+            chatId: 'chat-1',
+            commitId: commits[0],
+        })
+        expect(await fs.readFile(join(
+            resolveWikiVcsRepository(root, 'character', 'chat-1')
+                .workingTreeDirectory,
+            'characters/sequence.md'
+        ), 'utf8')).toBe('version-1')
+    })
+
+    test('afterWrite recovers its durable capture before pending lookup', async () => {
+        const root = await createRoot()
+        const repository = createWikiVcsRepository(root)
+        await writeWorkingTree(root, 'chat-1', {
+            'characters/aria.md': 'v1',
+        })
+        const baseline = await repository.ensureBaseline({
+            characterId: 'character',
+            chatId: 'chat-1',
+            chatAnchor: anchor('chat-1', null),
+        })
+        await fs.writeFile(
+            join(
+                resolveWikiVcsRepository(root, 'character', 'chat-1')
+                    .workingTreeDirectory,
+                'characters/aria.md'
+            ),
+            'v2'
+        )
+        const branchFile = join(
+            resolveWikiVcsRepository(root, 'character', 'chat-1')
+                .branchesDirectory,
+            `${Buffer.from('branch:chat-1').toString('base64url')}.json`
+        )
+        const failure = failOneRename(branchFile)
+        const versioning = createWikiVersioning(root, {
+            fileSystem: failure.fileSystem,
+        })
+        const captured = await versioning.afterWrite({
+            characterId: 'character',
+            chatId: 'chat-1',
+            kind: 'manual',
+            operationId: 'after-write-recovery',
+            expectedHead: baseline.commitId,
+            chatAnchor: anchor('chat-1'),
+        })
+
+        expect(failure.didFail()).toBe(true)
+        expect(captured.commitId).not.toBeNull()
+        expect(captured.changedPaths).toEqual(['characters/aria.md'])
+        expect((await versioning.readHead(
+            'character', 'chat-1'
+        ))).toBe(captured.commitId)
+        expect(await fs.readFile(
+            join(
+                resolveWikiVcsRepository(root, 'character', 'chat-1')
+                    .workingTreeDirectory,
+                'characters/aria.md'
+            ),
+            'utf8'
+        )).toBe('v2')
     })
 
     test('replaying the same operation ID returns the recorded commit', async () => {

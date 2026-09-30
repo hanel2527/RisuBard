@@ -8,8 +8,11 @@ import Chat from './Chat.svelte'
 import Chats from './Chats.svelte'
 import { DBState, selIdState } from 'src/ts/stores.svelte'
 import { ParseMarkdown } from 'src/ts/parser/parser.svelte'
+import { applyWikiRollback } from 'src/ts/risubard/wikiChatCoordinator'
 import { rebuildNarrativeAfterChatEdit } from 'src/ts/risubard/wikiChatRebuild'
-import { notifyError } from 'src/ts/alert'
+import { checkoutWikiVersion } from 'src/ts/risubard/wikiVersionClient'
+import { requestImmediateSave } from 'src/ts/globalApi.svelte'
+import { alertConfirmMulti, notifyError } from 'src/ts/alert'
 
 vi.mock('src/ts/stores.svelte', () => ({
     DBState: { db: {} },
@@ -99,6 +102,12 @@ beforeEach(() => {
             ttsMode: 'none',
         }],
     } as unknown as typeof DBState.db
+    const recovery = new SvelteMap()
+    Object.defineProperty(DBState.db.characters[0].chats[0], 'risuBardWikiRecoveryPending', {
+        configurable: true,
+        get: () => recovery.get('pending'),
+        set: pending => recovery.set('pending', pending),
+    })
     selIdState.selId = 0
 })
 
@@ -165,14 +174,27 @@ describe('message edit button', () => {
             vi.mocked(ParseMarkdown).mockImplementation(async value => value)
         }
     })
-    test('restores message and swipes when the Wiki rebuild rejects an edit', async () => {
+    test('persists the original message when edit and wiki checkout recovery both reject', async () => {
         const data = 'Before {{inlay::scene}} after'
         const chat = DBState.db.characters[0].chats[0]
         chat.message = [{ role: 'char', data, chatId: 'message-1',
             swipes: ['earlier', data], swipeId: 1 }]
         DBState.db.clickToEdit = true
+        const persistedMessages: Array<Array<{ data: string; swipes?: string[] }>> = []
+        const persistedRecoveryIds: string[] = []
+        vi.mocked(requestImmediateSave).mockReset().mockImplementation(async () => {
+            persistedMessages.push(chat.message.map(message => ({
+                data: message.data,
+                swipes: message.swipes ? [...message.swipes] : undefined,
+            })))
+            const pending = chat.risuBardWikiRecoveryPending
+            if (pending) persistedRecoveryIds.push(pending.id)
+        })
         vi.mocked(notifyError).mockClear()
         vi.mocked(rebuildNarrativeAfterChatEdit).mockRejectedValueOnce(new Error('Concurrent edit'))
+        vi.mocked(checkoutWikiVersion).mockRejectedValueOnce(new Error(
+            'Wiki operation pending: Memory Wiki materialization conflict at scene.md',
+        ))
         vi.mocked(ParseMarkdown).mockImplementation(async () =>
             '<p><img data-inlay-image-id="scene" data-inlay-occurrence="0" src="/scene.png"></p>')
         try {
@@ -183,12 +205,60 @@ describe('message edit button', () => {
             await vi.waitFor(() => expect(document.querySelector('.inlay-image-remove')).not.toBeNull())
             document.querySelector<HTMLButtonElement>('.inlay-image-remove')!.click()
             await vi.waitFor(() => expect(vi.mocked(notifyError).mock.calls.length).toBe(1))
-            expect(chat.message[0].data).toBe(data)
-            expect(chat.message[0].swipes).toEqual(['earlier', data])
+            expect(persistedMessages).toEqual([
+                [{ data: 'Before  after', swipes: ['earlier', 'Before  after'] }],
+                [{ data, swipes: ['earlier', data] }],
+            ])
+            expect(persistedRecoveryIds).toHaveLength(1)
+            expect(chat.risuBardWikiRecoveryPending?.steps.map(step => step.kind))
+                .toEqual(['checkout', 'save-chat'])
+            expect(document.querySelector<HTMLButtonElement>('.button-icon-remove')?.disabled).toBe(true)
+            expect(document.querySelector<HTMLButtonElement>('.button-icon-edit')?.disabled).toBe(true)
+            expect(vi.mocked(notifyError).mock.calls[0][0]).toContain('Concurrent edit')
+            expect(vi.mocked(notifyError).mock.calls[0][0]).toContain('Wiki operation pending')
+            expect(vi.mocked(notifyError).mock.calls[0][0]).toContain('복구가 대기 중')
         }
         finally {
             vi.mocked(ParseMarkdown).mockImplementation(async value => value)
         }
+    })
+    test('keeps the original persisted chat when a delete rebuild and rollback checkout fail', async () => {
+        const chat = DBState.db.characters[0].chats[0]
+        chat.message = [
+            { role: 'user', data: 'A', chatId: 'a' },
+            { role: 'char', data: 'B', chatId: 'b' },
+            { role: 'user', data: 'C', chatId: 'c' },
+        ]
+        const persistedMessages: string[][] = []
+        const persistedRecoverySteps: string[][] = []
+        vi.mocked(requestImmediateSave).mockReset().mockImplementation(async () => {
+            persistedMessages.push(chat.message.map(message => message.data))
+            const pending = chat.risuBardWikiRecoveryPending
+            if (pending) persistedRecoverySteps.push(pending.steps.map(step => step.kind))
+        })
+        vi.mocked(alertConfirmMulti).mockResolvedValueOnce(1)
+        vi.mocked(notifyError).mockClear()
+        vi.mocked(applyWikiRollback).mockResolvedValueOnce({
+            applied: false, requiresRebuild: true,
+        })
+        vi.mocked(rebuildNarrativeAfterChatEdit).mockRejectedValueOnce(new Error('Concurrent edit'))
+        vi.mocked(checkoutWikiVersion).mockRejectedValueOnce(new Error(
+            'Wiki operation pending: Memory Wiki materialization conflict at scene.md',
+        ))
+        mounted = mount(Chat, { target: document.body, props: {
+            message: 'B', name: 'Character', isLastMemory: false, idx: 1, role: 'char',
+        } })
+        await tick(); await tick()
+        document.querySelector<HTMLButtonElement>('.button-icon-remove')!.click()
+        await vi.waitFor(() => expect(vi.mocked(notifyError).mock.calls.length).toBe(1))
+        expect(chat.message.map(message => message.data)).toEqual(['A', 'B', 'C'])
+        expect(persistedMessages).toEqual([['A', 'B', 'C']])
+        expect(persistedRecoverySteps).toEqual([['checkout', 'save-chat']])
+        expect(document.querySelector<HTMLButtonElement>('.button-icon-remove')?.disabled).toBe(true)
+        expect(document.querySelector<HTMLButtonElement>('.button-icon-edit')?.disabled).toBe(true)
+        expect(vi.mocked(notifyError).mock.calls[0][0]).toContain('Concurrent edit')
+        expect(vi.mocked(notifyError).mock.calls[0][0]).toContain('Wiki operation pending')
+        expect(vi.mocked(notifyError).mock.calls[0][0]).toContain('복구가 대기 중')
     })
     test.each([true, false])('retains the previous reply when sending input with preserveReadingPosition=%s', async (preserve) => {
         DBState.db.preserveChatScrollPosition = preserve

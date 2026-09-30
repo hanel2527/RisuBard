@@ -103,7 +103,7 @@ function createLiveCharacterFiles(options) {
         reconcile: options => active?.reconcile(options) ?? null,
         invalidate: () => active?.invalidate(),
         reset: () => active?.reset(),
-        accept: database => active?.accept(database),
+        accept: (database, revision) => active?.accept(database, revision),
         close: () => setEnabled(false),
     };
 }
@@ -325,8 +325,8 @@ function createActiveLiveCharacterFiles({ repository, writeAsset, writeAssets, r
             needsInitialReconcile = false;
             invalidate();
         },
-        accept: database => {
-            accepted = repository.getProjectionRevision();
+        accept: (database, revision) => {
+            accepted = revision === undefined ? repository.getProjectionRevision() : revision;
             baseline = metadataSnapshot(database || repository.exportLegacyDatabase({ metadataOnly: true }));
         },
         close: () => watcher?.close(),

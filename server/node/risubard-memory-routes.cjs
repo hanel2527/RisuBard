@@ -189,10 +189,16 @@ function validWikiPrefixes(value) {
 function createRisuBardMemoryJsonParser(express) {
     const ordinary = express.json({ limit: '512kb', strict: true })
     const prefixes = express.json({ limit: '8mb', strict: true })
-    return (req, res, next) => (
-        /(?:^|\/)wiki\/version\/(?:prefix|preview)\/?$/u.test(req.path)
-            ? prefixes : ordinary
-    )(req, res, next)
+    const recoveryPayload = express.json({ limit: '66mb', strict: true })
+    return (req, res, next) => {
+        const path = req.path
+        const parser = /(?:^|\/)wiki\/version\/(?:prefix|preview)\/?$/u.test(path)
+            ? prefixes
+            : /(?:^|\/)wiki\/version\/(?:ref|recovery)(?:\/|$)/u.test(path)
+                ? recoveryPayload
+                : ordinary
+        return parser(req, res, next)
+    }
 }
 
 function requestHeader(req, name) {

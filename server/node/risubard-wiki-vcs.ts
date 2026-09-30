@@ -30,6 +30,8 @@ import {
 } from '../../src/ts/risubard/wikiVcsContract'
 /** A checkpoint is written once this many deltas accumulated past the last one. */
 const CHECKPOINT_INTERVAL = 16
+/** Bound retained materialized path maps; larger histories replay/checkpoint. */
+const PATH_MAP_CACHE_LIMIT = 16
 const REPOSITORY_DIRECTORY = 'wiki-vcs'
 const LINK_FILE = 'wiki-vcs-link.json'
 const WORKING_TREE_DIRECTORY = 'wiki'
@@ -85,6 +87,25 @@ interface WikiOperationJournal {
     /** Written once the branch head points at the commit. */
     published: boolean
     createdAt: string
+}
+
+class WikiMaterializationConflictError extends Error {
+    constructor(
+        operationId: string,
+        path: string,
+        currentHash: string | null,
+        beforeHash: string | null,
+        targetHash: string | null
+    ) {
+        super(
+            `Wiki operation pending: materialization conflict for ${path}; `
+            + `found ${currentHash ?? 'absent'}, before `
+            + `${beforeHash ?? 'absent'}, target ${targetHash ?? 'absent'}. `
+            + 'Restore the path to the before or target contents and retry '
+            + `recovery; operation ${operationId} remains pending.`
+        )
+        this.name = 'WikiMaterializationConflictError'
+    }
 }
 
 function parseJournal(value: unknown): WikiOperationJournal | undefined {
@@ -527,8 +548,32 @@ export function createWikiVcsRepository(
         pendingOperationCache.delete(repository.operationsDirectory)
     }
 
+    const cachePathMap = (
+        commitId: string,
+        paths: Map<string, string>
+    ): void => {
+        pathMapCache.delete(commitId)
+        pathMapCache.set(commitId, paths)
+        if (pathMapCache.size > PATH_MAP_CACHE_LIMIT) {
+            const oldest = pathMapCache.keys().next().value
+            if (oldest !== undefined) pathMapCache.delete(oldest)
+        }
+    }
+
     const repositoryFor = (characterId: string, chatId: string) =>
         resolveWikiVcsRepository(userDataDirectory, characterId, chatId)
+
+    const removePendingOperationFromCache = (
+        repository: WikiVcsRepository,
+        operationId: string
+    ): void => {
+        const pending = pendingOperationCache.get(repository.operationsDirectory)
+        if (!pending) return
+        pendingOperationCache.set(
+            repository.operationsDirectory,
+            pending.filter((journal) => journal.operationId !== operationId)
+        )
+    }
 
     const assertNoPendingOperation = async (
         repository: WikiVcsRepository,
@@ -560,7 +605,7 @@ export function createWikiVcsRepository(
                 && journal.chatId === chatId
                 && journal.branchId === branchId) {
                 throw new Error(
-                    `Wiki operation recovery is pending: ${journal.operationId}`
+                    `Wiki operation pending: recovery required for ${journal.operationId}`
                 )
             }
         }
@@ -570,7 +615,6 @@ export function createWikiVcsRepository(
         repository: WikiVcsRepository,
         journal: WikiOperationJournal
     ): Promise<void> => {
-        invalidatePendingOperationCache(repository)
         try {
             await writeFileAtomically(
                 fileSystem,
@@ -582,10 +626,20 @@ export function createWikiVcsRepository(
                 `${JSON.stringify(journal, null, 2)}\n`
             )
         }
-        finally {
+        catch (error) {
+            // An atomic write failure can leave the old or new journal durable.
             invalidatePendingOperationCache(repository)
+            throw error
         }
+        const pending = pendingOperationCache.get(repository.operationsDirectory)
+        if (!pending) return
+        const next = pending.filter(
+            (existing) => existing.operationId !== journal.operationId
+        )
+        if (!journal.published) next.push(journal)
+        pendingOperationCache.set(repository.operationsDirectory, next)
     }
+
     const refDirectoryFor = (
         repository: WikiVcsRepository,
         kind: WikiRefKind
@@ -763,7 +817,10 @@ export function createWikiVcsRepository(
         commitId: string
     ): Promise<Map<string, string>> => {
         const cached = pathMapCache.get(commitId)
-        if (cached) return cached
+        if (cached) {
+            cachePathMap(commitId, cached)
+            return cached
+        }
         const deltas: WikiCommitRecord[] = []
         const visited = new Set<string>()
         let base: Map<string, string> | undefined
@@ -813,7 +870,7 @@ export function createWikiVcsRepository(
                 else paths.set(change.path, change.after)
             }
         }
-        pathMapCache.set(commitId, paths)
+        cachePathMap(commitId, paths)
         return paths
     }
 
@@ -953,6 +1010,31 @@ export function createWikiVcsRepository(
                 throw new Error(`Wiki materialization path is unsafe: ${path}`)
             }
         }
+    }
+
+    const readWorkingTreePathHash = async (
+        repository: WikiVcsRepository,
+        path: string
+    ): Promise<string | null> => {
+        await assertSafeMaterializationPath(repository, path)
+        const destination = join(
+            repository.workingTreeDirectory, ...path.split('/')
+        )
+        let status: Awaited<ReturnType<RepositoryFileSystem['lstat']>>
+        try {
+            status = await fileSystem.lstat(destination)
+        }
+        catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+            invalidateWorkingTreePath(repository, path)
+            return null
+        }
+        if (!status.isFile()) {
+            throw new Error(`Wiki materialization path is unsafe: ${path}`)
+        }
+        const contents = await fileSystem.readFile(destination, 'utf8')
+        invalidateWorkingTreePath(repository, path)
+        return hashBytes(contents)
     }
 
     const createRefRecord = async (input: {
@@ -1156,30 +1238,42 @@ export function createWikiVcsRepository(
             }
         }
         const commitPaths = await pathMapFor(repository, journal.commitId)
-        pathMapCache.set(journal.commitId, new Map(commitPaths))
         for (const path of journal.changedPaths) {
             if ((commitPaths.get(path) ?? null) !== targetPaths[path]) {
                 throw new Error(`Wiki materialization target is inconsistent: ${path}`)
             }
         }
-        const actual = await readWorkingTree(repository)
         for (const path of journal.changedPaths) {
-            const currentHash = actual.get(path) ?? null
+            const currentHash = await readWorkingTreePathHash(repository, path)
             const expectedHash = beforePaths[path]
             const desiredHash = targetPaths[path]
-            if (currentHash === desiredHash || currentHash !== expectedHash) continue
+            if (currentHash !== desiredHash && currentHash !== expectedHash) {
+                throw new WikiMaterializationConflictError(
+                    journal.operationId, path, currentHash,
+                    expectedHash, desiredHash
+                )
+            }
+            if (currentHash === desiredHash) continue
+
             const destination = join(
                 repository.workingTreeDirectory, ...path.split('/')
             )
-            await assertSafeMaterializationPath(repository, path)
+            const contents = desiredHash === null
+                ? null : await readBlob(repository, desiredHash)
+            const latestHash = await readWorkingTreePathHash(repository, path)
+            if (latestHash === desiredHash) continue
+            if (latestHash !== expectedHash) {
+                throw new WikiMaterializationConflictError(
+                    journal.operationId, path, latestHash,
+                    expectedHash, desiredHash
+                )
+            }
             try {
                 if (desiredHash === null) {
                     await removeFileDurably(fileSystem, destination)
                 }
                 else {
-                    await writeFileAtomically(
-                        fileSystem, destination, await readBlob(repository, desiredHash)
-                    )
+                    await writeFileAtomically(fileSystem, destination, contents!)
                 }
             }
             finally {
@@ -1187,6 +1281,18 @@ export function createWikiVcsRepository(
             }
         }
         const materializedPaths = await readWorkingTree(repository)
+        for (const path of journal.changedPaths) {
+            const desiredHash = targetPaths[path]
+            const currentHash = await readWorkingTreePathHash(repository, path)
+            if (currentHash !== desiredHash) {
+                throw new WikiMaterializationConflictError(
+                    journal.operationId, path, currentHash,
+                    beforePaths[path], desiredHash
+                )
+            }
+            if (currentHash === null) materializedPaths.delete(path)
+            else materializedPaths.set(path, currentHash)
+        }
         if (journal.recoveryRefId && journal.previousHead
             && journal.previousHead !== journal.commitId) {
             const directory = refDirectoryFor(repository, 'recovery')
@@ -1322,7 +1428,14 @@ export function createWikiVcsRepository(
             if (journal?.commitId === branch.head) {
                 throw new Error('Cannot discard a published Wiki operation')
             }
-            await fileSystem.rm(directory, { recursive: true, force: true })
+            try {
+                await fileSystem.rm(directory, { recursive: true, force: true })
+            }
+            catch (error) {
+                invalidatePendingOperationCache(repository)
+                throw error
+            }
+            removePendingOperationFromCache(repository, input.operationId)
         },
 
         async listDeletedRecovery(characterId: string): Promise<WikiRefRecord[]> {
@@ -1434,7 +1547,7 @@ export function createWikiVcsRepository(
                 if (change.after === null) nextPaths.delete(change.path)
                 else nextPaths.set(change.path, change.after)
             }
-            pathMapCache.set(commitId, nextPaths)
+            cachePathMap(commitId, nextPaths)
             const checkpointCreated = await writeCheckpointIfDue(
                 repository, commitId
             )
@@ -1607,7 +1720,7 @@ export function createWikiVcsRepository(
                 if (change.after === null) nextPaths.delete(change.path)
                 else nextPaths.set(change.path, change.after)
             }
-            pathMapCache.set(commitId, nextPaths)
+            cachePathMap(commitId, nextPaths)
             const checkpointCreated = await writeCheckpointIfDue(
                 repository, commitId
             )
@@ -1726,7 +1839,7 @@ export function createWikiVcsRepository(
                 if (change.after === null) nextPaths.delete(change.path)
                 else nextPaths.set(change.path, change.after)
             }
-            pathMapCache.set(commitId, nextPaths)
+            cachePathMap(commitId, nextPaths)
             const checkpointCreated = await writeCheckpointIfDue(
                 repository, commitId
             )
@@ -1839,7 +1952,7 @@ export function createWikiVcsRepository(
             const paths = new Map(changes.map((change) => [
                 change.path, change.after as string,
             ]))
-            pathMapCache.set(commitId, paths)
+            cachePathMap(commitId, paths)
             const preparedJournal = { ...journal, prepared: true }
             await writeJournal(repository, preparedJournal)
             await writeBranchHead(repository, branch, commitId)
@@ -2314,12 +2427,14 @@ export function createWikiVcsRepository(
             completed: string[]
             discarded: string[]
             unresolved: string[]
+            conflicts?: string[]
         }> {
             const { repository, branch: initialBranch } =
                 await ensureRepositoryForChat(input.characterId, input.chatId, true)
             let branch = initialBranch
             const completed: string[] = []
             const discarded: string[] = []
+            const conflicts: string[] = []
             const unresolved: string[] = []
             for (const name of (await readDirectory(
                 fileSystem, repository.operationsDirectory
@@ -2339,8 +2454,16 @@ export function createWikiVcsRepository(
                     || journal.branchId !== branch.id
                     || journal.published) continue
                 if (!journal.prepared) {
-                    await removeFileDurably(fileSystem, journalFile)
-                    invalidatePendingOperationCache(repository)
+                    try {
+                        await removeFileDurably(fileSystem, journalFile)
+                    }
+                    catch (error) {
+                        invalidatePendingOperationCache(repository)
+                        throw error
+                    }
+                    removePendingOperationFromCache(
+                        repository, journal.operationId
+                    )
                     discarded.push(journal.operationId)
                     continue
                 }
@@ -2356,7 +2479,17 @@ export function createWikiVcsRepository(
                     continue
                 }
                 if (journal.mode === 'publish' || journal.mode === 'checkout') {
-                    await completeMaterialization(repository, branch, journal)
+                    try {
+                        await completeMaterialization(repository, branch, journal)
+                    }
+                    catch (error) {
+                        if (!(error instanceof WikiMaterializationConflictError)) {
+                            throw error
+                        }
+                        unresolved.push(journal.operationId)
+                        conflicts.push(error.message)
+                        continue
+                    }
                 }
                 else {
                     if (branch.head !== journal.commitId) {
@@ -2402,7 +2535,10 @@ export function createWikiVcsRepository(
                 branch = await readBranch(repository, branch.id) ?? branch
                 completed.push(journal.operationId)
             }
-            return { completed, discarded, unresolved }
+            return {
+                completed, discarded, unresolved,
+                ...(conflicts.length > 0 ? { conflicts } : {}),
+            }
         },
 
         /**
@@ -2626,5 +2762,6 @@ export interface WikiVcsService {
         completed: string[]
         discarded: string[]
         unresolved: string[]
+        conflicts?: string[]
     }>
 }

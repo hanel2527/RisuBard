@@ -52,7 +52,106 @@ describe('RisuBard memory CommonJS runtime', () => {
                 characterId: 'character', sourceChatId: 'chat-1',
             })).toEqual([])
         }
+
         finally { await rm(root, { recursive: true, force: true }) }
+    })
+
+    test('deletes and recreates a legacy save without resurrecting its slot as a chat', async () => {
+        const { createRuntimeMemoryService } = require(
+            './risubard-memory-runtime.cjs'
+        )
+        const root = await mkdtemp(join(tmpdir(), 'risubard-runtime-legacy-save-'))
+        try {
+            const service = createRuntimeMemoryService(root)
+            const saveInput = {
+                characterId: 'character', sourceChatId: 'chat-1',
+                saveId: 'legacy', sourceChatName: 'Story', turnCount: 1,
+                chatBytes: Buffer.from('legacy chat'),
+            }
+            await service.createMemorySave(saveInput)
+            const saveDirectory = resolveMemoryWorkspace(
+                root, 'character', 'save-slot:legacy'
+            ).directory
+            await rm(join(saveDirectory, 'risubard-save-vcs.json'))
+
+            await service.deleteMemorySave({
+                characterId: 'character', saveId: 'legacy',
+            })
+            await expect(access(saveDirectory)).rejects.toMatchObject({
+                code: 'ENOENT',
+            })
+
+            await service.createMemorySave({
+                ...saveInput, chatBytes: Buffer.from('recreated chat'),
+            })
+            expect(await service.listMemorySaves({
+                characterId: 'character', sourceChatId: 'chat-1',
+            })).toEqual([expect.objectContaining({
+                saveId: 'legacy', sourceChatId: 'chat-1',
+            })])
+            await expect(access(saveDirectory)).resolves.toBeUndefined()
+        }
+        finally {
+            await rm(root, { recursive: true, force: true })
+        }
+    })
+
+    test('does not delete a save whose legacy manifest is corrupt', async () => {
+        const { createRuntimeMemoryService } = require(
+            './risubard-memory-runtime.cjs'
+        )
+        const root = await mkdtemp(join(tmpdir(), 'risubard-runtime-corrupt-save-'))
+        try {
+            const service = createRuntimeMemoryService(root)
+            await service.createMemorySave({
+                characterId: 'character', sourceChatId: 'chat-1',
+                saveId: 'legacy', sourceChatName: 'Story', turnCount: 1,
+                chatBytes: Buffer.from('legacy chat'),
+            })
+            const saveDirectory = resolveMemoryWorkspace(
+                root, 'character', 'save-slot:legacy'
+            ).directory
+            await rm(join(saveDirectory, 'risubard-save-vcs.json'))
+            const manifest = join(saveDirectory, 'risubard-save.json')
+            await writeFile(manifest, '{')
+
+            await expect(service.deleteMemorySave({
+                characterId: 'character', saveId: 'legacy',
+            })).rejects.toThrow()
+            await expect(readFile(manifest, 'utf8')).resolves.toBe('{')
+        }
+        finally {
+            await rm(root, { recursive: true, force: true })
+        }
+    })
+
+    test('surfaces detailed materialization conflicts from pending recovery', async () => {
+        const { createRuntimeMemoryService } = require(
+            './risubard-memory-runtime.cjs'
+        )
+        const root = await mkdtemp(join(tmpdir(), 'risubard-runtime-pending-conflict-'))
+        try {
+            const conflict = 'Wiki operation pending: materialization conflict for wiki/scene.md; found changed, before old, target new. Restore and retry.'
+            const recoverOperations = vi.fn(async () => ({
+                completed: [], discarded: [], unresolved: ['operation-1'],
+                conflicts: [conflict],
+            }))
+            const service = createRuntimeMemoryService(root, {
+                versioning: { recoverOperations },
+            })
+
+            await expect(service.saveMarkdownWikiTurn({
+                characterId: 'character', chatId: 'chat',
+                sourceMessageIds: ['assistant-1'],
+                markdown: '# Scene\n\nThe scene changed.',
+            })).rejects.toThrow(conflict)
+            expect(recoverOperations).toHaveBeenCalledWith({
+                characterId: 'character', chatId: 'chat',
+            })
+        }
+        finally {
+            await rm(root, { recursive: true, force: true })
+        }
     })
 
     test('overwriting a reference save publishes the v1 slot and removes its autosave pin', async () => {

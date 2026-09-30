@@ -151,6 +151,7 @@ export interface WikiVersioningService extends WikiVersioningPort {
         completed: string[]
         discarded: string[]
         unresolved: string[]
+        conflicts?: string[]
     }>
     listHistory(input: {
         characterId: string
@@ -259,6 +260,9 @@ export function createWikiVersioning(
             })
         }
         catch (error) {
+            await repository.recoverOperations({
+                characterId: input.characterId, chatId: input.chatId,
+            })
             const branch = await repository.ensureRepository(
                 input.characterId, input.chatId
             )
@@ -266,9 +270,6 @@ export function createWikiVersioning(
                 ? await repository.readCommit(input.characterId, input.chatId, branch.head)
                 : undefined
             if (published?.operationId === operationId) {
-                await repository.recoverOperations({
-                    characterId: input.characterId, chatId: input.chatId,
-                })
                 return {
                     commitId: published.id,
                     changedPaths: published.changes.map((change) => change.path),

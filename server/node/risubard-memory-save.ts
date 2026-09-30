@@ -424,9 +424,28 @@ export async function readMemorySaveChat(input: {
     return Buffer.from(await fileSystem.readFile(saved.chatPath))
 }
 
+export async function readMemorySaveSummary(input: {
+    userDataDirectory: string
+    characterId: string
+    saveId: string
+}, options: { fileSystem?: SaveFileSystem } = {}): Promise<MemorySaveSlotSummary> {
+    const fileSystem = options.fileSystem ?? nodeFs
+    const saveId = required(input.saveId, 'saveId')
+    const workspace = workspaceFor(input.userDataDirectory, input.characterId, saveId)
+    const manifestPath = join(workspace.directory, SAVE_MANIFEST)
+    await safeFile(fileSystem, manifestPath, 'Memory save manifest')
+    const manifest = parseManifest(JSON.parse(
+        await fileSystem.readFile(manifestPath, 'utf8')
+    ))
+    if (manifest.saveId !== saveId) {
+        throw new Error('Invalid memory save manifest')
+    }
+    return summaryOf(manifest)
+}
+
 /**
- * Reads the optional version sidecar. A missing or unreadable sidecar is not an
- * error: that save is simply a plain v1 snapshot.
+ * Reads the optional version sidecar. Absence means the save is a plain v1
+ * snapshot; present but invalid metadata is an error.
  */
 export async function readMemorySaveVcsSidecar(input: {
     userDataDirectory: string
@@ -447,14 +466,15 @@ export async function readMemorySaveVcsSidecar(input: {
     }
     const value: unknown = JSON.parse(contents)
     if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-        return null
+        throw new Error('Invalid memory save VCS sidecar')
     }
     const sidecar = value as Partial<MemorySaveVcsSidecar>
     if (sidecar.schemaVersion !== 1
         || sidecar.mode !== 'v1-snapshot'
         || sidecar.saveId !== saveId
-        || typeof sidecar.sourceChatId !== 'string') {
-        return null
+        || typeof sidecar.sourceChatId !== 'string'
+        || sidecar.sourceChatId.trim().length === 0) {
+        throw new Error('Invalid memory save VCS sidecar')
     }
     return sidecar as MemorySaveVcsSidecar
 }
@@ -634,10 +654,11 @@ export async function readMemorySaveReference(input: {
     saveId: string
 }, options: { fileSystem?: SaveFileSystem } = {}): Promise<MemorySaveReferenceRecord | null> {
     const fileSystem = options.fileSystem ?? nodeFs
+    const saveId = required(input.saveId, 'saveId')
     const workspace = workspaceFor(
         input.userDataDirectory,
         input.characterId,
-        required(input.saveId, 'saveId')
+        saveId
     )
     let contents: string
     try {
@@ -651,15 +672,17 @@ export async function readMemorySaveReference(input: {
     }
     const value: unknown = JSON.parse(contents)
     if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-        return null
+        throw new Error('Invalid memory save reference manifest')
     }
     const record = value as Partial<MemorySaveReferenceRecord>
     if (record.schemaVersion !== 1
         || record.mode !== 'commit-reference'
-        || typeof record.saveId !== 'string'
+        || record.saveId !== saveId
         || typeof record.sourceChatId !== 'string'
-        || typeof record.chatStateRef !== 'string') {
-        return null
+        || record.sourceChatId.trim().length === 0
+        || typeof record.chatStateRef !== 'string'
+        || record.chatStateRef.trim().length === 0) {
+        throw new Error('Invalid memory save reference manifest')
     }
     return record as MemorySaveReferenceRecord
 }

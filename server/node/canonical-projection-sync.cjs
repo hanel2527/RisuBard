@@ -23,8 +23,7 @@ function createCanonicalProjectionSync(options = {}) {
         };
     }
 
-    function hasExternalChanges() {
-        const revision = repository.getProjectionRevision();
+    function hasExternalChanges(revision = repository.getProjectionRevision()) {
         return Boolean(revision && revision !== readAcceptedRevision());
     }
 
