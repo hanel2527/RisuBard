@@ -1856,15 +1856,16 @@ export async function downloadRisuHub(id:string, arg:{
 
         if(res.headers.get('content-type') === 'image/png' || res.headers.get('content-type') === 'application/zip' || res.headers.get('content-type') === 'application/charx'){
             let db = getDatabase()
+            let index: number | null
             if(res.headers.get('content-type') === 'application/zip' || res.headers.get('content-type') === 'application/charx'){
-                await importCharacterProcess({
+                index = await importCharacterProcess({
                     name: 'realm.charx',
                     data: new Uint8Array(await res.arrayBuffer()),
                     lightningRealmImport: db.lightningRealmImport,
                 })
             }
             else{
-                await importCharacterProcess({
+                index = await importCharacterProcess({
                     name: 'realm.png',
                     data: res.body,
                     lightningRealmImport: db.lightningRealmImport,
@@ -1872,8 +1873,7 @@ export async function downloadRisuHub(id:string, arg:{
             }
             checkCharOrder()
             db = getDatabase()
-            if(db.characters[db.characters.length-1] && (db.goCharacterOnImport || arg.forceRedirect)){
-                const index = db.characters.length-1
+            if(typeof index === 'number' && db.characters[index] && (db.goCharacterOnImport || arg.forceRedirect)){
                 characterFormatUpdate(index);
                 selectedCharID.set(index);
             }   
@@ -1886,15 +1886,14 @@ export async function downloadRisuHub(id:string, arg:{
 
         data.data.extensions.risuRealmImportId = id
     
-        await runImport(async transaction => {
+        const index = await runImport(async transaction => {
             const result = await importCharacterCardSpec(data, await getHubResources(img), 'hub', {}, null, false, transaction)
             if (!result) throw new Error(language.errors.noData)
-            return result
+            return getDatabase().characters.length - 1
         })
         checkCharOrder()
         let db = getDatabase()
-        if(db.characters[db.characters.length-1] && (db.goCharacterOnImport || arg.forceRedirect)){
-            const index = db.characters.length-1
+        if(typeof index === 'number' && db.characters[index] && (db.goCharacterOnImport || arg.forceRedirect)){
             characterFormatUpdate(index);
             selectedCharID.set(index);
             alertStore.set({
@@ -1903,9 +1902,10 @@ export async function downloadRisuHub(id:string, arg:{
             })
         }
     } catch (error) {
-        console.error(error)
-        console.log(error.stack)
-        alertError(language.characterImportFailed)
+        alertError({
+            message: `${language.characterImportFailed}\n${error instanceof Error ? error.message : String(error)}`,
+            ...(error instanceof Error ? { stack: error.stack } : {}),
+        })
     }
 }
 
