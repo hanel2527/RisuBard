@@ -95,7 +95,10 @@ describe('RisuRealm browser experience', () => {
 
         expect(popup).toContain("import ShDialog from '../GUI/ShDialog.svelte'")
         expect(popup).toContain('<ShDialog')
-        expect(popup).toContain('closeOnOutsideClick={!moduleBusy}')
+        expect(popup).toContain('closeOnOutsideClick={!busy}')
+        expect(popup).toContain('tier="base"')
+        expect(source('RealmMain.svelte')).toContain('$showRealmInfoStore = chara')
+        expect(source('RealmMain.svelte')).not.toContain('<RealmPopUp')
         expect(popup).not.toContain('role="button" tabindex="0" onclick={() => {\n    openedData = null')
     })
 

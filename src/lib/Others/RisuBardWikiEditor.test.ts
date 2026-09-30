@@ -217,7 +217,7 @@ describe('RisuBardWikiEditor', () => {
 
         const badges = [...document.querySelectorAll('[data-wiki-recent-update]')]
         expect(badges.map((badge) => badge.parentElement?.getAttribute('aria-label')))
-            .toEqual(['라비안 '])
+            .toEqual(['라비안, 관련 있을 때 포함'])
     })
 
     it('shows recent update badges on the right of root and folder pages without changing their selection', async () => {
@@ -237,7 +237,7 @@ describe('RisuBardWikiEditor', () => {
         await tick()
         const badges = [...document.querySelectorAll('[data-wiki-recent-update]')]
         expect(badges.map((badge) => badge.parentElement?.getAttribute('aria-label')))
-            .toEqual(['현재 장면', '새 인물 ', '전투 '])
+            .toEqual(['현재 장면', '새 인물, 관련 있을 때 포함', '전투'])
         expect(badges.every((badge) => badge.textContent === 'New'
             && badge === badge.parentElement?.lastElementChild)).toBe(true)
         badges[0].parentElement!.click()
@@ -832,6 +832,97 @@ describe('RisuBardWikiEditor', () => {
             expect.objectContaining({ documentId: 'character.lavian' })
         )
         expect(onChanged).toHaveBeenCalled()
+    })
+
+    it('labels configurable documents with their saved context policy in folders and at the root', async () => {
+        mounted = mount(RisuBardWikiEditor, {
+            target: document.body,
+            props: { characterId: 'character', chatId: 'chat', documents: [
+                { ...documents[0], contextMode: 'always' },
+                { ...documents[0], id: 'note.hidden', title: '숨긴 계획', relativePath: 'plan.md', contextMode: 'never' },
+                { ...documents[0], id: 'note.auto', title: '자동 기록', relativePath: 'notes/auto.md' },
+                documents[1],
+            ] },
+        })
+        await tick()
+        const badges = [...document.querySelectorAll('[data-wiki-context-mode]')]
+        expect(badges.map((badge) => badge.textContent?.trim()).sort()).toEqual(['자동', '제외', '항상'])
+        expect(document.querySelector('[data-wiki-context-mode="always"] svg')).not.toBeNull()
+        expect(document.querySelector('[data-wiki-context-mode="never"]')?.closest('.file-select')
+            ?.querySelector('.document-title.context-excluded')).not.toBeNull()
+        expect(document.querySelector('[data-wiki-context-mode="always"]')?.getAttribute('title')).toContain('저장된 포함 설정')
+    })
+
+    it('adopts policy receipts immediately and preserves unsaved text and the next save hash', async () => {
+        mocks.setWikiDocumentContextMode.mockResolvedValue({
+            ...documents[0], contextMode: 'always', contentHash: 'policy-hash',
+        })
+        mocks.saveManualWikiDocument.mockResolvedValue({ ...documents[0], contentHash: 'body-hash' })
+        mounted = mount(RisuBardWikiEditor, {
+            target: document.body,
+            props: { characterId: 'character', chatId: 'chat', documents },
+        })
+        await tick()
+        const editor = document.querySelector<HTMLTextAreaElement>('[aria-label="Markdown"]')!
+        editor.value += '\n아직 저장하지 않은 계획'
+        editor.dispatchEvent(new Event('input', { bubbles: true }))
+        const row = document.querySelector<HTMLButtonElement>('.file-select')!
+        row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
+        await tick()
+        expect(document.querySelector('[data-wiki-context-auto]')?.getAttribute('aria-checked')).toBe('true')
+        document.querySelector<HTMLButtonElement>('[data-wiki-context-always]')!.click()
+        await vi.waitFor(() => expect(row.querySelector('[data-wiki-context-mode="always"]')).not.toBeNull())
+        expect(editor.value).toContain('아직 저장하지 않은 계획')
+        row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
+        await tick()
+        expect(document.querySelector('[data-wiki-context-always]')?.getAttribute('role')).toBe('menuitemradio')
+        expect(document.querySelector('[data-wiki-context-always]')?.getAttribute('aria-checked')).toBe('true')
+        expect(document.querySelector('[data-wiki-context-always] svg')).not.toBeNull()
+        expect(document.querySelector('[data-wiki-context-auto]')?.getAttribute('aria-checked')).toBe('false')
+        document.querySelector<HTMLButtonElement>('[aria-label="저장"]')!.click()
+        await vi.waitFor(() => expect(mocks.saveManualWikiDocument).toHaveBeenCalledWith(
+            expect.objectContaining({ expectedContentHash: 'policy-hash', markdown: expect.stringContaining('아직 저장하지 않은 계획') })
+        ))
+    })
+
+    it('disables policy changes during a pending save and preserves the last saved policy on failure', async () => {
+        let rejectSave!: (error: Error) => void
+        mocks.setWikiDocumentContextMode.mockReturnValue(new Promise((_resolve, reject) => { rejectSave = reject }))
+        mounted = mount(RisuBardWikiEditor, {
+            target: document.body,
+            props: { characterId: 'character', chatId: 'chat', documents },
+        })
+        await tick()
+        const row = document.querySelector<HTMLButtonElement>('.file-select')!
+        row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
+        await tick()
+        document.querySelector<HTMLButtonElement>('[data-wiki-context-always]')!.click()
+        row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
+        await tick()
+        const options = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')]
+        expect(options).toHaveLength(3)
+        expect(options.every((option) => option.disabled)).toBe(true)
+        options[2].click()
+        expect(mocks.setWikiDocumentContextMode).toHaveBeenCalledTimes(1)
+        rejectSave(new Error('설정 저장 실패'))
+        await vi.waitFor(() => expect(document.body.textContent).toContain('설정 저장 실패'))
+        expect(row.querySelector('[data-wiki-context-mode="auto"]')).not.toBeNull()
+        expect(document.querySelector('[data-wiki-context-auto]')?.getAttribute('aria-checked')).toBe('true')
+    })
+
+    it('disables all policy options while the wiki is locked', async () => {
+        mounted = mount(RisuBardWikiEditor, {
+            target: document.body,
+            props: { characterId: 'character', chatId: 'chat', documents, locked: true },
+        })
+        await tick()
+        document.querySelector('.file-select')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
+        await tick()
+        const options = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')]
+        expect(options).toHaveLength(3)
+        expect(options.every((option) => option.disabled)).toBe(true)
+        options[0].click()
+        expect(mocks.setWikiDocumentContextMode).not.toHaveBeenCalled()
     })
 
     it('changes context policy and reveals either file from its context menu', async () => {

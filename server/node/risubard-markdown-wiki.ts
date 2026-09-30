@@ -2109,6 +2109,7 @@ export function createMarkdownNarrativeWiki(
         },
 
         async inquire(input: {
+            contextSelection?: 'required' | 'auto'
             characterId: string
             chatId: string
             currentInput: string
@@ -2139,6 +2140,7 @@ export function createMarkdownNarrativeWiki(
             }
         }) {
             return inquireMarkdownDocuments({
+                contextSelection: input.contextSelection,
                 documents: await loadDocuments(
                     input.characterId,
                     input.chatId

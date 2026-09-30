@@ -111,6 +111,7 @@ function boundedMetric(value: unknown, maximum = Number.MAX_SAFE_INTEGER) {
 }
 
 export async function loadNarrativeInquiry(input: {
+    contextSelection?: 'required' | 'auto'
     retrievalLimits?: { candidates: number; directSeeds: number }
     characterId: string
     chatId: string
@@ -175,6 +176,7 @@ export async function loadNarrativeInquiry(input: {
                             characterId: input.characterId,
                             chatId: input.chatId,
                             currentInput: input.currentInput.slice(0, 4_096),
+                            ...(input.contextSelection ? { contextSelection: input.contextSelection } : {}),
                             ...(input.retrievalLimits ? { retrievalLimits: input.retrievalLimits } : {}),
                             ...(input.fallbackInput === undefined
                                 ? {}

@@ -15,11 +15,15 @@ export function findSingleProtonLink(description: string): string | null {
     return links.size === 1 ? [...links][0] : null
 }
 
+export type ProtonModuleEntry = { uid: string, name: string, type: 'file' | 'folder', supported: boolean }
+export type ProtonModuleFolder = { kind: 'folder', uid: string, name: string, entries: ProtonModuleEntry[] }
 export type ProtonModuleResult = { kind: 'external', reason: 'password' | 'unsupported' }
+    | ProtonModuleFolder
     | { kind: 'file', data: Uint8Array }
 
 export async function downloadProtonModule(url: string, options: {
     signal?: AbortSignal,
+    nodeUid?: string,
     onProgress?: (downloaded: number, total?: number) => void,
 } = {}): Promise<ProtonModuleResult> {
     if (findSingleProtonLink(url) !== url) throw new Error('Invalid Proton share URL')
@@ -30,7 +34,21 @@ export async function downloadProtonModule(url: string, options: {
     if (info.isCustomPasswordProtected) return { kind: 'external', reason: 'password' }
     if (info.isLegacy) return { kind: 'external', reason: 'unsupported' }
     const share = await client.experimental.authURLAccess(url, undefined, true)
-    const root = await share.getRootNode()
+    const root = options.nodeUid ? await share.getNode(options.nodeUid) : await share.getRootNode()
+    options.signal?.throwIfAborted()
+    if (root.type === 'folder' && root.name.ok) {
+        const entries: ProtonModuleEntry[] = []
+        for await (const node of share.iterateFolderChildren(root.uid, undefined, options.signal)) {
+            options.signal?.throwIfAborted()
+            if (!node.name.ok) throw new Error('Could not read a shared file name')
+            const type = node.type === 'folder' ? 'folder' : 'file'
+            entries.push({ uid: node.uid, name: node.name.value, type,
+                supported: type === 'folder' || (node.type === 'file' && /\.risum$/i.test(node.name.value)) })
+        }
+        options.signal?.throwIfAborted()
+        entries.sort((a, b) => Number(b.type === 'folder') - Number(a.type === 'folder') || a.name.localeCompare(b.name))
+        return { kind: 'folder', uid: root.uid, name: root.name.value, entries }
+    }
     if (root.type !== 'file' || !root.name.ok || !root.name.value.toLowerCase().endsWith('.risum')) {
         return { kind: 'external', reason: 'unsupported' }
     }

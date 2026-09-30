@@ -56,6 +56,18 @@ describe('narrative context prompt composition', () => {
 })
 
 describe('actual narrative inquiry prompt', () => {
+    it('transports required and automatic selection without changing the failure contract', async () => {
+        for (const contextSelection of ['required', 'auto'] as const) {
+            let body: Record<string, unknown> = {}
+            await expect(loadNarrativeInquiry({ characterId: 'c', chatId: 'chat', currentInput: '', contextSelection,
+                createAuth: async () => 'auth', fetchImpl: async (_url, options) => {
+                    body = JSON.parse(String(options?.body))
+                    return new Response(JSON.stringify({ code: 'budget-exceeded' }), { status: 500 })
+                },
+            })).rejects.toMatchObject({ code: 'budget-exceeded' })
+            expect(body.contextSelection).toBe(contextSelection)
+        }
+    })
     it('preserves safe server failure codes without exposing raw server errors', async () => {
         await expect(loadNarrativeInquiry({ characterId: 'c', chatId: 'chat', currentInput: 'Alice',
             createAuth: async () => 'auth', fetchImpl: async () => new Response(JSON.stringify({

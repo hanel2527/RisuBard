@@ -563,6 +563,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             ]
             const validShape = hasExactKeys(req.body, [
                 ...inquiryKeys,
+                ...(req.body.contextSelection === undefined ? [] : ['contextSelection']),
                 ...(req.body.tokenBudget === undefined
                     ? []
                     : ['tokenBudget']),
@@ -584,11 +585,12 @@ function registerRisuBardMemoryRoutes(app, options) {
                 ...(req.body.retrievalLimits === undefined ? [] : ['retrievalLimits']),
             ])
             if (!validShape
+                || (req.body.contextSelection !== undefined && !['required', 'auto'].includes(req.body.contextSelection))
                 || (req.body.retrievalLimits !== undefined && !validRetrievalLimits(req.body.retrievalLimits))
                 || !hasBoundedId(req.body.characterId)
                 || !hasBoundedId(req.body.chatId)
                 || typeof req.body.currentInput !== 'string'
-                || req.body.currentInput.trim().length === 0
+                || (req.body.contextSelection !== 'required' && req.body.currentInput.trim().length === 0)
                 || req.body.currentInput.length > 4_096
                 || (req.body.fallbackInput !== undefined
                     && (typeof req.body.fallbackInput !== 'string'

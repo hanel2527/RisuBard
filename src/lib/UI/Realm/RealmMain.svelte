@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { downloadRisuHub, getRisuHub, hubAdditionalHTML, type hubType } from 'src/ts/characterCards';
+    import { downloadRisuHub, getRisuHub, hubAdditionalHTML, showRealmInfoStore, type hubType } from 'src/ts/characterCards';
     import { ArrowLeft, ArrowRight, HashIcon, MenuIcon, SearchIcon, SparklesIcon } from '@lucide/svelte';
     import { alertInput } from 'src/ts/alert';
     import { language } from 'src/lang';
@@ -9,9 +9,6 @@
     import ShButton from '../GUI/ShButton.svelte';
     import ShDialog from '../GUI/ShDialog.svelte';
     import RealmHubIcon from './RealmHubIcon.svelte';
-    import RealmPopUp from './RealmPopUp.svelte';
-
-    let openedData: null | hubType = $state(null);
     let charas: hubType[] = $state([]);
     let page = $state(0);
     let sort = $state('recommended');
@@ -188,7 +185,7 @@
 
     $effect(() => {
         if ($RealmInitialOpenChar) {
-            openedData = $RealmInitialOpenChar;
+            $showRealmInfoStore = $RealmInitialOpenChar;
             $RealmInitialOpenChar = null;
         }
     });
@@ -322,7 +319,7 @@
 
 <div class="grid w-full grid-cols-1 gap-3 py-4 lg:grid-cols-2">
     {#each charas as chara (chara.id)}
-        <RealmHubIcon onClick={() => openedData = chara} onAuthorClick={searchByAuthor} {chara} />
+        <RealmHubIcon onClick={() => $showRealmInfoStore = chara} onAuthorClick={searchByAuthor} {chara} />
     {/each}
 </div>
 
@@ -353,9 +350,6 @@
     </nav>
 {/if}
 
-{#if openedData}
-    <RealmPopUp bind:openedData />
-{/if}
 
 <ShDialog bind:open={menuOpen} size="sm" closeOnEscape={true} closeOnOutsideClick={true}>
     {#snippet title()}{ui.tools}{/snippet}

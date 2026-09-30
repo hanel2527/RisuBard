@@ -41,6 +41,21 @@ function createHarness() {
 }
 
 describe('RisuBard memory routes', () => {
+    test('accepts query-free required selection and validates selection modes', async () => {
+        const { registerRisuBardMemoryRoutes } = require('./risubard-memory-routes.cjs')
+        const harness = createHarness()
+        const service = { inquireNarrative: vi.fn(async () => ({ sources: [] })) }
+        registerRisuBardMemoryRoutes(harness.app, { auth: async () => true, service })
+        const route = harness.routes.get('/api/risubard/memory/inquiry')!
+        const body = { characterId: 'char', chatId: 'chat', currentInput: '', contextSelection: 'required' }
+        await route({ body }, harness.response, vi.fn())
+        expect(service.inquireNarrative).toHaveBeenCalledWith(body)
+        for (const mode of ['auto', 'invalid']) {
+            await route({ body: { ...body, contextSelection: mode } }, harness.response, vi.fn())
+            expect(harness.response.statusCode).toBe(400)
+        }
+        expect(service.inquireNarrative).toHaveBeenCalledOnce()
+    })
     test.each([
         ['Required wiki context exceeds token budget', 'budget-exceeded'],
         ['Required wiki context exceeds 12 documents', 'budget-exceeded'],

@@ -3,7 +3,7 @@ import { mount, tick, unmount } from 'svelte'
 import { writable } from 'svelte/store'
 import RealmPopUp from './RealmPopUp.svelte'
 
-const mocks = vi.hoisted(() => ({ download: vi.fn(), import: vi.fn() }))
+const mocks = vi.hoisted(() => ({ download: vi.fn(), import: vi.fn(), character: vi.fn() }))
 vi.mock('src/ts/realm/protonModule', async importOriginal => ({
     ...await importOriginal<typeof import('src/ts/realm/protonModule')>(), downloadProtonModule: mocks.download,
 }))
@@ -11,7 +11,7 @@ vi.mock('src/ts/process/modules', () => ({ importRisum: mocks.import }))
 vi.mock('src/ts/stores.svelte', () => ({ DBState: { db: { language: 'ko', hideAllImages: true } } }))
 vi.mock('src/lang', () => ({ language: { popularityLevelDesc: '', popularityLevel: '{}' } }))
 vi.mock('src/ts/alert', () => ({ alertConfirm: vi.fn(), alertInput: vi.fn(), alertNormal: vi.fn(), notifyInfo: vi.fn() }))
-vi.mock('src/ts/characterCards', () => ({ hubURL: '/hub', downloadRisuHub: vi.fn(), getRealmInfo: vi.fn() }))
+vi.mock('src/ts/characterCards', () => ({ hubURL: '/hub', downloadRisuHub: mocks.character, getRealmInfo: vi.fn() }))
 vi.mock('src/ts/globalApi.svelte', () => ({ openURL: vi.fn() }))
 vi.mock('src/ts/gui/tooltip', () => ({ tooltip: () => ({ destroy() {} }) }))
 vi.mock('src/ts/gui/colorscheme', () => ({ ColorSchemeTypeStore: writable('dark') }))
@@ -27,7 +27,7 @@ async function render(desc = link) {
     } as never } })
     await tick()
 }
-beforeEach(() => { vi.resetAllMocks(); mocks.import.mockResolvedValue(undefined) })
+beforeEach(() => { vi.resetAllMocks(); mocks.import.mockResolvedValue(true) })
 afterEach(async () => { if (mounted) await unmount(mounted); document.body.replaceChildren() })
 
 describe('Realm module button', () => {
@@ -47,13 +47,56 @@ describe('Realm module button', () => {
         expect(document.body.textContent).toContain('모듈을 가져왔습니다')
         expect(button('모듈 가져오기')!.disabled).toBe(true)
     })
-    it('keeps folders external and presents a user-clickable original link', async () => {
+    it('presents a user-clickable original link for unsupported files', async () => {
         mocks.download.mockResolvedValue({ kind: 'external', reason: 'unsupported' })
         await render()
         button('모듈 가져오기')!.click()
-        await vi.waitFor(() => expect(document.body.textContent).toContain('폴더 또는 지원하지 않는 파일'))
+        await vi.waitFor(() => expect(document.body.textContent).toContain('지원하지 않는 파일'))
         expect(mocks.import).not.toHaveBeenCalled()
         expect(document.querySelector('a[target="_blank"]')?.getAttribute('href')).toBe(link)
+    })
+    it('keeps details and the module action open after character download, preventing duplicate clicks', async () => {
+        let finish!: () => void
+        mocks.character.mockImplementation(() => new Promise<void>(resolve => { finish = resolve }))
+        await render()
+        const download = button('다운로드 후 채팅')!
+        download.click(); download.click()
+        await tick()
+        expect(mocks.character).toHaveBeenCalledTimes(1)
+        expect(button('모듈 가져오기')?.disabled).toBe(true)
+        finish()
+        await vi.waitFor(() => expect(button('모듈 가져오기')?.disabled).toBe(false))
+        expect(document.body.textContent).toContain('Test bot')
+    })
+    it('lists folder entries, imports the selected file, and keeps other files available', async () => {
+        mocks.download.mockResolvedValueOnce({ kind: 'folder', uid: 'root', name: 'Modules', entries: [
+            { uid: 'a', name: 'A.risum', type: 'file', supported: true },
+            { uid: 'b', name: 'B.risum', type: 'file', supported: true },
+            { uid: 'txt', name: 'readme.txt', type: 'file', supported: false },
+        ] }).mockResolvedValue({ kind: 'file', data: new Uint8Array([111, 0]) })
+        await render()
+        button('모듈 가져오기')!.click()
+        await vi.waitFor(() => expect(button('A.risum')).toBeDefined())
+        expect(mocks.import).not.toHaveBeenCalled()
+        expect(document.querySelector<HTMLButtonElement>('[data-module-entry="txt"]')?.disabled).toBe(true)
+        button('B.risum')!.click()
+        await vi.waitFor(() => expect(mocks.import).toHaveBeenCalledOnce())
+        expect(mocks.download).toHaveBeenLastCalledWith(link, expect.objectContaining({ nodeUid: 'b' }))
+        expect(button('A.risum')?.disabled).toBe(false)
+        expect(document.querySelector<HTMLButtonElement>('[data-module-entry="b"]')?.disabled).toBe(true)
+        expect(document.body.textContent).toContain('Test bot')
+    })
+    it('navigates nested folders and returns to the parent after an empty listing', async () => {
+        const root = { kind: 'folder', uid: 'root', name: 'Modules', entries: [{ uid: 'sub', name: 'Previous', type: 'folder', supported: true }] }
+        mocks.download.mockResolvedValueOnce(root).mockResolvedValueOnce({ kind: 'folder', uid: 'sub', name: 'Previous', entries: [] }).mockResolvedValue(root)
+        await render()
+        button('모듈 가져오기')!.click()
+        await vi.waitFor(() => expect(button('Previous')).toBeDefined())
+        button('Previous')!.click()
+        await vi.waitFor(() => expect(document.body.textContent).toContain('폴더가 비어 있습니다'))
+        button('상위 폴더')!.click()
+        await vi.waitFor(() => expect(button('Previous')).toBeDefined())
+        expect(mocks.download).toHaveBeenLastCalledWith(link, expect.objectContaining({ nodeUid: 'root' }))
     })
     it('allows retry after failure without reporting success', async () => {
         mocks.download.mockRejectedValue(new Error('network'))
@@ -86,5 +129,15 @@ describe('Realm module button', () => {
         button('모듈 가져오기')!.click()
         await vi.waitFor(() => expect(button('다시 시도')).toBeDefined())
         expect(document.body.textContent).not.toContain('모듈을 가져왔습니다')
+    })
+    it('does not mark a cancelled or pending recovery import as completed', async () => {
+        mocks.download.mockResolvedValue({ kind: 'file', data: new Uint8Array([111, 0]) })
+        mocks.import.mockResolvedValue(false)
+        await render()
+        button('모듈 가져오기')!.click()
+        await vi.waitFor(() => expect(mocks.import).toHaveBeenCalled())
+        await tick()
+        expect(document.body.textContent).not.toContain('모듈을 가져왔습니다')
+        expect(button('모듈 가져오기')?.disabled).toBe(false)
     })
 })

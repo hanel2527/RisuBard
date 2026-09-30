@@ -3,11 +3,12 @@ import { get, writable } from 'svelte/store'
 import { alertWait, notifySuccess } from './alert'
 import { forageStorage, requestImmediateSave, saveAsset } from './globalApi.svelte'
 import { getDatabase } from './storage/database.svelte'
+import { alertStore } from './stores.svelte'
 import { ImportCancelled, ImportTransaction, type ImportJournal, type ImportOwner } from './storage/importTransaction'
 import { startImportProgress, stopImportProgress, beginImportSave, receiveImportProgress, loseImportProgress } from './importProgress'
 
 const JOURNAL_KEY = 'risubard-pending-import-v1'
-export const importSession = writable<{ phase: 'idle' | 'installing' | 'rolling-back' | 'recovery', error?: string }>({ phase: 'idle' })
+export const importSession = writable<{ phase: 'idle' | 'installing' | 'rolling-back' | 'recovery', error?: string, dismissed?: boolean }>({ phase: 'idle' })
 let active: ImportTransaction | undefined
 
 async function removeOwners(owners: ImportOwner[]) {
@@ -38,7 +39,19 @@ function dependencies() {
 }
 
 export function checkImportRecovery() {
-    if (!active && localStorage.getItem(JOURNAL_KEY)) importSession.set({ phase: 'recovery' })
+    if (!active && localStorage.getItem(JOURNAL_KEY)) {
+        importSession.update(state => ({ ...state, phase: 'recovery', dismissed: false }))
+    }
+}
+
+export function dismissImportRecovery() {
+    if (get(importSession).phase !== 'recovery') return
+    // Dismiss only the prompt. The journal still blocks imports and survives reloads.
+    const alert = get(alertStore)
+    if (alert.type === 'wait' || alert.type === 'wait2' || alert.type === 'progress') {
+        alertStore.set({ type: 'none', msg: '' })
+    }
+    importSession.update(state => ({ ...state, dismissed: true }))
 }
 
 export function cancelImport() {
@@ -108,6 +121,7 @@ export async function runImport<T>(work: (transaction: ImportTransaction) => Pro
             importSession.set({ phase: 'idle' })
         } catch (rollbackError) {
             // Keep the write-ahead record. The retry button survives a page reload.
+            active = undefined
             importSession.set({ phase: 'recovery', error: String(rollbackError) })
             return null
         }
