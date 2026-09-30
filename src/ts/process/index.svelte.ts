@@ -323,7 +323,10 @@ async function confirmProjectedNarrativeTurn(input: {
                 excludeCanonicalDocumentIds:
                     input.excludeCanonicalDocumentIds,
             } : {}),
-            ...(chat ? { contextMessages } : {}),
+            ...(chat ? { contextMessages,
+                sourceMessageOrder: chat.message.filter(message => message.chatId)
+                    .map(({ chatId, role }) => ({ chatId, role })),
+            } : {}),
         }, generationSignal)
         const retryWarning = receipt
             ? canonicalTurnFailureWarning(receipt)
@@ -720,6 +723,8 @@ async function runWikiReboot(
                     },
                 } : {}),
                 contextMessages,
+                sourceMessageOrder: chat.message.filter(message => message.chatId)
+                    .map(({ chatId, role }) => ({ chatId, role })),
             }, generationSignal)
             if (!receipt) {
                 throw new Error('리부트 배치 완료 영수증을 저장하지 못했습니다.')

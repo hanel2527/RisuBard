@@ -3,6 +3,7 @@ import type {
     NarrativeMemoryState,
 } from '../../packages/risubard-core/src/memoryDelta'
 import { get_encoding, type Tiktoken } from '@dqbd/tiktoken'
+import { createEventOrder, type EventOrderMessage } from '../../src/ts/risubard/eventOrder'
 import { Sha256 } from '@aws-crypto/sha256-js'
 import {
     ModelOutputError,
@@ -182,6 +183,8 @@ export interface MemoryAnalysisInput {
     modelSessionChatId?: string
     messages: readonly MemoryAnalysisMessage[]
     contextMessages?: readonly MemoryAnalysisMessage[]
+    /** Body-free message order from the owning chat, never sent to the model. */
+    sourceMessageOrder?: readonly EventOrderMessage[]
     autoCanonicalUpdates?: boolean
     analysisTokenLimit?: number
     additionalSearchLimit?: number
@@ -458,6 +461,7 @@ function snapshotInput(value: MemoryAnalysisInput): MemoryAnalysisInput {
     assertExactKeys(value, [
         'characterId', 'chatId', 'messages',
         ...(value.contextMessages === undefined ? [] : ['contextMessages']),
+        ...(value.sourceMessageOrder === undefined ? [] : ['sourceMessageOrder']),
         ...(value.autoCanonicalUpdates === undefined
             ? []
             : ['autoCanonicalUpdates']),
@@ -504,6 +508,20 @@ function snapshotInput(value: MemoryAnalysisInput): MemoryAnalysisInput {
         throw new Error(
             'Analysis messages must contain at least one item'
         )
+    }
+    let sourceMessageOrder: EventOrderMessage[] | undefined
+    if (value.sourceMessageOrder !== undefined) {
+        if (!Array.isArray(value.sourceMessageOrder)) {
+            throw new Error('Analysis source message order must be an array')
+        }
+        sourceMessageOrder = Array.from(value.sourceMessageOrder, message => {
+            if (!isRecord(message)) throw new Error('Invalid source order message')
+            assertExactKeys(message, ['chatId', 'role'], 'source order message')
+            if (message.role !== 'user' && message.role !== 'char') {
+                throw new Error('Invalid source order message role')
+            }
+            return { chatId: requireNonEmptyString(message.chatId, 'Source order message ID'), role: message.role }
+        })
     }
     const messageIds = new Set<string>()
     // Keep raw evidence intact. The model adapter fits selected input to the
@@ -672,6 +690,7 @@ function snapshotInput(value: MemoryAnalysisInput): MemoryAnalysisInput {
         }),
         messages,
         ...(contextMessages ? { contextMessages } : {}),
+        ...(sourceMessageOrder === undefined ? {} : { sourceMessageOrder }),
         ...(value.autoCanonicalUpdates === undefined ? {} : {
             autoCanonicalUpdates: value.autoCanonicalUpdates,
         }),
@@ -1129,10 +1148,16 @@ export function createMemoryAnalysisRunner(
             const existingEvent = documents.find((document) => document.type === 'event'
                 && document.sourceMessageIds.length === sourceMessageIds.length
                 && document.sourceMessageIds.every((id, index) => id === sourceMessageIds[index]))
-            const priorEvents = documents.filter((document) => document.type === 'event'
+            const sourceOrder = createEventOrder(snapshot.sourceMessageOrder)
+            const currentPosition = sourceOrder.position({ sourceMessageIds })
+            const otherEvents = documents.filter((document) => document.type === 'event'
                 && document.status !== 'superseded' && document.status !== 'retracted'
                 && !document.sourceMessageIds.some((id) => sourceMessageIds.includes(id)))
-                .sort((a, b) => (a.created ?? '').localeCompare(b.created ?? '') || a.id.localeCompare(b.id))
+            const priorEvents = otherEvents.filter(document => {
+                if (snapshot.sourceMessageOrder === undefined) return true
+                const position = sourceOrder.position(document)
+                return currentPosition !== undefined && position !== undefined && position < currentPosition
+            }).sort((a, b) => sourceOrder.compare(a, b))
             const inquiry = await options.markdownWikiService.inquire({
                 characterId: snapshot.characterId,
                 chatId: snapshot.chatId,
@@ -1377,7 +1402,7 @@ export function createMemoryAnalysisRunner(
                 }))
                 : [{ sourceMessageIds, draft }]
             const savedEvents: MarkdownWikiDocument[] = []
-            const priorTimeline = documentsLoaded
+            const priorTimeline = documentsLoaded && (priorEvents.length > 0 || otherEvents.length === 0)
                 ? priorEvents.map((document) => document.retrievalMetadata?.storyTime
                     ?? { day: null, precision: 'unknown' as const })
                 : [{ day: null, precision: 'unknown' as const }]
@@ -1435,6 +1460,7 @@ export function createMemoryAnalysisRunner(
                         savedEvents,
                         writingLanguage: snapshot.wikiWritingLanguage ?? 'ko',
                         settings: snapshot.arcPlotterSettings,
+                        sourceMessageOrder: snapshot.sourceMessageOrder,
                     })
             if (storyArcPlan) {
                 draft = {

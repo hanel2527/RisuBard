@@ -2,6 +2,7 @@
     import markdownit from 'markdown-it'
     import { ArrowRightIcon, PencilIcon, RouteIcon } from '@lucide/svelte'
     import type { NarrativeMemoryWikiMarkdown } from 'src/ts/risubard/memoryWiki'
+    import type { EventOrderMessage } from 'src/ts/risubard/eventOrder'
     import {
         buildStoryArcView,
         extractStoryArcLinks,
@@ -12,19 +13,20 @@
 
     interface Props {
         documents: NarrativeMemoryWikiMarkdown['documents']
+        messages?: readonly EventOrderMessage[]
         checkpointSize: number
         enabled: boolean
         onOpenDocument?: (documentId: string) => void
     }
 
-    let { documents, checkpointSize, enabled, onOpenDocument }: Props = $props()
+    let { documents, messages, checkpointSize, enabled, onOpenDocument }: Props = $props()
     const markdownRenderer = markdownit({
         html: false,
         breaks: false,
         linkify: false,
         typographer: true,
     })
-    let view = $derived(buildStoryArcView(documents, checkpointSize))
+    let view = $derived(buildStoryArcView(documents, checkpointSize, messages))
     let links = $derived(view.document
         ? extractStoryArcLinks(view.document.content)
         : [])

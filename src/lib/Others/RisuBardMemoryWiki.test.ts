@@ -1498,13 +1498,16 @@ describe('RisuBardMemoryWiki', () => {
         })
     })
 
-    test('shows checkpoint progress before the first story arc plot exists', async () => {
+    test('uses source order in the tree and story and shows checkpoint progress', async () => {
+        mocks.db.characters = [{ chaId: 'character', chats: [{ id: 'chat',
+            message: [1, 2, 3].map(index => ({ chatId: `a${index}`, role: 'char' as const, data: `Turn ${index}` })),
+        }] }]
         const events = ['출발', '첫 관문', '숲의 밤'].map((title, index) => ({
             id: `event.${index + 1}`, type: 'event' as const, status: 'active' as const,
-            title, relativePath: `events/${index + 1}.md`, sourceMessageIds: [],
-            created: `2026-08-0${index + 1}T00:00:00.000Z`,
+            title, relativePath: `events/${index + 1}.md`, sourceMessageIds: [`a${index + 1}`],
+            created: index === 0 ? '2026-09-30T00:00:00.000Z' : `2026-08-0${index + 1}T00:00:00.000Z`,
             updated: `2026-08-0${index + 1}T00:00:00.000Z`,
-            content: `# ${title}`, links: [], contextMode: 'auto' as const,
+            content: `## ${title}\n\n### 이야기 요약\n\n- ${title}`, links: [], contextMode: 'auto' as const,
             contentHash: `hash-${index + 1}`,
         }))
         mocks.loadNarrativeMemoryWiki.mockResolvedValue({
@@ -1520,6 +1523,11 @@ describe('RisuBardMemoryWiki', () => {
         await vi.waitFor(() => expect(document.querySelector(
             '[data-memory-view="arc-plot"]'
         )).not.toBeNull())
+        expect([...document.querySelectorAll('.file-select .document-title')].map(node => node.textContent))
+            .toEqual(['숲의 밤', '첫 관문', '출발'])
+        document.querySelector<HTMLButtonElement>('[data-memory-view="story"]')?.click()
+        await vi.waitFor(() => expect([...document.querySelectorAll<HTMLElement>('[data-story-entry]')]
+            .map(node => node.dataset.storyEntry)).toEqual(['event.1', 'event.2', 'event.3']))
         document.querySelector<HTMLButtonElement>(
             '[data-memory-view="arc-plot"]'
         )?.click()
@@ -1591,36 +1599,6 @@ describe('RisuBardMemoryWiki', () => {
         await vi.waitFor(() => expect(document.querySelector<HTMLInputElement>(
             '[aria-label="항목 이름"]'
         )?.value).toBe('스토리 아크 플롯'))
-    })
-
-    test('opens character chronicle events in the shared editor with eligible original sources', async () => {
-        const base = {
-            status: 'active', relativePath: 'event.md', updated: '2026-09-29',
-            sourceMessageIds: [], content: '', links: [], contextMode: 'auto', contentHash: 'hash',
-        }
-        mocks.db.characters = [{ chaId: 'character', chats: [{ id: 'chat', message: [
-            { role: 'char', data: '앨리스가 도착했다.', chatId: 'message-1' },
-        ] }] }]
-        mocks.loadNarrativeMemoryWiki.mockResolvedValue({
-            mode: 'markdown', wikiPath: 'C:\\wiki',
-            health: { danglingLinks: [], unlinkedDocumentIds: [] },
-            documents: [
-                { ...base, id: 'alice', type: 'character', title: '앨리스' },
-                { ...base, id: 'arrival', type: 'event', title: '도착', links: ['앨리스'],
-                    content: '앨리스가 도착했다.', sourceMessageIds: ['message-1'] },
-            ],
-        })
-        const onNavigateStorySource = vi.fn()
-        mounted = mount(RisuBardMemoryWiki, { target: document.body, props: {
-            open: true, characterId: 'character', chatId: 'chat', onNavigateStorySource,
-        } })
-        await vi.waitFor(() => expect(document.querySelector('[data-memory-view="chronicle"]')).not.toBeNull())
-        document.querySelector<HTMLButtonElement>('[data-memory-view="chronicle"]')!.click()
-        await vi.waitFor(() => expect(document.querySelector('[data-chronicle-entry="arrival"]')).not.toBeNull())
-        document.querySelector<HTMLButtonElement>('[data-chronicle-source]')!.click()
-        expect(onNavigateStorySource).toHaveBeenCalledWith({ kind: 'chat', messageIds: ['message-1'] })
-        document.querySelector<HTMLButtonElement>('[data-chronicle-edit]')!.click()
-        await vi.waitFor(() => expect(document.querySelector<HTMLInputElement>('[aria-label="항목 이름"]')?.value).toBe('도착'))
     })
 
     test('opens story entries in the shared editor and keeps source navigation', async () => {

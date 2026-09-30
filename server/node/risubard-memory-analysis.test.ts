@@ -86,6 +86,43 @@ afterEach(async () => {
 })
 
 describe('memory analysis runner', () => {
+    test('uses the actual previous turn after a late repair instead of its save date', async () => {
+        const analyze = vi.fn(async (_request: MemoryAnalysisModelRequest) => JSON.stringify({
+            schemaVersion: 1, title: 'Next', establishedEvents: ['The next day they left.'],
+            stateChanges: [], characterKnowledge: [], persistentFacts: [], openContinuity: [],
+            canonicalUpdateCandidates: [], keywords: ['departure'],
+            temporalHint: { elapsedDays: 1, evidence: 'The next day' },
+        }))
+        const saveConfirmedTurn = vi.fn(async () => undefined)
+        const documents = [
+            { id: 'repair', source: 'a1', created: '2026-09-30', day: 1 },
+            { id: 'previous', source: 'a2', created: '2026-01-02', day: 8 },
+            { id: 'unknown', source: 'deleted', created: '2026-10-01', day: 99 },
+            { id: 'future', source: 'a4', created: '2026-10-02', day: 100 },
+        ].map(item => ({ ...item, type: 'event' as const, title: item.id,
+            sourceMessageIds: [item.source], relativePath: `events/${item.id}.md`,
+            content: `## ${item.id}`, contentHash: item.id,
+            retrievalMetadata: { keywords: [], storyTime: { day: item.day, precision: 'explicit' as const, evidence: 'Fixture timeline' } },
+        }))
+        const runner = createMemoryAnalysisRunner({
+            memoryService: { loadState: vi.fn(), applyDelta: vi.fn() }, nativeV2Analysis: true,
+            markdownWikiService: {
+                inquire: vi.fn(async () => ({ graphRevision: 0, sources: [] })),
+                loadDocuments: vi.fn(async () => documents), saveConfirmedTurn,
+            }, analyze, onError: vi.fn(),
+        })
+        await runner.run({ characterId: 'character', chatId: 'chat',
+            messages: [{ messageId: 'a3', role: 'assistant', content: 'The next day they left.' }],
+            sourceMessageOrder: [1, 2, 3, 4].map(index => ({ chatId: `a${index}`, role: 'char' })),
+        })
+        expect(saveConfirmedTurn).toHaveBeenCalledWith(expect.objectContaining({
+            retrievalMetadata: expect.objectContaining({ storyTime: expect.objectContaining({ day: 9 }) }),
+        }))
+        expect(JSON.parse(analyze.mock.calls[0][0].input))
+            .toMatchObject({ previousStoryEvent: { summary: '## previous', storyTime: { day: 8 } } })
+        expect(analyze.mock.calls[0][0].input).not.toContain('sourceMessageOrder')
+    })
+
     test.each(['missing', 'alias', 'unconfirmed', 'excluded', 'substring', 'pronoun'] as const)(
         'checks first registration of a named knowledge holder: %s', async (mode) => {
         const saveCanonicalDocument = vi.fn(async () => undefined)

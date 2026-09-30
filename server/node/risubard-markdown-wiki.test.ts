@@ -92,6 +92,24 @@ describe('Markdown narrative wiki', () => {
         expect(contents).toContain('retrieval_metadata: {"keywords":["Gilbert","dance"],"storyTime":{"day":0,"evidence":"first recorded event","precision":"origin"}}')
     })
 
+    test('preserves the original event identity and creation time when reanalyzing and reopening', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        let time = '2026-01-01T00:00:00.000Z'
+        const wiki = createMarkdownNarrativeWiki(root, { now: () => new Date(time) })
+        const scope = { characterId: 'character', chatId: 'chat', sourceMessageIds: ['a1'] }
+        const before = await wiki.saveConfirmedTurn({ ...scope, markdown: '## Arrival\n\n### Story Summary\n\n- Arrived.' })
+        time = '2026-09-30T00:00:00.000Z'
+        const after = await wiki.saveConfirmedTurn({ ...scope, markdown: '## Arrival\n\n### Story Summary\n\n- Corrected arrival.' })
+        expect(after).toMatchObject({ id: before.id, relativePath: before.relativePath,
+            created: before.created, updated: time, sourceMessageIds: ['a1'] })
+        expect(after.content).toContain('Corrected arrival.')
+        expect(after.content).not.toContain('- Arrived.')
+        const reopened = createMarkdownNarrativeWiki(root)
+        expect((await reopened.loadView(scope.characterId, scope.chatId)).documents.find(document => document.id === before.id))
+            .toMatchObject({ created: before.created, updated: time })
+    })
+
     test('can append the first summary to an English event with only a title', async () => {
         const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
         temporaryDirectories.push(root)

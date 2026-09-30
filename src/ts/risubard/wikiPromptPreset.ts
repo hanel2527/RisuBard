@@ -15,7 +15,7 @@ export interface WikiPromptBlock {
 
 export interface WikiPromptPreset {
     schemaVersion: 1
-    writingPolicyVersion?: 1 | 2 | 3
+    writingPolicyVersion?: 1 | 2 | 3 | 4
     id: string
     name: string
     revision: number
@@ -116,6 +116,7 @@ const MODULAR_CONTINUITY = [
 
 export const OFFICIAL_WIKI_BACKUP_ID = 'official-wiki-260922'
 export const OFFICIAL_WIKI_V2_BACKUP_ID = 'official-wiki-260922-v2'
+export const OFFICIAL_WIKI_V3_BACKUP_ID = 'official-wiki-260930'
 const OPTIONAL_BLOCKS: WikiPromptBlock[] = [
     {
         id: 'default-character-equipment', type: 'text', name: '장비와 소지품',
@@ -128,6 +129,24 @@ const OPTIONAL_BLOCKS: WikiPromptBlock[] = [
         content: 'Apply stronger compression when updating character canon. Consolidate repeated explanations and counterpart relationship bullets, replace obsolete current states from confirmed evidence, and group consecutive steps of the same major transition with exact event links. Keep scene details in event documents. Never drop distinct still-valid facts, current state, relationship direction or values, knowledge boundaries, secrets, unresolved promises, meaningful equipment, or causal consequences merely to shorten the document. Keep each major transition meaning as well as its link. Prefer the shortest faithful expression, but impose no fixed length or item quota. Move facts and delete redundant source sections in the same patch batch only after preserving their necessary content.',
     },
 ]
+
+// Version 4 keeps current state and individual knowledge without accumulating expired instructions.
+const CURRENT_CONTINUITY = [
+    'Character canon maintains durable identity and current operating state. Keep scene details and acquisition history in event documents.',
+    'Preserve established relationships and trust, knowledge, promises, injuries and meaningful possessions when the latest scene is silent about them. Silence is not completion, forgetting or evidence of change.',
+    'On confirmed completion, expiry or replacement, remove inactive tasks, temporary instructions and superseded state from any section. Preserve outstanding rewards, obligations and lasting consequences; task completion does not prove reward delivery. Keep useful history in saved events with exact supplied links.',
+    'A completed encounter or revelation does not erase acquaintance or acquired knowledge. Retain who met whom and what each person learned. Group knowledge by counterpart or topic and update the existing entry rather than append each occasion of learning.',
+    'Preserve learned identities, rules, secrets, uncertainty, mistaken beliefs and who shares each secret. Correct a belief only for holders reached by the evidence. A document link, another person\'s knowledge or knowing a mutual acquaintance does not establish this person\'s knowledge. Do not invent ignorance from absent evidence.',
+    'Use these section roles in the wiki writing language: 인물 핵심 (Identity), 현재 상태 (Current State), 관계와 신뢰 (Relationships and Trust), 지식과 비밀 (Knowledge and Secrets), 주요 전환 (Major Transitions). Do not create empty sections or templates.',
+    'Identity owns identity, background, personality and abilities. Current State owns situation, goals, physical and mental condition, constraints and active tasks. Relationships and Trust owns acquaintances, relationships, trust, conflict, promises and explicit values. Knowledge and Secrets owns individual knowledge and belief boundaries, not an experience diary.',
+    'One primary home per fact. Preserve its holder, source, certainty and conditions there, including knowledge recorded outside Knowledge and Secrets. Elsewhere retain only a distinct consequence. Keep routine experiences in events unless they establish durable state or knowledge needed for later choices.',
+    'Record confirmed structured state values in the relevant subject canon. Update them only from confirmed evidence, retain existing values when they are omitted, and do not recalculate them or infer narrative meaning from them alone.',
+    'Major Transitions records consequential changes with exact event links. Merge successive steps of the same transition; retain independent changes without a fixed item or character quota.',
+    'When replacing or merging sections, preserve unrelated still-valid state and knowledge. Return destination and deletion patches together, retaining necessary content before removing source sections. Older headings alone do not justify an update.',
+    'Meaningful equipment remains in Identity or Current State unless the equipment module is enabled. Do not create a Related Documents section just to repeat links already present.',
+].join('\n')
+
+const CURRENT_COMPRESSION = 'Apply stronger compression by merging repeated explanations and successive steps of the same change. Follow the continuity contract to retire confirmed completed or expired state while preserving outstanding obligations and lasting consequences. Keep scene details and knowledge acquisition history in events; keep who met whom and each holder\'s current knowledge concise in canon. Never drop distinct still-valid facts, knowledge boundaries, attribution, conditions, relationship direction or values merely to shorten the document. Retain meaningful transition results and exact event links without a fixed length or item quota. Move necessary content and delete redundant source sections in the same patch batch.'
 
 // Version 3 adds recall detail without changing the archived writing policies.
 const RECALL_BLOCKS: WikiPromptBlock[] = [
@@ -294,7 +313,8 @@ function normalizePreset(value: unknown, idFactory: () => string): WikiPromptPre
             content: '',
         })
     }
-    const writingPolicyVersion = source.writingPolicyVersion === 3 ? 3
+    const writingPolicyVersion = source.writingPolicyVersion === 4 ? 4
+        : source.writingPolicyVersion === 3 ? 3
         : source.writingPolicyVersion === 2 ? 2 : 1
     return {
         schemaVersion: 1,
@@ -313,7 +333,7 @@ function normalizePreset(value: unknown, idFactory: () => string): WikiPromptPre
                 return {
                     ...block,
                     ...(block.id === 'core-character-continuity-contract' && writingPolicyVersion >= 2
-                        ? { content: MODULAR_CONTINUITY } : {}),
+                        ? { content: writingPolicyVersion >= 4 ? CURRENT_CONTINUITY : MODULAR_CONTINUITY } : {}),
                     ...(stored ? {
                         name: boundedText(stored.name, 80) || block.name,
                         target: normalizeTarget(stored.target),
@@ -395,11 +415,20 @@ function createModularWikiPromptPreset(id: string): WikiPromptPreset {
     }, () => id)
 }
 
-export function createDefaultWikiPromptPreset(id: string): WikiPromptPreset {
+function createRecallWikiPromptPreset(id: string): WikiPromptPreset {
     const modular = createModularWikiPromptPreset(id)
     return normalizePreset({
         ...modular, writingPolicyVersion: 3, revision: 2,
         blocks: [...modular.blocks, ...RECALL_BLOCKS.map(block => ({ ...block }))],
+    }, () => id)
+}
+
+export function createDefaultWikiPromptPreset(id: string): WikiPromptPreset {
+    const previous = createRecallWikiPromptPreset(id)
+    return normalizePreset({
+        ...previous, writingPolicyVersion: 4, revision: 3,
+        blocks: previous.blocks.map(block => block.id === 'default-length-compression'
+            ? { ...block, content: CURRENT_COMPRESSION } : block),
     }, () => id)
 }
 
@@ -428,7 +457,8 @@ export function normalizeWikiPromptPresetState(
         // Existing official selections retain their stable ID; personal copies retain their policy.
         if (!normalized.builtin || normalized.id === OFFICIAL_WIKI_BACKUP_ID
             || normalized.id === OFFICIAL_WIKI_V2_BACKUP_ID
-            || normalized.writingPolicyVersion === 3) return normalized
+            || normalized.id === OFFICIAL_WIKI_V3_BACKUP_ID
+            || normalized.writingPolicyVersion === 4) return normalized
         const current = createDefaultWikiPromptPreset(normalized.id)
         for (const optional of OPTIONAL_BLOCKS) {
             const stored = normalized.blocks.find(block => block.id === optional.id)
@@ -437,7 +467,7 @@ export function normalizeWikiPromptPresetState(
         return current
     })
     if (presets.length === 0) presets.push(createDefaultWikiPromptPreset(idFactory()))
-    if (!presets.some(preset => preset.builtin && preset.writingPolicyVersion === 3)) {
+    if (!presets.some(preset => preset.builtin && preset.writingPolicyVersion === 4)) {
         presets.push(createDefaultWikiPromptPreset('official-wiki-current'))
     }
     if (!presets.some(preset => preset.id === OFFICIAL_WIKI_BACKUP_ID)) {
@@ -447,6 +477,12 @@ export function normalizeWikiPromptPresetState(
         presets.push({
             ...createModularWikiPromptPreset(OFFICIAL_WIKI_V2_BACKUP_ID),
             name: '공식기본-260922-v2',
+        })
+    }
+    if (!presets.some(preset => preset.id === OFFICIAL_WIKI_V3_BACKUP_ID)) {
+        presets.push({
+            ...createRecallWikiPromptPreset(OFFICIAL_WIKI_V3_BACKUP_ID),
+            name: '공식기본-260930',
         })
     }
     const ids = new Set(presets.map((preset) => preset.id))

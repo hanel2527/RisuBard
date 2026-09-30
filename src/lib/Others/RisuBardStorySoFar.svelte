@@ -1,6 +1,7 @@
 <script lang="ts">
     import { LocateFixedIcon, PencilIcon } from '@lucide/svelte'
     import type { NarrativeMemoryWikiMarkdown } from 'src/ts/risubard/memoryWiki'
+    import type { EventOrderMessage } from 'src/ts/risubard/eventOrder'
     import {
         buildStorySoFar,
         type StorySourceRef,
@@ -8,19 +9,20 @@
 
     interface Props {
         documents: NarrativeMemoryWikiMarkdown['documents']
+        messages?: readonly EventOrderMessage[]
         onNavigate?: (source: StorySourceRef) => void
         onEdit?: (documentId: string) => void
     }
 
-    let { documents, onNavigate, onEdit }: Props = $props()
-    let entries = $derived(buildStorySoFar(documents))
+    let { documents, messages, onNavigate, onEdit }: Props = $props()
+    let entries = $derived(buildStorySoFar(documents, messages))
 </script>
 
 <section class="story-ledger" data-story-so-far aria-label="지금까지의 이야기">
     <header>
         <span>STORY SO FAR</span>
         <h2>지금까지의 이야기</h2>
-        <p>확정된 사건만 시간 순서대로 이어 읽습니다.</p>
+        <p>확정된 사건을 원본 대화 순서로 읽습니다. 원본을 찾을 수 없는 사건은 뒤에 표시됩니다.</p>
     </header>
 
     {#if entries.length === 0}

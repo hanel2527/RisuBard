@@ -65,7 +65,8 @@
         if (effective === undefined || effective === base) return ''
         const percent = base ? ((effective - base) / base * 100).toFixed(1) : '0'
         const capped = effective < base + Math.round(base * dynamicMemoryGrowth(settings.risuBardDynamicMemoryMode, dynamicCharacters))
-        return `기본값 ${formatNumber(base)} → 동적 한도 ${formatNumber(effective)} (+${percent}%)${capped ? '\n검색 증가 상한 적용' : ''}\n편집할 때는 기본값을 변경합니다.`
+        const label = key === 'risuBardAnalysisTokenLimit' ? '동적 요청' : '동적 한도'
+        return `기본값 ${formatNumber(base)} → ${label} ${formatNumber(effective)} (+${percent}%)${capped ? '\n검색 증가 상한 적용' : ''}\n입력칸에서 기본값을 변경합니다.${key === 'risuBardAnalysisTokenLimit' ? '\n모델 출력 상한에 따라 요청값이 줄어들 수 있습니다.' : ''}`
     }
 
     function dynamicModeHelp(): string {
@@ -78,7 +79,7 @@
             `절약형: 50턴 ${example('economy', 50_000)}, 100턴 ${example('economy', 100_000)}, 500턴부터 ${example('economy', 500_000)}`,
             `균형형: 50턴 ${example('balanced', 50_000)}, 100턴 ${example('balanced', 100_000)}, 500턴부터 ${example('balanced', 500_000)}`,
             `회수 우선형: 50턴 ${example('recall', 50_000)}, 100턴 ${example('recall', 100_000)}, 500턴부터 ${example('recall', 500_000)}`,
-            '검색 최대 토큰에는 검색 증가 상한도 적용합니다. 파란 숫자는 계산된 한도이며, 편집할 때는 기본값이 표시됩니다.',
+            '검색 최대 토큰에는 검색 증가 상한도 적용합니다. 입력칸은 저장할 기본값이며, 아래에 동적으로 계산된 값을 표시합니다. 분석 요청값은 모델 출력 상한에 따라 줄어들 수 있습니다.',
         ].join('\n\n')
     }
 
@@ -164,9 +165,11 @@
 {#snippet dynamicNumber(key: DynamicKey, id: string, min = 256, max?: number)}
     <div class="dynamic-number">
         <input {id} type="number" {min} {max}
-            class:dynamic-value={editingKey !== key && effectiveValue(key) !== settings[key]}
-            value={editingKey === key ? numberDraft : effectiveValue(key)}
-            aria-describedby={editingKey === key ? `${id}-editing` : undefined}
+            value={editingKey === key ? numberDraft : settings[key]}
+            aria-describedby={[
+                settings.risuBardDynamicMemoryMode !== 'off' ? `${id}-dynamic` : '',
+                editingKey === key ? `${id}-editing` : '',
+            ].filter(Boolean).join(' ') || undefined}
             use:tooltip={dynamicValueHelp(key)}
             onfocus={(event) => {
                 editingKey = key
@@ -187,6 +190,14 @@
                 if (event.key === 'Escape') { editingKey = null; event.currentTarget.blur() }
                 if (event.key === 'Enter') event.currentTarget.blur()
             }} />
+        {#if settings.risuBardDynamicMemoryMode !== 'off'}
+            <small id={`${id}-dynamic`} class="dynamic-value">
+                {key === 'risuBardAnalysisTokenLimit' ? '동적 요청' : '동적 한도'} {formatNumber(effectiveValue(key)!)} 토큰
+                {#if key === 'risuBardAnalysisTokenLimit'}
+                    <span class="dynamic-note">모델 출력 상한에 따라 줄어들 수 있습니다.</span>
+                {/if}
+            </small>
+        {/if}
         {#if editingKey === key}<small id={`${id}-editing`} class="editing-hint">기본값 편집 중</small>{/if}
     </div>
 {/snippet}
@@ -386,7 +397,8 @@
 
 <style>
     .dynamic-number { min-width: 0; position: relative; }
-    input.dynamic-value { color: var(--color-info); font-weight: 650; }
+    .dynamic-value { display: block; margin-top: .2rem; color: var(--color-info); font-size: .7rem; line-height: 1.4; overflow-wrap: anywhere; }
+    .dynamic-note { display: block; color: var(--color-textcolor2); }
     .editing-hint { display: block; color: var(--color-textcolor2); font-size: .7rem; margin-top: .2rem; }
     .chat-settings { container: chat-settings / inline-size; display: grid; gap: .48rem; min-width: 0; padding: .05rem; }
     .settings-head { position: sticky; z-index: 2; top: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .3rem .75rem; padding: .18rem .12rem .48rem; border-bottom: 1px solid var(--risu-theme-darkborderc); background: var(--risu-theme-bgcolor); }

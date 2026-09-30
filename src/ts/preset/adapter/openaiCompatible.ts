@@ -21,6 +21,7 @@ import type {
     AdapterUsage,
 } from './types'
 import { resolveWireModelId } from './wireInvariants'
+import { capModelOutputTokens } from './outputTokens'
 
 interface WireToolCall {
     id: string
@@ -217,7 +218,7 @@ async function prepareOpenAiBody(
                 || (!bodyFields.has('max_tokens') && prepared.body.max_completion_tokens !== undefined)
             const tokenField = completionTokens ? 'max_completion_tokens' : 'max_tokens'
             const otherTokenField = completionTokens ? 'max_tokens' : 'max_completion_tokens'
-            prepared.body[tokenField] = options.maxOutputTokens
+            prepared.body[tokenField] = capModelOutputTokens(preset, options.maxOutputTokens)
             delete prepared.body[otherTokenField]
         }
     }

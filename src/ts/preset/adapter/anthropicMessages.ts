@@ -20,6 +20,7 @@ import type {
     AdapterUsage,
 } from './types'
 import { resolveWireModelId } from './wireInvariants'
+import { capModelOutputTokens } from './outputTokens'
 
 // `anthropic` base provider v2+ supplies `max_tokens: 4096` via `defaultBody`,
 // so freshly-resolved snapshots already carry the value. But presets persisted
@@ -234,19 +235,20 @@ async function prepareAnthropicBody(
         }
     }
     if (options.maxOutputTokens !== undefined) {
-        prepared.body.max_tokens = options.maxOutputTokens
+        const maxOutputTokens = capModelOutputTokens(preset, options.maxOutputTokens)
+        prepared.body.max_tokens = maxOutputTokens
         if (thinking?.type === 'enabled') {
             // Manual thinking requires at least 1024 tokens and a budget below
             // max_tokens. Never expand the caller's cap or turn thinking off.
-            if (options.maxOutputTokens <= 1024) {
+            if (maxOutputTokens <= 1024) {
                 throw new ModelPresetAdapterError('invalid-request',
                     'Anthropic manual thinking requires maxOutputTokens greater than 1024',
                     { retryable: false, fallbackEligible: false })
             }
-            if (typeof thinking.budget_tokens === 'number' && thinking.budget_tokens >= options.maxOutputTokens) {
+            if (typeof thinking.budget_tokens === 'number' && thinking.budget_tokens >= maxOutputTokens) {
                 // On conflict, reserve half for the answer where the minimum
                 // permits it; cap - 1 alone can starve structured JSON output.
-                thinking.budget_tokens = Math.max(1024, Math.floor(options.maxOutputTokens / 2))
+                thinking.budget_tokens = Math.max(1024, Math.floor(maxOutputTokens / 2))
             }
         }
     }

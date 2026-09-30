@@ -35,6 +35,31 @@ function document(
 }
 
 describe('story arc view model', () => {
+    it('counts new chat events after an inherited checkpoint', () => {
+        const inherited = { ...document('event.old', 'event', 'Old'), sourceMessageIds: ['inherited:parent:a1'] }
+        const current = { ...document('event.new', 'event', 'New'), sourceMessageIds: ['a1'] }
+        const plot = document('other.arc', 'other', 'Story Arc Map',
+            '## Story Arc Map\n\n<!-- risubard-story-arc-checkpoint: event.old -->')
+        expect(buildStoryArcView([inherited, current, plot], 8, [{ chatId: 'a1', role: 'char' }]))
+            .toMatchObject({ pendingEventCount: 1, remainingEventCount: 7 })
+        expect(buildStoryArcView([{ ...inherited, sourceMessageIds: ['deleted'] }, current, plot], 8,
+            [{ chatId: 'a1', role: 'char' }])).toMatchObject({ pendingEventCount: 0 })
+    })
+
+    it('does not count a repaired earlier turn or an unresolved source after the checkpoint', () => {
+        const events = [1, 2, 3].map(index => ({
+            ...document(`event.${index}`, 'event', `Event ${index}`, '',
+                index === 1 ? '2026-09-30' : `2026-01-0${index}`),
+            sourceMessageIds: [`a${index}`],
+        }))
+        const plot = document('other.arc', 'other', 'Story Arc Map',
+            '## Story Arc Map\n\n<!-- risubard-story-arc-checkpoint: event.2 -->')
+        const messages = [1, 2, 3].map(index => ({ chatId: `a${index}`, role: 'char' }))
+        expect(buildStoryArcView([...events, plot,
+            document('event.unknown', 'event', 'Deleted source')], 8, messages))
+            .toMatchObject({ pendingEventCount: 1, remainingEventCount: 7 })
+    })
+
     it('reports confirmed-event progress before the first plot is created', () => {
         const documents = [
             document('event.1', 'event', '출발'),

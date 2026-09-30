@@ -330,7 +330,7 @@ export function buildRisuBardCanonicalWritingPolicy(
         'Give a named sublocation its own location canon when it has independent persistent state, structure, people, secrets, or repeated scene use; keep only a short link summary in its parent.',
         'Do not create canon for every clue. Keep one compact investigation thread in other canon only when clues cross events or remain unresolved and affect future decisions.',
         'When new facts replace old ones, do not present both states as current. Preserve unrelated established facts.',
-        'Compress expression, never distinct established facts, relationship direction, knowledge boundaries, or consequences of change. Preserve durable relationships and trust, mental state, knowledge boundaries, promises, and meaningful possessions, equipment, injuries, or appearance unless confirmed evidence changes them.',
+        'Preserve distinct still-valid operating facts, relationship direction, individual knowledge and lasting consequences when compressing. The selected wiki preset governs how confirmed completed or expired state is retired. Preserve unrelated durable state and unresolved obligations; silence alone never establishes completion or forgetting.',
         'The selected wiki preset defines section organization and compression pressure. Keep durable facts distinct from transient observations without requiring separate sections. Do not create empty sections or templates, and do not infer shared knowledge, ownership, or relationship meaning from structured state values alone.',
     ].join('\n')
 }

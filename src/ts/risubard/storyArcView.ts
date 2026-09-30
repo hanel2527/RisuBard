@@ -1,5 +1,6 @@
 import type { NarrativeMemoryWikiMarkdown } from './memoryWiki'
 import { isStoryArcTitle } from './wikiWritingLanguage'
+import { createEventOrder, hasOnlyInheritedSources, type EventOrderMessage } from './eventOrder'
 
 type WikiDocument = NarrativeMemoryWikiMarkdown['documents'][number]
 
@@ -36,31 +37,33 @@ function storyArcCheckpoint(content: string): string | undefined {
     return matches.at(-1)?.[1]
 }
 
-function activeEvents(documents: readonly WikiDocument[]): WikiDocument[] {
+function activeEvents(documents: readonly WikiDocument[], messages?: readonly EventOrderMessage[]): WikiDocument[] {
+    const order = createEventOrder(messages)
     return documents
         .filter((document) =>
             document.type === 'event' && document.status === 'active')
-        .sort((left, right) => {
-            const leftTime = left.created ?? left.updated
-            const rightTime = right.created ?? right.updated
-            return leftTime.localeCompare(rightTime)
-                || left.id.localeCompare(right.id)
-        })
+        .filter(document => messages === undefined || order.position(document) !== undefined)
+        .sort((left, right) => order.compare(left, right))
 }
 
 export function buildStoryArcView(
     documents: readonly WikiDocument[],
-    requestedCheckpointSize: number
+    requestedCheckpointSize: number,
+    messages?: readonly EventOrderMessage[]
 ): StoryArcView {
     const checkpointSize = Math.max(1, Math.round(requestedCheckpointSize))
     const document = findStoryArcDocument(documents)
-    const events = activeEvents(documents)
+    const events = activeEvents(documents, messages)
     const checkpoint = document ? storyArcCheckpoint(document.content) : undefined
     const checkpointIndex = checkpoint
         ? events.findIndex((event) => event.id === checkpoint)
         : -1
+    const inheritedCheckpoint = messages !== undefined && documents.some(event =>
+        event.id === checkpoint && event.type === 'event' && event.status === 'active'
+        && hasOnlyInheritedSources(event))
     const pendingEventCount = document
-        ? checkpointIndex >= 0 ? events.length - checkpointIndex - 1 : 0
+        ? checkpointIndex >= 0 ? events.length - checkpointIndex - 1
+            : inheritedCheckpoint ? events.length : 0
         : events.length
 
     return {

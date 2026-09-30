@@ -47,7 +47,6 @@
     import RisuBardWikiEditor from './RisuBardWikiEditor.svelte'
     import RisuBardMemoryActivity from './RisuBardMemoryActivity.svelte'
     import RisuBardStorySoFar from './RisuBardStorySoFar.svelte'
-    import RisuBardCharacterChronicle from './RisuBardCharacterChronicle.svelte'
     import RisuBardStoryArcPlot from './RisuBardStoryArcPlot.svelte'
     import RisuBardWikiCommandTerminal from './RisuBardWikiCommandTerminal.svelte'
     import RisuBardMemoryWikiHelp from './RisuBardMemoryWikiHelp.svelte'
@@ -174,7 +173,7 @@
     let loadedScope = ''
     let dockElement = $state<HTMLElement | null>(null)
     let workspaceSplitElement = $state<HTMLElement | null>(null)
-    let activeView = $state<'painter' | 'ooc' | 'workspace' | 'story' | 'chronicle' | 'arc-plot' | 'log'>('workspace')
+    let activeView = $state<'painter' | 'ooc' | 'workspace' | 'story' | 'arc-plot' | 'log'>('workspace')
     let painterLoadError = $state('')
     let settingsOpen = $state(false)
     let settingsPopoverElement = $state<HTMLElement | null>(null)
@@ -794,14 +793,6 @@
                     </button>
                     <button
                         type="button"
-                        class:active={activeView === 'chronicle'}
-                        data-memory-view="chronicle"
-                        title="인물 연대기"
-                        aria-pressed={activeView === 'chronicle'}
-                        onclick={() => activeView = 'chronicle'}
-                    ><Clock3Icon size={20} /><span>인물 연대기</span></button>
-                    <button
-                        type="button"
                         class:active={activeView === 'arc-plot'}
                         data-memory-view="arc-plot"
                         title="아크 플롯"
@@ -1026,6 +1017,7 @@
                     <div class="wiki-editor-region">
                         <RisuBardWikiEditor
                             {characterId}
+                            messages={activityMessages}
                             chatId={wikiChatId}
                             locked={Boolean(rebootJob)}
                             documents={wiki.documents}
@@ -1083,22 +1075,14 @@
                 {:else if activeView === 'story'}
                     <RisuBardStorySoFar
                         documents={wiki.documents}
+                        messages={activityMessages}
                         onNavigate={onNavigateStorySource}
                         onEdit={editStoryEntry}
                     />
-                {:else if activeView === 'chronicle'}
-                    {#key `${characterId}:${wikiChatId}`}
-                        <RisuBardCharacterChronicle
-                            documents={wiki.documents}
-                            messages={activityMessages}
-                            ignoreOocTurns={resolvedChatSettings.risuBardIgnoreOocTurns}
-                            onNavigate={onNavigateStorySource}
-                            onEdit={editStoryEntry}
-                        />
-                    {/key}
                 {:else if activeView === 'arc-plot'}
                     <RisuBardStoryArcPlot
                         documents={wiki.documents}
+                        messages={activityMessages}
                         checkpointSize={arcPlotterSettings.checkpointSize}
                         enabled={arcPlotterSettings.enabled}
                         onOpenDocument={editStoryEntry}

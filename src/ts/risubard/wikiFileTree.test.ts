@@ -29,6 +29,20 @@ describe('getRecentlyUpdatedWikiDocumentIds', () => {
 })
 
 describe('buildWikiFileTree', () => {
+    it('keeps late repairs at their original chat position in the newest-first event folder', () => {
+        const tree = buildWikiFileTree([
+            { id: 'later', title: '다음 턴', type: 'event', relativePath: 'events/a.md',
+                sourceMessageIds: ['a2'], created: '2026-01-02' },
+            { id: 'repair', title: '과거 턴 재분석', type: 'event', relativePath: 'events/z.md',
+                sourceMessageIds: ['a1'], created: '2026-09-30' },
+            { id: 'unknown', title: '출처 없음', type: 'event', relativePath: 'events/b.md',
+                sourceMessageIds: ['deleted'], created: '2026-10-01' },
+        ], [{ chatId: 'a1', role: 'char' }, { chatId: 'a2', role: 'char' }])
+        const events = tree.find(node => node.name === 'events')
+        expect(events?.kind === 'folder' && events.children.map(node => node.kind === 'file' && node.documentId))
+            .toEqual(['later', 'repair', 'unknown'])
+    })
+
     it('shows the newest recorded event first regardless of hashed filename', () => {
         const tree = buildWikiFileTree([
             {
