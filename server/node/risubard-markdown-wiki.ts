@@ -2015,10 +2015,8 @@ export function createMarkdownNarrativeWiki(
             const suffix = stableId(sourceMessageIds)
             const file = `turn-${suffix}.md`
             const operationTime = now().toISOString()
-            const existingEvent = input.append
-                ? knownDocuments
-                    .find((document) => document.id === `event.${suffix}`)
-                : undefined
+            const existingEvent = knownDocuments
+                .find((document) => document.id === `event.${suffix}`)
             const retrievalMetadata = input.retrievalMetadata === undefined
                 ? existingEvent?.retrievalMetadata
                 : normalizeMemoryRetrievalMetadata(input.retrievalMetadata)
@@ -2026,7 +2024,7 @@ export function createMarkdownNarrativeWiki(
             const writingLanguage = normalizeWikiWritingLanguage(input.writingLanguage
                 ?? previousLanguage ?? detectWikiWritingLanguage(normalized.content))
             normalized = normalizeMarkdown(localizeWikiHeadings(normalized.content, writingLanguage))
-            if (existingEvent?.type === 'event') {
+            if (input.append && existingEvent?.type === 'event') {
                 if (previousLanguage && writingLanguage !== previousLanguage) {
                     throw new Error('Wiki writing language differs from the existing event; reboot the wiki to change its language.')
                 }
@@ -2825,6 +2823,7 @@ export function createMarkdownNarrativeWiki(
             chatId: string
             currentInput: string
             fallbackInput?: string
+            retrievalLimits?: { candidates: number; directSeeds: number }
             entityHints?: readonly { kind: 'character'; names: readonly string[] }[]
             semanticMatches?: readonly {
                 documentId: string
@@ -2834,6 +2833,7 @@ export function createMarkdownNarrativeWiki(
                 end?: number
             }[]
             sourceMatches?: readonly {
+                retrieval?: 'semantic'
                 messageId: string
                 role: 'user' | 'assistant'
                 content: string
@@ -2854,6 +2854,7 @@ export function createMarkdownNarrativeWiki(
                     input.chatId
                 ),
                 currentInput: input.currentInput,
+                ...(input.retrievalLimits ? { retrievalLimits: input.retrievalLimits } : {}),
                 ...(input.entityHints ? { entityHints: input.entityHints } : {}),
                 ...(input.fallbackInput
                     ? { fallbackInput: input.fallbackInput }

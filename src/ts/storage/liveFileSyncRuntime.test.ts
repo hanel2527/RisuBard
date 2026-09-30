@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import ts from 'typescript'
 import { expect, test, vi } from 'vitest'
 import { waitForSendSync } from '../process/sendPreparation'
+import { captureGenerationTarget, createGenerationScope } from '../process/generationTarget'
 
 // Exercise the actual runtime response handler without mounting the application.
 const source = readFileSync(resolve(process.cwd(), 'src/ts/globalApi.svelte.ts'), 'utf8')
@@ -31,13 +32,17 @@ test('send preflight failure is a visible false result before any generation sta
     const sendStart = sendSource.indexOf('export async function sendChat(')
     const bodyMarker = '} = {}):Promise<boolean> {'
     const bodyStart = sendSource.indexOf(bodyMarker, sendStart) + bodyMarker.length
-    const bodyEnd = sendSource.indexOf('    const selected =', bodyStart)
+    const bodyEnd = sendSource.indexOf('    const parseGenerationText =', bodyStart)
+    expect(sendStart).toBeGreaterThanOrEqual(0)
+    expect(bodyStart).toBeGreaterThan(sendStart)
+    expect(bodyEnd).toBeGreaterThan(bodyStart)
     const preflight = ts.transpile(`async function preflight(arg = {}) { ${sendSource.slice(bodyStart, bodyEnd)}; return true }`, { target: ts.ScriptTarget.ES2022 })
     const notifyError = vi.fn()
     const refreshLiveFiles = vi.fn(async () => { throw new Error('writer inactive') })
     const dependencies = {
-        refreshLiveFiles, notifyError, waitForSendSync,
-        DBState: { db: { characters: [] } }, get: () => 0, selectedCharID: {}, language: {},
+        refreshLiveFiles, notifyError, waitForSendSync, captureGenerationTarget, createGenerationScope,
+        DBState: { db: { characters: [{ chaId: 'bot', chatPage: 0, chats: [{ id: 'A' }] }] } },
+        get: () => 0, selectedCharID: {}, language: {}, forageStorage: {},
     }
     const run = new Function(...Object.keys(dependencies), `${preflight}; return preflight`)(...Object.values(dependencies))
     await expect(run()).resolves.toBe(false)

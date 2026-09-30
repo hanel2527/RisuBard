@@ -145,11 +145,14 @@ describe('Character Vault sidebar integration', () => {
 
     test('pins successful CharX imports at the bottom of quick access', () => {
         const cards = source('src/ts/characterCards.ts')
-        const charxStart = cards.indexOf("if(f.name.endsWith('charx')")
-        const pngStart = cards.indexOf("if(!f.name.endsWith('png')", charxStart)
+        const charxStart = cards.indexOf("if(lowerName.endsWith('charx')")
+        const pngStart = cards.indexOf("if(!lowerName.endsWith('png')", charxStart)
+        expect(charxStart).toBeGreaterThanOrEqual(0)
+        expect(pngStart).toBeGreaterThan(charxStart)
         const charxImport = cards.slice(charxStart, pngStart)
         expect(cards).toContain("import { pinCharacterVaultQuickAccess } from './characterVault'")
-        expect(charxImport).toContain('pinCharacterVaultQuickAccess(db, importedCharacter.chaId)')
+        expect(charxImport).toContain('db.characters.push(v)')
+        expect(charxImport).toContain('pinCharacterVaultQuickAccess(db, v.chaId)')
     })
 
     test('pins characters created from scratch at the bottom of quick access', () => {

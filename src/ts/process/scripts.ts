@@ -1,7 +1,7 @@
 import { get } from "svelte/store";
 import { preserveOocTurnMarker } from '../risubard/oocTurns';
 import { CharEmotion, selectedCharID } from "../stores.svelte";
-import { type character, type customscript, getDatabase, getCurrentCharacter, getCurrentChat } from "../storage/database.svelte";
+import { type character, type customscript, type Database, getDatabase, getCurrentCharacter, getCurrentChat } from "../storage/database.svelte";
 import { downloadFile } from "../globalApi.svelte";
 import { alertError, notifySuccess } from "../alert";
 import { language } from "src/lang";
@@ -12,6 +12,7 @@ import { HypaProcesser } from "./memory/hypamemory";
 import { runLuaEditTrigger } from "./scriptings";
 import { pluginV2 } from "../plugins/plugins.svelte";
 import { runTrigger } from "./triggers";
+import { resolveGenerationTarget, type GenerationTarget } from "./generationTarget";
 
 const dreg = /{{data}}/g
 const randomness = /\|\|\|/g
@@ -24,8 +25,8 @@ type pScript = {
     actions: string[]
 }
 
-export async function processScript(char:character, data:string, mode:ScriptMode, cbsConditions:CbsConditions = {}){
-    return (await processScriptFull(char, data, mode, -1, cbsConditions)).data
+export async function processScript(char:character, data:string, mode:ScriptMode, cbsConditions:CbsConditions = {}, target?:GenerationTarget, requestSettings?:Database){
+    return (await processScriptFull(char, data, mode, -1, cbsConditions, target, requestSettings)).data
 }
 
 export function exportRegex(s?:customscript[]){
@@ -69,13 +70,13 @@ export async function importRegex(o?:customscript[]):Promise<customscript[]>{
 let bestMatchCache = new Map<string, string>()
 let processScriptCache = new Map<string, string>()
 
-function generateScriptCacheKey(scripts: customscript[], data: string, mode: ScriptMode, chatID = -1, cbsConditions: CbsConditions = {}, characterId = '') {
-    let hash = data + '|||' + mode + '|||' + characterId + '|||';
+function generateScriptCacheKey(scripts: customscript[], data: string, mode: ScriptMode, chatID = -1, cbsConditions: CbsConditions = {}, characterId = '', chat?: import('../storage/database.svelte').Chat, db?:Database, chara?:character) {
+    let hash = data + '|||' + mode + '|||' + characterId + '|||' + (chat?.id ?? '') + '|||';
     for (const script of scripts) {
         if(script.type !== mode){
             continue
         }
-        hash += `${script.flag?.includes('<cbs>') ? risuChatParser(script.in, { chatID: chatID, cbsConditions }) : script.in}|||${script.out}${chatID}|||${script.flag ?? ''}|||${script.ableFlag ? 1 : 0}`;
+        hash += `${script.flag?.includes('<cbs>') ? risuChatParser(script.in, { chatID: chatID, cbsConditions, chat, db, chara }) : script.in}|||${script.out}${chatID}|||${script.flag ?? ''}|||${script.ableFlag ? 1 : 0}`;
     }
     return hash;
 }
@@ -106,17 +107,22 @@ export function resetScriptCache(){
     processScriptCache = new Map()
 }
 
-export async function processScriptFull(char:character|simpleCharacterArgument, data:string, mode:ScriptMode, chatID = -1, cbsConditions:CbsConditions = {}){
-    const result = await processScriptFullInternal(char, data, mode, chatID, cbsConditions)
+export async function processScriptFull(char:character|simpleCharacterArgument, data:string, mode:ScriptMode, chatID = -1, cbsConditions:CbsConditions = {}, target?:GenerationTarget, requestSettings?:Database){
+    const result = await processScriptFullInternal(char, data, mode, chatID, cbsConditions, target, requestSettings)
     if (mode === 'editoutput') result.data = preserveOocTurnMarker(data, result.data)
     return result
 }
 
-async function processScriptFullInternal(char:character|simpleCharacterArgument, data:string, mode:ScriptMode, chatID = -1, cbsConditions:CbsConditions = {}){
-    let db = getDatabase()
+async function processScriptFullInternal(char:character|simpleCharacterArgument, data:string, mode:ScriptMode, chatID = -1, cbsConditions:CbsConditions = {}, target?:GenerationTarget, requestSettings?:Database){
+    const db = requestSettings ?? getDatabase()
     let emoChanged = false
+    const scoped = target ? resolveGenerationTarget(getDatabase().characters, target) : undefined
+    const targetChat = scoped?.chat
     const parserCharacter = char.type === 'character' ? char : undefined
-    data = await runLuaEditTrigger(char, mode, data, { index:chatID })
+    // Each parse is a sibling operation. The parser mutates callStack on its
+    // options, so reusing one object makes sequential regex rules look recursive.
+    const parserOptions = () => ({ chara: parserCharacter, chat: targetChat, chatID, cbsConditions, db })
+    data = await runLuaEditTrigger(char, mode, data, { index:chatID }, target)
 
     if(mode === 'editdisplay'){
         const currentChar = getCurrentCharacter()
@@ -147,9 +153,9 @@ async function processScriptFullInternal(char:character|simpleCharacterArgument,
         }
     }
 
-    data = risuChatParser(data, { chara: parserCharacter, chatID: chatID, cbsConditions })
-    const scripts = (db.presetRegex ?? []).concat(char.customscript).concat(getModuleRegexScripts())
-    const hash = generateScriptCacheKey(scripts, data, mode, chatID, cbsConditions, char.chaId)
+    data = risuChatParser(data, parserOptions())
+    const scripts = (db.presetRegex ?? []).concat(char.customscript).concat(getModuleRegexScripts(scoped ? { character: scoped.character, chat: scoped.chat } : undefined))
+    const hash = generateScriptCacheKey(scripts, data, mode, chatID, cbsConditions, char.chaId, targetChat, db, parserCharacter)
     const cached = getScriptCache(hash)
     if(cached){
         return {data: cached, emoChanged: false}
@@ -192,7 +198,7 @@ async function processScriptFullInternal(char:character|simpleCharacterArgument,
 
             let input = script.in
             if(pscript.actions.includes('cbs')){
-                input = risuChatParser(input, { chara: parserCharacter, chatID: chatID, cbsConditions })
+                input = risuChatParser(input, parserOptions())
             }
 
             const reg = compileScriptRegex(input, flag)
@@ -225,8 +231,8 @@ async function processScriptFullInternal(char:character|simpleCharacterArgument,
                         }
                     }
                     else if((outScript.startsWith('@@inject') || pscript.actions.includes('inject')) && chatID !== -1){
-                        const selchar = db.characters[get(selectedCharID)]
-                        selchar.chats[selchar.chatPage].message[chatID].data = data
+                        const chat = target ? resolveGenerationTarget(getDatabase().characters, target).chat : getCurrentChat()
+                        if (chat?.message[chatID]) chat.message[chatID].data = data
                         data = data.replace(reg, "")
                     }
                     else if(
@@ -263,17 +269,19 @@ async function processScriptFullInternal(char:character|simpleCharacterArgument,
                                 }
                             }
                         }
-                        data = risuChatParser(data, { chara: parserCharacter, chatID: chatID, cbsConditions })
+                        data = risuChatParser(data, parserOptions())
                     }
                     else{
-                        data = risuChatParser(data.replace(reg, outScript), { chara: parserCharacter, chatID: chatID, cbsConditions })
+                        data = risuChatParser(data.replace(reg, outScript), parserOptions())
                     }
                 }
                 else{
                     if((outScript.startsWith('@@repeat_back') || pscript.actions.includes('repeat_back'))  && chatID !== -1){
                         const v = outScript.split(' ', 2)[1]
-                        const selchar = db.characters[get(selectedCharID)]
-                        const chat = selchar.chats[selchar.chatPage]
+                        const resolved = target ? resolveGenerationTarget(getDatabase().characters, target) : undefined
+                        const selchar = resolved?.character ?? getDatabase().characters[get(selectedCharID)]
+                        const chat = resolved?.chat ?? selchar.chats[selchar.chatPage]
+                        if (!chat.message[chatID]) return
                         let lastChat = chat.fmIndex === -1 ? selchar.firstMessage : selchar.alternateGreetings[chat.fmIndex]
                         let pointer = chatID - 1
                         while(pointer >= 0){
@@ -312,7 +320,7 @@ async function processScriptFullInternal(char:character|simpleCharacterArgument,
                 }
             }
             else{
-                data = risuChatParser(data.replace(reg, outScript), { chara: parserCharacter, chatID: chatID, cbsConditions })
+                data = risuChatParser(data.replace(reg, outScript), parserOptions())
             }
         }
     }

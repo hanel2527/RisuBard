@@ -21,6 +21,7 @@ import type {
     AdapterUsage,
 } from './types'
 import { resolveWireModelId } from './wireInvariants'
+import { capModelOutputTokens } from './outputTokens'
 
 interface GeminiPart {
     text?: string
@@ -315,7 +316,7 @@ async function prepareGeminiBody(
             generationConfig.temperature = options.temperature
         }
         if (options.maxOutputTokens !== undefined) {
-            generationConfig.maxOutputTokens = options.maxOutputTokens
+            generationConfig.maxOutputTokens = capModelOutputTokens(preset, options.maxOutputTokens)
         }
         if (options.reasoningEffort === 'minimal'
             && /^gemini-3(?:[.-]|$)/i.test(modelId)) {

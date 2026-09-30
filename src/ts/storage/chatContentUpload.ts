@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid'
 import { DEFAULT_CHAT_UPLOAD_CHUNK_MIB, normalizeChatUploadChunkMiB } from './chatUploadSettings'
+import { boundedResponse } from './boundedResponse'
 
 export const CHAT_UPLOAD_CHUNK_BYTES = DEFAULT_CHAT_UPLOAD_CHUNK_MIB * 1024 * 1024
 
@@ -51,7 +52,9 @@ export async function uploadChatContent(
     } finally {
         if (!committed) {
             // Do not mask the save/conflict error if the network is unavailable.
-            await request(url, { method: 'DELETE', headers: { 'x-chat-id': chatId, 'x-upload-id': uploadId } }).catch(() => {})
+            await boundedResponse(signal => request(url, {
+                method: 'DELETE', signal, headers: { 'x-chat-id': chatId, 'x-upload-id': uploadId },
+            }), 5_000, new Error('Upload cleanup timed out')).catch(() => {})
         }
     }
 }

@@ -14,7 +14,7 @@ import {
     resolvePluginStructuredOutput,
     shouldFallbackFromNativeStructuredOutput,
 } from '../../plugins/providerStructuredOutput';
-import { getCurrentCharacter, getCurrentChat, getDatabase, type character } from "../../storage/database.svelte";
+import { getCurrentCharacter, getCurrentChat, getDatabase, type Database, type character } from "../../storage/database.svelte";
 import { resolveRisuBardChatSettings } from '../../risubard/risuBardSettings';
 import { tokenizeNum, encodeWithTokenizer } from "../../tokenizer";
 import { v4 as uuidv4 } from "uuid";
@@ -79,6 +79,7 @@ export type ToolCall = {
 
 interface requestDataArgument{
     formated: OpenAIChat[]
+    requestSettings?: Database
     bias: {[key:number]:number}
     biasString?: [string,number][]
     currentChar?: character
@@ -173,7 +174,7 @@ export type requestDataResponse = {
 export interface StreamResponseChunk{[key:string]:string}
 
 export async function requestChatData(arg:RequestDataArgumentExtended, model:ModelModeExtended, abortSignal:AbortSignal=null):Promise<requestDataResponse> {
-    const db = getDatabase()
+    const db = arg.requestSettings ?? getDatabase()
     const retryLimit = normalizeRequestRetryLimit(db.requestRetrys)
     const internalOutput = Boolean(arg.schema) || arg.logSource === 'memory'
     const fallBackModels = createModelAttemptOrder(
@@ -215,23 +216,23 @@ export async function requestChatData(arg:RequestDataArgumentExtended, model:Mod
                 }
             }
             
-            // Request triggers receive the live chat while displayMode=true,
-            // so request effects such as impersonate/modifychat can append or
-            // rewrite the current conversation. Translation prompts are
-            // intentionally standalone and must not execute character request
-            // triggers against whichever chat happens to be open. Plugin
-            // replacers above still run with mode='translate' for compatibility.
+            // Translation requests are standalone; character request triggers
+            // must only affect the chat captured for this generation.
             if(model !== 'translate'){
                 try{
-                    const currentChar = getCurrentCharacter()
-                    if(currentChar){
+                    const currentChar = arg.currentChar ?? (arg.realChatId
+                        ? db.characters.find(c => c.chats.some(chat => chat.id === arg.realChatId))
+                        : getCurrentCharacter())
+                    const requestChat = arg.realChatId
+                        ? currentChar?.chats.find(chat => chat.id === arg.realChatId)
+                        : currentChar?.chats[currentChar.chatPage]
+                    if(currentChar && requestChat){
                         const perf = performance.now()
                         const d = await runTrigger(currentChar, 'request', {
-                            chat: getCurrentChat(),
+                            chat: requestChat,
                             displayMode: true,
                             displayData: JSON.stringify(arg.formated)
                         })
-
                         const got = JSON.parse(d.displayData)
                         if(!got || !Array.isArray(got)){
                             throw new Error('Invalid return')
@@ -449,7 +450,7 @@ export function reformater(formated:OpenAIChat[],modelInfo:LLMModel|LLMFlags[]){
 
 
 export async function requestChatDataMain(arg:requestDataArgument, model:ModelModeExtended, abortSignal:AbortSignal=null):Promise<requestDataResponse> {
-    const db = getDatabase()
+    const db = arg.requestSettings ?? getDatabase()
     const targ:RequestDataArgumentExtended = arg
 
     // P4 dual-regime dispatch (plan v6 §7). Resolve the per-chat ModelPreset
@@ -464,7 +465,7 @@ export async function requestChatDataMain(arg:requestDataArgument, model:ModelMo
         )
         const binding = resolveChatModelBinding(currentChat, model, arg.moduleId)
         if(binding.kind === 'modelPreset'){
-            return requestModelPreset(targ, applyPromptPresetParams(binding.preset, currentChat, model), abortSignal, model)
+            return requestModelPreset(targ, applyPromptPresetParams(binding.preset, currentChat, model, db), abortSignal, model)
         }
         if(binding.kind === 'block'){
             return {
@@ -922,7 +923,7 @@ async function requestModelPreset(arg:RequestDataArgumentExtended, preset:ModelP
         && (caps?.includes('cache') ?? false)
         && !tools && !arg.previewBody
         && (cacheAuthKind === 'x-goog-api-key' || cacheAuthKind === 'google-service-account')) {
-        const cacheChatKey = getCurrentChat()?.id
+        const cacheChatKey = arg.realChatId ?? getCurrentChat()?.id
         if (cacheChatKey) {
             cache = {
                 promptCaching: preset.promptCaching,

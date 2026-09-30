@@ -1,7 +1,7 @@
 /** Bound this send's wait without cancelling the shared save/sync operation. */
 export async function waitForSendSync(
     refresh: () => Promise<void>,
-    options: { signal?: AbortSignal, timeoutMs?: number, timeoutMessage?: string } = {},
+    options: { signal?: AbortSignal, timeoutMs?: number, timeoutMessage?: string | (() => string) } = {},
 ): Promise<void> {
     const { signal, timeoutMs = 30_000, timeoutMessage = 'Chat synchronization timed out' } = options
     const abortError = () => new DOMException('Send cancelled', 'AbortError')
@@ -9,7 +9,7 @@ export async function waitForSendSync(
     let timer: ReturnType<typeof setTimeout> | undefined
     let onAbort: (() => void) | undefined
     const interrupted = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs)
+        timer = setTimeout(() => reject(new Error(typeof timeoutMessage === 'function' ? timeoutMessage() : timeoutMessage)), timeoutMs)
         onAbort = () => reject(abortError())
         signal?.addEventListener('abort', onAbort, { once: true })
     })

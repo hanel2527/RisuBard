@@ -55,6 +55,8 @@ const { createProjectionRevisionStore } = require('./projection-revision-store.c
 const { createDirectWriteTracker } = require('./direct-write-tracker.cjs');
 const { writeCanonicalProjection } = require('./canonical-projection-writer.cjs');
 const { reclaimDeletedCharacterAssets } = require('./deleted-character-assets.cjs');
+const importProgress = require('./import-progress.cjs');
+const { reportImportProgress } = importProgress;
 const { kvDelManyAndCollect } = require('./db.cjs');
 const { createExternalEditSession } = require('./external-edit-session.cjs');
 const { metadataSnapshot, mergePendingLiveDatabase, createLiveFileRecovery } = require('./live-character-files.cjs');
@@ -270,6 +272,7 @@ function flushPendingDb() {
 
 // Call only from an operation that already owns the storage queue.
 async function flushPendingDbWithinQueue(options = {}) {
+    reportImportProgress('flush');
     if (await adoptSettledExternalProjection()) return;
     const trigger = options.deferCompatibility === true ? 'canonical-flush' : 'flush';
     if (saveTimers[DB_HEX_KEY]) {
@@ -286,7 +289,10 @@ async function flushPendingDbWithinQueue(options = {}) {
         }
         maybeCollectUnreferencedObjects();
     }
-    if (options.materialize !== false) compatibilityCache.materialize('flush');
+    if (options.materialize !== false) {
+        reportImportProgress('compatibility-cache');
+        compatibilityCache.materialize('flush');
+    }
 }
 
 function invalidateDbCache() {
@@ -966,6 +972,10 @@ app.use(
 );
 app.use(express.json({ limit: '100mb' }));
 app.use((req, res, next) => {
+    const id = req.headers['x-import-id'];
+    importProgress.withImportProgress(typeof id === 'string' && /^[a-f0-9-]{36}$/i.test(id) ? id : undefined, next);
+});
+app.use((req, res, next) => {
     // Skip express.raw() for backup import — it must stream, not buffer into memory
     if (req.path === '/api/backup/import') return next();
     const isChatUpload = req.path.startsWith('/api/chat-content-upload/');
@@ -1047,6 +1057,7 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
     let errorStage = 'external-change-check'
     const phaseMetrics = {}
     try {
+        reportImportProgress('check-files');
         if (externalEditSession?.isActive()) {
             const error = new Error('Canonical projection is paused for external editing')
             error.code = 'EXTERNAL_EDIT_MODE'
@@ -1071,6 +1082,7 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
         errorStage = 'transaction'
         phaseMetrics.compatibilityInvalidateMs = elapsedMs(phaseStartedAt)
         phaseStartedAt = performance.now()
+        reportImportProgress('canonical-files');
         const write = writeCanonicalProjection({
             repository: userDataRepository,
             database: databaseObject,
@@ -1084,10 +1096,12 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
         phaseMetrics.transactionMs = elapsedMs(phaseStartedAt)
         phaseStartedAt = performance.now()
         errorStage = 'character-assets'
+        reportImportProgress('character-assets');
         characterAssets.sync(databaseObject)
         phaseMetrics.assetSyncMs = elapsedMs(phaseStartedAt)
         phaseStartedAt = performance.now()
         errorStage = 'revision-accept'
+        reportImportProgress('verify-save');
         canonicalProjectionSync.accept()
         if (!observationContext.adoptingLiveFiles) {
             liveCharacterFiles.accept(databaseObject)
@@ -1095,7 +1109,10 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
         }
         phaseMetrics.revisionAcceptMs = elapsedMs(phaseStartedAt)
         canonicalProjectionReady = true
-        if (result.deletedAssetCandidates?.length) {
+        // A rollback reclaims only the import's new keys. Ordinary character
+        // deletion must not collect pre-existing, previously orphaned assets.
+        // The marker is durable so a restart cannot remove this protection.
+        if (result.deletedAssetCandidates?.length && !kvList('cache/import-rollback/').length) {
             try {
                 const cleanup = reclaimDeletedCharacterAssets({
                     candidates: result.deletedAssetCandidates,
@@ -2896,7 +2913,10 @@ async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0
         liveCharacterFiles.reset();
         liveFilesRevision = nodeCrypto.randomUUID();
         characterAssets.reload();
-        canonicalProjectionReady = true;
+        // Keep the projection invalid until the imported database is decoded
+        // below. Other clients can carry our flat canonical entries unchanged
+        // while updating database.risudat, so those files may be an older copy.
+        // Reconcile the imported database before startup reads use the files.
     }
 
     // Trigger cold storage migration now so import result includes failure count.
@@ -4408,6 +4428,12 @@ app.post('/api/write', async (req, res, next) => {
 // fsync what it already has. It fires automatically on tab-hide from EVERY
 // device, so gating it on the write lock made a phone going to background
 // steal (or trip over) the lock without any user action.
+app.get('/api/import-progress/:id', async (req, res) => {
+    if (!await checkAuth(req, res)) return;
+    if (!/^[a-f0-9-]{36}$/i.test(req.params.id)) return res.status(400).end();
+    importProgress.stream(req.params.id, req, res);
+});
+
 app.post('/api/db/flush', sessionAuthMiddleware, async (req, res, next) => {
     try {
         await queueStorageOperation(async () => {
@@ -6348,6 +6374,46 @@ app.post('/api/db/optimize', async (req, res, next) => {
             };
         });
         res.json(result);
+    } catch (err) { next(err); }
+});
+
+function importRollbackMarker(req) {
+    if (typeof req.body?.id !== 'string' || !/^[a-f0-9-]{36}$/i.test(req.body.id)) throw new Error('Invalid import rollback ID');
+    return 'cache/import-rollback/' + req.body.id;
+}
+
+app.post('/api/assets/import-rollback/prepare', async (req, res, next) => {
+    if (!await checkAuth(req, res)) return;
+    if (!checkActiveSession(req, res)) return;
+    try {
+        await queueStorageOperation(async () => kvSet(importRollbackMarker(req), Buffer.from('pending')));
+        res.json({ ok: true });
+    } catch (err) { next(err); }
+});
+
+app.post('/api/assets/import-rollback', async (req, res, next) => {
+    if (!await checkAuth(req, res)) return;
+    if (!checkActiveSession(req, res)) return;
+    try {
+        const marker = importRollbackMarker(req);
+        const keys = req.body?.keys;
+        if (!Array.isArray(keys)
+            || keys.some(key => typeof key !== 'string' || !/^assets\/[A-Za-z0-9._-]+$/.test(key))) {
+            return res.status(400).json({ error: 'Invalid import asset candidates' });
+        }
+        const result = await queueStorageOperation(async () => {
+            await flushPendingDbWithinQueue({ materialize: false, deferCompatibility: true });
+            reportImportProgress('cleanup-assets', 0, keys.length);
+            const cleanup = reclaimDeletedCharacterAssets({
+                candidates: keys.map(key => key.slice('assets/'.length)),
+                database: userDataRepository.exportLegacyDatabase(),
+                listKeys: kvList, read: kvGet, remove: kvDelManyAndCollect,
+            });
+            kvDelManyAndCollect([marker]);
+            reportImportProgress('cleanup-assets', keys.length, keys.length);
+            return cleanup;
+        });
+        res.json({ ok: true, ...result });
     } catch (err) { next(err); }
 });
 

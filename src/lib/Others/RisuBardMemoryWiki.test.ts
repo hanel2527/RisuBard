@@ -1498,13 +1498,16 @@ describe('RisuBardMemoryWiki', () => {
         })
     })
 
-    test('shows checkpoint progress before the first story arc plot exists', async () => {
+    test('uses source order in the tree and story and shows checkpoint progress', async () => {
+        mocks.db.characters = [{ chaId: 'character', chats: [{ id: 'chat',
+            message: [1, 2, 3].map(index => ({ chatId: `a${index}`, role: 'char' as const, data: `Turn ${index}` })),
+        }] }]
         const events = ['출발', '첫 관문', '숲의 밤'].map((title, index) => ({
             id: `event.${index + 1}`, type: 'event' as const, status: 'active' as const,
-            title, relativePath: `events/${index + 1}.md`, sourceMessageIds: [],
-            created: `2026-08-0${index + 1}T00:00:00.000Z`,
+            title, relativePath: `events/${index + 1}.md`, sourceMessageIds: [`a${index + 1}`],
+            created: index === 0 ? '2026-09-30T00:00:00.000Z' : `2026-08-0${index + 1}T00:00:00.000Z`,
             updated: `2026-08-0${index + 1}T00:00:00.000Z`,
-            content: `# ${title}`, links: [], contextMode: 'auto' as const,
+            content: `## ${title}\n\n### 이야기 요약\n\n- ${title}`, links: [], contextMode: 'auto' as const,
             contentHash: `hash-${index + 1}`,
         }))
         mocks.loadNarrativeMemoryWiki.mockResolvedValue({
@@ -1520,6 +1523,11 @@ describe('RisuBardMemoryWiki', () => {
         await vi.waitFor(() => expect(document.querySelector(
             '[data-memory-view="arc-plot"]'
         )).not.toBeNull())
+        expect([...document.querySelectorAll('.file-select .document-title')].map(node => node.textContent))
+            .toEqual(['숲의 밤', '첫 관문', '출발'])
+        document.querySelector<HTMLButtonElement>('[data-memory-view="story"]')?.click()
+        await vi.waitFor(() => expect([...document.querySelectorAll<HTMLElement>('[data-story-entry]')]
+            .map(node => node.dataset.storyEntry)).toEqual(['event.1', 'event.2', 'event.3']))
         document.querySelector<HTMLButtonElement>(
             '[data-memory-view="arc-plot"]'
         )?.click()

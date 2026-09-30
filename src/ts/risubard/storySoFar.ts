@@ -1,5 +1,6 @@
 import type { NarrativeMemoryWikiMarkdown } from './memoryWiki'
 import { isWikiHeadingLabel } from './wikiWritingLanguage'
+import { createEventOrder, type EventOrderMessage } from './eventOrder'
 
 type MarkdownDocument = NarrativeMemoryWikiMarkdown['documents'][number]
 
@@ -41,19 +42,16 @@ function sourceFor(document: MarkdownDocument): StorySourceRef {
 }
 
 export function buildStorySoFar(
-    documents: readonly MarkdownDocument[]
+    documents: readonly MarkdownDocument[],
+    messages?: readonly EventOrderMessage[]
 ): StorySoFarEntry[] {
+    const order = createEventOrder(messages)
     return documents
         .filter((document) => document.type === 'event'
             && document.status === 'active')
         .map((document) => ({ document, summary: storySection(document.content) }))
         .filter(({ summary }) => summary.length > 0)
-        .sort((left, right) => {
-            const leftTime = left.document.created ?? left.document.updated
-            const rightTime = right.document.created ?? right.document.updated
-            return leftTime.localeCompare(rightTime)
-                || left.document.id.localeCompare(right.document.id)
-        })
+        .sort((left, right) => order.compare(left.document, right.document))
         .map(({ document, summary }) => ({
             id: document.id,
             title: document.title,

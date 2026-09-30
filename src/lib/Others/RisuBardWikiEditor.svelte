@@ -42,6 +42,7 @@
     import { copyWikiDocumentToLorebook } from 'src/ts/risubard/wikiLorebookCopy'
     import { normalizeMemoryWikiTreeHeight } from 'src/ts/risubard/memoryWikiLayout'
     import type { StorySourceRef } from 'src/ts/risubard/storySoFar'
+    import type { EventOrderMessage } from 'src/ts/risubard/eventOrder'
 
     type WikiDocument = NarrativeMemoryWikiMarkdown['documents'][number]
 
@@ -49,6 +50,7 @@
         characterId: string
         chatId: string
         documents: WikiDocument[]
+        messages?: readonly EventOrderMessage[]
         health?: NarrativeMemoryWikiMarkdown['health']
         locked?: boolean
         mobileLayout?: boolean
@@ -64,6 +66,7 @@
         characterId,
         chatId,
         documents,
+        messages,
         health = {
             danglingLinks: [], unlinkedDocumentIds: [], duplicatePassages: [],
         },
@@ -251,7 +254,7 @@
     let filteredDocuments = $derived(documents.filter((document) =>
         documentMatchesSearch(document, searchQuery)
     ))
-    let tree = $derived(buildWikiFileTree(filteredDocuments).filter((node) =>
+    let tree = $derived(buildWikiFileTree(filteredDocuments, messages).filter((node) =>
         !searchQuery || node.kind === 'file' || node.children.length > 0
     ))
     let recentlyUpdatedIds = $derived(highlightedDocumentIds === null
@@ -946,7 +949,6 @@
                 bind:value={markdown}
                 bind:this={markdownTextarea}
                 readonly={readOnly}
-                maxlength="12000"
                 spellcheck="false"
             ></textarea>
         {/if}

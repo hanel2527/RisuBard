@@ -60,6 +60,20 @@ function lore(comment: string, key: string, content: string) {
 }
 
 describe('Grimoire live prompt retrieval', () => {
+    it('keeps A history and local lore while B is selected during prompt retrieval', async () => {
+        mockModuleSources.length = 0
+        const a = { id: 'a', localLore: [lore('A lore', 'A keyword', 'A FACT')], message: [{ role: 'user', data: 'A keyword' }] }
+        const b = { id: 'b', localLore: [lore('B lore', 'B keyword', 'B FACT')], message: [{ role: 'user', data: 'B keyword' }] }
+        const character = { chaId: 'bot', name: 'bot', chatPage: 1, globalLore: [], chats: [a, b] }
+        mockDBState.db = { username: 'user', loreBookDepth: 3, loreBookToken: 8000, characters: [character] }
+
+        const result = await loadLoreBookV3Prompt({ character: character as any, chat: a as any })
+
+        expect(result.actives.map(entry => entry.prompt)).toEqual(['A FACT'])
+        expect(character.chatPage).toBe(1)
+        expect(b.message).toEqual([{ role: 'user', data: 'B keyword' }])
+    })
+
     it.each([0, 1, 3, 20])('injects a named character with a %s-message window and ignores disabled history', async (contextMessages) => {
         mockModuleSources.length = 0
         const sources = [

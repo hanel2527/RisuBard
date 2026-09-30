@@ -1,7 +1,9 @@
 import { changeFullscreen, checkNullish, sleep } from "./util"
 import { v4 as uuidv4, v4 } from 'uuid';
 import { tick } from "svelte";
-import { get } from "svelte/store";
+import { get, fromStore } from "svelte/store";
+import { generationStates } from './process/generationState';
+import { createGenerationSaveTracker } from './storage/generationSaveTracking';
 import streamSaver from 'streamsaver';
 import { setDatabase, type Database, defaultSdDataFunc, getDatabase, appVer, nodeOnlyVer, getCurrentCharacter, loadChatBindings, syncActiveBotPresetFromMirror, syncActiveThemePresetFromMirror } from "./storage/database.svelte";
 import { checkRisuUpdate } from "./update";
@@ -205,7 +207,7 @@ export async function readImage(data: string) {
  * @param {string} [fileName=''] - The name of the asset file.
  * @returns {Promise<string>} - A promise that resolves to the path of the saved asset file.
  */
-export async function saveAsset(data: Uint8Array, customId: string = '', fileName: string = '') {
+export async function saveAsset(data: Uint8Array, customId: string = '', fileName: string = '', transaction?: import('./storage/importTransaction').ImportTransaction) {
     let id = ''
     if (customId !== '') {
         id = customId
@@ -222,6 +224,10 @@ export async function saveAsset(data: Uint8Array, customId: string = '', fileNam
         fileExtension = fileName.split('.').pop()
     }
     let form = `assets/${id}.${fileExtension}`
+    if (transaction) {
+        await transaction.write([{ key: form, value: data }])
+        return form
+    }
     const replacer = await forageStorage.setItem(form, data)
     if (replacer) {
         return replacer
@@ -685,6 +691,7 @@ export async function saveDb() {
         const response = await fetch(canonicalOnly ? '/api/db/flush?mode=canonical' : '/api/db/flush', {
             method: 'POST',
             keepalive,
+            headers: forageStorage.importProgressId ? { 'x-import-id': forageStorage.importProgressId } : undefined,
             credentials: 'same-origin'
         })
         if (!response.ok) {
@@ -711,6 +718,8 @@ export async function saveDb() {
         let didInitPluginStorageEffect = false
         let didInitGeneralEffect = false
         let trackedActiveChatKey = ''
+        const generating = fromStore(generationStates)
+        const trackGenerationSaves = createGenerationSaveTracker()
 
         const debounceTime = 500; // 500 milliseconds
         let saveTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -879,6 +888,15 @@ export async function saveDb() {
                 changeTracker.chat.unshift([activeChaId, activeChatId])
             }
             saveTimeoutExecute()
+        })
+        $effect(() => {
+            const targets = trackGenerationSaves(DBState.db.characters, generating.current.keys())
+            for (const { character, chat } of targets) {
+                if (!changeTracker.chat.some(([owner, id]) => owner === character.chaId && id === chat.id)) {
+                    changeTracker.chat.push([character.chaId, chat.id])
+                }
+            }
+            if (targets.length) saveTimeoutExecute()
         })
         return () => {
             if (saveTimeout) clearTimeout(saveTimeout)
@@ -1093,6 +1111,8 @@ export async function saveDb() {
             try {
                 await saveChatToServer(chaId, chatIndex, chatId, chat)
             } catch (e) {
+                // Keep the unknown-outcome explanation and requeue this batch.
+                if (e?.code === 'STORAGE_WRITE_TIMEOUT') throw e
                 if (e instanceof ConflictError) {
                     if (e.externalEditMode) {
                         externalEditMode.active = true

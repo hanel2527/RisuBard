@@ -16,18 +16,20 @@
     import RisuBardSaveSlotsDialog from '../SideBars/RisuBardSaveSlotsDialog.svelte';
     import RisuBardGallery from '../SideBars/RisuBardGallery.svelte';
     import { ensureChatHydrated } from 'src/ts/storage/chatStorage';
-    import { alertConfirm, notifyInfo, notifySuccess } from 'src/ts/alert';
+    import { alertConfirm, notifyError, notifyInfo, notifySuccess } from 'src/ts/alert';
     import { changeChatTo, createChatCopyName, forageStorage, requestImmediateSave } from 'src/ts/globalApi.svelte';
-    import type { Chat } from 'src/ts/storage/database.svelte';
+    import type { Chat, WikiChatRecoveryPending, WikiChatRecoveryStep } from 'src/ts/storage/database.svelte';
     import { completeMemoryWikiFork } from 'src/ts/risubard/memoryWikiFork';
     import { countChatTurns, createMemorySaveSlot, deleteMemorySaveSlot, latestChatMessageId, listMemorySaveSlots, prepareMemorySaveLoad, prepareReferenceSaveLoad, shouldConfirmMemorySaveLoad, writeReferenceAutosave, type MemorySaveSlotSummary } from 'src/ts/risubard/memorySaveSlots';
     import { ensureWikiBaselineForChat } from 'src/ts/risubard/wikiChatCoordinator';
     import { checkoutWikiVersion, captureWikiVersion, listWikiHistory, discardWikiFork } from 'src/ts/risubard/wikiVersionClient';
+    import { cleanupWikiRebootWorkspace } from 'src/ts/risubard/wikiRebootTransport';
     import { autoSaveId, normalizeAutosaveInterval, normalizeAutosaveRetention, obsoleteAutosaveIds, quickSaveId, shouldCreateAutosave } from 'src/ts/risubard/memorySavePolicy';
     import { isWikiGenerating } from 'src/ts/risubard/wikiGenerationState';
     import { resolveChatTextSurface } from 'src/ts/gui/textTheme';
     import { chatGenKey, generationStates } from 'src/ts/process/generationState';
-    import { activateWikiEmbeddings, wikiEmbeddingRuntime } from 'src/ts/risubard/wikiEmbeddingService';
+    import { activateWikiEmbeddings, activateHistoricalSourceEmbeddings, refreshHistoricalSourceEmbeddings, stopHistoricalSourceEmbeddings, wikiEmbeddingRuntime } from 'src/ts/risubard/wikiEmbeddingService';
+    import { resolveRisuBardChatSettings } from 'src/ts/risubard/risuBardSettings';
     import { RISUBARD_MEMORY_UPDATED_EVENT, announceRisuBardMemoryUpdated, type RisuBardMemoryUpdatedDetail } from 'src/ts/risubard/memoryEvents';
     let openChatList = $state(false)
     let openModuleList = $state(false)
@@ -41,7 +43,7 @@
         currentCharacter?.type === 'character' ? currentCharacter : undefined
     )
 
-    onDestroy(() => wikiEmbeddingRuntime.stop())
+    onDestroy(() => { wikiEmbeddingRuntime.stop(); stopHistoricalSourceEmbeddings() })
 
     $effect(() => {
         const characterId = currentCharacter?.chaId
@@ -49,9 +51,17 @@
         const settings = DBState.db
         if (!characterId || !chatId) {
             wikiEmbeddingRuntime.stop()
+            stopHistoricalSourceEmbeddings()
             return
         }
         activateWikiEmbeddings(characterId, chatId, settings)
+        const chat = currentCharacter?.chats[currentCharacter.chatPage]
+        const resolved = resolveRisuBardChatSettings(settings, chat?.risuBardSettings, currentCharacter?.risuBardPinnedSettings)
+        const messageCount = chat?.message.length
+        if (chat && !chat._placeholder && resolved.risuBardHistoricalSourceMatchLimit > 0) {
+            activateHistoricalSourceEmbeddings(characterId, chatId, settings)
+            if (!chat.isStreaming && messageCount) untrack(() => refreshHistoricalSourceEmbeddings(characterId, chatId, settings, chat.message, resolved.risuBardIgnoreOocTurns))
+        } else stopHistoricalSourceEmbeddings()
         const refresh = (event: Event) => {
             const detail = (event as CustomEvent<RisuBardMemoryUpdatedDetail>).detail
             if (detail?.characterId === characterId && detail.chatId === chatId) {
@@ -64,6 +74,105 @@
         }
     })
 
+    async function retryPendingChatRecovery(
+        characterId: string,
+        characterChats: Chat[],
+        chat: Chat,
+        pending: WikiChatRecoveryPending,
+    ): Promise<void> {
+        const recoveryId = pending.id
+        const context = {
+            characterId,
+            chatId: chat.id!,
+            fetchImpl: fetch,
+            createAuth: () => forageStorage.createAuth(),
+        }
+        const isCurrent = () => characterChats.includes(chat)
+            && chat.risuBardWikiRecoveryPending?.id === recoveryId
+        while (isCurrent() && pending.steps[0]?.kind !== 'save-chat') {
+            const step = pending.steps[0]
+            if (!step) return
+            switch (step.kind) {
+                case 'checkout':
+                    if (!step.commitId || !step.reason) {
+                        throw new Error('Pending Memory Wiki checkout is missing its commit or reason.')
+                    }
+                    await checkoutWikiVersion({
+                        ...context, chatId: step.chatId,
+                        commitId: step.commitId, reason: step.reason,
+                    })
+                    break
+                case 'discard-fork':
+                    await discardWikiFork({ ...context, chatId: step.chatId })
+                    break
+                case 'discard-memory-fork':
+                    if (!step.forkToken) {
+                        throw new Error('Pending Memory Wiki fork cleanup is missing its token.')
+                    }
+                    await completeMemoryWikiFork({
+                        characterId,
+                        destinationChatId: step.chatId,
+                        forkToken: step.forkToken,
+                        action: 'discard',
+                        fetchImpl: fetch,
+                        createAuth: () => forageStorage.createAuth(),
+                    })
+                    break
+                case 'cleanup-workspace':
+                    if (!step.stagingChatId) {
+                        throw new Error('Pending reboot cleanup is missing its staging chat ID.')
+                    }
+                    await cleanupWikiRebootWorkspace({
+                        characterId,
+                        stagingChatId: step.stagingChatId,
+                        fetchImpl: fetch,
+                        createAuth: () => forageStorage.createAuth(),
+                    })
+                    break
+                case 'save-chat':
+                    return
+            }
+            if (!isCurrent()) return
+            pending.steps.shift()
+            try {
+                await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+            }
+            catch (error) {
+                if (isCurrent()) pending.steps.unshift(step)
+                throw error
+            }
+        }
+        if (!isCurrent()) return
+        const saveStep = pending.steps[0]
+        if (!saveStep || saveStep.kind !== 'save-chat') {
+            throw new Error('Pending Memory Wiki recovery has no final chat-save step.')
+        }
+        pending.steps.shift()
+        delete chat.risuBardWikiRecoveryPending
+        try {
+            await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+        }
+        catch (error) {
+            if (!chat.risuBardWikiRecoveryPending
+                || chat.risuBardWikiRecoveryPending.id === recoveryId) {
+                pending.error = `${pending.error}; recovery save failed: ${error instanceof Error
+                    ? error.message : String(error)}`
+                pending.steps = [saveStep]
+                chat.risuBardWikiRecoveryPending = pending
+                try {
+                    await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+                }
+                catch (retryError) {
+                    pending.error = `${pending.error}; pending-state save failed: ${retryError instanceof Error
+                        ? retryError.message : String(retryError)}`
+                }
+            }
+            throw error
+        }
+        if (chat.risuBardWikiRecoveryPending) return
+        announceRisuBardMemoryUpdated({ characterId, chatId: chat.id! })
+    }
+
     $effect(() => {
         const character = currentCharacter
         const chat = character?.chats[character.chatPage]
@@ -74,6 +183,7 @@
         let running = false
         let initialized = false
         let previousHead: string | null | undefined
+        let recoveryRetryAt = 0
         const context = {
             characterId, chatId, fetchImpl: fetch,
             createAuth: () => forageStorage.createAuth(),
@@ -82,6 +192,15 @@
             if (disposed || !initialized || running || document.visibilityState === 'hidden') return
             running = true
             try {
+                if (chat.risuBardWikiRecoveryPending) {
+                    if (Date.now() < recoveryRetryAt) return
+                    recoveryRetryAt = Date.now() + 30_000
+                    await retryPendingChatRecovery(
+                        characterId, character.chats, chat,
+                        chat.risuBardWikiRecoveryPending,
+                    )
+                    if (chat.risuBardWikiRecoveryPending) return
+                }
                 const captured = await captureWikiVersion(context)
                 const head = (await listWikiHistory(context))[0]?.commitId ?? null
                 if (!disposed && (captured.commitId
@@ -97,14 +216,16 @@
         }
         untrack(() => {
             void (async () => {
-                let changed = false
-                for (const item of chat.message) {
-                    if (!item.chatId) { item.chatId = v4(); changed = true }
+                if (!chat.risuBardWikiRecoveryPending) {
+                    let changed = false
+                    for (const item of chat.message) {
+                        if (!item.chatId) { item.chatId = v4(); changed = true }
+                    }
+                    if (changed) await requestImmediateSave({
+                        forceFullWrite: true, rejectOnFailure: true,
+                    })
+                    await ensureWikiBaselineForChat(context, $state.snapshot(chat.message))
                 }
-                if (changed) await requestImmediateSave({
-                    forceFullWrite: true, rejectOnFailure: true,
-                })
-                await ensureWikiBaselineForChat(context, $state.snapshot(chat.message))
                 initialized = true
                 await synchronize()
             })().catch((error) => console.warn('[BardWiki baseline]', error))
@@ -270,6 +391,9 @@
         if(currentChat.isStreaming){
             throw new Error('응답 생성이 끝난 뒤 저장 파일을 불러와 주세요.')
         }
+        if(currentChat.risuBardWikiRecoveryPending){
+            throw new Error(`Memory Wiki recovery is pending: ${currentChat.risuBardWikiRecoveryPending.error}`)
+        }
         const destinationChatId = asNewChat ? v4() : currentChat.id
         // Reference saves carry no wiki copy: their wiki is materialized from
         // the pinned commit, so they take a different load path.
@@ -324,38 +448,121 @@
                 character.chats[chatIdx] = currentChat
             }
             character.chats = character.chats
+
+            const recoveryFailures: string[] = []
+            const pendingSteps: WikiChatRecoveryStep[] = []
             if(forkToken){
-                await completeMemoryWikiFork({
-                    characterId: character.chaId,
-                    destinationChatId,
-                    forkToken,
-                    action: 'discard',
-                    fetchImpl: fetch,
-                    createAuth: () => forageStorage.createAuth(),
-                }).catch(() => undefined)
+                try {
+                    await completeMemoryWikiFork({
+                        characterId: character.chaId,
+                        destinationChatId,
+                        forkToken,
+                        action: 'discard',
+                        fetchImpl: fetch,
+                        createAuth: () => forageStorage.createAuth(),
+                    })
+                }
+                catch(recoveryError){
+                    const detail = recoveryError instanceof Error
+                        ? recoveryError.message : String(recoveryError)
+                    recoveryFailures.push(`Memory Wiki fork cleanup: ${detail}`)
+                    pendingSteps.push({
+                        kind: 'discard-memory-fork',
+                        chatId: destinationChatId,
+                        forkToken,
+                    })
+                }
             }
             if(reference?.wikiForked){
-                await discardWikiFork({
-                    characterId: character.chaId,
-                    chatId: destinationChatId,
-                    fetchImpl: fetch,
-                    createAuth: () => forageStorage.createAuth(),
-                })
+                try {
+                    await discardWikiFork({
+                        characterId: character.chaId,
+                        chatId: destinationChatId,
+                        fetchImpl: fetch,
+                        createAuth: () => forageStorage.createAuth(),
+                    })
+                }
+                catch(recoveryError){
+                    const detail = recoveryError instanceof Error
+                        ? recoveryError.message : String(recoveryError)
+                    recoveryFailures.push(`Memory Wiki fork cleanup: ${detail}`)
+                    pendingSteps.push({
+                        kind: 'discard-fork',
+                        chatId: destinationChatId,
+                    })
+                }
             }
             if(reference?.wikiCheckedOut && reference.previousWikiHead){
-                await checkoutWikiVersion({
-                    characterId: character.chaId,
-                    chatId: destinationChatId,
-                    commitId: reference.previousWikiHead,
-                    reason: 'save-load',
-                    fetchImpl: fetch,
-                    createAuth: () => forageStorage.createAuth(),
-                }).catch(() => undefined)
+                try {
+                    await checkoutWikiVersion({
+                        characterId: character.chaId,
+                        chatId: destinationChatId,
+                        commitId: reference.previousWikiHead,
+                        reason: 'save-load',
+                        fetchImpl: fetch,
+                        createAuth: () => forageStorage.createAuth(),
+                    })
+                }
+                catch(recoveryError){
+                    const detail = recoveryError instanceof Error
+                        ? recoveryError.message : String(recoveryError)
+                    recoveryFailures.push(`Memory Wiki checkout recovery: ${detail}`)
+                    pendingSteps.push({
+                        kind: 'checkout',
+                        chatId: destinationChatId,
+                        commitId: reference.previousWikiHead,
+                        reason: 'save-load',
+                    })
+                }
             }
-            await requestImmediateSave({
-                forceFullWrite: true,
-                rejectOnFailure: true,
-            })
+            const originalError = error instanceof Error ? error.message : String(error)
+            let pendingMarker: WikiChatRecoveryPending | undefined
+            if (recoveryFailures.length > 0) {
+                pendingSteps.push({ kind: 'save-chat', chatId: currentChat.id })
+                pendingMarker = {
+                    id: v4(),
+                    error: `${originalError}; ${recoveryFailures.join('; ')}`,
+                    steps: pendingSteps,
+                }
+                currentChat.risuBardWikiRecoveryPending = pendingMarker
+            }
+            try {
+                await requestImmediateSave({
+                    forceFullWrite: true,
+                    rejectOnFailure: true,
+                })
+            }
+            catch(recoveryError){
+                const detail = recoveryError instanceof Error
+                    ? recoveryError.message : String(recoveryError)
+                pendingMarker ??= {
+                    id: v4(), error: originalError, steps: [],
+                }
+                if (!pendingMarker.steps.some(step => step.kind === 'save-chat')) {
+                    pendingMarker.steps.push({
+                        kind: 'save-chat', chatId: currentChat.id,
+                    })
+                }
+                pendingMarker.error = `${originalError}; ${recoveryFailures.join('; ')}`
+                currentChat.risuBardWikiRecoveryPending = pendingMarker
+                try {
+                    await requestImmediateSave({
+                        forceFullWrite: true,
+                        rejectOnFailure: true,
+                    })
+                }
+                catch(retryError){
+                    pendingMarker.error += `; Original chat save retry: ${retryError instanceof Error
+                        ? retryError.message : String(retryError)}`
+                }
+            }
+            if(recoveryFailures.length){
+                const recoveryMessage = recoveryFailures.join('; ')
+                notifyError(`Chat load failed (${originalError}); recovery is pending: ${recoveryMessage}`)
+                throw new Error(`Chat load failed (${originalError}); recovery is pending: ${recoveryMessage}`, {
+                    cause: error,
+                })
+            }
             throw error
         }
         if(forkToken){

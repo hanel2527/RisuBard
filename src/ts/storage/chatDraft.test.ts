@@ -32,6 +32,8 @@ const {
     loadChatDraft,
     flushChatDraft,
     removeChatDraft,
+    removeChatDraftIfMatches,
+    scheduleSaveChatDraft,
     sweepOrphanDrafts,
     chatDraftKey,
 } = await import('./chatDraft')
@@ -46,6 +48,31 @@ beforeEach(() => {
 // between cases.
 
 describe('chatDraft write ordering', () => {
+    test('conditional send cleanup preserves a newer saved draft and B pending save', async () => {
+        flushChatDraft('conditional', 'A', {m: 'next draft', t: 'new translation'})
+        scheduleSaveChatDraft('conditional', 'B', {m: 'B draft', t: ''})
+        removeChatDraftIfMatches('conditional', 'A', {m: 'sent input', t: ''})
+        expect(await loadChatDraft('conditional', 'A')).toEqual({m: 'next draft', t: 'new translation'})
+        await new Promise(resolve => setTimeout(resolve, 850))
+        expect(await loadChatDraft('conditional', 'B')).toEqual({m: 'B draft', t: ''})
+    })
+
+    test('conditional cleanup removes the matching saved draft and pending copy', async () => {
+        flushChatDraft('matching', 'A', {m: 'sent input', t: 'translation'})
+        scheduleSaveChatDraft('matching', 'A', {m: 'sent input', t: 'translation'})
+        removeChatDraftIfMatches('matching', 'A', {m: 'sent input', t: 'translation'})
+        expect(await loadChatDraft('matching', 'A')).toBeNull()
+        await new Promise(resolve => setTimeout(resolve, 850))
+        expect(await loadChatDraft('matching', 'A')).toBeNull()
+    })
+
+    test('conditional cleanup leaves a newer pending draft intact', async () => {
+        flushChatDraft('new-pending', 'A', {m: 'sent input', t: ''})
+        scheduleSaveChatDraft('new-pending', 'A', {m: 'next draft', t: ''})
+        removeChatDraftIfMatches('new-pending', 'A', {m: 'sent input', t: ''})
+        await new Promise(resolve => setTimeout(resolve, 850))
+        expect(await loadChatDraft('new-pending', 'A')).toEqual({m: 'next draft', t: ''})
+    })
     test('a delayed save cannot resurrect a draft a later remove deleted', async () => {
         mockState.setItemDelay = 50 // make the save land well after the remove would
         flushChatDraft('ser', 'c1', { m: 'hello', t: '' })

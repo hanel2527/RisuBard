@@ -459,3 +459,10 @@ describe('applyPromptPresetValues — explicit prompt preset sampling source', (
         } as any)).toBe(modelPreset)
     })
 })
+
+
+test('uses captured prompt sampling when another chat changes the visible preset', () => {
+    const preset = {profileSnapshot:{schema:[{key:'temperature',mapsTo:{target:'body',path:'temperature'}}]},userValues:{}} as any
+    const output = applyPromptPresetParams(preset,{usePromptPresetParams:true},'model',{temperature:23})
+    expect(output.userValues.temperature).toBe(0.23)
+})

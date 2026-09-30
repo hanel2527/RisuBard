@@ -18,6 +18,43 @@ const event = (index: number) => ({
 })
 
 describe('story arc writer', () => {
+    test('continues a forked arc after its inherited checkpoint without guessing deleted checkpoints', () => {
+        const inherited = { ...event(1), sourceMessageIds: ['inherited:parent:a1'] }
+        const arc = { id: 'other.arc', type: 'other', title: 'Story Arc Map', sourceMessageIds: [],
+            content: stampStoryArcCheckpoint('## Story Arc Map\n\n[[사건 1]]', 'event.1') }
+        const input = { documents: [inherited, arc, event(2), event(3)], savedEvents: [],
+            writingLanguage: 'en' as const, settings: { checkpointSize: 2 },
+            sourceMessageOrder: [2, 3].map(index => ({ chatId: `assistant-${index}`, role: 'char' })) }
+        const plan = buildStoryArcUpdatePlan(input)
+        expect(plan?.events.map(event => event.id)).toEqual(['event.2', 'event.3'])
+        expect(plan?.checkpointEventId).toBe('event.3')
+        expect(buildStoryArcUpdatePlan({ ...input,
+            documents: [{ ...inherited, sourceMessageIds: ['deleted'] }, arc, event(2), event(3)],
+        })).toBeUndefined()
+    })
+
+    test('groups events by source turns and does not treat a late repair as a new checkpoint', () => {
+        const sourceMessageOrder = Array.from({ length: 8 }, (_, index) => ({
+            chatId: `assistant-${index + 1}`, role: 'char',
+        }))
+        const documents = Array.from({ length: 8 }, (_, index) => ({
+            ...event(index + 1),
+            ...(index === 1 ? { created: '2026-09-30' } : {}),
+        }))
+        const plan = buildStoryArcUpdatePlan({ documents, savedEvents: [],
+            writingLanguage: 'en', sourceMessageOrder })
+        expect(plan?.events.map(event => event.id))
+            .toEqual(documents.map(event => event.id))
+        expect(plan?.checkpointEventId).toBe('event.8')
+        expect(buildStoryArcUpdatePlan({
+            documents: [...documents, {
+                id: 'other.arc', type: 'other', title: 'Story Arc Map', sourceMessageIds: [],
+                content: stampStoryArcCheckpoint('## Story Arc Map\n\n[[사건 8]]', 'event.8'),
+            }], savedEvents: [], writingLanguage: 'en', sourceMessageOrder,
+            settings: { checkpointSize: 1 },
+        })).toBeUndefined()
+    })
+
     test('waits for a bounded event checkpoint before creating the plot', () => {
         expect(buildStoryArcUpdatePlan({
             documents: Array.from(

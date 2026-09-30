@@ -8,15 +8,20 @@ describe('historical source recall connections', () => {
             process.cwd(),
             'src/ts/process/index.svelte.ts'
         ), 'utf8')
-        const recallCall = source.match(
-            /sourceMatches: findHistoricalSourceMatches\(\{[\s\S]{0,900}?\}\),/
-        )?.[0] ?? ''
+        const recallStart = source.indexOf('const historicalOptions =')
+        const recallEnd = source.indexOf('const loadInquiry =', recallStart)
+        expect(recallStart).toBeGreaterThanOrEqual(0)
+        expect(recallEnd).toBeGreaterThan(recallStart)
+        const recallCall = source.slice(recallStart, recallEnd)
         const exactRecallCall = source.match(
             /resolveSourceMatches: \(messageIds, evidenceRequests\) =>[\s\S]{0,1600}?\}\),/
         )?.[0] ?? ''
 
         expect(source).toContain('findHistoricalSourceMatches,')
         expect(source).toContain('resolveHistoricalSourceMatchesById,')
+        expect(recallCall).toContain('findHistoricalSourceMatches({ ...historicalOptions,')
+        expect(recallCall).toContain('mergeHistoricalSourceMatches(')
+        expect(source).toContain('sourceMatches: historicalMatches,')
         expect(recallCall).toContain('messages: currentChat.message')
         expect(recallCall).toContain('ignoreOocTurns: inquirySettings.risuBardIgnoreOocTurns')
         expect(recallCall).toContain(

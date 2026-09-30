@@ -1,5 +1,6 @@
 <script lang="ts">
     import { onMount } from 'svelte'
+    import { resolveDynamicMemorySettings } from 'src/ts/risubard/dynamicMemoryBudget'
     import { painterInsertionRequest } from 'src/ts/bardPainter/selectionState'
     import {
         BookOpenIcon,
@@ -259,11 +260,7 @@
         && rebootStartChatIndex <= rebootLastChatIndex
     )
     let rebootAnalysisTokenLimit = $derived(
-        resolveRisuBardChatSettings(
-            DBState.db,
-            currentChat?.risuBardSettings,
-            currentCharacter?.risuBardPinnedSettings,
-        ).risuBardAnalysisTokenLimit
+        resolveDynamicMemorySettings(resolvedChatSettings, currentChat?.message ?? []).risuBardAnalysisTokenLimit
     )
     let empty = $derived(
         wiki?.mode === 'v1'
@@ -1041,6 +1038,7 @@
                     <div class="wiki-editor-region">
                         <RisuBardWikiEditor
                             {characterId}
+                            messages={activityMessages}
                             chatId={wikiChatId}
                             locked={Boolean(rebootJob)}
                             documents={wiki.documents}
@@ -1098,12 +1096,14 @@
                 {:else if activeView === 'story'}
                     <RisuBardStorySoFar
                         documents={wiki.documents}
+                        messages={activityMessages}
                         onNavigate={onNavigateStorySource}
                         onEdit={editStoryEntry}
                     />
                 {:else if activeView === 'arc-plot'}
                     <RisuBardStoryArcPlot
                         documents={wiki.documents}
+                        messages={activityMessages}
                         checkpointSize={arcPlotterSettings.checkpointSize}
                         enabled={arcPlotterSettings.enabled}
                         onOpenDocument={editStoryEntry}

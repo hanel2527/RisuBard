@@ -4,6 +4,29 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import { DBState } from '../../stores.svelte'
 import { getChatVar, getGlobalChatVar, setChatVar, setGlobalChatVar } from '../chatVar.svelte'
 import { resetChatVariables } from './cbs/lib'
+import { risuChatParser } from '../parser.svelte'
+import type { Chat } from '../../storage/database.svelte'
+import { readFileSync } from 'node:fs'
+import ts from 'typescript'
+
+test.each(['editdisplay', 'editoutput'])('sequential %s regex rules do not accumulate parser recursion depth', async (mode) => {
+  const source = readFileSync('src/ts/process/scripts.ts', 'utf8')
+  const tree = ts.createSourceFile('scripts.ts', source, ts.ScriptTarget.Latest, true)
+  const fn = tree.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'processScriptFullInternal')!
+  const code = ts.transpileModule(fn.getText(tree), {compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText
+  const deps = {
+    getDatabase:()=>DBState.db, getCurrentCharacter:()=>undefined,
+    runLuaEditTrigger:async (_:unknown,_mode:unknown,text:string)=>text,
+    pluginV2:{[mode]:new Set()}, risuChatParser,
+    getModuleRegexScripts:()=>[], generateScriptCacheKey:()=>'', getScriptCache:()=>undefined,
+    cacheScript:()=>{}, compileScriptRegex:(pattern:string,flags:string)=>new RegExp(pattern,flags),
+    dreg:/{{data}}/g,
+  }
+  const run = new Function(...Object.keys(deps), `${code};return processScriptFullInternal`)(...Object.values(deps))
+  const char = {...DBState.db.characters[0],type:'character',customscript:Array.from({length:25},()=>({type:mode,in:'원문',out:'원문',ableFlag:false}))}
+  const result = await run(char,'보존해야 하는 원문',mode)
+  expect(result.data).toBe('보존해야 하는 원문')
+})
 
 //#region module mocks
 
@@ -13,7 +36,7 @@ vi.mock(
     ({
       appVer: '1234.5.67',
       getCurrentCharacter: () => ({}),
-      getDatabase: () => ({}),
+      getDatabase: () => DBState.db,
     } as typeof import('../../storage/database.svelte'))
 )
 
@@ -68,6 +91,48 @@ test('can get a character default variable', () => {
       expect(getChatVar(key)).toBe(value)
     })
   )
+})
+
+test('keeps parser variables and messages on A while B is selected', () => {
+  const character = DBState.db.characters[0]
+  const a = { name: 'A', note: '', localLore: [], scriptstate: { $count: '2' }, message: [{ role: 'char', data: 'A reply' }], useLocallySetGlobalVariables: true, GLGlobalVariables: { toggle_scene: 'A' } } as Chat
+  const b = { name: 'B', note: '', localLore: [], scriptstate: { $count: '9' }, message: [{ role: 'char', data: 'B reply' }] } as Chat
+  const previousChats = character.chats
+  character.chats = [a, b]
+  character.chatPage = 1
+  try {
+    expect(getChatVar('count', character, a)).toBe('2')
+    expect(getGlobalChatVar('toggle_scene', a)).toBe('A')
+    expect(risuChatParser('{{addvar::count::1}}{{getvar::count}}/{{lastcharmessage}}/{{getglobalvar::toggle_scene}}/{{#when::count::vis::3}}yes{{/}}', { chara: character, chat: a, runVar: true })).toBe('3/A reply/A/yes')
+    expect(a.scriptstate.$count).toBe('3')
+    expect(b.scriptstate.$count).toBe('9')
+    expect(getChatVar('count')).toBe('9')
+  } finally {
+    character.chats = previousChats
+    character.chatPage = 0
+  }
+})
+
+test('uses A persona and nested variables while B is selected', () => {
+  const character = DBState.db.characters[0]
+  const a = { name: 'A', note: '', localLore: [], bindedPersona: 'persona-a', scriptstate: { $scene: 'A scene' }, message: [] } as Chat
+  const b = { name: 'B', note: '', localLore: [], bindedPersona: 'persona-b', scriptstate: { $scene: 'B scene' }, message: [] } as Chat
+  const previousChats = character.chats
+  const previousPersonas = character.personas
+  character.chats = [a, b]
+  character.chatPage = 1
+  character.personas = [
+    { id: 'persona-a', name: 'A user', personaPrompt: '{{getvar::scene}}', icon: '' },
+    { id: 'persona-b', name: 'B user', personaPrompt: '{{getvar::scene}}', icon: '' },
+  ]
+  try {
+    expect(risuChatParser('{{user}}/{{persona}}', { chara: character, chat: a })).toBe('A user/A scene')
+    expect(risuChatParser('{{user}}/{{persona}}')).toBe('B user/B scene')
+  } finally {
+    character.chats = previousChats
+    character.personas = previousPersonas
+    character.chatPage = 0
+  }
 })
 
 test('can get a template default variable', () => {

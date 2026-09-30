@@ -135,7 +135,13 @@ function createFileKv(options = {}) {
     fs.mkdirSync(dataRoot, { recursive: true });
     recoverTransactions(dataRoot);
     const characterAssets = createCharacterAssets({ dataRoot, sourceSize: kvSize, readOriginal: kvGetOriginal,
-        sourceVersion: key => manifest.entries[key]?.object });
+        sourceVersion: key => manifest.entries[key]?.object,
+        sourcePath: (key, expectedDigest) => {
+            if (!/^[a-f0-9]{64}$/.test(expectedDigest) || manifest.entries[key]?.object !== expectedDigest) {
+                throw new Error(`Content object changed during asset sync for ${key}`);
+            }
+            return resolveInside(dataRoot, path.join('kv', 'objects', expectedDigest));
+        } });
 
     let manifest = fs.existsSync(path.join(dataRoot, MANIFEST_PATH))
         ? readVerifiedJson(dataRoot, MANIFEST_PATH)

@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { reportImportProgress } = require('./import-progress.cjs');
 
 function checksum(data) {
     return crypto.createHash('sha256').update(data).digest('hex');
@@ -170,6 +171,7 @@ function publishTransaction(root, journal, journalPath, options = {}) {
     let published = 0;
     let skipped = 0;
     for (const entry of journal.entries) {
+        reportImportProgress('publish-files', published + skipped, journal.entries.length, entry.path);
         if (entry.action === 'delete-character') {
             const target = characterDeletionPath(root, entry.path);
             fs.rmSync(target, { recursive: true, force: true });
@@ -229,6 +231,7 @@ function publishTransaction(root, journal, journalPath, options = {}) {
         published += 1;
         if (options.failAfterPublish === published) throw new Error('simulated crash during transaction publish');
     }
+    reportImportProgress('publish-files', published + skipped, journal.entries.length);
     return { published, skipped };
 }
 
@@ -295,6 +298,7 @@ function commitTransaction(root, operations, options = {}) {
     }
     const clearedPaths = [];
     const prepared = operations.map((operation, operationIndex) => {
+        reportImportProgress('verify-files', operationIndex, operations.length, operation.path);
         if (operation.deleteCharacter === true) {
             characterDeletionPath(root, operation.path);
             if (operation.moveTo || operation.sourcePath || operation.chunks || operation.data !== undefined) throw new Error('Deletion cannot include file data');
@@ -344,6 +348,9 @@ function commitTransaction(root, operations, options = {}) {
                 throw new Error(`Transaction file validation is unsupported: ${operation.path}`);
             }
             digest = checksumFile(sourcePath);
+            if (operation.expectedChecksum && digest !== operation.expectedChecksum) {
+                throw new Error(`Transaction source checksum mismatch: ${operation.path}`);
+            }
         } else {
             data = Buffer.isBuffer(operation.data) ? operation.data : Buffer.from(operation.data);
             if (operation.validate && operation.validate(data) !== true) {
@@ -374,6 +381,7 @@ function commitTransaction(root, operations, options = {}) {
     let entries;
     try {
         entries = pending.map((operation, index) => {
+            reportImportProgress('stage-files', index, pending.length, operation.path);
             if (operation.action === 'delete-character') return { action: operation.action, path: operation.path };
             if (operation.action === 'move') {
                 return { action: 'move', path: operation.path, destination: operation.destination };

@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
     setItems: vi.fn<(entries: Array<{ key: string; value: Uint8Array }>) => Promise<void>>(async () => undefined),
     database: {
         current: {
+            characters: [],
+            characterOrder: [],
             modules: [] as Array<{ id: string, name: string, description: string }>,
             enabledModules: [] as string[],
             personaEnabledModules: {} as Record<string, string[]>,
@@ -22,8 +24,9 @@ const mocks = vi.hoisted(() => ({
     },
 }))
 
-vi.mock('src/lang', () => ({
+vi.mock('src/lang', async () => ({
     language: {
+        importInstall: (await import('src/lang/en')).languageEnglish.importInstall,
         errors: { noData: 'no data' },
         successImport: 'imported',
         fileDropImport: {
@@ -56,7 +59,7 @@ vi.mock('../globalApi.svelte', () => ({
         get buffer() { return Buffer.concat(this.parts) }
     },
     downloadFile: vi.fn(),
-    forageStorage: { setItems: mocks.setItems },
+    forageStorage: { setItems: mocks.setItems, keys: vi.fn(async () => []), cleanupImportAssets: vi.fn(async () => {}), prepareImportRollback: vi.fn(async () => {}), observeImportProgress: vi.fn(async () => () => {}) },
     LocalWriter: class {},
     readImage: mocks.readImage,
     requestImmediateSave: mocks.requestImmediateSave,
@@ -81,7 +84,7 @@ vi.mock('../stores.svelte', () => ({
     moduleBackgroundEmbedding: { set: vi.fn() },
     ReloadGUIPointer: { set: vi.fn() },
 }))
-vi.mock('svelte/store', () => ({ get: vi.fn(() => 0) }))
+vi.mock('svelte/store', async (original) => ({ ...await original<typeof import('svelte/store')>() }))
 vi.mock('../interchangeability', () => ({
     convertCharacterToModule: vi.fn(),
     convertModuleToCharacter: vi.fn(),
@@ -93,6 +96,7 @@ vi.mock('../characterCards', () => ({
 vi.mock('../parser/parser.svelte', () => ({ hasher: mocks.hasher }))
 
 import { exportModuleLegacy, getModules, importModule, importRisum, readModule, refreshModules, resolveModuleIds } from './modules'
+import { getCurrentCharacter, getCurrentChat } from '../storage/database.svelte'
 
 function uint32le(value: number) {
     const bytes = Buffer.alloc(4)
@@ -141,7 +145,7 @@ describe('module import durability', () => {
     it('persists an imported module before reporting success', async () => {
         await importModule()
 
-        expect(mocks.requestImmediateSave).toHaveBeenCalledWith({ flushServer: true, rejectOnFailure: true })
+        expect(mocks.requestImmediateSave).toHaveBeenCalledWith({ flushServer: 'canonical', rejectOnFailure: true })
         expect(mocks.events).toEqual(['saved', 'notified'])
     })
 
@@ -156,7 +160,7 @@ describe('module import durability', () => {
         mocks.requestImmediateSave.mockRejectedValueOnce(new Error('disk full'))
         await expect(importRisum(risumWithAssets(0))).rejects.toThrow('disk full')
         expect(mocks.database.current.modules).toHaveLength(0)
-        expect(mocks.events).toEqual([])
+        expect(mocks.events).toEqual(['saved'])
     })
 
     it('does not register invalid downloaded bytes', async () => {
@@ -289,6 +293,24 @@ describe('getModules cache invalidation', () => {
 
         expect(getModules()[0]).toBe(replacement)
         expect(getModules()[0].description).toBe('new content')
+    })
+
+    it('uses the request chat modules after the selected chat changes', () => {
+        mocks.database.current.modules = [
+            { id: 'a-module', name: 'A', description: '' },
+            { id: 'b-module', name: 'B', description: '' },
+        ]
+        const a = { modules: ['a-module'] } as import('../storage/database.svelte').Chat
+        const b = { modules: ['b-module'] } as import('../storage/database.svelte').Chat
+        const character = { modules: [], chatPage: 1, chats: [a, b] } as import('../storage/database.svelte').character
+        vi.mocked(getCurrentCharacter).mockReturnValue(character)
+        vi.mocked(getCurrentChat).mockReturnValue(b)
+        expect(getModules({ character, chat: a }).map(module => module.id)).toEqual(['a-module'])
+        expect(getModules().map(module => module.id)).toEqual(['b-module'])
+        expect(getModules({ character, chat: b }).map(module => module.id)).toEqual(['b-module'])
+        expect(getModules({ character, chat: a }).map(module => module.id)).toEqual(['a-module'])
+        vi.mocked(getCurrentCharacter).mockReset()
+        vi.mocked(getCurrentChat).mockReset()
     })
 
     it('returns an empty list while the module collection is not initialized', () => {

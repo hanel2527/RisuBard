@@ -22,6 +22,50 @@ const event = (overrides: Partial<Document>): Document => ({
 })
 
 describe('story so far projection', () => {
+    it('places a late repair back in source order, including grouped turns and missing sources', () => {
+        const messages = [
+            { chatId: 'shared-user', role: 'user' },
+            { chatId: 'a1', role: 'char' },
+            { chatId: 'a2', role: 'char' },
+            { chatId: 'a3', role: 'char' },
+            { chatId: 'a4', role: 'char' },
+        ]
+        const documents = [
+            event({ id: 'last', sourceMessageIds: ['shared-user', 'a4'], created: '2026-01-02' }),
+            event({ id: 'repair', sourceMessageIds: ['a3', 'a2'], created: '2026-09-30' }),
+            event({ id: 'first', sourceMessageIds: ['a1'], created: '2026-01-01' }),
+            event({ id: 'unavailable', sourceMessageIds: ['deleted'], created: '2025-01-01' }),
+        ]
+        expect(buildStorySoFar(documents, messages).map(entry => entry.id))
+            .toEqual(['first', 'repair', 'last', 'unavailable'])
+        expect(buildStorySoFar(documents, [...messages].reverse()).map(entry => entry.id))
+            .toEqual(['last', 'repair', 'first', 'unavailable'])
+        expect(documents.map(document => document.id)).toEqual(['last', 'repair', 'first', 'unavailable'])
+    })
+
+    it('does not infer source order from inherited or ambiguous message IDs', () => {
+        const documents = [
+            event({ id: 'ambiguous', sourceMessageIds: ['user', 'duplicate'], created: '2026-01-03' }),
+            event({ id: 'inherited', sourceMessageIds: ['inherited:a1'], created: '2026-01-01' }),
+            event({ id: 'known', sourceMessageIds: ['a1'], created: '2026-01-02' }),
+        ]
+        expect(buildStorySoFar(documents, [
+            { chatId: 'user', role: 'user' },
+            { chatId: 'duplicate', role: 'char' },
+            { chatId: 'a1', role: 'char' },
+            { chatId: 'duplicate', role: 'char' },
+        ]).map(entry => entry.id)).toEqual(['known', 'inherited', 'ambiguous'])
+    })
+
+    it('does not use the remaining user message to guess a deleted response position', () => {
+        const documents = [
+            event({ id: 'deleted', sourceMessageIds: ['u1', 'deleted-a1'], created: '2026-01-01' }),
+            event({ id: 'known', sourceMessageIds: ['a2'], created: '2026-01-02' }),
+        ]
+        expect(buildStorySoFar(documents, [{ chatId: 'u1', role: 'user' }, { chatId: 'a2', role: 'char' }])
+            .map(entry => entry.id)).toEqual(['known', 'deleted'])
+    })
+
     it('reads English summaries alongside legacy Korean without including related links', () => {
         const entries = buildStorySoFar([event({}), event({
             id: 'event.english',

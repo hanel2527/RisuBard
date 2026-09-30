@@ -1,4 +1,5 @@
 import type { MarkdownWikiDocumentType } from './memoryWiki'
+import { createEventOrder, type EventOrderMessage } from './eventOrder'
 
 export interface WikiTreeDocumentInput {
     id: string
@@ -8,6 +9,7 @@ export interface WikiTreeDocumentInput {
     status?: 'active' | 'superseded' | 'retracted'
     created?: string
     updated?: string
+    sourceMessageIds?: readonly string[]
 }
 
 export function getRecentlyUpdatedWikiDocumentIds(
@@ -53,8 +55,11 @@ const standardWikiFolders = [
 ] as const
 
 export function buildWikiFileTree(
-    documents: readonly WikiTreeDocumentInput[]
+    documents: readonly WikiTreeDocumentInput[],
+    messages?: readonly EventOrderMessage[]
 ): WikiFileTreeNode[] {
+    const eventOrder = createEventOrder(messages)
+    const documentsById = new Map(documents.map(document => [document.id, document]))
     const roots = new Map<string, WikiFileTreeNode>()
     for (const name of standardWikiFolders) {
         roots.set(name, {
@@ -117,8 +122,9 @@ export function buildWikiFileTree(
                 if (node.path === 'events'
                     && left.kind === 'file'
                     && right.kind === 'file') {
-                    const chronological = (right.created ?? '')
-                        .localeCompare(left.created ?? '')
+                    const chronological = eventOrder.compare(
+                        documentsById.get(left.documentId)!,
+                        documentsById.get(right.documentId)!, true)
                     if (chronological !== 0) return chronological
                 }
                 return left.name.localeCompare(right.name)

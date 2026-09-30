@@ -1,10 +1,10 @@
 import { parseChatML } from "../parser/chatML";
-import { risuChatParser } from "../parser/parser.svelte";
-import { getCurrentCharacter, getCurrentChat, getDatabase, setCurrentCharacter, setDatabase, type Chat, type character } from "../storage/database.svelte";
+import { risuChatParser as parseChat } from "../parser/parser.svelte";
+import { getDatabase, setDatabase, type Chat, type character } from "../storage/database.svelte";
 import { tokenize } from "../tokenizer";
 import { getModuleTriggers } from "./modules";
 import { get } from "svelte/store";
-import { ReloadChatPointer, ReloadGUIPointer, selectedCharID, CurrentTriggerIdStore } from "../stores.svelte";
+import { ReloadChatPointer, ReloadGUIPointer, CurrentTriggerIdStore } from "../stores.svelte";
 import { processMultiCommand } from "./command";
 import { parseKeyValue, sleep } from "../util";
 import { alertError, alertInput, alertNormal, alertSelect } from "../alert";
@@ -1060,19 +1060,35 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
     let stopSending = arg.stopSending ?? false
     const CharacterlowLevelAccess = char.lowLevelAccess ?? false
     let sendAIprompt = false
-    const currentChat = getCurrentChat()
     let additonalSysPrompt:additonalSysPrompt = arg.additonalSysPrompt ?? {
         start:'',
         historyend: '',
         promptend: ''
     }
+    const sourceChat = arg.chat ?? char.chats[char.chatPage]
+    const targetChatId = sourceChat.id
+    const sourceChatIndex = char.chats.findIndex(candidate => candidate.id === targetChatId)
+    if (!arg.displayMode && targetChatId && sourceChatIndex >= 0) char.chatPage = sourceChatIndex
+    function getTargetCharacter() {
+        return getDatabase().characters.find(candidate => candidate.chaId === char.chaId)
+    }
+    function getTargetChat() {
+        return targetChatId ? getTargetCharacter()?.chats.find(candidate => candidate.id === targetChatId) : sourceChat
+    }
+    function updateCharacterField<K extends 'globalLore' | 'desc' | 'replaceGlobalNote'>(key: K, value: character[K]) {
+        const live = getTargetCharacter()
+        if (live?.type === 'character') live[key] = value
+    }
+    function risuChatParser(value: string, options: Parameters<typeof parseChat>[1] = {}) {
+        return parseChat(value, { ...options, chat })
+    }
     const triggers = char.triggerscript.map((v) => {
         v.lowLevelAccess = CharacterlowLevelAccess
         return v
-    }).concat(getModuleTriggers())
+    }).concat(getModuleTriggers({ character: char, chat: sourceChat }))
     const db = getDatabase()
     const defaultVariables = parseKeyValue(char.defaultVariables).concat(parseKeyValue(db.templateDefaultVariables))
-    let chat = arg.displayMode ? arg.chat : safeStructuredClone(arg.chat ?? char.chats[char.chatPage])
+    let chat = arg.displayMode ? arg.chat : safeStructuredClone(sourceChat)
     
     const previousTriggerId = get(CurrentTriggerIdStore)
     const shouldSetTriggerId = !arg.displayMode && mode !== 'display'
@@ -1195,15 +1211,11 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
             return
         }
         
-        const selectedCharId = get(selectedCharID)
-        const currentCharacter = getCurrentCharacter()
-        const db = getDatabase()
         varChanged = true
         chat.scriptstate ??= {}
         chat.scriptstate['$' + key] = value
-        currentChat.scriptstate = chat.scriptstate
-        currentCharacter.chats[currentCharacter.chatPage].scriptstate = chat.scriptstate
-        db.characters[selectedCharId].chats[currentCharacter.chatPage].scriptstate = chat.scriptstate
+        const liveChat = getTargetChat()
+        if (liveChat) liveChat.scriptstate = chat.scriptstate
     }
     
     
@@ -1369,7 +1381,7 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
                 }
                 case 'command':{
                     const effectValue = risuChatParser(effect.value,{chara:char})
-                    await processMultiCommand(effectValue)
+                    await processMultiCommand(effectValue, { character: char, chat })
                     break
                 }
                 case 'stop':
@@ -1842,7 +1854,7 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
                 }
                 case 'v2Command':{
                     let value = effect.valueType === 'value' ? risuChatParser(effect.value,{chara:char}) : getVar(risuChatParser(effect.value,{chara:char}))
-                    await processMultiCommand(value)
+                    await processMultiCommand(value, { character: char, chat })
                     break
                 }
                 case 'v2SendAIprompt':{
@@ -1964,10 +1976,7 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
                         char.globalLore[index][1] = value
                     }
 
-                    const db = getDatabase()
-                    const selectedCharId = get(selectedCharID)
-                    db.characters[selectedCharId].globalLore = char.globalLore
-                    setCurrentCharacter(db.characters[selectedCharId])
+                    updateCharacterField('globalLore', char.globalLore)
                     break
                 }
                 case 'v2GetLorebook':{
@@ -1997,10 +2006,7 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
                     let value = effect.value
                     char.globalLore[index][2] = value
 
-                    const selectedCharId = get(selectedCharID)
-                    const db = getDatabase()
-                    db.characters[selectedCharId].globalLore = char.globalLore
-                    setCurrentCharacter(char)
+                    updateCharacterField('globalLore', char.globalLore)
 
                     break
                 }
@@ -2101,10 +2107,7 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
                 case 'v2SetCharacterDesc':{
                     let value = effect.valueType === 'value' ? risuChatParser(effect.value,{chara:char}) : getVar(risuChatParser(effect.value,{chara:char}))
                     char.desc = value
-                    const selectedCharId = get(selectedCharID)
-                    const db = getDatabase();
-                    (db.characters[selectedCharId] as character).desc = value
-                    setCurrentCharacter(char)
+                    updateCharacterField('desc', value)
                     break
                 }
                 case 'v2GetPersonaDesc':{
@@ -2130,10 +2133,7 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
                 case 'v2SetReplaceGlobalNote':{
                     const value = effect.valueType === 'value' ? risuChatParser(effect.value,{chara:char}) : getVar(risuChatParser(effect.value,{chara:char}))
                     char.replaceGlobalNote = value
-                    const selectedCharId = get(selectedCharID)
-                    const db = getDatabase();
-                    (db.characters[selectedCharId] as character).replaceGlobalNote = value
-                    setCurrentCharacter(char)
+                    updateCharacterField('replaceGlobalNote', value)
                     break
                 }
                 case 'v2MakeArrayVar':{
@@ -2507,10 +2507,7 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
                         selective: false
                     })
 
-                    const selectedCharId = get(selectedCharID)
-                    const db = getDatabase()
-                    db.characters[selectedCharId].globalLore = char.globalLore
-                    setCurrentCharacter(char)
+                    updateCharacterField('globalLore', char.globalLore)
                     break
                 }
                 case 'v2ModifyLorebookByIndex':{
@@ -2542,10 +2539,7 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
                         char.globalLore[index].insertorder = insertOrderNum
                     }
 
-                    const selectedCharId = get(selectedCharID)
-                    const db = getDatabase()
-                    db.characters[selectedCharId].globalLore = char.globalLore
-                    setCurrentCharacter(char)
+                    updateCharacterField('globalLore', char.globalLore)
                     break
                 }
                 case 'v2DeleteLorebookByIndex':{
@@ -2558,10 +2552,7 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
 
                     char.globalLore.splice(index, 1)
 
-                    const selectedCharId = get(selectedCharID)
-                    const db = getDatabase()
-                    db.characters[selectedCharId].globalLore = char.globalLore
-                    setCurrentCharacter(char)
+                    updateCharacterField('globalLore', char.globalLore)
                     break
                 }
                 case 'v2GetLorebookCountNew':{
@@ -2579,10 +2570,7 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
 
                     char.globalLore[index].alwaysActive = effect.value
 
-                    const selectedCharId = get(selectedCharID)
-                    const db = getDatabase()
-                    db.characters[selectedCharId].globalLore = char.globalLore
-                    setCurrentCharacter(char)
+                    updateCharacterField('globalLore', char.globalLore)
                     break
                 }
                 case 'v2RegexTest':{
@@ -2607,12 +2595,8 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
                     chat.note = value
                     
                     if(!arg.displayMode){
-                        const selectedCharId = get(selectedCharID)
-                        const currentCharacter = getCurrentCharacter()
-                        const db = getDatabase()
-                        currentCharacter.chats[currentCharacter.chatPage].note = value
-                        db.characters[selectedCharId].chats[currentCharacter.chatPage].note = value
-                        setCurrentCharacter(currentCharacter)
+                        const liveChat = getTargetChat()
+                        if (liveChat) liveChat.note = value
                     }
                     break
                 }
@@ -2799,8 +2783,8 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
         caculatedTokens += await tokenize(additonalSysPrompt.promptend)
     }
     if(varChanged){
-        const currentChat = getCurrentChat()
-        currentChat.scriptstate = chat.scriptstate
+        const liveChat = getTargetChat()
+        if (liveChat) liveChat.scriptstate = chat.scriptstate
         ReloadGUIPointer.set(get(ReloadGUIPointer) + 1)
     }
 

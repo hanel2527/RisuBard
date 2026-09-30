@@ -27,6 +27,31 @@ function mappedFixture() {
     const mapped = repo.publishCharacterDirectoryMapping('one')
     return { ...fixtureValue, directory: path.join(root, 'characters', mapped.directory, 'assets') }
 }
+it('stages new asset copies from immutable source paths instead of retaining all asset buffers', () => {
+    const { root, store, db, directory } = mappedFixture()
+    const fileStore = require('./file-store.cjs')
+    const commit = vi.spyOn(fileStore, 'commitTransaction')
+    const modulePath = require.resolve('./character-assets.cjs')
+    delete require.cache[modulePath]
+    try {
+        const { createCharacterAssets } = require('./character-assets.cjs')
+        const originals = new Map(['assets/shared.png', 'assets/portrait.png'].map(key => [key, store.kvGet(key)]))
+        const sourcePath = vi.fn((key: string, digest: string) => path.join(root, 'kv', 'objects', digest))
+        const assets = createCharacterAssets({ dataRoot: root, sourceSize: (key: string) => originals.get(key).length,
+            readOriginal: (key: string) => originals.get(key), sourcePath })
+        assets.sync(db)
+        const operations = commit.mock.calls.flatMap((call: any[]) => call[1])
+        const copies = operations.filter((operation: any) => operation.path.includes('/assets/'))
+        expect(copies).toHaveLength(2)
+        for (const copy of copies) {
+            expect(copy.data).toBeUndefined()
+            expect(copy.sourcePath).toMatch(/[\\/]kv[\\/]objects[\\/][a-f0-9]{64}$/)
+            expect(copy.expectedChecksum).toBe(path.basename(copy.sourcePath))
+        }
+        expect(sourcePath).toHaveBeenCalledTimes(2)
+        expect(fs.readFileSync(path.join(directory, 'portrait.png')).toString()).toBe('portrait')
+    } finally { commit.mockRestore(); delete require.cache[modulePath] }
+})
 it('syncs V3 app replacement and removal, preserves shared KV, and skips unchanged saves', () => {
     const { root, store, db, directory } = mappedFixture()
     expect(store.characterAssets.sync(db).changed).toBe(true)

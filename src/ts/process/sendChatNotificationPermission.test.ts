@@ -8,7 +8,7 @@ describe('sendChat completion notification', () => {
             resolve(process.cwd(), 'src/ts/process/index.svelte.ts'),
             'utf8'
         )
-        const start = source.indexOf('if(DBState.db.notification')
+        const start = source.indexOf('if(requestSettings.notification')
         const end = source.indexOf('\n    if(req.special)', start)
         expect(start).toBeGreaterThanOrEqual(0)
         expect(end).toBeGreaterThan(start)

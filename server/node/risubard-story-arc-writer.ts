@@ -3,6 +3,7 @@ import {
     wikiWritingLocales,
     type WikiWritingLanguage,
 } from '../../src/ts/risubard/wikiWritingLanguage'
+import { createEventOrder, hasOnlyInheritedSources, type EventOrderMessage } from '../../src/ts/risubard/eventOrder'
 import {
     ARC_PLOTTER_DEFAULT_SETTINGS,
     normalizeArcPlotterSettings,
@@ -97,7 +98,9 @@ export function buildStoryArcUpdatePlan(input: {
     savedEvents: readonly StoryArcWriterDocument[]
     writingLanguage: WikiWritingLanguage
     settings?: Partial<ArcPlotterSettings>
+    sourceMessageOrder?: readonly EventOrderMessage[]
 }): StoryArcUpdatePlan | undefined {
+    const sourceOrder = createEventOrder(input.sourceMessageOrder)
     const settings = normalizeArcPlotterSettings(input.settings)
     const existing = input.documents.find((document) =>
         document.type === 'other'
@@ -110,8 +113,13 @@ export function buildStoryArcUpdatePlan(input: {
             && document.status !== 'superseded')
         .filter((document, index, all) =>
             all.findIndex((candidate) => candidate.id === document.id) === index)
+        .filter(document => input.sourceMessageOrder === undefined
+            || sourceOrder.position(document) !== undefined)
         .map((document, index) => ({ document, index }))
         .sort((left, right) => {
+            if (input.sourceMessageOrder !== undefined) {
+                return sourceOrder.compare(left.document, right.document)
+            }
             const byCreated = (left.document.created ?? '')
                 .localeCompare(right.document.created ?? '')
             return byCreated || left.index - right.index
@@ -124,9 +132,17 @@ export function buildStoryArcUpdatePlan(input: {
     const checkpointIndex = checkpoint
         ? ordered.findIndex((document) => document.id === checkpoint)
         : -1
-    if (checkpoint && checkpointIndex < 0) return undefined
+    // A fork keeps its predecessor's checkpoint ID but detaches its sources.
+    // That checkpoint is before all current-chat events, not a deleted local turn.
+    const inheritedCheckpoint = input.sourceMessageOrder !== undefined
+        && input.documents.some(document => document.id === checkpoint
+            && document.type === 'event'
+            && document.status !== 'retracted' && document.status !== 'superseded'
+            && hasOnlyInheritedSources(document))
+    if (checkpoint && checkpointIndex < 0 && !inheritedCheckpoint) return undefined
     const pending = ordered.slice(checkpointIndex + 1)
     const repairEvents = existing && checkpoint
+        && checkpointIndex >= 0
         && !hasStoryArcEventLink(existing.content, ordered)
         ? ordered.slice(
             Math.max(0, checkpointIndex - settings.checkpointSize + 1),

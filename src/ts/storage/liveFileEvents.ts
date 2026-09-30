@@ -9,6 +9,10 @@ export function subscribeLiveFileEvents(options: {
     onEvent(event: LiveFileEvent): void
     onFallback(): void
 }): () => void {
+    // Quick Tunnels buffer SSE. Use ordinary requests from the start instead
+    // of maintaining an unsupported stream and repeatedly reconnecting it.
+    const pollingOnly = typeof location !== 'undefined'
+        && location.hostname.toLowerCase().endsWith('.trycloudflare.com')
     let disposed = false
     let connected = false
     let connecting = false
@@ -35,7 +39,7 @@ export function subscribeLiveFileEvents(options: {
     }
     async function connect(initial = false) {
         if (disposed || connecting) return
-        if (typeof EventSource === 'undefined') {
+        if (pollingOnly || typeof EventSource === 'undefined') {
             if (initial) options.onFallback()
             return
         }

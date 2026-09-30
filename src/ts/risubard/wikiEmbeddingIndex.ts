@@ -128,8 +128,8 @@ export class WikiEmbeddingIndex {
         this.ready = true
     }
 
-    async search(current: string, recent: string, timeoutMs = 2000) {
-        const entries = this.entries
+    async search(current: string, recent: string, timeoutMs = 2000, options: { maximumDocuments?: number; maximumPassagesPerDocument?: number; allowedDocumentIds?: ReadonlySet<string> } = {}) {
+        const entries = options.allowedDocumentIds ? this.entries.filter(entry => options.allowedDocumentIds!.has(entry.chunk.documentId)) : this.entries
         const queries = buildWikiEmbeddingQueries(current, recent)
         if (!this.ready || !entries.length || !queries.length) return emptyResult()
         let timer: ReturnType<typeof setTimeout> | undefined
@@ -146,11 +146,13 @@ export class WikiEmbeddingIndex {
             if (vectors.length !== queries.length || !vectors.every(validVector)
                 || vectors.some(vector => vector.length !== entries[0].vector.length)) return emptyResult()
             const bestByDocument = new Map<string, IndexedChunk & { score: number; order: number }>()
+            const passages: (IndexedChunk & { score: number; order: number })[] = []
             entries.forEach((entry, order) => {
                 const direct = cosine(entry.vector, vectors[0])
                 const contextual = vectors[1] ? cosine(entry.vector, vectors[1]) : direct
                 const score = Math.max(0, Math.min(1, direct * 0.55 + contextual * 0.45))
                 if (score < 0.4) return
+                passages.push({ ...entry, score, order })
                 const previous = bestByDocument.get(entry.chunk.documentId)
                 if (!previous || score > previous.score
                     || (score === previous.score && entry.chunk.start < previous.chunk.start)) {
@@ -163,14 +165,22 @@ export class WikiEmbeddingIndex {
                 || a.chunk.start - b.chunk.start || a.order - b.order)
             // Do not fill the budget with weak matches or repeated chunks of one document.
             const threshold = Math.max(0.4, (ranked[0]?.score ?? 0) - 0.12)
-            const selected = ranked.filter(item => item.score >= threshold).slice(0, 12)
+            const selected = ranked.filter(item => item.score >= threshold).slice(0, Math.max(1, Math.min(32, options.maximumDocuments ?? 12)))
+            const winners = new Map(selected.map(item => [item.chunk.documentId, [item]]))
+            for (const item of passages.sort((a, b) => b.score - a.score || a.chunk.start - b.chunk.start)) {
+                const existing = winners.get(item.chunk.documentId)
+                if (selected.length >= 32 || !existing || existing.length >= Math.min(3, options.maximumPassagesPerDocument ?? 1)
+                    || item.score < threshold || existing.some(other => item.chunk.start < other.chunk.end && item.chunk.end > other.chunk.start)) continue
+                existing.push(item)
+                selected.push(item)
+            }
             return {
                 matches: selected.map(({ chunk, score }) => ({
                     documentId: chunk.documentId, score, contentHash: chunk.contentHash,
                     start: chunk.start, end: chunk.end,
                 })),
                 evidenceQuery: selected.slice(0, 3).map(item => item.chunk.text).join('\n').slice(0, 3072),
-                evidenceHints: Object.fromEntries(selected.map(item => [item.chunk.documentId, item.chunk.text])),
+                evidenceHints: Object.fromEntries([...winners].map(([id, items]) => [id, items.map(item => item.chunk.text).join('\n').slice(0, 3072)])),
             }
         } catch { return emptyResult() }
         finally {
@@ -185,7 +195,8 @@ export function mergeWikiSemanticMatches(
     semantic: readonly WikiSemanticMatch[], ranked: readonly WikiSemanticMatch[],
 ): WikiSemanticMatch[] {
     if (ranked.length === 0) return [...semantic].sort((a, b) => b.score - a.score).slice(0, 32)
-    const matches = new Map(semantic.map(match => [match.documentId, match]))
+    const matches = new Map<string, WikiSemanticMatch>()
+    for (const match of semantic) if (!matches.has(match.documentId)) matches.set(match.documentId, match)
     const ordered = new Map<string, WikiSemanticMatch>()
     for (const match of [...ranked].sort((a, b) => b.score - a.score)) {
         const previous = matches.get(match.documentId)
@@ -195,6 +206,10 @@ export function mergeWikiSemanticMatches(
         if (!ordered.has(match.documentId)) ordered.set(match.documentId, match)
     }
     const result = [...ordered.values()].slice(0, 32)
+    for (const match of semantic) {
+        if (result.length >= 32) break
+        if (!result.some(item => item.documentId === match.documentId && item.start === match.start && item.end === match.end)) result.push(match)
+    }
     // Encode one ordering, never compare cosine values to reranker rank fractions.
     return result.map((match, index) => ({ ...match, score: (result.length - index) / result.length }))
 }

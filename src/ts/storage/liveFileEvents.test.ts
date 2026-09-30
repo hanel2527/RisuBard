@@ -12,6 +12,23 @@ class FakeEventSource extends EventTarget {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); FakeEventSource.instances = [] })
 
 describe('live file event subscription', () => {
+    it('uses polling immediately on Quick Tunnel hosts without opening SSE', async () => {
+        vi.useFakeTimers()
+        vi.stubGlobal('location', { hostname: 'test-link.trycloudflare.com' })
+        vi.stubGlobal('EventSource', FakeEventSource)
+        const authenticate = vi.fn(), onFallback = vi.fn()
+        const close = subscribeLiveFileEvents({ authenticate, onEvent: vi.fn(), onFallback })
+        await vi.advanceTimersByTimeAsync(0)
+        expect(onFallback).toHaveBeenCalledOnce()
+        expect(FakeEventSource.instances).toHaveLength(0)
+        await vi.advanceTimersByTimeAsync(60_000)
+        expect(onFallback).toHaveBeenCalledTimes(2)
+        expect(authenticate).not.toHaveBeenCalled()
+        close()
+        await vi.advanceTimersByTimeAsync(60_000)
+        expect(onFallback).toHaveBeenCalledTimes(2)
+        expect(vi.getTimerCount()).toBe(0)
+    })
     it('uses server events without idle polling and closes listeners/timer', async () => {
         vi.useFakeTimers()
         vi.stubGlobal('EventSource', FakeEventSource)

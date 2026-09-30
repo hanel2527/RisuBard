@@ -23,7 +23,7 @@
     } from 'src/ts/chatTurnNavigation';
     import { loadChatViewSession, saveChatViewSession, type ChatViewSession } from 'src/ts/chatViewSession'
     import { oocTurnIndices } from 'src/ts/risubard/oocTurns'
-    import { type Chat as ChatData, type Message } from "../../ts/storage/database.svelte";
+    import { type Chat as ChatData, type Message, type Database, type WikiChatRecoveryStep } from "../../ts/storage/database.svelte";
     import { DBState } from 'src/ts/stores.svelte';
     import { getCharImage } from "../../ts/characters";
     import {
@@ -40,6 +40,7 @@
         sendChat,
     } from "../../ts/process/index.svelte";
     import { abortGeneration, chatGenKey, endGeneration, generationStates, registerAbort } from "../../ts/process/generationState";
+    import { captureGenerationTarget, resolveGenerationTarget, type GenerationTarget } from '../../ts/process/generationTarget';
     import { claimPendingSend, clearPendingSend, markResumable, resumableSends, takeResumable } from "../../ts/process/request/pendingSends";
     import { ensureCurrentChatReady } from "../../ts/storage/chatStorage";
     import { sleep } from "../../ts/util";
@@ -78,7 +79,7 @@ import { isMobile } from 'src/ts/platform'
     import { postChatFile } from 'src/ts/process/files/multisend';
     import { getInlayAsset } from 'src/ts/process/files/inlays';
     import { quickMenu } from 'src/ts/hotkey';
-    import { loadChatDraft, scheduleSaveChatDraft, flushChatDraft, removeChatDraft } from 'src/ts/storage/chatDraft';
+    import { loadChatDraft, scheduleSaveChatDraft, flushChatDraft, removeChatDraftIfMatches } from 'src/ts/storage/chatDraft';
     import { blocksChatGeneration } from 'src/ts/risubard/wikiReboot';
     import {
         cancelWikiGeneration,
@@ -195,9 +196,13 @@ import { isMobile } from 'src/ts/platform'
     let currentCharacter = $derived(DBState.db.characters[$selectedCharID])
     let findReplaceOpen = $state(false)
     let currentChatSlot = $derived(currentCharacter?.chats[currentCharacter.chatPage])
+    let wikiRecoveryPending = $derived(Boolean(currentChatSlot?.risuBardWikiRecoveryPending))
     let wikiRebootBlocksGeneration = $derived(
-        blocksChatGeneration(currentChatSlot?.risuBardWikiReboot)
+        blocksChatGeneration(currentChatSlot?.risuBardWikiReboot) || wikiRecoveryPending
     )
+    let generationLockMessage = $derived(wikiRecoveryPending
+        ? `Memory Wiki 복구가 대기 중입니다. ${currentChatSlot?.risuBardWikiRecoveryPending?.error ?? ''}`
+        : language.risuBardWikiRebootChatLocked)
     let currentChatReady = $derived(!!currentChatSlot && !currentChatSlot._placeholder)
     let chatAutoTranslate = $derived(currentChatSlot?.autoTranslate ?? DBState.db.autoTranslate)
 
@@ -603,34 +608,44 @@ import { isMobile } from 'src/ts/platform'
             return
         }
         if (wikiRebootBlocksGeneration) {
-            alertError(language.risuBardWikiRebootChatLocked)
+            alertError(generationLockMessage)
             return
         }
 
         preparingInput = true
         try {
+            const target = captureGenerationTarget(DBState.db.characters[selectedChar])
+            const requestSettings = {...DBState.db}
+            const submittedInput = messageInput
+            const submittedFiles = [...fileInput]
+            const isTargetVisible = () => draftChaId === target.characterId && draftChatId === target.chatId
+            const clearSubmittedDraft = () => {
+                fileInput = fileInput.filter(file => !submittedFiles.includes(file))
+                if (isTargetVisible()) {
+                    if (messageInput !== submittedInput) return
+                    messageInput = ''
+                }
+                removeChatDraftIfMatches(target.characterId, target.chatId, {m: submittedInput, t: ''})
+            }
             const activeChat = await ensureActiveChatReady(selectedChar)
             if(!activeChat) return
 
             let cha = activeChat.message
 
-            if(messageInput.startsWith('/')){
-                const commandProcessed = await processMultiCommand(messageInput)
+            if(submittedInput.startsWith('/')){
+                const commandTarget = resolveGenerationTarget(DBState.db.characters, target)
+                const commandProcessed = await processMultiCommand(submittedInput, {
+                    character: commandTarget.character, chat: commandTarget.chat,
+                })
                 if(commandProcessed !== false){
-                    messageInput = ''
-                    removeChatDraft(draftChaId, draftChatId)
+                    clearSubmittedDraft()
                     return
                 }
             }
 
-            if(fileInput.length > 0){
-                for(const file of fileInput){
-                    messageInput += `{{inlayed::${file}}}`
-                }
-                fileInput = []
-            }
+            const input = submittedInput + submittedFiles.map(file => `{{inlayed::${file}}}`).join('')
 
-            if(messageInput === ''){
+            if(input === ''){
                 if(cha.length === 0 || cha[cha.length - 1].role !== 'user'){
                     if(DBState.db.useSayNothing){
                         cha.push({
@@ -642,7 +657,8 @@ import { isMobile } from 'src/ts/platform'
                 }
             }
             else{
-                const char = DBState.db.characters[selectedChar]
+                const char = resolveGenerationTarget(DBState.db.characters, target)?.character
+                if (!char) return
                 if(char.type === 'character'){
                     let triggerResult = await runTrigger(char,'input', {chat: activeChat})
                     if(triggerResult){
@@ -651,7 +667,7 @@ import { isMobile } from 'src/ts/platform'
 
                     cha.push({
                         role: 'user',
-                        data: await processScript(char,messageInput,'editinput'),
+                        data: await processScript(char,input,'editinput', {}, target, requestSettings),
                         time: Date.now(),
                         name: null
                     })
@@ -659,21 +675,22 @@ import { isMobile } from 'src/ts/platform'
                 else{
                     cha.push({
                         role: 'user',
-                        data: messageInput,
+                        data: input,
                         time: Date.now(),
                         name: null
                     })
                 }
             }
-            messageInput = ''
-            removeChatDraft(draftChaId, draftChatId)
-            DBState.db.characters[selectedChar].chats[DBState.db.characters[selectedChar].chatPage].message = cha
-            chatPage = getLatestChatPage(cha.length, chatPageSize)
+            const destination = resolveGenerationTarget(DBState.db.characters, target)
+            if (!destination) return
+            destination.chat.message = cha
+            clearSubmittedDraft()
+            if (isTargetVisible()) chatPage = getLatestChatPage(cha.length, chatPageSize)
 
             await sleep(10)
-            updateInputSizeAll()
+            if (isTargetVisible()) updateInputSizeAll()
             preparingInput = false
-            await sendChatMain(continueResponse)
+            await sendChatMain(continueResponse, target, requestSettings)
         } catch (error) {
             console.error(error)
             alertError(error)
@@ -727,25 +744,40 @@ import { isMobile } from 'src/ts/platform'
         return null
     }
 
+    function setPendingWikiRecovery(
+        chat: ChatData,
+        error: string,
+        steps: WikiChatRecoveryStep[],
+    ) {
+        const chatId = chat.id ||= v4()
+        chat.risuBardWikiRecoveryPending = {
+            id: v4(),
+            error,
+            steps: [...steps, { kind: 'save-chat', chatId }],
+        }
+    }
     async function reroll() {
         if($doingChat || preparingInput || sendingChat || currentChatGenerating) return
         if (wikiRebootBlocksGeneration) {
-            alertError(language.risuBardWikiRebootChatLocked)
+            alertError(generationLockMessage)
             return
         }
+        const character = DBState.db.characters[$selectedCharID]
+        const chat = character?.chats[character.chatPage]
+        if (!character || !chat) return
+        const target = captureGenerationTarget(character)
+        const requestSettings = { ...DBState.db }
         const lastMsg = getLastCharMsg()
         if (!lastMsg) return
 
         // Save existing swipes before clone replaces the array
         const savedSwipes = lastMsg.swipes ? [...lastMsg.swipes] : [lastMsg.data]
         const savedSwipeCheckpoints = getSwipeScriptstateCheckpoints(lastMsg, savedSwipes.length)
-        const originalScriptstate = snapshotChatScriptstate(
-            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate,
-        )
+        const originalScriptstate = snapshotChatScriptstate(chat.scriptstate)
 
         // Generate new response
         // Preserve trailing comment/disabled messages (e.g. branch comments)
-        let cha = safeStructuredClone(DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message)
+        let cha = safeStructuredClone(chat.message)
         const originalMessages = safeStructuredClone(cha)
         if(cha.length === 0) return
         openMenu = false
@@ -774,8 +806,6 @@ import { isMobile } from 'src/ts/platform'
             message.risubardMemoryConfirmed === true
             || message.risubardCanonicalReceipt !== undefined
         )
-        const character = DBState.db.characters[$selectedCharID]
-        const chat = character.chats[character.chatPage]
         const originalChat = safeStructuredClone(chat)
         let wikiRolledBack = false
         let previousWikiHead: string | undefined
@@ -812,43 +842,110 @@ import { isMobile } from 'src/ts/platform'
                 const stagingChatId = chat.risuBardWikiReboot?.stagingChatId
                 Object.assign(chat, originalChat)
                 if (!originalChat.risuBardWikiReboot) delete chat.risuBardWikiReboot
-                if (stagingChatId) await cleanupWikiRebootWorkspace({
-                    characterId: character.chaId, stagingChatId,
-                    fetchImpl: fetch, createAuth: () => forageStorage.createAuth(),
-                })
-                if (previousWikiHead) await checkoutWikiVersion({
-                    characterId: character.chaId,
-                    chatId: chat.id,
-                    commitId: previousWikiHead,
-                    reason: 'reroll',
-                    fetchImpl: fetch,
-                    createAuth: () => forageStorage.createAuth(),
-                })
-                await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
-                notifyError(
-                    `BardWiki 시점 복원에 실패해 이전 응답을 유지합니다: ${error instanceof Error
-                        ? error.message
-                        : String(error)}`
-                )
+
+                const recoveryFailures: string[] = []
+                const pendingSteps: WikiChatRecoveryStep[] = []
+                let wikiRestored = true
+                if (previousWikiHead) {
+                    try {
+                        await checkoutWikiVersion({
+                            characterId: character.chaId,
+                            chatId: chat.id,
+                            commitId: previousWikiHead,
+                            reason: 'reroll',
+                            fetchImpl: fetch,
+                            createAuth: () => forageStorage.createAuth(),
+                        })
+                    }
+                    catch(recoveryError){
+                        wikiRestored = false
+                        const detail = recoveryError instanceof Error
+                            ? recoveryError.message : String(recoveryError)
+                        recoveryFailures.push(`Memory Wiki: ${detail}`)
+                        pendingSteps.push({
+                            kind: 'checkout',
+                            chatId: chat.id,
+                            commitId: previousWikiHead,
+                            reason: 'reroll',
+                        })
+                    }
+                }
+                if (stagingChatId && wikiRestored) {
+                    try {
+                        await cleanupWikiRebootWorkspace({
+                            characterId: character.chaId, stagingChatId,
+                            fetchImpl: fetch, createAuth: () => forageStorage.createAuth(),
+                        })
+                    }
+                    catch(recoveryError){
+                        const detail = recoveryError instanceof Error
+                            ? recoveryError.message : String(recoveryError)
+                        recoveryFailures.push(`Reboot workspace cleanup: ${detail}`)
+                        pendingSteps.push({
+                            kind: 'cleanup-workspace',
+                            chatId: chat.id,
+                            stagingChatId,
+                        })
+                    }
+                }
+                else if (stagingChatId) {
+                    pendingSteps.push({
+                        kind: 'cleanup-workspace',
+                        chatId: chat.id,
+                        stagingChatId,
+                    })
+                }
+
+                const originalError = error instanceof Error ? error.message : String(error)
+                if (recoveryFailures.length) {
+                    setPendingWikiRecovery(
+                        chat, `${originalError}; ${recoveryFailures.join('; ')}`, pendingSteps,
+                    )
+                }
+                try {
+                    await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+                }
+                catch(recoveryError){
+                    const detail = recoveryError instanceof Error
+                        ? recoveryError.message : String(recoveryError)
+                    recoveryFailures.push(`Original chat save: ${detail}`)
+                    if (!chat.risuBardWikiRecoveryPending) {
+                        setPendingWikiRecovery(chat, `${originalError}; ${detail}`, [])
+                    }
+                    else {
+                        chat.risuBardWikiRecoveryPending.error =
+                            `${originalError}; ${recoveryFailures.join('; ')}`
+                    }
+                    try {
+                        await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+                    }
+                    catch(retryError){
+                        chat.risuBardWikiRecoveryPending!.error += `; Original chat save retry: ${retryError instanceof Error
+                            ? retryError.message : String(retryError)}`
+                    }
+                }
+                if (recoveryFailures.length) {
+                    notifyError(`BardWiki operation failed (${originalError}); the previous chat is restored in memory but recovery remains pending: ${recoveryFailures.join('; ')}`)
+                }
+                else {
+                    notifyError(`BardWiki operation failed; the previous chat and wiki were restored: ${originalError}`)
+                }
                 return
             }
         }
-        restoreScriptstateBeforeReroll(
-            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage],
-            lastMsg,
-        )
-        DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message = cha
-        const generated = await sendChatMain()
+        restoreScriptstateBeforeReroll(chat, lastMsg)
+        chat.message = cha
+        const generated = await sendChatMain(false, target, requestSettings)
 
-        const currentMsgs = DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message
+        const currentMsgs = chat.message
 
         // If generation failed, restore original messages
         if (!generated) {
-            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message = originalMessages
-            const currentChat = DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage]
-            if(originalScriptstate === null) delete currentChat.scriptstate
-            else currentChat.scriptstate = { ...originalScriptstate }
-            // The chat is back where it started, so the wiki has to be too.
+            chat.message = originalMessages
+            if(originalScriptstate === null) delete chat.scriptstate
+            else chat.scriptstate = { ...originalScriptstate }
+            const recoveryFailures: string[] = []
+            const pendingSteps: WikiChatRecoveryStep[] = []
             if(wikiRolledBack && previousWikiHead && character.chaId && chat.id){
                 try {
                     await checkoutWikiVersion({
@@ -861,14 +958,52 @@ import { isMobile } from 'src/ts/platform'
                     })
                 }
                 catch(error){
-                    notifyError(
-                        `BardWiki 시점을 되돌리지 못했습니다: ${error instanceof Error
-                            ? error.message
-                            : String(error)}`
-                    )
+                    const detail = error instanceof Error ? error.message : String(error)
+                    recoveryFailures.push(`Memory Wiki checkout: ${detail}`)
+                    pendingSteps.push({
+                        kind: 'checkout',
+                        chatId: chat.id,
+                        commitId: previousWikiHead,
+                        reason: 'reroll',
+                    })
                 }
             }
-            await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+            if (recoveryFailures.length) {
+                setPendingWikiRecovery(chat, recoveryFailures.join('; '), pendingSteps)
+            }
+            try {
+                await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+            }
+            catch(error){
+                const detail = error instanceof Error ? error.message : String(error)
+                recoveryFailures.push(`Original chat save: ${detail}`)
+                if (!chat.risuBardWikiRecoveryPending) {
+                    setPendingWikiRecovery(chat, recoveryFailures.join('; '), pendingSteps)
+                }
+                else {
+                    chat.risuBardWikiRecoveryPending.error = recoveryFailures.join('; ')
+                }
+                try {
+                    await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+                }
+                catch(retryError){
+                    chat.risuBardWikiRecoveryPending!.error += `; Original chat save retry: ${retryError instanceof Error
+                        ? retryError.message : String(retryError)}`
+                }
+            }
+            if (recoveryFailures.length) {
+                if (!chat.risuBardWikiRecoveryPending) {
+                    setPendingWikiRecovery(chat, recoveryFailures.join('; '), pendingSteps)
+                    try {
+                        await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+                    }
+                    catch(retryError){
+                        chat.risuBardWikiRecoveryPending!.error += `; Pending-state save: ${retryError instanceof Error
+                            ? retryError.message : String(retryError)}`
+                    }
+                }
+                notifyError(`Reroll failed; the original chat is restored in memory but Memory Wiki recovery is pending: ${recoveryFailures.join('; ')}`)
+            }
             return
         }
 
@@ -964,10 +1099,13 @@ import { isMobile } from 'src/ts/platform'
     // switch because currentChatGenKey reads the selected char/chatPage.
     let currentChatGenerating = $derived($generationStates.has(currentChatGenKey()))
 
-    async function sendChatMain(continued:boolean = false) {
+    async function sendChatMain(continued:boolean = false, target?: GenerationTarget, requestSettings?: Database) {
         if (sendingChat) return false
-        if (wikiRebootBlocksGeneration) return false
-        const genKey = currentChatGenKey()
+        target ??= captureGenerationTarget(DBState.db.characters[$selectedCharID])
+        const destination = resolveGenerationTarget(DBState.db.characters, target)
+        if (blocksChatGeneration(destination.chat.risuBardWikiReboot)
+            || destination.chat.risuBardWikiRecoveryPending) return false
+        const genKey = chatGenKey(target.chatId)
         // Mirror sendChat's per-chat guard BEFORE any side effects: a blocked
         // send must not run the unconditional conclude below, which would tear
         // down the RUNNING generation's guard entry and tombstone (e.g. Enter
@@ -975,7 +1113,6 @@ import { isMobile } from 'src/ts/platform'
         if ($generationStates.has(genKey)) {
             return false
         }
-        messageInput = ''
         sendingChat = true
         sendingChatKey = genKey
         const abortController = new AbortController()
@@ -984,7 +1121,9 @@ import { isMobile } from 'src/ts/platform'
         try {
             generated = await sendChat(-1, {
                 signal:abortController.signal,
-                continue:continued
+                continue:continued,
+                target,
+                requestSettings,
             })
         } catch (error) {
             console.error(error)
@@ -1644,7 +1783,7 @@ import { isMobile } from 'src/ts/platform'
                             onclick={send}
                             disabled={wikiRebootBlocksGeneration}
                             title={wikiRebootBlocksGeneration
-                                ? language.risuBardWikiRebootChatLocked
+                                ? generationLockMessage
                                 : undefined}
                             aria-label={willResend ? language.reroll : language.send}
                             class="order-2 shrink-0 flex justify-center items-center w-9 h-9 rounded-full bg-primary text-accenttext hover:bg-primary/80 transition-colors button-icon-send disabled:opacity-45 disabled:cursor-not-allowed"
@@ -2022,9 +2161,7 @@ import { isMobile } from 'src/ts/platform'
             <div class="flex justify-end mt-3">
                 <button onclick={sendFullscreen} aria-label="send"
                         disabled={wikiRebootBlocksGeneration}
-                        title={wikiRebootBlocksGeneration
-                            ? language.risuBardWikiRebootChatLocked
-                            : undefined}
+                        title={wikiRebootBlocksGeneration ? generationLockMessage : undefined}
                         class="flex items-center gap-1 px-4 h-10 rounded-full bg-primary text-accenttext hover:bg-primary/80 transition-colors disabled:opacity-45 disabled:cursor-not-allowed">
                     <Send size={18} />
                     <span>{language.send}</span>

@@ -9,7 +9,7 @@
     import { announceRisuBardMemoryUpdated } from "src/ts/risubard/memoryEvents"
     import { completeMemoryWikiFork, forkMemoryWiki } from "src/ts/risubard/memoryWikiFork"
     import { canBranchFromMessage, isHistoricalBranch } from "src/ts/risubard/chatHistoryPolicy"
-    import { applyWikiRollback, createWikiBranchAt, preserveWikiChat } from "src/ts/risubard/wikiChatCoordinator"
+    import { applyWikiRollback, createWikiBranchAt, preserveWikiChat, type WikiChatContext } from "src/ts/risubard/wikiChatCoordinator"
     import { checkoutWikiVersion, discardWikiFork } from "src/ts/risubard/wikiVersionClient"
     import { cleanupWikiRebootWorkspace } from "src/ts/risubard/wikiRebootTransport"
     import { rebuildNarrativeAfterChatEdit } from "src/ts/risubard/wikiChatRebuild"
@@ -29,7 +29,7 @@
     import { alertClear, alertConfirm, alertConfirmMulti, alertInput, alertRequestData, alertWait, notifyError, notifyInfo, notifySuccess, type AlertAction } from "../../ts/alert"
     import { ParseMarkdown, type CbsConditions, type simpleCharacterArgument } from "../../ts/parser/parser.svelte"
     import { getLLMCache, setLLMCache } from "../../ts/translator/translator"
-    import { getCurrentCharacter, getCurrentChat, setCurrentChat, type MessageGenerationInfo, type StreamingDisplayOptimizationMode } from "../../ts/storage/database.svelte"
+    import { getCurrentCharacter, getCurrentChat, setCurrentChat, type Chat as ChatData, type WikiChatRecoveryStep, type MessageGenerationInfo, type StreamingDisplayOptimizationMode } from "../../ts/storage/database.svelte"
     import { selectedCharID } from "../../ts/stores.svelte"
     import { HideIconStore, ReloadGUIPointer, selIdState } from "../../ts/stores.svelte"
     import AutoresizeArea from "../UI/GUI/TextAreaResizable.svelte"
@@ -48,7 +48,18 @@
     } from 'src/ts/firstMessageStudio'
     import type { character as Character } from 'src/ts/storage/database.svelte'
     import { createRisuTriggerActivation } from './risuTriggerActivation'
+    import { Popover } from 'bits-ui'
 
+    let wikiRecoveryPending = $derived(Boolean(
+        DBState.db.characters[selIdState.selId]
+            ?.chats[DBState.db.characters[selIdState.selId].chatPage]
+            ?.risuBardWikiRecoveryPending
+    ))
+    function hasPendingWikiRecovery() {
+        return wikiRecoveryPending
+    }
+    let viewportWidth = $state(window.innerWidth)
+    let mobileActionsOpen = $state(false)
     let translating = $state(false)
     let editMode = $state(false)
     let statusMessage:string = $state('')
@@ -152,7 +163,124 @@
         canonicalReceipt = state.canonicalReceipt
     }
 
+    async function recoverChatMutation(
+        chat: ChatData,
+        original: ChatData,
+        context: WikiChatContext,
+        previousHead: string | undefined,
+        failure: unknown,
+    ) {
+        const stagingChatId = chat.risuBardWikiReboot?.stagingChatId
+        Object.assign(chat, original)
+        if (!original.risuBardWikiReboot) delete chat.risuBardWikiReboot
+
+        const recoveryFailures: string[] = []
+        const pendingSteps: WikiChatRecoveryStep[] = []
+        let wikiRestored = true
+        if (previousHead) {
+            try {
+                await checkoutWikiVersion({
+                    ...context, commitId: previousHead, reason: 'truncate',
+                })
+            }
+            catch (recoveryError) {
+                wikiRestored = false
+                const detail = recoveryError instanceof Error
+                    ? recoveryError.message : String(recoveryError)
+                recoveryFailures.push(`Memory Wiki: ${detail}`)
+                pendingSteps.push({
+                    kind: 'checkout',
+                    chatId: context.chatId,
+                    commitId: previousHead,
+                    reason: 'truncate',
+                })
+            }
+        }
+
+        if (stagingChatId && wikiRestored) {
+            try {
+                await cleanupWikiRebootWorkspace({
+                    characterId: context.characterId,
+                    stagingChatId,
+                    fetchImpl: fetch,
+                    createAuth: () => forageStorage.createAuth(),
+                })
+            }
+            catch (recoveryError) {
+                const detail = recoveryError instanceof Error
+                    ? recoveryError.message : String(recoveryError)
+                recoveryFailures.push(`작업 공간 정리: ${detail}`)
+                pendingSteps.push({
+                    kind: 'cleanup-workspace',
+                    chatId: context.chatId,
+                    stagingChatId,
+                })
+            }
+        }
+        if (stagingChatId && !wikiRestored) {
+            pendingSteps.push({
+                kind: 'cleanup-workspace',
+                chatId: context.chatId,
+                stagingChatId,
+            })
+        }
+        if (recoveryFailures.length > 0) {
+            pendingSteps.push({ kind: 'save-chat', chatId: context.chatId })
+            chat.risuBardWikiRecoveryPending = {
+                id: v4(),
+                error: recoveryFailures.join('; '),
+                steps: pendingSteps,
+            }
+        }
+
+        let chatPersisted = false
+        try {
+            await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+            chatPersisted = true
+        }
+        catch (recoveryError) {
+            const detail = recoveryError instanceof Error
+                ? recoveryError.message : String(recoveryError)
+            recoveryFailures.push(`채팅 저장: ${detail}`)
+            if (!chat.risuBardWikiRecoveryPending) {
+                chat.risuBardWikiRecoveryPending = {
+                    id: v4(),
+                    error: '',
+                    steps: [{ kind: 'save-chat', chatId: context.chatId }],
+                }
+            }
+            chat.risuBardWikiRecoveryPending.error = recoveryFailures.join('; ')
+            try {
+                await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+                chatPersisted = true
+            }
+            catch (retryError) {
+                recoveryFailures.push(`채팅 저장 재시도: ${retryError instanceof Error
+                    ? retryError.message : String(retryError)}`)
+                chat.risuBardWikiRecoveryPending.error = recoveryFailures.join('; ')
+            }
+        }
+
+        const originalFailure = failure instanceof Error ? failure.message : String(failure)
+        if (recoveryFailures.length > 0) {
+            const status = !wikiRestored
+                ? 'Memory Wiki 복구가 대기 중입니다.'
+                : '복구 작업이 완료되지 않았습니다.'
+            setStatusMessage(status)
+            notifyError(`작업 실패 (${originalFailure}). ${chatPersisted
+                ? '원본 채팅은 저장했습니다.' : '원본 채팅 저장 여부를 확인할 수 없습니다.'} ${status} ${recoveryFailures.join('; ')}`)
+            return
+        }
+        setStatusMessage('변경을 취소하고 원본 채팅과 Memory Wiki를 복원했습니다.')
+        notifyError(`작업 실패로 원본 상태를 복원했습니다: ${originalFailure}`)
+    }
+
+
     async function rm(){
+        if (hasPendingWikiRecovery()) {
+            notifyError('Memory Wiki 복구가 완료될 때까지 채팅을 변경할 수 없습니다.')
+            return
+        }
         const messages = DBState.db.characters[selIdState.selId].chats[DBState.db.characters[selIdState.selId].chatPage].message
         const cascadeCount = messages.length - idx
         const singleDeleteLabel = language.removeMessageOnly.includes('{}')
@@ -191,7 +319,6 @@
             currentChat.message = truncated
                 ? currentChat.message.slice(0, idx)
                 : currentChat.message.filter((_, index) => index !== idx)
-            await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
             const rollback = truncated
                 ? await applyWikiRollback(context, currentChat.message, 'truncate')
                 : { applied: false }
@@ -208,29 +335,15 @@
                 : language.messageRemoved)
         }
         catch (error) {
-            const stagingChatId = currentChat.risuBardWikiReboot?.stagingChatId
-            Object.assign(currentChat, original)
-            if (!original.risuBardWikiReboot) delete currentChat.risuBardWikiReboot
-            if (previousHead) {
-                await checkoutWikiVersion({
-                    ...context, commitId: previousHead, reason: 'truncate',
-                })
-            }
-            await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
-            if (stagingChatId) {
-                await cleanupWikiRebootWorkspace({
-                    characterId: currentCharacter.chaId,
-                    stagingChatId,
-                    fetchImpl: fetch,
-                    createAuth: () => forageStorage.createAuth(),
-                })
-            }
-            notifyError(`삭제를 취소하고 이전 상태를 복원했습니다: ${error instanceof Error
-                ? error.message : String(error)}`)
+            await recoverChatMutation(currentChat, original, context, previousHead, error)
         }
     }
 
     async function edit(){
+        if (hasPendingWikiRecovery()) {
+            notifyError('Memory Wiki 복구가 완료될 때까지 채팅을 변경할 수 없습니다.')
+            return
+        }
         const character = DBState.db.characters[selIdState.selId]
         const chat = character.chats[character.chatPage]
         const target = chat.message[idx]
@@ -258,19 +371,8 @@
             await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
         }
         catch (error) {
-            const stagingChatId = chat.risuBardWikiReboot?.stagingChatId
-            Object.assign(chat, original)
-            if (!original.risuBardWikiReboot) delete chat.risuBardWikiReboot
-            message = original.message[idx].data
-            if (head) await checkoutWikiVersion({
-                ...context, commitId: head, reason: 'truncate',
-            })
-            await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
-            if (stagingChatId) await cleanupWikiRebootWorkspace({
-                characterId: character.chaId, stagingChatId,
-                fetchImpl: fetch, createAuth: () => forageStorage.createAuth(),
-            })
-            notifyError(`편집을 취소했습니다: ${error instanceof Error ? error.message : String(error)}`)
+            message = original.message[idx]?.data ?? ''
+            await recoverChatMutation(chat, original, context, head, error)
         }
     }
 
@@ -693,6 +795,8 @@
     {/if}
 {/snippet}
 
+<svelte:window bind:innerWidth={viewportWidth} />
+
 {#snippet iconButtons(options:{applyTextColors?:boolean} = {})}
     {#if !readOnly}
     <div class="grow flex items-center justify-end" class:text-textcolor2={options?.applyTextColors !== false}>
@@ -709,8 +813,9 @@
         {:else}
             <span class="text-xs">{statusMessage}</span>
             <div class="flex items-center ml-2 gap-2 flex-wrap justify-end">
-                {@render translationButton()}
-                {#if window.innerWidth >= 640}
+                {#if viewportWidth >= 640}
+                    {@render translationButton()}
+                    {@render editButton()}
                     {@render majorIconButtonsBody(false)}
                     {#if DBState.db.characters[selIdState.selId] && idx > -1}
                         <PopupButton>
@@ -718,16 +823,46 @@
                         </PopupButton>
                     {/if}
                 {:else}
-                    {#if DBState.db.characters[selIdState.selId] && idx > -1}
-                        <PopupButton>
-                            {@render majorIconButtonsBody(true)}
-                            {@render minorIconButtonsBody(true)}
-                        </PopupButton>
-                    {:else}
-                        {@render majorIconButtonsBody(false)}
-                    {/if}
+                    <div class="mobile-message-actions flex items-center gap-2">
+                        {@render editButton()}
+                        <Popover.Root bind:open={mobileActionsOpen}>
+                            <Popover.Trigger class="button-icon-menu flex min-h-11 min-w-11 items-center justify-center rounded-md hover:text-primary" aria-label={language.messageMoreActions}>
+                                <MenuIcon size={20} />
+                            </Popover.Trigger>
+                            <Popover.Portal>
+                                <Popover.Content align="end" sideOffset={6} collisionPadding={8} aria-label={language.messageMoreActions} class="mobile-message-flyout z-50 flex w-64 max-w-[calc(100vw-1rem)] max-h-[min(70dvh,var(--bits-popover-content-available-height))] flex-col gap-1 overflow-y-auto rounded-md border border-darkborderc bg-darkbg p-2 text-textcolor shadow-md"
+                                    onclick={(event) => {
+                                        const button = (event.target as Element).closest('button')
+                                        if (button && !button.disabled) mobileActionsOpen = false
+                                    }}>
+                                    {@render translationButton(true)}
+                                    {@render majorIconButtonsBody(true)}
+                                    {#if DBState.db.characters[selIdState.selId] && idx > -1}
+                                        {@render minorIconButtonsBody(true)}
+                                    {/if}
+                                    {@render firstMessageToggle(true)}
+                                    <div class="mobile-message-rerolls flex items-center justify-between gap-2">
+                                        {@render rerolls()}
+                                    </div>
+                                </Popover.Content>
+                            </Popover.Portal>
+                        </Popover.Root>
+                    </div>
                 {/if}
-                {#if firstMessage}
+                {#if viewportWidth >= 640}
+                    {@render firstMessageToggle()}
+                    <div class="flex items-center gap-1">
+                        {@render rerolls()}
+                    </div>
+                {/if}
+            </div>
+        {/if}
+    </div>
+    {/if}
+{/snippet}
+
+{#snippet firstMessageToggle(showNames = false)}
+    {#if firstMessage}
                     <button class={"flex items-center shrink-0 transition-colors " + (disabled === true ? 'text-danger hover:text-danger/80' : 'hover:text-primary')} onclick={async () => {
                         await sleep(1)
                         const chat = DBState.db.characters[selIdState.selId].chats[DBState.db.characters[selIdState.selId].chatPage]
@@ -738,14 +873,8 @@
                         }
                     }}>
                         <EyeOff size={20}/>
+                        {#if showNames}<span class="ml-1">{disabled === true ? language.messageFirstEnable : language.messageFirstDisable}</span>{/if}
                     </button>
-                {/if}
-                <div class="flex items-center gap-1">
-                    {@render rerolls()}
-                </div>
-            </div>
-        {/if}
-    </div>
     {/if}
 {/snippet}
 
@@ -1082,7 +1211,7 @@
             {/if}
         </button>
     {/if}
-    <button class="flex items-center hover:text-danger/80 transition-colors button-icon-remove" onclick={rm}>
+    <button class="flex items-center hover:text-danger/80 transition-colors button-icon-remove" disabled={wikiRecoveryPending} onclick={rm}>
         <TrashIcon size={20}/>
 
         {#if showNames}
@@ -1099,7 +1228,7 @@
         }}>
             <LanguagesIcon />
             {#if showNames}
-                <span class="ml-1">{language.translate}</span>
+                <span class="ml-1">{language.axModelTranslate}</span>
             {/if}
         </button>
     {/if}
@@ -1107,7 +1236,7 @@
 
 <!-- Translation toggle row: rendered above and below the response body. -->
 {#snippet translationToggleRow(showNames = false, wrapperClass = '')}
-    {#if !readOnly && DBState.db.translator !== '' && !blankMessage && !isOptimizedStreamingMessage}
+    {#if viewportWidth >= 640 && !readOnly && DBState.db.translator !== '' && !blankMessage && !isOptimizedStreamingMessage}
         <div class={"flex items-center text-textcolor2 " + wrapperClass}>
             {@render translationToggleButton(showNames)}
         </div>
@@ -1116,10 +1245,13 @@
 
 {#snippet translationButton(showNames = false)}
     {@render translationToggleButton(showNames)}
+{/snippet}
+
+{#snippet editButton(showNames = false)}
     {#if idx > -1
         && !isOptimizedStreamingMessage
         && !memoryConfirming}
-        <button class={"flex items-center hover:text-primary transition-colors button-icon-edit "+(editMode?'text-info':'')} onclick={() => {
+        <button disabled={wikiRecoveryPending} aria-label={editMode ? language.messageEditDone : language.edit} class={"flex items-center hover:text-primary transition-colors button-icon-edit "+(editMode?'text-info':'')} onclick={() => {
             if(!editMode){
                 editMode = true
             }
@@ -1905,3 +2037,25 @@
     "border-warning-border": disabled === 'allBefore',
 }}></div>
 {/if}
+
+<style>
+    .mobile-message-actions :global(.button-icon-edit) {
+        min-width: 44px;
+        min-height: 44px;
+        justify-content: center;
+        border-radius: 0.375rem;
+    }
+    :global(.mobile-message-flyout > button) {
+        min-height: 44px;
+        width: 100%;
+        padding: 0.5rem;
+        text-align: left;
+    }
+    :global(.mobile-message-flyout button svg) { flex-shrink: 0; }
+    :global(.mobile-message-rerolls button) {
+        min-width: 44px;
+        min-height: 44px;
+        justify-content: center;
+        opacity: 1;
+    }
+</style>

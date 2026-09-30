@@ -19,6 +19,35 @@ vi.mock('./chatContentPage', () => ({ assembleChatContentPages: vi.fn() }))
 
 import { NodeStorage } from './nodeStorage'
 
+describe('NodeStorage import progress', () => {
+    it('decodes split lines and reports a disconnected stream without failing storage', async () => {
+        const storage = new NodeStorage()
+        const onEvent = vi.fn(), onLost = vi.fn()
+        const encoder = new TextEncoder()
+        ;(storage as any).authFetch = vi.fn(async () => new Response(new ReadableStream({ start(c) {
+            c.enqueue(encoder.encode('{"type":"heart'))
+            c.enqueue(encoder.encode('beat"}\n{"type":"progress","stage":"stage-files","completed":1,"total":2}\n'))
+            c.close()
+        } })))
+        const stop = await storage.observeImportProgress('test-import', onEvent, onLost)
+        await vi.waitFor(() => expect(onLost).toHaveBeenCalledOnce())
+        expect(onEvent.mock.calls.map(call => call[0].type)).toEqual(['heartbeat', 'progress'])
+        expect(storage.importProgressId).toBe('test-import')
+        stop()
+        expect(storage.importProgressId).toBeUndefined()
+    })
+
+    it('allows installation to continue when observation is unavailable', async () => {
+        const storage = new NodeStorage()
+        ;(storage as any).authFetch = vi.fn(async () => new Response('', { status: 503 }))
+        const lost = vi.fn()
+        const stop = await storage.observeImportProgress('test-import', vi.fn(), lost)
+        expect(lost).toHaveBeenCalledOnce()
+        stop()
+        expect(storage.importProgressId).toBeUndefined()
+    })
+})
+
 describe('NodeStorage live file synchronization', () => {
     it('sends the revision through authenticated transport without advancing the save etag', async () => {
         const storage = new NodeStorage()
@@ -30,6 +59,7 @@ describe('NodeStorage live file synchronization', () => {
         ;(storage as any).authFetch = authFetch
         expect(await storage.syncLiveFiles('old')).toEqual(result)
         expect(authFetch).toHaveBeenCalledWith('/api/live-files/sync', {
+            signal: expect.any(AbortSignal),
             method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"revision":"old"}',
         })
         expect(storage._lastDbEtag).toBe('acknowledged')

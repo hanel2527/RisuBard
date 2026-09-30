@@ -18,6 +18,7 @@ import { tokenize } from "../tokenizer";
 import { fetchNative, readImage } from "../globalApi.svelte";
 import { loadLoreBookV3Prompt } from './lorebook.svelte';
 import { getPersonaPrompt, getUserName, getUserIcon } from '../util';
+import { resolveGenerationTarget, type GenerationTarget } from './generationTarget';
 let luaFactory:LuaFactory
 let ScriptingSafeIds = new Set<string>()
 let ScriptingEditDisplayIds = new Set<string>()
@@ -77,12 +78,12 @@ export async function runScripted(code:string, arg:{
     const type: 'lua'|'py' = arg.type ?? 'lua'
     const char = arg.char ?? getCurrentCharacter()
     const data = arg.data ?? ''
-    const setVar = arg.setVar ?? setChatVar
-    const getVar = arg.getVar ?? getChatVar
+    let chat = arg.chat ?? (char?.type === 'character' ? char.chats[char.chatPage] : getCurrentChat())
+    const setVar = arg.setVar ?? ((key: string, value: string) => setChatVar(key, value, chat))
+    const getVar = arg.getVar ?? ((key: string) => getChatVar(key, char?.type === 'character' ? char : undefined, chat))
     const meta = arg.meta ?? {}
     const mode = arg.mode ?? 'manual'
 
-    let chat = arg.chat ?? getCurrentChat()
     let lowLevelAccess = arg.lowLevelAccess ?? false
     const permissionFingerprint = lowLevelAccess ? 'low-level' : 'standard'
 
@@ -147,7 +148,7 @@ export async function runScripted(code:string, arg:{
                 return ScriptingEngineState.setVar(key, value) === true
             })
             declareAPI('getGlobalVar', (id:string, key:string) => {
-                return getGlobalChatVar(key)
+                return getGlobalChatVar(key, ScriptingEngineState.chat)
             })
             declareAPI('stopChat', (id:string) => {
                 if(!ScriptingSafeIds.has(id)){
@@ -298,7 +299,8 @@ export async function runScripted(code:string, arg:{
             })
 
             declareAPI('cbs', (value) => {
-                return risuChatParser(value, { chara: getCurrentCharacter() })
+                const currentChar = ScriptingEngineState.char
+                return risuChatParser(value, { chara: currentChar?.type === 'character' ? currentChar : undefined, chat: ScriptingEngineState.chat })
             })
             
             declareAPI('setFullChatMain', (id:string, value:string) => {
@@ -788,7 +790,7 @@ export async function runScripted(code:string, arg:{
                 }
 
                 const loreSources = [
-                    selectedChar.chats[selectedChar.chatPage]?.localLore ?? [],
+                    ScriptingEngineState.chat?.localLore ?? [],
                     selectedChar.globalLore,
                     getModuleLorebooks()
                 ]
@@ -797,7 +799,7 @@ export async function runScripted(code:string, arg:{
                 for (const source of loreSources) {
                     for (const b of source) {
                         if (b.comment === search) {
-                            found.push({ ...b, content: risuChatParser(b.content, { chara: selectedChar }) })
+                            found.push({ ...b, content: risuChatParser(b.content, { chara: selectedChar, chat: ScriptingEngineState.chat }) })
                         }
                     }
                 }
@@ -831,7 +833,7 @@ export async function runScripted(code:string, arg:{
                     secondKey = '',
                 } = options
 
-                const currentChat = currentChar.chats[currentChar.chatPage]
+                const currentChat = ScriptingEngineState.chat ?? currentChar.chats[currentChar.chatPage]
 
                 const newLocalLoreBooks = currentChat.localLore.filter((book) => book.comment !== name)
                 newLocalLoreBooks.push({
@@ -1522,7 +1524,7 @@ ${code}
 `
 }
 
-export async function runLuaEditTrigger<T extends string|OpenAIChat[]>(char:character|simpleCharacterArgument, mode:string, content:T, meta?:object):Promise<T>{
+export async function runLuaEditTrigger<T extends string|OpenAIChat[]>(char:character|simpleCharacterArgument, mode:string, content:T, meta?:object, target?:GenerationTarget):Promise<T>{
     switch(mode){
         case 'editinput':
             mode = 'editInput'
@@ -1539,16 +1541,18 @@ export async function runLuaEditTrigger<T extends string|OpenAIChat[]>(char:char
 
     try {
         let data = content
+        const scope = target ? resolveGenerationTarget(getDatabase().characters, target) : undefined
 
         const triggers = char.triggerscript.map((v) => {
             v.lowLevelAccess = false
             return v
-        }).concat(getModuleTriggers())
+        }).concat(getModuleTriggers(scope ? { character: scope.character, chat: scope.chat } : undefined))
     
         for(let trigger of triggers){
             if(trigger?.effect?.[0]?.type === 'triggerlua'){
                 const runResult = await runScripted(trigger.effect[0].code, {
                     char: char,
+                    chat: scope?.chat,
                     lowLevelAccess: false,
                     mode: mode,
                     data,

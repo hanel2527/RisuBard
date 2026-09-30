@@ -111,6 +111,7 @@ function boundedMetric(value: unknown, maximum = Number.MAX_SAFE_INTEGER) {
 }
 
 export async function loadNarrativeInquiry(input: {
+    retrievalLimits?: { candidates: number; directSeeds: number }
     characterId: string
     chatId: string
     currentInput: string
@@ -174,6 +175,7 @@ export async function loadNarrativeInquiry(input: {
                             characterId: input.characterId,
                             chatId: input.chatId,
                             currentInput: input.currentInput.slice(0, 4_096),
+                            ...(input.retrievalLimits ? { retrievalLimits: input.retrievalLimits } : {}),
                             ...(input.fallbackInput === undefined
                                 ? {}
                                 : { fallbackInput:
@@ -449,7 +451,7 @@ export async function loadNarrativeInquiry(input: {
         .map((request) => request.messageId)
     if (input.resolveSourceMatches && missingSourceIds.length > 0) {
         const resolved = await input.resolveSourceMatches(missingSourceIds, evidenceRequests)
-        const merged = [...resolved, ...(input.sourceMatches ?? [])]
+        const merged = [...(input.sourceMatches ?? []).filter(match => match.retrieval === 'semantic'), ...resolved, ...(input.sourceMatches ?? [])]
             .filter((match, index, matches) => matches.findIndex((candidate) =>
                 candidate.messageId === match.messageId) === index)
             .slice(0, Math.max(0, Math.min(
@@ -477,7 +479,7 @@ export async function loadNarrativeInquiry(input: {
         rerankCandidates,
         entityCandidates,
         metrics: {
-            candidateCount: boundedMetric(value.metrics.candidateCount, 64),
+            candidateCount: boundedMetric(value.metrics.candidateCount, input.retrievalLimits?.candidates ?? 64),
             inspectedNodeCount: boundedMetric(
                 value.metrics.inspectedNodeCount,
                 100_000

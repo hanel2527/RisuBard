@@ -85,6 +85,13 @@ function validSemanticMatches(value) {
         )
 }
 
+function validRetrievalLimits(value) {
+    return isRecord(value) && hasExactKeys(value, ['candidates', 'directSeeds'])
+        && Number.isSafeInteger(value.candidates) && value.candidates >= 1 && value.candidates <= 256
+        && Number.isSafeInteger(value.directSeeds) && value.directSeeds >= 1
+        && value.directSeeds <= 128 && value.directSeeds <= value.candidates
+}
+
 function validWikiWritingLanguage(value) {
     return typeof value === 'string'
         && Object.prototype.hasOwnProperty.call(wikiWritingLocales, value)
@@ -111,7 +118,9 @@ function validSourceMatches(value) {
         && value.every((match) =>
             hasExactKeys(match, [
                 'messageId', 'role', 'content', 'score', 'occurredAt',
+                ...(match?.retrieval === undefined ? [] : ['retrieval']),
             ])
+            && (match.retrieval === undefined || match.retrieval === 'semantic')
             && hasBoundedId(match.messageId)
             && (match.role === 'user' || match.role === 'assistant')
             && typeof match.content === 'string'
@@ -619,8 +628,10 @@ function registerRisuBardMemoryRoutes(app, options) {
                 ...(req.body.sourceLimit === undefined
                     ? []
                     : ['sourceLimit']),
+                ...(req.body.retrievalLimits === undefined ? [] : ['retrievalLimits']),
             ])
             if (!validShape
+                || (req.body.retrievalLimits !== undefined && !validRetrievalLimits(req.body.retrievalLimits))
                 || !hasBoundedId(req.body.characterId)
                 || !hasBoundedId(req.body.chatId)
                 || typeof req.body.currentInput !== 'string'

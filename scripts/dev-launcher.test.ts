@@ -16,7 +16,7 @@ describe('RisuBard development launcher', () => {
     expect(specs).toEqual([
       {
         label: 'SERVER',
-        args: ['--watch-path=server/node', '--watch-preserve-output', 'server/node/server.cjs'],
+        args: ['server/node/server.cjs'],
       },
       {
         label: 'WEB',
