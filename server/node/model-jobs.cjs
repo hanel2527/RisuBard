@@ -132,41 +132,6 @@ function requestUpstreamStream(targetUrl, arg) {
     });
 }
 
-// Durable jobs outlive browser connections, so a client-side gate alone cannot
-// enforce the Cloud account limit after a reload or client handoff.
-let activeOllamaCloudJobs = 0;
-const queuedOllamaCloudJobs = [];
-
-async function acquireOllamaCloudJobSlot(signal) {
-    signal.throwIfAborted();
-    if (activeOllamaCloudJobs < 3) {
-        activeOllamaCloudJobs++;
-    } else {
-        const { promise, resolve, reject } = Promise.withResolvers();
-        const waiting = { resolve, signal, onAbort: null };
-        waiting.onAbort = () => {
-            const index = queuedOllamaCloudJobs.indexOf(waiting);
-            if (index !== -1) queuedOllamaCloudJobs.splice(index, 1);
-            reject(signal.reason);
-        };
-        queuedOllamaCloudJobs.push(waiting);
-        signal.addEventListener('abort', waiting.onAbort, { once: true });
-        await promise;
-    }
-    let released = false;
-    return () => {
-        if (released) return;
-        released = true;
-        const next = queuedOllamaCloudJobs.shift();
-        if (next) {
-            next.signal.removeEventListener('abort', next.onAbort);
-            next.resolve();
-        } else {
-            activeOllamaCloudJobs--;
-        }
-    };
-}
-
 // Factory bound to a save directory. Each job owns state/event/journal files,
 // keeping recovery independent and testable without a native database.
 function createModelJobs(opts = {}) {
@@ -358,13 +323,7 @@ function createModelJobs(opts = {}) {
         let writeError = null;
         ws.on('error', (err) => { writeError = writeError || err; });
         let error = null;
-        let releaseCloudSlot;
         try {
-            const hostname = new URL(arg.targetUrl).hostname;
-            if (hostname === 'ollama.com' || hostname.endsWith('.ollama.com')) {
-                releaseCloudSlot = await acquireOllamaCloudJobSlot(job.controller.signal);
-            }
-            job.controller.signal.throwIfAborted();
             const upstream = await requestUpstreamStream(arg.targetUrl, {
                 method: arg.method,
                 headers: arg.headers,
@@ -392,7 +351,6 @@ function createModelJobs(opts = {}) {
         } catch (err) {
             error = err;
         } finally {
-            releaseCloudSlot?.();
             // Flush + close before flipping status terminal; resolve even if
             // the stream already errored/destroyed (end() still calls back).
             await new Promise((resolve) => ws.end(resolve));
@@ -407,7 +365,7 @@ function createModelJobs(opts = {}) {
         }
     }
 
-    // Create a job and schedule its upstream request. `arg.headers`
+    // Create a job and fire the upstream request immediately. `arg.headers`
     // (which carry the provider auth) are consumed here and never persisted.
     // Returns { jobId } or throws { httpStatus, message } style errors are
     // left to the route layer — this returns { error, status } instead.

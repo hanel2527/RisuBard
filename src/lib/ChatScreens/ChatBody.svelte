@@ -1,7 +1,6 @@
 <script lang="ts">
     import isEqual from "lodash/isEqual"
     import { onDestroy } from "svelte"
-    import { doingChat } from "src/ts/process/generationState"
     import { DBState } from 'src/ts/stores.svelte'
     import { sleep } from "src/ts/util"
     import { alertError } from "../../ts/alert"
@@ -47,32 +46,12 @@
         onRemoveInlay,
     }: Props =  $props()
 
-    // Keep parser/translation work tied to the exact render that started it.
-    // A message can change while ParseMarkdown or the translator is pending,
-    // and a chat switch can reuse this component before that work settles.
     // svelte-ignore non_reactive_update
     let lastParsed = ''
     let lastCharArg:string|simpleCharacterArgument = null
     let lastChatId = -10
+    let lastAutoTranslate: boolean | undefined
     let lastChatKey: string | undefined
-    let lastChatObject: unknown
-    let lastRole: string|null|undefined
-    let lastTranslationPolicyKey: string | undefined
-    let lastData: string | undefined
-    let lastTranslationKey: {
-        data: string
-        charArg: string | simpleCharacterArgument
-        chatID: number
-        chatKey: string | undefined
-        chatObject: unknown
-        role: string|null
-        translatorType: unknown
-        legacyTranslation: unknown
-        translateBeforeHTMLFormatting: unknown
-        autoTranslateCachedOnly: unknown
-        generationActive: boolean
-    } | undefined
-    let lastTranslationResult: string | undefined
     let autoTranslationRevision = 0
     onDestroy(() => { autoTranslationRevision += 1 })
 
@@ -91,215 +70,121 @@
             }
         }
     }
+
     let shouldRenderRawStreaming = $derived(renderRawStreaming && !translated && !retranslate)
 
     const markParsing = async (data: string, charArg: string | simpleCharacterArgument, chatID: number, tries?:number) => {
-        // Every invocation gets its own revision, not just policy changes. This
-        // covers streaming chunks as well as a component that survives a chat
-        // or history switch while an older request is still pending.
-        const revision = ++autoTranslationRevision
-        const isCurrent = () => revision === autoTranslationRevision
-        // translateHTML intentionally returns its input while generation is
-        // active. Subscribe here so it is retried when generation completes,
-        // even if the message text itself did not change.
-        const generationActive = $doingChat
-        // A newer render supersedes any older translation operation. Clear
-        // its progress indicator before deciding whether this render starts
-        // another request; the newer request will set it again when needed.
-        void Promise.resolve().then(() => {
-            if (isCurrent()) translating = false
-        })
+        // track 'translated' and 'retranslate' state
+        translated;
+        retranslate;
         const chat = getCurrentChat()
         const autoTranslate = role !== 'user' && !!(chat?.autoTranslate ?? DBState.db.autoTranslate)
         const chatKey = chat?.id
-        const autoTranslateCachedOnly = !!DBState.db.autoTranslateCachedOnly
-        const translatorType = DBState.db.translatorType
-        const legacyTranslation = !!DBState.db.legacyTranslation
-        const translateBeforeHTMLFormatting = !!DBState.db.translateBeforeHTMLFormatting
-        const policyKey = [
-            role,
-            autoTranslate,
-            autoTranslateCachedOnly,
-            translatorType,
-            legacyTranslation,
-            translateBeforeHTMLFormatting,
-        ].join('|')
-        const contextChanged = !isEqual(lastCharArg, charArg)
-            || chatID !== lastChatId
-            || chatKey !== lastChatKey
-            || chat !== lastChatObject
-            || role !== lastRole
-        const dataChanged = data !== lastData
-        // Cached-only translation is a per-source lookup. A new streaming
-        // chunk therefore needs a fresh cache decision even when the chat
-        // policy itself did not change.
-        const shouldResolveTranslationPolicy = contextChanged
-            || policyKey !== lastTranslationPolicyKey
-            || (autoTranslate && autoTranslateCachedOnly && dataChanged)
-
         let lastParsedQueue = ''
-        const mode = 'notrim' as const
-
-        if (contextChanged) {
-            // Never show a previous chat/message's retained loading HTML.
-            lastParsed = ''
-            lastTranslationKey = undefined
-            lastTranslationResult = undefined
-        }
-
-        lastCharArg = charArg
-        lastChatId = chatID
-        lastChatKey = chatKey
-        lastChatObject = chat
-        lastRole = role
-        lastTranslationPolicyKey = policyKey
-        lastData = data
-
-        const setTranslatedLater = (value: boolean) => {
-            setTimeout(() => {
-                if (isCurrent()) translated = value
-            }, 10)
-        }
-
-        const withTranslationState = async (work: () => Promise<string>): Promise<string> => {
-            if (!isCurrent()) return data
-            translating = true
-            try {
-                return await work()
-            }
-            finally {
-                if (isCurrent()) translating = false
-            }
-        }
-
+        let mode = 'notrim' as const
         try {
-            if (shouldResolveTranslationPolicy) {
-                let translateText = autoTranslate
-                if (autoTranslate && autoTranslateCachedOnly && translatorType === 'llm') {
-                    try {
-                        const cache = translateBeforeHTMLFormatting
+            if((!isEqual(lastCharArg, charArg)) || (chatID !== lastChatId)
+                || autoTranslate !== lastAutoTranslate || chatKey !== lastChatKey){
+                const revision = ++autoTranslationRevision
+                lastAutoTranslate = autoTranslate
+                lastChatKey = chatKey
+                lastParsedQueue = ''
+                lastCharArg = charArg
+                lastChatId = chatID
+                let translateText = false
+                try {
+                    if(autoTranslate){
+                        if(DBState.db.autoTranslateCachedOnly && DBState.db.translatorType === 'llm'){
+                            const cache = DBState.db.translateBeforeHTMLFormatting
                             ? await getLLMCache(data)
-                            : !legacyTranslation
+                            : !DBState.db.legacyTranslation
                             ? await getLLMCache(await ParseMarkdown(data, charArg, 'pretranslate', chatID, getCbsCondition()))
                             : await getLLMCache(await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition()))
-                        translateText = cache !== null
+                  
+                            translateText = cache !== null
+                        }
+                        else{
+                            translateText = true
+                        }
                     }
-                    catch (error) {
-                        console.error(error)
-                        translateText = false
-                    }
-                }
 
-                if (!isCurrent()) return data
-                const lastTranslated = translated
-                if (lastTranslated !== translateText) {
-                    setTranslatedLater(translateText)
-                    // The state update above deliberately causes one more
-                    // parse. Returning raw data keeps the await block useful
-                    // while that state transition is pending.
-                    return data
+                    if (revision !== autoTranslationRevision) return data
+                    const lastTranslated = translated
+
+                    setTimeout(() => {
+                        if (revision === autoTranslationRevision) translated = translateText
+                    }, 10)
+
+                    // State change of `translated` triggers markParsing again,
+                    // causing redundant translation attempts. Return the raw
+                    // message so the {#await} block never resolves undefined.
+                    if (lastTranslated !== translateText) {
+                        return data
+                    }
+                } catch (error) {
+                    console.error(error)
                 }
             }
-
             if(retranslate || translated){
-                const translationKey = {
-                    data,
-                    charArg,
-                    chatID,
-                    chatKey,
-                    chatObject: chat,
-                    role,
-                    translatorType,
-                    legacyTranslation,
-                    translateBeforeHTMLFormatting,
-                    autoTranslateCachedOnly,
-                    generationActive,
-                }
-                // A retranslate flag is a one-shot force. Its reset triggers a
-                // reactive parse, so reuse the completed result instead of
-                // issuing the same request a second time.
-                if (!retranslate
-                    && lastTranslationResult !== undefined
-                    && lastTranslationKey
-                    && lastTranslationKey.data === translationKey.data
-                    && isEqual(lastTranslationKey.charArg, translationKey.charArg)
-                    && lastTranslationKey.chatID === translationKey.chatID
-                    && lastTranslationKey.chatKey === translationKey.chatKey
-                    && lastTranslationKey.chatObject === translationKey.chatObject
-                    && lastTranslationKey.role === translationKey.role
-                    && lastTranslationKey.translatorType === translationKey.translatorType
-                    && lastTranslationKey.legacyTranslation === translationKey.legacyTranslation
-                    && lastTranslationKey.translateBeforeHTMLFormatting === translationKey.translateBeforeHTMLFormatting
-                    && lastTranslationKey.autoTranslateCachedOnly === translationKey.autoTranslateCachedOnly
-                    && lastTranslationKey.generationActive === translationKey.generationActive) {
-                    lastParsedQueue = lastTranslationResult
-                    return lastTranslationResult
-                }
-
                 if (DBState.db.showTranslationLoading) {
                     lastParsed = `<div style="display:flex;justify-content:center;align-items:center;height:48px;"><div style="animation: spin 1s linear infinite; border-radius: 50%; height: 32px; width: 32px; border: 2px solid var(--color-primary); border-top: 2px solid transparent;"></div></div><style>@keyframes spin { to { transform: rotate(360deg); } }</style>`
                 }
 
-                let transResult: string
+                let transResult
+                
                 if(DBState.db.translatorType === 'llm' && DBState.db.translateBeforeHTMLFormatting){
                     await sleep(100)
-                    if (!isCurrent()) return data
-                    transResult = await withTranslationState(async () => {
-                        const translatedData = await translateHTML(data, false, charArg, chatID, retranslate)
-                        return await ParseMarkdown(translatedData, charArg, mode, chatID, getCbsCondition())
-                    })
+                    translating = true
+                    data = await translateHTML(data, false, charArg, chatID, retranslate)
+                    translating = false
+                    const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition())
+                    lastParsedQueue = marked
+                    lastCharArg = charArg
+                    transResult = marked
                 }
                 else if(!DBState.db.legacyTranslation){
                     const marked = await ParseMarkdown(data, charArg, 'pretranslate', chatID, getCbsCondition())
-                    if (!isCurrent()) return data
-                    transResult = await withTranslationState(async () => {
-                        const translatedData = await translateHTML(marked, false, charArg, chatID, retranslate)
-                        return await postTranslationParse(translatedData)
-                    })
+                    translating = true
+                    const translated = await postTranslationParse(await translateHTML(marked, false, charArg, chatID, retranslate))
+                    translating = false
+                    lastParsedQueue = translated
+                    lastCharArg = charArg
+                    transResult = translated
                 }
                 else{
                     const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition())
-                    if (!isCurrent()) return data
-                    transResult = await withTranslationState(
-                        () => translateHTML(marked, false, charArg, chatID, retranslate)
-                    )
+                    translating = true
+                    const translated = await translateHTML(marked, false, charArg, chatID, retranslate)
+                    translating = false
+                    lastParsedQueue = translated
+                    lastCharArg = charArg
+                    transResult = translated
                 }
 
-                if (!isCurrent()) return data
-                lastTranslationKey = translationKey
-                lastTranslationResult = transResult
-                lastParsedQueue = transResult
-                // Resetting retranslate is itself reactive. Guard it so an old
-                // request cannot clear a newer manual retranslation.
-                if (retranslate) {
-                    setTimeout(() => {
-                        if (isCurrent()) retranslate = false
-                    }, 10)
-                }
+                setTimeout(() => {
+                    retranslate = false
+                }, 10);
+
                 return transResult
             }
             else{
                 const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition())
-                if (!isCurrent()) return data
                 lastParsedQueue = marked
+                lastCharArg = charArg
                 return marked
-            }
+            }   
         } catch (error) {
-            if (!isCurrent()) return data
-            // retry
-            if((tries ?? 0) > 2){
-                const message = error instanceof Error ? error.message : String(error)
-                const stack = error instanceof Error ? error.stack ?? '' : ''
-                alertError(`Error while parsing chat message: ${translated}, ${message}, ${stack}`)
+            //retry
+            if(tries > 2){
+
+                alertError(`Error while parsing chat message: ${translated}, ${error.message}, ${error.stack}`)
                 return data
             }
             return await markParsing(data, charArg, chatID, (tries ?? 0) + 1)
         }
         finally{
-            // Since trimMarkdown is fast, we don't need to cache it. More
-            // importantly, an old request must not replace current pending
-            // content after a message/chat switch.
-            if (isCurrent()) lastParsed = lastParsedQueue
+            //since trimMarkdown is fast, we don't need to cache it
+            lastParsed = lastParsedQueue
         }
     }
 

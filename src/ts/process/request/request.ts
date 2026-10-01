@@ -216,34 +216,30 @@ export async function requestChatData(arg:RequestDataArgumentExtended, model:Mod
                 }
             }
             
-            // Translation requests are standalone; character request triggers
-            // must only affect the chat captured for this generation.
-            if(model !== 'translate'){
-                try{
-                    const currentChar = arg.currentChar ?? (arg.realChatId
-                        ? db.characters.find(c => c.chats.some(chat => chat.id === arg.realChatId))
-                        : getCurrentCharacter())
-                    const requestChat = arg.realChatId
-                        ? currentChar?.chats.find(chat => chat.id === arg.realChatId)
-                        : currentChar?.chats[currentChar.chatPage]
-                    if(currentChar && requestChat){
-                        const perf = performance.now()
-                        const d = await runTrigger(currentChar, 'request', {
-                            chat: requestChat,
-                            displayMode: true,
-                            displayData: JSON.stringify(arg.formated)
-                        })
-                        const got = JSON.parse(d.displayData)
-                        if(!got || !Array.isArray(got)){
-                            throw new Error('Invalid return')
-                        }
-                        arg.formated = got
-                        console.log('Trigger time', performance.now() - perf)
+            try{
+                const currentChar = arg.currentChar ?? (arg.realChatId
+                    ? db.characters.find(c => c.chats.some(chat => chat.id === arg.realChatId))
+                    : getCurrentCharacter())
+                const requestChat = arg.realChatId
+                    ? currentChar?.chats.find(chat => chat.id === arg.realChatId)
+                    : currentChar?.chats[currentChar.chatPage]
+                if(currentChar && requestChat){
+                    const perf = performance.now()
+                    const d = await runTrigger(currentChar, 'request', {
+                        chat: requestChat,
+                        displayMode: true,
+                        displayData: JSON.stringify(arg.formated)
+                    })
+                    const got = JSON.parse(d.displayData)
+                    if(!got || !Array.isArray(got)){
+                        throw new Error('Invalid return')
                     }
+                    arg.formated = got
+                    console.log('Trigger time', performance.now() - perf)
                 }
-                catch(e){
-                    console.error(e)
-                }
+            }
+            catch(e){
+                console.error(e)
             }
             
     

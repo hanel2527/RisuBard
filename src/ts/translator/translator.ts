@@ -1,6 +1,6 @@
 import { get } from "svelte/store"
 import { parseChatML } from "../parser/chatML";
-import { getCurrentChat, getDatabase, type character, type customscript } from "../storage/database.svelte"
+import { getDatabase, type character, type customscript } from "../storage/database.svelte"
 import {
     defaultTranslatorPrompt,
     getCurrentTranslatorPresetFromState,
@@ -8,7 +8,7 @@ import {
 } from "./presets";
 import { globalFetch } from "../globalApi.svelte"
 import { notifyError } from "../alert"
-import { requestChatData, type RequestDataArgumentExtended, type requestDataResponse } from "../process/request/request"
+import { requestChatData } from "../process/request/request"
 import { doingChat, type OpenAIChat } from "../process/index.svelte"
 import { applyMarkdownToNode, type simpleCharacterArgument } from "../parser/parser.svelte"
 import { selectedCharID } from "../stores.svelte"
@@ -37,7 +37,6 @@ let bergamotTranslate: (text: string, from: string, to: string, html?: boolean) 
 const llmTranslateCache = new Map<string, string>()
 const llmTranslateCachePrefix = 'cache/llm-translate/'
 const llmCacheReadConcurrency = 16
-const pendingLLMTranslations = new Map<string, Promise<requestDataResponse>>()
 
 type LLMTranslationCachePayload = { key: string, value: string }
 type VersionedLLMTranslationCachePayload = LLMTranslationCachePayload & { etag: string }
@@ -923,21 +922,24 @@ function needSuperChunkedTranslate(){
 }
 
 async function translateLLM(text:string, arg:{to:string, from:string, regenerate?:boolean,translatorNote?:string, onCacheState?:(cached:boolean) => void}):Promise<string>{
-    // Capture the request context before cache I/O can yield to a chat switch.
-    const db = getDatabase()
-    const chat = getCurrentChat()
-    const modelBindingTarget = {
-        useModelPreset: chat?.useModelPreset,
-        modelBinding: chat?.modelBinding ? safeStructuredClone(chat.modelBinding) : undefined,
-        usePromptPresetParams: chat?.usePromptPresetParams,
+    if(!arg.regenerate){
+        const cacheMatch = llmTranslateCache.get(text)
+        if(cacheMatch){
+            arg.onCacheState?.(true)
+            return cacheMatch
+        }
+        const persistedCacheMatch = await getPersistentLLMCache(text)
+        if (persistedCacheMatch !== null) {
+            arg.onCacheState?.(true)
+            return persistedCacheMatch
+        }
     }
-    const realChatId = chat?.id
-    const currentChar = db.characters[get(selectedCharID)]
-    const translatorNote = arg.translatorNote
-        ?? (currentChar?.type === 'character' ? currentChar.translatorNote ?? '' : '')
-    const preset = getCurrentTranslatorPreset()
-    const maxTokens = preset.maxResponse
+    // The cache is looked up (above) with the original text, so it must be stored
+    // under the same key. `text` gets mutated below for the request; storing under
+    // the mutated string made every <style>-bearing message a permanent cache miss
+    // that re-billed the LLM and piled up orphan entries.
     const cacheKey = text
+    const publicationToken = beginLLMCachePublication(cacheKey)
     const styleDecodeRegex = /\<risu-style\>(.+?)\<\/risu-style\>/gms
     let styleDecodes:string[] = []
     text = text.replace(styleDecodeRegex, (match, p1) => {
@@ -945,64 +947,56 @@ async function translateLLM(text:string, arg:{to:string, from:string, regenerate
         return `<style-data style-index="${styleDecodes.length-1}"></style-data>`
     })
 
-    // Parse the template, not the source text: source ChatML/CBS must remain
-    // literal rather than expanding into another message or chat history.
-    const prompt = preset.prompt || defaultTranslatorPrompt
-    const fillSlots = (value: string) => value.replace(
-        /\{\{(?:slot(?:::(?:from|content|tnote))?|solt::content)\}\}/g,
-        (slot) => {
-            switch (slot) {
-                case '{{slot}}': return arg.to
-                case '{{slot::from}}': return arg.from ?? ''
-                case '{{slot::tnote}}': return translatorNote
-                default: return text
-            }
-        },
-    )
-    const parsedPrompt = parseChatML(prompt)
-    const formated: OpenAIChat[] = parsedPrompt
-        ? parsedPrompt.map(message => ({ ...message, content: fillSlots(message.content) }))
-        : [{ role: 'system', content: fillSlots(prompt) }, { role: 'user', content: text }]
-
-    if (!arg.regenerate) {
-        const cacheMatch = llmTranslateCache.get(cacheKey) ?? await getPersistentLLMCache(cacheKey)
-        if (cacheMatch !== null && cacheMatch !== undefined) {
-            arg.onCacheState?.(true)
-            return cacheMatch
-        }
+    const db = getDatabase()
+    const charIndex = get(selectedCharID)
+    const currentChar = db.characters[charIndex]
+    let translatorNote = ""
+    console.log(arg.translatorNote)
+    if(arg.translatorNote){
+        translatorNote = arg.translatorNote
     }
-    const publicationToken = beginLLMCachePublication(cacheKey)
-    const request: RequestDataArgumentExtended = {
+    else if (currentChar?.type === "character") {
+        translatorNote = currentChar.translatorNote ?? ""
+    } else {
+        translatorNote = ""
+    }
+    console.log(translatorNote)
+
+    let formated:OpenAIChat[] = []
+    const preset = getCurrentTranslatorPreset()
+    let prompt = preset.prompt || defaultTranslatorPrompt
+    let parsedPrompt = parseChatML(prompt.replaceAll('{{slot::from}}', arg.from).replaceAll('{{slot}}', arg.to).replaceAll('{{solt::content}}', text).replaceAll('{{slot::content}}', text).replaceAll('{{slot::tnote}}', translatorNote))
+    if(parsedPrompt){
+        formated = parsedPrompt
+    }
+    else{
+        prompt = prompt.replaceAll('{{slot}}', arg.to).replaceAll('{{slot::tnote}}', translatorNote).replaceAll('{{slot::from}}', arg.from)
+        formated = [
+            {
+                'role': 'system',
+                'content': prompt
+            },
+            {
+                'role': 'user',
+                'content': text
+            }
+        ]
+    }
+    const rq = await requestChatData({
         formated,
         bias: {},
         useStreaming: false,
         noMultiGen: true,
-        maxTokens,
-        modelBindingTarget,
-        realChatId,
-        tools: [],
-        disablePromptCache: true,
-    }
-    const requestKey = JSON.stringify(request)
-    let pending = arg.regenerate ? undefined : pendingLLMTranslations.get(requestKey)
-    if (!pending) {
-        pending = requestChatData(request, 'translate')
-        if (!arg.regenerate) pendingLLMTranslations.set(requestKey, pending)
-    }
-    let rq: requestDataResponse
-    try {
-        rq = await pending
-    } finally {
-        if (pendingLLMTranslations.get(requestKey) === pending) pendingLLMTranslations.delete(requestKey)
-    }
+        maxTokens: preset.maxResponse,
+    }, 'translate')
 
     if(rq.type === 'fail'){
         notifyError(rq.result)
-        return cacheKey
+        return text
     }
     if(rq.type === 'streaming' || rq.type === 'multiline'){
         notifyError('Unexpected response type')
-        return cacheKey
+        return text
     }
     const result = rq.result.replace(/<style-data style-index="(\d+)" ?\/?>/g, (match, p1) => {
         return styleDecodes[parseInt(p1)] ?? ''

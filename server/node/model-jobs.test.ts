@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import http from 'node:http'
 import express from 'express'
 import fs from 'node:fs'
@@ -145,57 +145,6 @@ describe('model-jobs', () => {
         })
         return { status: res.status, json: await res.json() }
     }
-
-    it('limits durable Ollama jobs to three upstream requests and cancels queued jobs without sending them', async () => {
-        const responses: http.ServerResponse[] = [];
-        const received: string[] = [];
-        let active = 0;
-        let peak = 0;
-        const cloud = http.createServer((req, res) => {
-            active++;
-            peak = Math.max(peak, active);
-            received.push(req.url!);
-            responses.push(res);
-            res.on('close', () => { active--; });
-            req.resume();
-        });
-        const port = await listen(cloud);
-        const originalRequest = http.request;
-        const redirect = vi.spyOn(http, 'request').mockImplementation(((url: URL, options: http.RequestOptions, callback: (res: http.IncomingMessage) => void) => {
-            const local = new URL(url);
-            if (local.hostname === 'ollama.com') {
-                local.hostname = '127.0.0.1';
-                local.port = String(port);
-            }
-            return originalRequest(local, options, callback);
-        }) as typeof http.request);
-        const jobs = Array.from({ length: 8 }, (_, index) => store.createJob({
-            targetUrl: `http://ollama.com/job/${index}`,
-            chatId: `cloud-chat-${index}`,
-            kind: index % 2 ? 'aux' : 'main',
-            body: '{}',
-        }));
-        try {
-            await vi.waitFor(() => expect(received).toEqual(['/job/0', '/job/1', '/job/2']));
-            store.deleteJob(jobs[3].jobId);
-            await jobs[3].runPromise;
-            expect(store.getJob(jobs[3].jobId).status).toBe('aborted');
-            for (let index = 0; index < 7; index++) {
-                await vi.waitFor(() => expect(responses[index]).toBeDefined());
-                responses[index].end('{}');
-            }
-            await Promise.all(jobs.map(job => job.runPromise));
-            expect(received).toEqual(['/job/0', '/job/1', '/job/2', '/job/4', '/job/5', '/job/6', '/job/7']);
-            expect(peak).toBe(3);
-            expect(jobs.filter(job => store.getJob(job.jobId).status === 'done')).toHaveLength(7);
-        } finally {
-            for (const job of jobs) store.deleteJob(job.jobId);
-            cloud.closeAllConnections();
-            await Promise.all(jobs.map(job => job.runPromise));
-            redirect.mockRestore();
-            cloud.close();
-        }
-    });
 
     it('rejects unauthenticated requests', async () => {
         const res = await fetch(`${base}/api/model-jobs`, { method: 'POST' })

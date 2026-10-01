@@ -21,32 +21,7 @@ import type {
     AdapterUsage,
 } from './types'
 import { resolveWireModelId } from './wireInvariants'
-import {
-    isOllamaCloudRequest,
-    ollamaCloudRequestLimiter,
-    type RequestSlotRelease,
-} from './ollamaCloudLimiter'
 import { capModelOutputTokens } from './outputTokens'
-
-async function acquireOllamaCloudSlot(
-    preset: ModelPreset,
-    preparedUrl: string,
-    signal: AbortSignal | undefined,
-): Promise<RequestSlotRelease | undefined> {
-    if (!isOllamaCloudRequest(preset, preparedUrl)) return undefined
-    try {
-        const release = await ollamaCloudRequestLimiter.acquire(signal)
-        if (signal?.aborted) {
-            release()
-            throw signal.reason ?? new DOMException('The operation was aborted.', 'AbortError')
-        }
-        return release
-    }
-    catch (error) {
-        throw normalizeFetchError(error)
-    }
-}
-
 
 interface WireToolCall {
     id: string
@@ -103,43 +78,33 @@ export async function sendChatRequest(
     credential?: AdapterCredential,
 ): Promise<AdapterChatResponse> {
     const prepared = await prepareOpenAiBody(preset, options, credential, false)
-    const releaseSlot = await acquireOllamaCloudSlot(
-        preset,
-        prepared.url,
-        options.abortSignal,
-    )
+    const fetchImpl = options.fetchImpl ?? globalThis.fetch
+    let response: Response
     try {
-        const fetchImpl = options.fetchImpl ?? globalThis.fetch
-        let response: Response
-        try {
-            response = await fetchImpl(prepared.url, {
-                method: prepared.method,
-                headers: prepared.headers,
-                body: JSON.stringify(prepared.body),
-                signal: options.abortSignal,
-            })
-        } catch (err) {
-            throw normalizeFetchError(err)
-        }
-
-        if (!response.ok) {
-            throw await deriveHttpError(response)
-        }
-
-        let raw: unknown
-        try {
-            raw = await response.json()
-        } catch (err) {
-            throw new ModelPresetAdapterError('parse', 'Failed to parse OpenAI-compatible JSON response', {
-                cause: err,
-            })
-        }
-
-        return parseChatCompletion(raw)
+        response = await fetchImpl(prepared.url, {
+            method: prepared.method,
+            headers: prepared.headers,
+            body: JSON.stringify(prepared.body),
+            signal: options.abortSignal,
+        })
+    } catch (err) {
+        throw normalizeFetchError(err)
     }
-    finally {
-        releaseSlot?.()
+
+    if (!response.ok) {
+        throw await deriveHttpError(response)
     }
+
+    let raw: unknown
+    try {
+        raw = await response.json()
+    } catch (err) {
+        throw new ModelPresetAdapterError('parse', 'Failed to parse OpenAI-compatible JSON response', {
+            cause: err,
+        })
+    }
+
+    return parseChatCompletion(raw)
 }
 
 export async function* streamChatRequest(
@@ -148,62 +113,51 @@ export async function* streamChatRequest(
     credential?: AdapterCredential,
 ): AsyncGenerator<AdapterChatStreamDelta, void, void> {
     const prepared = await prepareOpenAiBody(preset, options, credential, true)
-    const releaseSlot = await acquireOllamaCloudSlot(
-        preset,
-        prepared.url,
-        options.abortSignal,
-    )
+    const fetchImpl = options.fetchImpl ?? globalThis.fetch
+    let response: Response
     try {
-        const fetchImpl = options.fetchImpl ?? globalThis.fetch
-        let response: Response
-        try {
-            response = await fetchImpl(prepared.url, {
-                method: prepared.method,
-                headers: { ...prepared.headers, Accept: 'text/event-stream' },
-                body: JSON.stringify(prepared.body),
-                signal: options.abortSignal,
-            })
-        } catch (err) {
-            throw normalizeFetchError(err)
-        }
-
-        if (!response.ok) {
-            throw await deriveHttpError(response)
-        }
-
-        if (!response.body) {
-            throw new ModelPresetAdapterError('parse', 'OpenAI-compatible stream response has no body')
-        }
-
-        try {
-            for await (const event of parseSseStream(response.body)) {
-                if (event.data === '[DONE]') return
-                if (event.data.length === 0) continue
-                let raw: unknown
-                try {
-                    raw = JSON.parse(event.data)
-                } catch (err) {
-                    throw new ModelPresetAdapterError(
-                        'parse',
-                        'Failed to parse OpenAI-compatible stream chunk JSON',
-                        { cause: err },
-                    )
-                }
-                const delta = parseChatStreamDelta(raw)
-                if (delta) yield delta
-            }
-        } catch (err) {
-            // Intentional domain errors (parse, etc.) pass through;
-            // fetch/abort/network failures during stream body read get normalized.
-            if (err instanceof ModelPresetAdapterError) throw err
-            throw normalizeFetchError(err)
-        }
+        response = await fetchImpl(prepared.url, {
+            method: prepared.method,
+            headers: { ...prepared.headers, Accept: 'text/event-stream' },
+            body: JSON.stringify(prepared.body),
+            signal: options.abortSignal,
+        })
+    } catch (err) {
+        throw normalizeFetchError(err)
     }
-    finally {
-        releaseSlot?.()
+
+    if (!response.ok) {
+        throw await deriveHttpError(response)
+    }
+
+    if (!response.body) {
+        throw new ModelPresetAdapterError('parse', 'OpenAI-compatible stream response has no body')
+    }
+
+    try {
+        for await (const event of parseSseStream(response.body)) {
+            if (event.data === '[DONE]') return
+            if (event.data.length === 0) continue
+            let raw: unknown
+            try {
+                raw = JSON.parse(event.data)
+            } catch (err) {
+                throw new ModelPresetAdapterError(
+                    'parse',
+                    'Failed to parse OpenAI-compatible stream chunk JSON',
+                    { cause: err },
+                )
+            }
+            const delta = parseChatStreamDelta(raw)
+            if (delta) yield delta
+        }
+    } catch (err) {
+        // Intentional domain errors (parse, etc.) pass through;
+        // fetch/abort/network failures during stream body read get normalized.
+        if (err instanceof ModelPresetAdapterError) throw err
+        throw normalizeFetchError(err)
     }
 }
-
 
 // Build the request without sending it (previewBody). Must never hit the network
 // or the tool loop.
