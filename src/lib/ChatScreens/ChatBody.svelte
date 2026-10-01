@@ -1,13 +1,12 @@
 <script lang="ts">
     import isEqual from "lodash/isEqual"
-    import { onDestroy } from "svelte"
     import { DBState } from 'src/ts/stores.svelte'
     import { sleep } from "src/ts/util"
     import { alertError } from "../../ts/alert"
     import { addMetadataToElement, getDistance, ParseMarkdown, postTranslationParse, resolveInlayPlaceholders, trimMarkdown, type CbsConditions, type simpleCharacterArgument } from "../../ts/parser/parser.svelte"
     import { getLLMCache, translateHTML } from "../../ts/translator/translator"
     import { getModuleAssets } from "src/ts/process/modules";
-    import { getCurrentCharacter, getCurrentChat } from "src/ts/storage/database.svelte";
+    import { getCurrentCharacter } from "src/ts/storage/database.svelte";
     import { getFileSrc } from "src/ts/globalApi.svelte";
     import { clearGenericChatImageStyles, isFirstMessageStudioManagedImage } from './chatImageHandling'
     import { retainedChatHtml } from './retainedChatHtml'
@@ -50,10 +49,6 @@
     let lastParsed = ''
     let lastCharArg:string|simpleCharacterArgument = null
     let lastChatId = -10
-    let lastAutoTranslate: boolean | undefined
-    let lastChatKey: string | undefined
-    let autoTranslationRevision = 0
-    onDestroy(() => { autoTranslationRevision += 1 })
 
     function getCbsCondition(){
         try{
@@ -77,23 +72,16 @@
         // track 'translated' and 'retranslate' state
         translated;
         retranslate;
-        const chat = getCurrentChat()
-        const autoTranslate = role !== 'user' && !!(chat?.autoTranslate ?? DBState.db.autoTranslate)
-        const chatKey = chat?.id
         let lastParsedQueue = ''
         let mode = 'notrim' as const
         try {
-            if((!isEqual(lastCharArg, charArg)) || (chatID !== lastChatId)
-                || autoTranslate !== lastAutoTranslate || chatKey !== lastChatKey){
-                const revision = ++autoTranslationRevision
-                lastAutoTranslate = autoTranslate
-                lastChatKey = chatKey
+            if((!isEqual(lastCharArg, charArg)) || (chatID !== lastChatId)){
                 lastParsedQueue = ''
                 lastCharArg = charArg
                 lastChatId = chatID
                 let translateText = false
                 try {
-                    if(autoTranslate){
+                    if(DBState.db.autoTranslate){
                         if(DBState.db.autoTranslateCachedOnly && DBState.db.translatorType === 'llm'){
                             const cache = DBState.db.translateBeforeHTMLFormatting
                             ? await getLLMCache(data)
@@ -108,11 +96,10 @@
                         }
                     }
 
-                    if (revision !== autoTranslationRevision) return data
                     const lastTranslated = translated
 
                     setTimeout(() => {
-                        if (revision === autoTranslationRevision) translated = translateText
+                            translated = translateText
                     }, 10)
 
                     // State change of `translated` triggers markParsing again,

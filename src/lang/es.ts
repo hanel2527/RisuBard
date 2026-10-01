@@ -655,6 +655,8 @@ export const languageSpanish = {
     "useChatCopy": "Usar Copia de Mensaje de Chat",
     "useChatSticker": "Usar Sticker de Chat",
     "useAdditionalAssetsPreview": "Usar Vista Previa de Activos Adicionales",
+    "autoTranslateInput": "Traducción Automática de Entrada",
+    "enterMessageForTranslateToEnglish": "Ingresa el Mensaje para Traducir al Inglés",
     "recent": "Reciente",
     "downloads": "Descargas",
     "trending": "Tendencias",

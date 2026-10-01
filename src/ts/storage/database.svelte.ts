@@ -1662,6 +1662,7 @@ export interface Database{
     claudeAPIKey:string,
     useChatCopy:boolean,
     novellistAPI:string,
+    useAutoTranslateInput:boolean
     imageCompression:boolean
     inlayImageLossless:boolean
     inlayImagePriority:boolean
@@ -2811,8 +2812,6 @@ export interface Chat{
     message: Message[]
     note:string
     name:string
-    /** Overrides global automatic translation for this chat; absent inherits it. */
-    autoTranslate?: boolean
     localLore: loreBook[]
     /** Legacy per-chat gallery. New data is stored on the character. */
     risuBardGallery?:RisuBardGallery
