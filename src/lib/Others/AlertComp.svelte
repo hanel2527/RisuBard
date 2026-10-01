@@ -2,7 +2,7 @@
     import { alertGenerationInfoStore } from "../../ts/alert";
     
     import { DBState, loadedStore } from 'src/ts/stores.svelte';
-    import { importSession, cancelImport, retryImportRollback, checkImportRecovery, dismissImportRecovery } from 'src/ts/importSession';
+    import { importSession, cancelImport, retryImportRollback, checkImportRecovery, dismissImportRecovery, requestImportReset } from 'src/ts/importSession';
     import { importProgress } from 'src/ts/importProgress';
     import ImportActivity from './ImportActivity.svelte';
     import { getCharImage } from '../../ts/characters';
@@ -44,6 +44,7 @@
     import { getMessageSize } from 'src/ts/messageSize';
 
     let showDetails = $state(false);
+    let confirmImportReset = $state(false);
     $effect(() => { if ($loadedStore) checkImportRecovery() });
     let translatedStackTrace = $state('');
     let stackTraceTranslationFailed = $state(false);
@@ -894,29 +895,45 @@
 
 <ShLoadingDialog
     open={($importSession.phase !== 'recovery' || $importSession.dismissed) && ($alertStore.type === 'wait' || $alertStore.type === 'wait2' || $alertStore.type === 'progress' || $importSession.phase === 'rolling-back')}
-    message={$importSession.phase === 'rolling-back' ? language.importInstall.rollbackMessage : $importProgress.active && $importProgress.server ? (language.importInstall.stages[$importProgress.stage as keyof typeof language.importInstall.stages] ?? language.importInstall.saving) : $alertStore.msg}
+    message={$importSession.resetting ? language.importInstall.resetting : $importSession.phase === 'rolling-back' ? language.importInstall.rollbackMessage : $importProgress.active && $importProgress.server ? (language.importInstall.stages[$importProgress.stage as keyof typeof language.importInstall.stages] ?? language.importInstall.saving) : $alertStore.msg}
     submessage={$alertStore.type !== 'progress' ? ($alertStore.submsg ?? '') : ''}
     progress={$importProgress.active ? ($importProgress.percent ?? null) : $importSession.phase !== 'rolling-back' && $alertStore.type === 'progress' ? parseFloat($alertStore.submsg ?? '0') : null}
     progressLabel={$importProgress.active ? language.importInstall.stageProgress : ''}
+    reserveProgressSpace={$importSession.phase === 'installing' || $importSession.phase === 'rolling-back'}
 >
     {#snippet extra()}
         {#if $importSession.phase === 'installing' || $importSession.phase === 'rolling-back'}
             <ImportActivity />
             <p class="text-sm text-textcolor2 text-center">{$importSession.phase === 'rolling-back' ? language.importInstall.rollbackWait : language.importInstall.rollbackHint}</p>
-            <ShButton variant="outline" disabled={$importSession.phase === 'rolling-back'} onclick={cancelImport}>
-                {$importSession.phase === 'rolling-back' ? language.importInstall.rollingBack : language.importInstall.cancel}
-            </ShButton>
+            <div class="flex flex-wrap justify-center gap-2">
+                <ShButton variant="outline" disabled={$importSession.phase === 'rolling-back'} onclick={cancelImport}>
+                    {$importSession.phase === 'rolling-back' ? language.importInstall.rollingBack : language.importInstall.cancel}
+                </ShButton>
+                <ShButton variant="outline" onclick={() => { confirmImportReset = true }}>{language.importInstall.reset}</ShButton>
+            </div>
         {/if}
     {/snippet}
 </ShLoadingDialog>
 
-<ShDialog open={$importSession.phase === 'recovery' && !$importSession.dismissed} tier="top" closable={false} closeOnOutsideClick={false}>
-    {#snippet title()}{language.importInstall.recoveryTitle}{/snippet}
+<ShDialog open={$importSession.phase === 'recovery' && !$importSession.dismissed && !confirmImportReset} tier="top" closable={false} closeOnOutsideClick={false}>
+    {#snippet title()}{$importSession.resetting ? language.importInstall.resetFailedTitle : language.importInstall.recoveryTitle}{/snippet}
     <p class="text-textcolor whitespace-pre-wrap break-words">{language.importInstall.recoveryMessage}</p>
     {#if $importSession.error}<p class="text-sm text-textcolor2 break-words">{$importSession.error}</p>{/if}
     {#snippet footer()}
-        <ShButton variant="outline" onclick={dismissImportRecovery}>{language.importInstall.dismiss}</ShButton>
-        <ShButton onclick={retryImportRollback}>{language.importInstall.retry}</ShButton>
+        <div class="flex flex-wrap justify-end gap-2">
+            <ShButton variant="outline" onclick={dismissImportRecovery}>{language.importInstall.dismiss}</ShButton>
+            <ShButton variant="outline" onclick={() => { confirmImportReset = true }}>{language.importInstall.reset}</ShButton>
+            <ShButton onclick={retryImportRollback}>{$importSession.resetting ? language.importInstall.resetRetry : language.importInstall.retry}</ShButton>
+        </div>
+    {/snippet}
+</ShDialog>
+
+<ShDialog bind:open={confirmImportReset} tier="top" closeOnEscape closeOnOutsideClick={false}>
+    {#snippet title()}{language.importInstall.resetTitle}{/snippet}
+    <p class="text-textcolor whitespace-pre-wrap break-words">{language.importInstall.resetMessage}</p>
+    {#snippet footer()}
+        <ShButton variant="outline" onclick={() => { confirmImportReset = false }}>{language.cancel}</ShButton>
+        <ShButton variant="destructive" onclick={() => { requestImportReset(); confirmImportReset = false }}>{language.importInstall.resetConfirm}</ShButton>
     {/snippet}
 </ShDialog>
 

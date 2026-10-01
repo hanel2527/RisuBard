@@ -11,6 +11,11 @@ export const languageEnglish = {
     messageFirstEnable: 'Enable first message',
     messageFirstDisable: 'Disable first message',
     importInstall: {
+        reset: 'Reset installation', resetTitle: 'Reset this installation?',
+        resetMessage: 'Reload the app to stop the current installation, then remove characters and modules added by this installation. Existing characters, chats and settings are preserved. Asset files are retained to protect existing data, so disk space is not fully reclaimed. A server connection is required. If resetting fails, the request is saved so you can retry.',
+        resetConfirm: 'Reload and reset', resetting: 'Resetting installation.',
+        resetRetry: 'Retry reset', resetFailedTitle: 'Installation reset is incomplete',
+        resetComplete: 'Installation reset. You can install again. Asset files were retained.',
         saving: 'Saving imported data on the server...', stageProgress: 'Current stage',
         elapsed: 'Elapsed', lastActivity: 'Last work update', secondsAgo: ' seconds ago',
         unavailable: 'The server progress connection was lost. Completion has not been confirmed.',

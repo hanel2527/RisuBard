@@ -17,6 +17,7 @@
         submessage?: string;
         progress?: number | null;
         progressLabel?: string;
+        reserveProgressSpace?: boolean;
         tier?: ShDialogTier;
         contentClass?: string;
         extra?: Snippet;
@@ -28,6 +29,7 @@
         submessage = '',
         progress = null,
         progressLabel = '',
+        reserveProgressSpace = false,
         tier = 'alert',
         contentClass = '',
         extra,
@@ -84,16 +86,16 @@
                 </div>
             {/if}
 
-            {#if clampedProgress != null}
-                <div class="w-full flex flex-col gap-2 mt-2">
+            {#if clampedProgress != null || reserveProgressSpace}
+                <div class="w-full flex flex-col gap-2 mt-2" class:invisible={clampedProgress == null} aria-hidden={clampedProgress == null}>
                     <div class="w-full h-2 bg-bgcolor border border-darkborderc rounded-md overflow-hidden">
                         <div
                             class="h-full bg-linear-to-r from-info to-secondary saving-animation transition-[width]"
-                            style:width={clampedProgress + '%'}
+                            style:width={(clampedProgress ?? 0) + '%'}
                         ></div>
                     </div>
                     <div class="text-textcolor2 text-sm text-center">
-                        {progressLabel} {clampedProgress.toFixed(0)}%
+                        {progressLabel} {(clampedProgress ?? 0).toFixed(0)}%
                     </div>
                 </div>
             {/if}

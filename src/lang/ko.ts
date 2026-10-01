@@ -11,6 +11,11 @@ export const languageKorean = {
   messageFirstEnable: '첫 메시지 켜기',
   messageFirstDisable: '첫 메시지 끄기',
   importInstall: {
+    reset: '설치 초기화', resetTitle: '이 설치를 초기화할까요?',
+    resetMessage: '앱을 새로고침해 현재 설치 작업을 중단한 뒤, 이 설치가 추가한 캐릭터와 모듈을 제거합니다. 기존 캐릭터, 대화와 설정은 보존합니다. 에셋 파일은 기존 데이터 보호를 위해 남겨 두므로 디스크 용량이 모두 반환되지는 않습니다. 서버 연결이 필요하며, 실패하면 초기화 요청을 보관해 다시 시도할 수 있습니다.',
+    resetConfirm: '새로고침하고 초기화', resetting: '설치를 초기화하는 중입니다.',
+    resetRetry: '초기화 다시 시도', resetFailedTitle: '설치 초기화가 완료되지 않았습니다',
+    resetComplete: '설치를 초기화했습니다. 다시 설치할 수 있습니다. 에셋 파일은 보존했습니다.',
     saving: '가져온 데이터를 서버에 저장하는 중입니다.', stageProgress: '현재 단계',
     elapsed: '전체 경과', lastActivity: '최근 작업 갱신', secondsAgo: '초 전',
     unavailable: '서버 진행 상태 연결이 끊겼습니다. 완료 여부를 아직 확인할 수 없습니다.',

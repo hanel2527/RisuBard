@@ -49,3 +49,34 @@ it('does no scan for ordinary saves and refuses unresolved chats', () => {
     expect(() => reclaimDeletedCharacterAssets({ candidates: ['one'], database: { characters: [{ chats: [{ _stub: true }] }] }, listKeys, remove })).toThrow(/Unloaded/)
     expect(remove).not.toHaveBeenCalled()
 })
+
+it.each([
+    { coldstorage: 'archived-character', chats: [] },
+    { chats: [{ _stub: true }] },
+    { chats: [{ type: 'remote' }] },
+])('allows rollback to retain all assets when references are incomplete: %j', character => {
+    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rollback-retained-assets-'))
+    roots.push(dataRoot)
+    const store = createFileKv({ dataRoot })
+    store.kvSet('assets/new', Buffer.from('new import'))
+    store.kvSet('assets/existing', Buffer.from('existing user asset'))
+    const result = reclaimDeletedCharacterAssets({
+        candidates: ['new'], database: { characters: [character] },
+        listKeys: store.kvList, read: store.kvGet, remove: store.kvDelManyAndCollect,
+        retainIfUnloaded: true,
+    })
+    expect(result).toEqual({ count: 0, reclaimed: 0, retained: 1 })
+    const reopened = createFileKv({ dataRoot })
+    expect(reopened.kvGet('assets/new').toString()).toBe('new import')
+    expect(reopened.kvGet('assets/existing').toString()).toBe('existing user asset')
+})
+
+it('still rejects unreadable plugin references during rollback when data is loaded', () => {
+    const remove = vi.fn()
+    expect(() => reclaimDeletedCharacterAssets({
+        candidates: ['new'], database: { characters: [] },
+        listKeys: () => ['cache/plugin-storage/broken.json'], read: () => Buffer.from('{'), remove,
+        retainIfUnloaded: true,
+    })).toThrow()
+    expect(remove).not.toHaveBeenCalled()
+})

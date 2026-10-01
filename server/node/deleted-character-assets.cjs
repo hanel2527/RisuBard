@@ -1,11 +1,14 @@
 'use strict';
 const { collectNestedAssetReferences } = require('./orphan-cleanup.cjs');
 
-function reclaimDeletedCharacterAssets({ candidates, database, listKeys, read, remove }) {
+function reclaimDeletedCharacterAssets({ candidates, database, listKeys, read, remove, retainIfUnloaded = false }) {
     if (!candidates?.length) return { count: 0, reclaimed: 0 };
     if (!Array.isArray(database?.characters)) throw new Error('Complete database required for asset cleanup');
     for (const character of database.characters) {
         if (character.coldstorage || character.chats?.some(chat => chat._stub || chat.type === 'remote')) {
+            // Rollback may finish without reclaiming bytes, but must never guess
+            // whether an unloaded character still references an asset.
+            if (retainIfUnloaded) return { count: 0, reclaimed: 0, retained: candidates.length };
             throw new Error('Unloaded character data prevents asset cleanup');
         }
     }

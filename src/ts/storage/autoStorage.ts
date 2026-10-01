@@ -126,7 +126,7 @@ export class AutoStorage{
     // ── Bulk asset operations ──────────────────────────────────────────────────
     async getItems(keys: string[]) { return this.realStorage.getItems(keys) }
     async setItems(entries: {key: string, value: Uint8Array}[]) { return this.realStorage.setItems(entries) }
-    async cleanupImportAssets(keys: string[], id: string) { await this.Init(); return this.realStorage.cleanupImportAssets(keys, id) }
+    async cleanupImportAssets(keys: string[], id: string, retainAssets = false) { await this.Init(); return this.realStorage.cleanupImportAssets(keys, id, retainAssets) }
     async prepareImportRollback(id: string) { await this.Init(); return this.realStorage.prepareImportRollback(id) }
 
     // ── Server-side backup ─────────────────────────────────────────────────────

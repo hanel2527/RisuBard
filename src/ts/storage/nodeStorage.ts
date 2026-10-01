@@ -726,10 +726,10 @@ export class NodeStorage{
         return results.map(r => ({ key: r.key, value: Buffer.from(r.value, 'base64') }))
     }
 
-    async cleanupImportAssets(keys: string[], id: string) {
+    async cleanupImportAssets(keys: string[], id: string, retainAssets = false) {
         const response = await this.saveRequest('/api/assets/import-rollback', {
             method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ keys, id }),
+            body: JSON.stringify({ keys, id, retainAssets }),
         })
         if (!response.ok) {
             const body = await response.json().catch(() => null)

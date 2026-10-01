@@ -1,8 +1,9 @@
-import { beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { get, writable } from 'svelte/store'
 
 const mocks = vi.hoisted(() => ({
     cleanup: vi.fn(), prepare: vi.fn(), save: vi.fn(), success: vi.fn(),
+    database: { characters: [] as any[], modules: [] as any[] },
 }))
 vi.mock('src/lang', () => ({ language: { importInstall: {
     busy: 'pending rollback', missingRecord: 'missing record', cancelled: 'cancelled',
@@ -17,7 +18,7 @@ vi.mock('./globalApi.svelte', () => ({
     },
     requestImmediateSave: mocks.save, saveAsset: vi.fn(),
 }))
-vi.mock('./storage/database.svelte', () => ({ getDatabase: () => ({ characters: [], modules: [] }) }))
+vi.mock('./storage/database.svelte', () => ({ getDatabase: () => mocks.database }))
 vi.mock('./importProgress', () => ({
     startImportProgress: vi.fn(), stopImportProgress: vi.fn(), beginImportSave: vi.fn(),
     receiveImportProgress: vi.fn(), loseImportProgress: vi.fn(),
@@ -32,9 +33,74 @@ const record = { id: '12345678-1234-1234-1234-123456789abc', assets: ['assets/ne
 beforeEach(() => {
     vi.clearAllMocks()
     mocks.cleanup.mockReset().mockResolvedValue({ ok: true })
+    mocks.save.mockReset().mockResolvedValue(undefined)
+    mocks.database.characters = []
+    mocks.database.modules = []
     localStorage.clear()
     session.importSession.set({ phase: 'idle' })
     alertStore.set({ type: 'none', msg: '' })
+})
+
+afterEach(() => vi.unstubAllGlobals())
+
+it('resets only recorded installation owners and preserves the request when saving fails', async () => {
+    const resetKey = 'risubard-reset-import-v1'
+    localStorage.setItem(key, JSON.stringify({ ...record, owners: [{ type: 'character', id: 'new' }, { type: 'module', id: 'new-module' }] }))
+    localStorage.setItem(resetKey, record.id)
+    mocks.database.characters = [{ chaId: 'existing', chats: [{ message: ['keep'] }] }, { chaId: 'new' }]
+    mocks.database.modules = [{ id: 'existing-module' }, { id: 'new-module' }]
+    session.importSession.set({ phase: 'recovery' })
+    mocks.save.mockRejectedValueOnce(new Error('offline'))
+    await session.retryImportRollback()
+    expect(get(session.importSession)).toMatchObject({ phase: 'recovery', error: 'Error: offline' })
+    expect(localStorage.getItem(resetKey)).toBe(record.id)
+    expect(localStorage.getItem(key)).not.toBeNull()
+    expect(mocks.cleanup).not.toHaveBeenCalled()
+    await session.retryImportRollback()
+    expect(mocks.database.characters).toEqual([{ chaId: 'existing', chats: [{ message: ['keep'] }] }])
+    expect(mocks.database.modules).toEqual([{ id: 'existing-module' }])
+    expect(mocks.cleanup).toHaveBeenLastCalledWith(record.assets, record.id, true)
+    expect(localStorage.getItem(key)).toBeNull()
+    expect(localStorage.getItem(resetKey)).toBeNull()
+    expect(get(session.importSession).phase).toBe('idle')
+    await session.runImport(async () => {})
+    expect(get(session.importSession).phase).toBe('idle')
+})
+
+it('persists a reset request and protects its journal from a late rollback response before reload', async () => {
+    vi.resetModules()
+    const isolated = await import('./importSession')
+    const reload = vi.fn()
+    vi.stubGlobal('location', { reload })
+    localStorage.setItem(key, JSON.stringify(record))
+    isolated.importSession.set({ phase: 'recovery' })
+    let finish!: (value: unknown) => void
+    mocks.cleanup.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const pending = isolated.retryImportRollback()
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
+    isolated.requestImportReset()
+    expect(reload).toHaveBeenCalledOnce()
+    expect(localStorage.getItem('risubard-reset-import-v1')).toBe(record.id)
+    finish({ ok: true })
+    await pending
+    expect(JSON.parse(localStorage.getItem(key)!)).toEqual(record)
+    expect(localStorage.getItem('risubard-reset-import-v1')).toBe(record.id)
+})
+
+it('does not start a second recovery while reset is already running', async () => {
+    localStorage.setItem(key, JSON.stringify(record))
+    localStorage.setItem('risubard-reset-import-v1', record.id)
+    session.importSession.set({ phase: 'recovery' })
+    let finish!: (value: unknown) => void
+    mocks.cleanup.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const pending = session.retryImportRollback()
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
+    session.checkImportRecovery()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(get(session.importSession).phase).toBe('rolling-back')
+    expect(mocks.cleanup).toHaveBeenCalledTimes(1)
+    finish({ ok: true })
+    await pending
 })
 
 it('dismisses a failed recovery without losing its journal, and reopens it before any new import', async () => {

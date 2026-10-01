@@ -8,8 +8,10 @@ import { ImportCancelled, ImportTransaction, type ImportJournal, type ImportOwne
 import { startImportProgress, stopImportProgress, beginImportSave, receiveImportProgress, loseImportProgress } from './importProgress'
 
 const JOURNAL_KEY = 'risubard-pending-import-v1'
-export const importSession = writable<{ phase: 'idle' | 'installing' | 'rolling-back' | 'recovery', error?: string, dismissed?: boolean }>({ phase: 'idle' })
+const RESET_KEY = 'risubard-reset-import-v1'
+export const importSession = writable<{ phase: 'idle' | 'installing' | 'rolling-back' | 'recovery', error?: string, dismissed?: boolean, resetting?: boolean }>({ phase: 'idle' })
 let active: ImportTransaction | undefined
+let reloadForReset = false
 
 async function removeOwners(owners: ImportOwner[]) {
     if (!owners.length) return
@@ -27,21 +29,38 @@ async function removeOwners(owners: ImportOwner[]) {
     await requestImmediateSave({ flushServer: 'canonical', rejectOnFailure: true })
 }
 
-function dependencies() {
+function dependencies(retainAssets = false) {
     return {
         write: (entries: Parameters<ImportTransaction['write']>[0]) => forageStorage.setItems(entries),
-        journal: (record: ImportJournal | null) => record
-            ? localStorage.setItem(JOURNAL_KEY, JSON.stringify(record)) : localStorage.removeItem(JOURNAL_KEY),
+        journal: (record: ImportJournal | null) => {
+            if (reloadForReset) return
+            if (record) localStorage.setItem(JOURNAL_KEY, JSON.stringify(record))
+            else localStorage.removeItem(JOURNAL_KEY)
+        },
         removeOwners,
         prepareRollback: (id: string) => forageStorage.prepareImportRollback(id),
-        cleanup: (keys: string[], id: string) => forageStorage.cleanupImportAssets(keys, id),
+        cleanup: (keys: string[], id: string) => retainAssets
+            ? forageStorage.cleanupImportAssets(keys, id, true) : forageStorage.cleanupImportAssets(keys, id),
     }
 }
 
 export function checkImportRecovery() {
+    if (reloadForReset || get(importSession).phase === 'rolling-back') return
     if (!active && localStorage.getItem(JOURNAL_KEY)) {
         importSession.update(state => ({ ...state, phase: 'recovery', dismissed: false }))
+        if (localStorage.getItem(RESET_KEY)) void retryImportRollback()
     }
+}
+
+// Reload aborts client work before replaying the durable installation journal.
+// Never discard that journal merely to hide a failed rollback.
+export function requestImportReset() {
+    if (get(importSession).phase === 'idle') return
+    const record = JSON.parse(localStorage.getItem(JOURNAL_KEY) ?? 'null') as ImportJournal | null
+    if (record) localStorage.setItem(RESET_KEY, record.id)
+    reloadForReset = true
+    active?.cancel()
+    location.reload()
 }
 
 export function dismissImportRecovery() {
@@ -62,20 +81,27 @@ export function cancelImport() {
 
 export async function retryImportRollback() {
     if (get(importSession).phase !== 'recovery') return
+    let resetting = false
     importSession.set({ phase: 'rolling-back' })
     startImportProgress()
     let stopWatching: (() => void) | undefined
     try {
         const record = JSON.parse(localStorage.getItem(JOURNAL_KEY) ?? 'null') as ImportJournal | null
         if (!record) throw new Error(language.importInstall.missingRecord)
-        stopWatching = await forageStorage.observeImportProgress(record.id, receiveImportProgress, loseImportProgress)
-        beginImportSave()
-        await new ImportTransaction(new Set(), dependencies(), record).rollback()
+        resetting = localStorage.getItem(RESET_KEY) === record.id
+        importSession.set({ phase: 'rolling-back', resetting })
+        if (!resetting) {
+            stopWatching = await forageStorage.observeImportProgress(record.id, receiveImportProgress, loseImportProgress)
+            beginImportSave()
+        }
+        await new ImportTransaction(new Set(), dependencies(resetting), record).rollback()
+        if (reloadForReset) return
+        localStorage.removeItem(RESET_KEY)
         active = undefined
         importSession.set({ phase: 'idle' })
-        notifySuccess(language.importInstall.cancelled)
+        notifySuccess(resetting ? language.importInstall.resetComplete : language.importInstall.cancelled)
     } catch (error) {
-        importSession.set({ phase: 'recovery', error: String(error) })
+        if (!reloadForReset) importSession.set({ phase: 'recovery', resetting, error: String(error) })
     } finally {
         stopWatching?.()
         stopImportProgress()
@@ -111,6 +137,7 @@ export async function runImport<T>(work: (transaction: ImportTransaction) => Pro
         notifySuccess(language.importInstall.complete)
         return result
     } catch (error) {
+        if (reloadForReset) return null
         const wasCancelled = transaction.cancelled || error instanceof ImportCancelled
         importSession.set({ phase: 'rolling-back' })
         beginImportSave()

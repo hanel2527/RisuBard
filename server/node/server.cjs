@@ -6404,10 +6404,15 @@ app.post('/api/assets/import-rollback', async (req, res, next) => {
         const result = await queueStorageOperation(async () => {
             await flushPendingDbWithinQueue({ materialize: false, deferCompatibility: true });
             reportImportProgress('cleanup-assets', 0, keys.length);
-            const cleanup = reclaimDeletedCharacterAssets({
+            // Explicit reset releases the installation without scanning or deleting
+            // assets whose ownership may be impossible to establish right now.
+            const cleanup = req.body.retainAssets === true
+                ? { count: 0, reclaimed: 0, retained: keys.length }
+                : reclaimDeletedCharacterAssets({
                 candidates: keys.map(key => key.slice('assets/'.length)),
                 database: userDataRepository.exportLegacyDatabase(),
                 listKeys: kvList, read: kvGet, remove: kvDelManyAndCollect,
+                retainIfUnloaded: true,
             });
             kvDelManyAndCollect([marker]);
             reportImportProgress('cleanup-assets', keys.length, keys.length);
