@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { findSingleProtonLink, downloadProtonModule } from './protonModule'
 
-const mocks = vi.hoisted(() => ({ info: vi.fn(), auth: vi.fn(), root: vi.fn(), downloader: vi.fn() }))
+const mocks = vi.hoisted(() => ({ info: vi.fn(), auth: vi.fn(), root: vi.fn(), downloader: vi.fn(), node: vi.fn(), children: vi.fn() }))
 vi.mock('./protonDriveClient', () => ({ createProtonDriveClient: () => ({ experimental: {
     getURLAccessInfo: mocks.info, authURLAccess: mocks.auth,
 } }) }))
@@ -24,15 +24,54 @@ describe('Proton module download', () => {
     beforeEach(() => {
         vi.resetAllMocks()
         mocks.info.mockResolvedValue({ isCustomPasswordProtected: false, isLegacy: false })
-        mocks.auth.mockResolvedValue({ getRootNode: mocks.root, getFileDownloader: mocks.downloader })
+        mocks.auth.mockResolvedValue({ getRootNode: mocks.root, getFileDownloader: mocks.downloader, getNode: mocks.node, iterateFolderChildren: mocks.children })
         mocks.root.mockResolvedValue({ uid: 'file', type: 'file', name: { ok: true, value: 'module.risum' } })
     })
     it.each([
-        { type: 'folder', name: { ok: true, value: 'modules' } },
         { type: 'file', name: { ok: true, value: 'readme.txt' } },
     ])('offers the original for unsupported roots without downloading', async root => {
         mocks.root.mockResolvedValue(root)
         expect(await downloadProtonModule(link)).toEqual({ kind: 'external', reason: 'unsupported' })
+        expect(mocks.downloader).not.toHaveBeenCalled()
+    })
+    it('lists a shared folder without downloading files and distinguishes supported modules', async () => {
+        mocks.root.mockResolvedValue({ uid: 'root', type: 'folder', name: { ok: true, value: 'Modules' } })
+        mocks.children.mockImplementation(async function* () {
+            yield { uid: 'a', type: 'file', name: { ok: true, value: 'A.RISUM' } }
+            yield { uid: 'b', type: 'file', name: { ok: true, value: 'readme.txt' } }
+            yield { uid: 'sub', type: 'folder', name: { ok: true, value: 'Older versions' } }
+        })
+        expect(await downloadProtonModule(link)).toEqual({ kind: 'folder', uid: 'root', name: 'Modules', entries: [
+            { uid: 'sub', name: 'Older versions', type: 'folder', supported: true },
+            { uid: 'a', name: 'A.RISUM', type: 'file', supported: true },
+            { uid: 'b', name: 'readme.txt', type: 'file', supported: false },
+        ] })
+        expect(mocks.downloader).not.toHaveBeenCalled()
+    })
+    it('opens a selected nested folder, including an empty one', async () => {
+        mocks.node.mockResolvedValue({ uid: 'sub', type: 'folder', name: { ok: true, value: 'Empty' } })
+        mocks.children.mockImplementation(async function* () {})
+        expect(await downloadProtonModule(link, { nodeUid: 'sub' })).toEqual({ kind: 'folder', uid: 'sub', name: 'Empty', entries: [] })
+        expect(mocks.node).toHaveBeenCalledWith('sub')
+        expect(mocks.downloader).not.toHaveBeenCalled()
+    })
+    it('downloads only the selected module and rejects unsupported selections', async () => {
+        mocks.node.mockResolvedValue({ uid: 'selected', type: 'file', name: { ok: true, value: 'B.risum' } })
+        mocks.downloader.mockResolvedValue({ getClaimedSizeInBytes: () => 1, downloadToStream: (stream: WritableStream) => ({
+            completion: async () => { const writer = stream.getWriter(); await writer.write(new Uint8Array([7])); await writer.close() },
+        }) })
+        expect(await downloadProtonModule(link, { nodeUid: 'selected' })).toEqual({ kind: 'file', data: new Uint8Array([7]) })
+        expect(mocks.downloader).toHaveBeenCalledWith('selected', undefined)
+        mocks.downloader.mockClear()
+        mocks.node.mockResolvedValue({ uid: 'text', type: 'file', name: { ok: true, value: 'readme.txt' } })
+        expect(await downloadProtonModule(link, { nodeUid: 'text' })).toEqual({ kind: 'external', reason: 'unsupported' })
+        expect(mocks.downloader).not.toHaveBeenCalled()
+    })
+    it('discards an interrupted folder listing', async () => {
+        const controller = new AbortController()
+        mocks.root.mockResolvedValue({ uid: 'root', type: 'folder', name: { ok: true, value: 'Modules' } })
+        mocks.children.mockImplementation(async function* () { controller.abort(); yield { uid: 'a', type: 'file', name: { ok: true, value: 'a.risum' } } })
+        await expect(downloadProtonModule(link, { signal: controller.signal })).rejects.toThrow()
         expect(mocks.downloader).not.toHaveBeenCalled()
     })
     it('offers the original for password-protected links', async () => {

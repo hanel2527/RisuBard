@@ -150,7 +150,7 @@ describe('module import durability', () => {
     })
 
     it('imports downloaded risum bytes without a file picker and waits for persistence', async () => {
-        await importRisum(risumWithAssets(0))
+        expect(await importRisum(risumWithAssets(0))).toBe(true)
         expect(mocks.selectSingleFile).not.toHaveBeenCalled()
         expect(mocks.database.current.modules).toHaveLength(1)
         expect(mocks.events).toEqual(['saved', 'notified'])

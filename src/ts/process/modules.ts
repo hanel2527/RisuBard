@@ -337,12 +337,13 @@ export async function readModule(buf:Buffer, transaction?: ImportTransaction):Pr
     return module
 }
 
-export async function importRisum(data: Uint8Array, transaction?: ImportTransaction): Promise<void> {
-    if (!transaction) { await runImport(tx => importRisum(data, tx)); return }
+export async function importRisum(data: Uint8Array, transaction?: ImportTransaction): Promise<boolean> {
+    if (!transaction) return (await runImport(tx => importRisum(data, tx))) === true
     const module = await readModule(Buffer.from(data), transaction)
     if (!module?.id || !module.name) throw new Error(language.errors.noData)
     transaction.register('module', module.id)
     getDatabase().modules.push(module)
+    return true
 }
 
 export async function importModule(){

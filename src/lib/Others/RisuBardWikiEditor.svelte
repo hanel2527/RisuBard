@@ -22,6 +22,9 @@
         Minimize2,
         LocateFixedIcon,
         SearchIcon,
+        PinIcon,
+        CircleOffIcon,
+        CheckIcon,
     } from '@lucide/svelte'
     import ShButton from 'src/lib/UI/GUI/ShButton.svelte'
     import { v4 } from 'uuid'
@@ -45,6 +48,11 @@
     import type { EventOrderMessage } from 'src/ts/risubard/eventOrder'
 
     type WikiDocument = NarrativeMemoryWikiMarkdown['documents'][number]
+    const contextLabels = {
+        always: '항상 컨텍스트에 포함',
+        auto: '관련 있을 때 포함',
+        never: '자동 컨텍스트에서 제외',
+    }
 
     interface Props {
         characterId: string
@@ -254,6 +262,15 @@
     let filteredDocuments = $derived(documents.filter((document) =>
         documentMatchesSearch(document, searchQuery)
     ))
+    let contextModes = $derived(new Map(documents
+        .filter((document) => document.type !== 'event' && document.type !== 'scene')
+        .map((document) => [document.id, document.contextMode ?? 'auto'])))
+
+    function documentLabel(documentId: string, title: string, readOnly = false) {
+        const mode = contextModes.get(documentId)
+        return [title, readOnly ? '읽기 전용' : '', mode ? contextLabels[mode] : '']
+            .filter(Boolean).join(', ')
+    }
     let tree = $derived(buildWikiFileTree(filteredDocuments, messages).filter((node) =>
         !searchQuery || node.kind === 'file' || node.children.length > 0
     ))
@@ -369,8 +386,8 @@
     function openContextMenu(event: MouseEvent, documentId: string) {
         event.preventDefault()
         contextDocumentId = documentId
-        contextX = Math.min(event.clientX, Math.max(8, window.innerWidth - 190))
-        contextY = Math.min(event.clientY, Math.max(8, window.innerHeight - 96))
+        contextX = Math.min(event.clientX, Math.max(8, window.innerWidth - 232))
+        contextY = Math.min(event.clientY, Math.max(8, window.innerHeight - 168))
     }
 
     function closeContextMenu() {
@@ -403,7 +420,7 @@
     }
 
     async function changeContextMode(mode: 'always' | 'auto' | 'never') {
-        if (locked) return
+        if (locked || saving) return
         if (!contextDocument
             || contextDocument.type === 'event'
             || contextDocument.type === 'scene') return
@@ -412,7 +429,7 @@
         saving = true
         error = ''
         try {
-            await setWikiDocumentContextMode({
+            const saved = await setWikiDocumentContextMode({
                 characterId,
                 chatId,
                 documentId: target.id,
@@ -421,6 +438,11 @@
                 fetchImpl: fetch,
                 createAuth: () => forageStorage.createAuth(),
             })
+            documents = documents.map((document) => document.id === saved.id ? saved : document)
+            // A policy-only save advances the hash without discarding an editor draft.
+            if (loadedDocumentId === saved.id && loadedContentHash === target.contentHash) {
+                loadedContentHash = saved.contentHash
+            }
             publishRisuBardMemoryActivity({
                 characterId,
                 chatId,
@@ -737,11 +759,12 @@
                                             void tick().then(highlightEditorMatch)
                                         }}
                                         oncontextmenu={(event) => openContextMenu(event, child.documentId)}
-                                        aria-label={`${child.title} ${child.readOnly ? '읽기 전용' : ''}`}
+                                        aria-label={documentLabel(child.documentId, child.title, child.readOnly)}
                                     >
                                         {#if child.readOnly}<FileLock2Icon size={13} />
                                         {:else}<FileIcon size={13} />{/if}
-                                        <span class="document-title">{child.title}</span>
+                                        <span class="document-title" class:context-excluded={contextModes.get(child.documentId) === 'never'}>{child.title}</span>
+                                        {@render contextBadge(child.documentId)}
                                         {@render recentUpdateBadge(child.documentId)}
                                     </button>
                                 </div>
@@ -767,9 +790,10 @@
                             void tick().then(highlightEditorMatch)
                         }}
                         oncontextmenu={(event) => openContextMenu(event, node.documentId)}
-                        aria-label={node.title}
+                        aria-label={documentLabel(node.documentId, node.title)}
                     >
-                        <FileIcon size={13} /><span class="document-title">{node.title}</span>
+                        <FileIcon size={13} /><span class="document-title" class:context-excluded={contextModes.get(node.documentId) === 'never'}>{node.title}</span>
+                        {@render contextBadge(node.documentId)}
                         {@render recentUpdateBadge(node.documentId)}
                     </button>
                 </div>
@@ -783,6 +807,20 @@
             <span>본문 중복 {health.duplicatePassages?.length ?? 0}</span>
         </div>
     </nav>
+
+    {#snippet contextBadge(documentId: string)}
+        {@const mode = contextModes.get(documentId)}
+        {#if mode}
+            <span class="context-mode-badge" class:context-always={mode === 'always'}
+                data-wiki-context-mode={mode}
+                title={`저장된 포함 설정: ${contextLabels[mode]}. 이번 응답에 실제 포함된 자료는 컨텍스트 내역에서 확인하세요.`}
+                aria-hidden="true">
+                {#if mode === 'always'}<PinIcon size={11} />항상
+                {:else if mode === 'never'}<CircleOffIcon size={11} />제외
+                {:else}자동{/if}
+            </span>
+        {/if}
+    {/snippet}
 
     {#snippet recentUpdateBadge(documentId: string)}
         {#if recentlyUpdatedIds.has(documentId)}
@@ -977,13 +1015,19 @@
         style:top={`${contextY}px`}
     >
         {#if contextDocument.type !== 'event' && contextDocument.type !== 'scene'}
-            <button type="button" role="menuitem" data-wiki-context-always onclick={() => changeContextMode('always')}>
+            <button type="button" role="menuitemradio" aria-checked={(contextDocument.contextMode ?? 'auto') === 'always'}
+                disabled={locked || saving} data-wiki-context-always onclick={() => changeContextMode('always')}>
+                <span class="context-check" aria-hidden="true">{#if contextDocument.contextMode === 'always'}<CheckIcon size={14} />{/if}</span>
                 항상 컨텍스트에 포함
             </button>
-            <button type="button" role="menuitem" data-wiki-context-auto onclick={() => changeContextMode('auto')}>
+            <button type="button" role="menuitemradio" aria-checked={(contextDocument.contextMode ?? 'auto') === 'auto'}
+                disabled={locked || saving} data-wiki-context-auto onclick={() => changeContextMode('auto')}>
+                <span class="context-check" aria-hidden="true">{#if (contextDocument.contextMode ?? 'auto') === 'auto'}<CheckIcon size={14} />{/if}</span>
                 관련 있을 때 포함
             </button>
-            <button type="button" role="menuitem" data-wiki-context-never onclick={() => changeContextMode('never')}>
+            <button type="button" role="menuitemradio" aria-checked={(contextDocument.contextMode ?? 'auto') === 'never'}
+                disabled={locked || saving} data-wiki-context-never onclick={() => changeContextMode('never')}>
+                <span class="context-check" aria-hidden="true">{#if contextDocument.contextMode === 'never'}<CheckIcon size={14} />{/if}</span>
                 자동 컨텍스트에서 제외
             </button>
         {/if}
@@ -1021,6 +1065,12 @@
     .file-row.dangling-link .file-select { color: var(--risu-theme-draculared); }
     .file-row.duplicate-passage { box-shadow: inset 2px 0 color-mix(in srgb, var(--color-warning) 75%, transparent); }
     .document-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .document-title.context-excluded { color: var(--color-textcolor2); }
+    .context-mode-badge { display: inline-flex; flex: 0 0 auto; align-items: center; gap: .2rem; color: var(--color-textcolor2); font-size: .65rem; line-height: 1.4; white-space: nowrap; }
+    .context-mode-badge.context-always { color: var(--color-primary); font-weight: 700; }
+    .context-check { display: inline-flex; flex: 0 0 14px; color: var(--color-primary); }
+    .file-context-menu button:disabled { opacity: .5; cursor: not-allowed; }
+    .file-context-menu button[aria-checked="true"] { background: color-mix(in srgb, var(--color-primary) 12%, transparent); }
     .recent-update-badge { flex: 0 0 auto; margin-left: auto; padding: .12rem .32rem; border: 1px solid color-mix(in srgb, var(--risu-theme-primary) 45%, transparent); border-radius: .25rem; color: var(--risu-theme-textcolor); background: color-mix(in srgb, var(--risu-theme-primary) 18%, transparent); font-size: .6rem; font-weight: 700; line-height: 1.2; white-space: nowrap; }
     .editor-pane { container-name: wiki-editor-pane; container-type: inline-size; min-width: 0; display: flex; flex-direction: column; background: color-mix(in srgb, var(--risu-theme-darkbg) 98%, var(--color-bgcolor)); }
     .editor-header { min-width: 0; border-bottom: 1px solid var(--risu-theme-darkborderc); }
@@ -1076,7 +1126,7 @@
         position: fixed;
         z-index: 10000;
         display: grid;
-        width: 11rem;
+        width: 14rem;
         padding: .28rem;
         border: 1px solid color-mix(in srgb, var(--risu-theme-primary) 28%, var(--risu-theme-darkborderc));
         border-radius: .45rem;

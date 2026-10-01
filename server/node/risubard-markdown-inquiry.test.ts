@@ -21,6 +21,27 @@ function document(
 }
 
 describe('progressive Markdown inquiry', () => {
+    test('reserves the existing document count limit for separately injected required pages', () => {
+        const pinned = Array.from({ length: 12 }, (_, index) => document({ id: `pin-${index}`,
+            title: '계획', type: 'other', relativePath: `notes/pin-${index}.md`, content: '계획', contextMode: 'always' }))
+        const auto = document({ id: 'auto', title: '계획', type: 'other', relativePath: 'notes/auto.md', content: '계획' })
+        const result = inquireMarkdownDocuments({ documents: [...pinned, auto], currentInput: '계획', contextSelection: 'auto' })
+        expect(result.sources).toEqual([])
+    })
+    test('loads complete required documents independently of query and per-source excerpt limits', () => {
+        const content = '## 흑막의 계획\n\n' + '기억해야 할 계획입니다. '.repeat(140) + '\n열 번째 턴에 정체를 밝힌다.'
+        const pinned = document({ id: 'plan', type: 'other', title: '계획', relativePath: 'notes/plan.md', content, contextMode: 'always' })
+        const hidden = { ...pinned, id: 'hidden', relativePath: 'notes/hidden.md', contextMode: 'never' as const }
+        const result = inquireMarkdownDocuments({ documents: [pinned, hidden], currentInput: '', contextSelection: 'required',
+            tokenBudget: { target: 256, perSource: 256, maximum: 6000 } })
+        expect(result.sources.map(source => source.content)).toEqual([content])
+        expect(result.sources[0].tokens).toBeGreaterThan(256)
+        expect(result.metrics.inspectedEdgeCount).toBe(0)
+        expect(() => inquireMarkdownDocuments({ documents: [pinned], currentInput: '', contextSelection: 'required',
+            tokenBudget: { target: 256, perSource: 256, maximum: 256 } })).toThrow('Required wiki context exceeds token budget')
+        const optional = inquireMarkdownDocuments({ documents: [pinned, hidden], currentInput: '계획', contextSelection: 'auto' })
+        expect(optional.sources).toEqual([])
+    })
     test('includes verified semantic original evidence without an explicit history keyword', () => {
         const result = inquireMarkdownDocuments({documents:[],currentInput:'그는 손가락을 만지작거린다.',
             sourceMatches:[{messageId:'old',role:'assistant',content:'그가 전달했던 은빛 반지에는 비밀 장부의 위치가 새겨져 있다.',score:0.8,occurredAt:2,retrieval:'semantic'}],
@@ -1013,14 +1034,16 @@ describe('progressive Markdown inquiry', () => {
         expect(result.sources[0].content.length).toBeLessThanOrEqual(2_000)
     })
 
-    test('keeps linked characters for explicit relationship questions', () => {
+    test.each([undefined, 'auto'] as const)('keeps linked characters for explicit relationship questions (%s)', (contextSelection) => {
         const result = inquireMarkdownDocuments({
+            contextSelection,
             currentInput: '리리아와 연결된 인물은 누구인가?',
             documents: [
                 document({
                     id: 'lelia', type: 'character', title: '리리아',
                     relativePath: 'characters/lelia.md',
                     content: '# 리리아\n\n[[부리 마스크 간수]] [[하니아]]와 연결되어 있다.',
+                    contextMode: 'always',
                     links: ['부리 마스크 간수', '하니아'],
                 }),
                 document({

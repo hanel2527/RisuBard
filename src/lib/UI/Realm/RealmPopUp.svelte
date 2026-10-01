@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { BookIcon, DownloadIcon, FlagIcon, ImageIcon, LinkIcon, LoaderCircleIcon, PackageIcon, SmileIcon, TrashIcon } from '@lucide/svelte';
+    import { BookIcon, DownloadIcon, FlagIcon, FolderIcon, FileIcon, ArrowLeftIcon, ImageIcon, LinkIcon, LoaderCircleIcon, PackageIcon, SmileIcon, TrashIcon } from '@lucide/svelte';
     import { onDestroy } from 'svelte';
     import { language } from 'src/lang';
     import { alertConfirm, alertInput, alertNormal, notifyInfo } from 'src/ts/alert';
@@ -10,7 +10,7 @@
     import ShButton from '../GUI/ShButton.svelte';
     import ShDialog from '../GUI/ShDialog.svelte';
     import { tooltip } from 'src/ts/gui/tooltip';
-    import { downloadProtonModule, findSingleProtonLink } from 'src/ts/realm/protonModule';
+    import { downloadProtonModule, findSingleProtonLink, type ProtonModuleFolder } from 'src/ts/realm/protonModule';
     import { importRisum } from 'src/ts/process/modules';
 
     interface Props {
@@ -20,8 +20,14 @@
     let { openedData = $bindable() }: Props = $props();
     let isKorean = $derived(DBState.db.language === 'ko');
     let moduleLink = $derived(findSingleProtonLink(openedData.desc));
-    let moduleStage = $state<'idle' | 'checking' | 'downloading' | 'importing' | 'done' | 'unsupported' | 'password' | 'error'>('idle');
+    let moduleStage = $state<'idle' | 'choosing' | 'checking' | 'downloading' | 'importing' | 'done' | 'unsupported' | 'password' | 'error'>('idle');
     let moduleBusy = $derived(['checking', 'downloading', 'importing'].includes(moduleStage));
+    let characterBusy = $state(false);
+    let busy = $derived(moduleBusy || characterBusy);
+    let folder = $state<ProtonModuleFolder | null>(null);
+    let folderTrail = $state<{ uid: string, name: string }[]>([]);
+    let importedFiles = $state<string[]>([]);
+    let lastRequest: { nodeUid?: string, parents: { uid: string, name: string }[] } = { parents: [] };
     let downloadedBytes = $state(0);
     let totalBytes = $state<number | undefined>();
     let moduleController: AbortController | undefined;
@@ -31,6 +37,9 @@
         moduleController?.abort();
         moduleController = undefined;
         moduleStage = 'idle';
+        folder = null;
+        folderTrail = [];
+        importedFiles = [];
     });
     let ui = $derived(isKorean ? {
         madeBy: '제작자',
@@ -44,7 +53,13 @@
         downloadingModule: '모듈 다운로드 중…',
         importingModule: '모듈 임포트 중…',
         moduleDone: '모듈을 가져왔습니다. 모듈 설정에서 사용할 수 있습니다.',
-        moduleUnsupported: '폴더 또는 지원하지 않는 파일입니다. Proton Drive에서 열어주세요.',
+        moduleUnsupported: '지원하지 않는 파일입니다. Proton Drive에서 열어주세요.',
+        chooseModule: '가져올 모듈 파일을 선택하세요.',
+        supportedModules: '.risum 파일을 가져올 수 있습니다. 폴더를 눌러 내부 파일을 확인하세요.',
+        emptyFolder: '폴더가 비어 있습니다.',
+        parentFolder: '상위 폴더',
+        unsupportedFile: '지원하지 않는 형식',
+        importedFile: '가져옴',
         modulePassword: '추가 비밀번호가 필요한 링크입니다. Proton Drive에서 열어주세요.',
         moduleError: '모듈을 가져오지 못했습니다. 다시 시도하거나 원본을 열어주세요.',
         openOriginal: '원본 열기',
@@ -68,7 +83,13 @@
         downloadingModule: 'Downloading module…',
         importingModule: 'Importing module…',
         moduleDone: 'Module imported. You can use it in module settings.',
-        moduleUnsupported: 'This is a folder or an unsupported file. Open it in Proton Drive.',
+        moduleUnsupported: 'This file is not supported. Open it in Proton Drive.',
+        chooseModule: 'Choose a module file to import.',
+        supportedModules: 'You can import .risum files. Open a folder to browse its files.',
+        emptyFolder: 'This folder is empty.',
+        parentFolder: 'Parent folder',
+        unsupportedFile: 'Unsupported format',
+        importedFile: 'Imported',
         modulePassword: 'This link requires an additional password. Open it in Proton Drive.',
         moduleError: 'Could not import the module. Try again or open the original.',
         openOriginal: 'Open original',
@@ -83,12 +104,20 @@
     });
 
     function close() {
-        if (moduleBusy) return;
+        if (busy) return;
         openedData = null;
     }
 
-    async function getModule() {
-        if (!moduleLink || moduleBusy) return;
+    async function getCharacter() {
+        if (busy) return;
+        characterBusy = true;
+        try { await downloadRisuHub(openedData.id); }
+        finally { characterBusy = false; }
+    }
+
+    async function getModule(nodeUid?: string, parents: typeof folderTrail = []) {
+        if (!moduleLink || busy) return;
+        lastRequest = { nodeUid, parents };
         const controller = new AbortController();
         moduleController = controller;
         moduleStage = 'checking';
@@ -96,6 +125,7 @@
         totalBytes = undefined;
         try {
             const result = await downloadProtonModule(moduleLink, {
+                nodeUid,
                 signal: controller.signal,
                 onProgress: (downloaded, total) => {
                     if (moduleController !== controller) return;
@@ -106,15 +136,25 @@
             });
             if (moduleController !== controller) return;
             controller.signal.throwIfAborted();
+            if (result.kind === 'folder') {
+                folder = result;
+                folderTrail = [...parents, { uid: result.uid, name: result.name }];
+                moduleStage = 'choosing';
+                return;
+            }
             if (result.kind === 'external') {
                 moduleStage = result.reason;
                 return;
             }
             moduleStage = 'importing';
-            await importRisum(result.data);
+            if (await importRisum(result.data) === false) {
+                moduleStage = folder ? 'choosing' : 'idle';
+                return;
+            }
             moduleStage = 'done';
+            if (nodeUid) importedFiles = [...importedFiles, nodeUid];
         } catch {
-            if (moduleController === controller) moduleStage = controller.signal.aborted ? 'idle' : 'error';
+            if (moduleController === controller) moduleStage = controller.signal.aborted ? (folder ? 'choosing' : 'idle') : 'error';
         } finally {
             if (moduleController === controller) moduleController = undefined;
         }
@@ -125,9 +165,10 @@
     open={true}
     onOpenChange={(open) => { if (!open) close(); }}
     size="lg"
-    closable={!moduleBusy}
-    closeOnEscape={!moduleBusy}
-    closeOnOutsideClick={!moduleBusy}
+    tier="base"
+    closable={!busy}
+    closeOnEscape={!busy}
+    closeOnOutsideClick={!busy}
     contentClass="max-h-[calc(100dvh-1rem)] gap-0 rounded-2xl p-0 overflow-hidden"
     bodyClass="min-h-0 min-w-0 flex-1 overflow-y-auto"
     closeClass="right-5 top-5 z-10 rounded-full border border-darkborderc bg-darkbg/90 p-1.5"
@@ -182,13 +223,10 @@
             <div class="mt-3"><RealmLicense license={openedData.license} /></div>
 
             <div class="mt-auto flex flex-wrap items-center gap-2 border-t border-darkborderc pt-4">
-                <ShButton variant="primary" className="grow" disabled={moduleBusy} onclick={() => {
-                    void downloadRisuHub(openedData.id);
-                    close();
-                }}><DownloadIcon size={17} /> {ui.download}</ShButton>
+                <ShButton variant="primary" className="grow" disabled={busy} onclick={getCharacter}><DownloadIcon size={17} /> {ui.download}</ShButton>
 
                 {#if moduleLink}
-                    <ShButton variant="outline" className="grow" disabled={moduleBusy || moduleStage === 'done'} onclick={getModule}>
+                    <ShButton variant="outline" className="grow" disabled={busy || (moduleStage === 'done' && !folder)} onclick={() => moduleStage === 'error' ? getModule(lastRequest.nodeUid, lastRequest.parents) : getModule()}>
                         {#if moduleBusy}<LoaderCircleIcon size={17} class="animate-spin" />{:else}<PackageIcon size={17} />{/if}
                         {moduleStage === 'checking' ? ui.checkingModule : moduleStage === 'downloading' ? ui.downloadingModule : moduleStage === 'importing' ? ui.importingModule : moduleStage === 'error' ? ui.retry : ui.importModule}
                     </ShButton>
@@ -232,6 +270,7 @@
                         {:else if moduleStage === 'password'}{ui.modulePassword}
                         {:else if moduleStage === 'error'}{ui.moduleError}
                         {:else if moduleStage === 'importing'}{ui.importingModule}
+                        {:else if moduleStage === 'choosing'}{ui.chooseModule}
                         {:else}{ui.checkingModule}{/if}
                     </p>
                     {#if moduleStage === 'downloading' && totalBytes && totalBytes > 0}
@@ -242,6 +281,35 @@
                     {:else if ['unsupported', 'password', 'error'].includes(moduleStage)}
                         <ShButton variant="outline" size="sm" href={moduleLink} target="_blank" rel="noopener noreferrer">{ui.openOriginal}</ShButton>
                     {/if}
+                </div>
+            {/if}
+            {#if folder}
+                <div class="mt-3 min-w-0 space-y-2" aria-label={ui.chooseModule}>
+                    <div class="flex min-w-0 items-center gap-2">
+                        {#if folderTrail.length > 1}
+                            <ShButton variant="outline" size="sm" disabled={busy} onclick={() => getModule(folderTrail[folderTrail.length - 2].uid, folderTrail.slice(0, -2))}><ArrowLeftIcon size={16} />{ui.parentFolder}</ShButton>
+                        {/if}
+                        <p class="min-w-0 break-words text-sm text-textcolor">{folderTrail.map(entry => entry.name).join(' / ')}</p>
+                    </div>
+                    <p class="text-xs text-textcolor2">{ui.supportedModules}</p>
+                    <ul class="max-h-60 overflow-y-auto rounded-lg border border-darkborderc divide-y divide-darkborderc">
+                        {#each folder.entries as entry (entry.uid)}
+                            <li>
+                                <button type="button" data-module-entry={entry.uid}
+                                    class="flex w-full min-w-0 items-center gap-2 px-3 py-2.5 text-left text-sm text-textcolor hover:bg-selected focus-visible:outline-2 focus-visible:outline-primary disabled:cursor-default disabled:opacity-60"
+                                    disabled={busy || !entry.supported || importedFiles.includes(entry.uid)}
+                                    onclick={() => getModule(entry.uid, folderTrail)}>
+                                    {#if entry.type === 'folder'}<FolderIcon size={18} class="shrink-0" />{:else}<FileIcon size={18} class="shrink-0" />{/if}
+                                    <span class="min-w-0 flex-1 break-all">{entry.name}</span>
+                                    {#if !entry.supported}<span class="shrink-0 text-xs">{ui.unsupportedFile}</span>
+                                    {:else if importedFiles.includes(entry.uid)}<span class="shrink-0 text-xs">{ui.importedFile}</span>{/if}
+                                </button>
+                            </li>
+                        {:else}
+                            <li class="p-3 text-sm text-textcolor2">{ui.emptyFolder}</li>
+                        {/each}
+                    </ul>
+                    <ShButton variant="outline" size="sm" href={moduleLink} target="_blank" rel="noopener noreferrer">{ui.openOriginal}</ShButton>
                 </div>
             {/if}
         </div>

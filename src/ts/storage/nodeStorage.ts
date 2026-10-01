@@ -727,19 +727,27 @@ export class NodeStorage{
     }
 
     async cleanupImportAssets(keys: string[], id: string) {
-        const response = await this.authFetch('/api/assets/import-rollback', {
+        const response = await this.saveRequest('/api/assets/import-rollback', {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ keys, id }),
         })
-        if (!response.ok) throw new Error(`Import rollback failed (${response.status})`)
+        if (!response.ok) {
+            const body = await response.json().catch(() => null)
+            const detail = typeof body?.error === 'string' ? `: ${body.error}` : ''
+            throw new Error(`Import rollback failed (${response.status})${detail}`)
+        }
         return response.json()
     }
 
     async prepareImportRollback(id: string) {
-        const response = await this.authFetch('/api/assets/import-rollback/prepare', {
+        const response = await this.saveRequest('/api/assets/import-rollback/prepare', {
             method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }),
         })
-        if (!response.ok) throw new Error(`Import rollback preparation failed (${response.status})`)
+        if (!response.ok) {
+            const body = await response.json().catch(() => null)
+            const detail = typeof body?.error === 'string' ? `: ${body.error}` : ''
+            throw new Error(`Import rollback preparation failed (${response.status})${detail}`)
+        }
     }
 
     async setItems(entries: {key: string, value: Uint8Array}[]) {

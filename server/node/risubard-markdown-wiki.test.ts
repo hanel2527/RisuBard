@@ -1418,6 +1418,12 @@ describe('Markdown narrative wiki', () => {
         expect(inquiry.sources.map((source) => source.id)).toEqual([
             `narrative-memory:wiki:${pinned.relativePath}`,
         ])
+        const required = await wiki.inquire({ characterId: 'character', chatId: 'chat',
+            currentInput: '', contextSelection: 'required' })
+        expect(required.sources.map(source => source.content)).toEqual([pinned.content])
+        const automatic = await wiki.inquire({ characterId: 'character', chatId: 'chat',
+            currentInput: '라비안 금지된 탑', contextSelection: 'auto' })
+        expect(automatic.sources).toEqual([])
     })
 
     test('rejects stale canonical approvals and excessive required context', async () => {

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import type { character } from './storage/database.svelte'
 
@@ -99,11 +99,13 @@ vi.mock('./media', () => ({ compressImage: vi.fn(), getImageType: vi.fn() }))
 vi.mock('./parser/parser.svelte', () => ({ hasher: vi.fn(), risuChatParser: vi.fn() }))
 vi.mock('./process/files/inlays', () => ({ reencodeImage: vi.fn() }))
 vi.mock('./characterVault', () => ({ pinCharacterVaultQuickAccess: vi.fn() }))
+vi.mock('./characters', () => ({ characterFormatUpdate: vi.fn() }))
 vi.mock('src/lang', async () => ({
     language: {
         importInstall: (await import('src/lang/en')).languageEnglish.importInstall,
         errors: { noData: 'invalid-data' },
         importedCharacter: 'imported',
+        characterImportFailed: 'Import failed',
         characterImportReadingBytes: (done: string, total: string) => `읽기 ${done}/${total}`,
         characterImportExtracting: (done: number, total: number) => `압축 ${done}/${total}`,
         characterImportPreparingAssets: (done: number, total: number) => `준비 ${done}/${total}`,
@@ -113,9 +115,10 @@ vi.mock('src/lang', async () => ({
     },
 }))
 
-import { createBaseV2, createBaseV3, importCharacterProcess } from './characterCards'
+import { createBaseV2, createBaseV3, downloadRisuHub, importCharacterProcess } from './characterCards'
 import { inspectCharx } from './charxPreflight'
-import { alertConfirmMulti } from './alert'
+import { alertConfirmMulti, alertError } from './alert'
+import { selectedCharID } from './stores.svelte'
 import { createBardLoreSettings, fingerprintLegacyLore, upgradeLegacyLorebook } from './lorebook/bardLore'
 
 beforeEach(() => {
@@ -157,6 +160,50 @@ describe('CHARX install routing', () => {
         expect(state.requestImmediateSave).not.toHaveBeenCalled()
         expect(state.db.characters).toHaveLength(0)
         expect(state.db.modules).toHaveLength(0)
+    })
+})
+
+describe('Realm installation results', () => {
+    const originalFetch = globalThis.fetch
+    beforeEach(() => {
+        state.db.characters = [{ chaId: 'existing', name: 'Existing character' }] as any
+        state.db.modules = []
+        state.cardPayload = cardFixture('chara_card_v3', undefined)
+        vi.mocked(inspectCharx).mockResolvedValue({ bytes: 150_000_000, assets: 1 })
+        vi.mocked(selectedCharID.set).mockClear()
+        vi.mocked(alertError).mockClear()
+        globalThis.fetch = vi.fn(async () => new Response(new Uint8Array(), {
+            headers: { 'content-type': 'application/charx' },
+        }))
+    })
+    afterEach(() => { globalThis.fetch = originalFetch })
+
+    test('does not change character selection when installation is cancelled', async () => {
+        vi.mocked(alertConfirmMulti).mockResolvedValueOnce(-1)
+        await downloadRisuHub('test', { forceRedirect: true })
+        expect(state.db.characters).toHaveLength(1)
+        expect(selectedCharID.set).not.toHaveBeenCalled()
+    })
+    test('does not select an unrelated character after installing a module', async () => {
+        vi.mocked(alertConfirmMulti).mockResolvedValueOnce(0)
+        await downloadRisuHub('test', { forceRedirect: true })
+        expect(state.db.modules).toHaveLength(1)
+        expect(state.db.characters).toHaveLength(1)
+        expect(selectedCharID.set).not.toHaveBeenCalled()
+    })
+    test('selects the character actually installed', async () => {
+        vi.mocked(alertConfirmMulti).mockResolvedValueOnce(1)
+        await downloadRisuHub('test', { forceRedirect: true })
+        expect(state.db.characters).toHaveLength(2)
+        expect(selectedCharID.set).toHaveBeenCalledWith(1)
+    })
+    test('preserves the original import error and stack for the error dialog', async () => {
+        const error = new Error('Invalid CHARX ZIP entry')
+        vi.mocked(inspectCharx).mockRejectedValueOnce(error)
+        await downloadRisuHub('test', { forceRedirect: true })
+        expect(alertError).toHaveBeenCalledWith(expect.objectContaining({
+            message: expect.stringContaining(error.message), stack: error.stack,
+        }))
     })
 })
 

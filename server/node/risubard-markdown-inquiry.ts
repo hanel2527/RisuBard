@@ -404,6 +404,7 @@ function semanticExcerpt(document: MarkdownWikiDocument, start: number, end: num
 export function inquireMarkdownDocuments(
     input: MarkdownInquiryInput
 ): MarkdownInquiryResult {
+    // Required context is a direct read, independent of ranking and excerpts.
     if (input.contextSelection === 'required') {
         const documents = input.documents.filter(document => isEligible(document, input)
             && (document.contextMode === 'always' || document.type === 'scene'))

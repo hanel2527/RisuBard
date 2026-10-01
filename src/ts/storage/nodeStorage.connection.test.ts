@@ -16,6 +16,28 @@ afterEach(() => {
     vi.useRealTimers(); vi.unstubAllGlobals()
 })
 
+it.each(['cleanup', 'prepare'])('shows the server reason for failed import rollback %s', async action => {
+    const storage = new NodeStorage()
+    ;(storage as any).authFetch = vi.fn(async () => Response.json({ error: 'Plugin storage unavailable during asset cleanup' }, { status: 500 }))
+    const request = action === 'cleanup' ? storage.cleanupImportAssets(['assets/new.png'], 'id') : storage.prepareImportRollback('id')
+    await expect(request).rejects.toThrow('Plugin storage unavailable during asset cleanup')
+})
+
+it.each(['cleanup', 'prepare'])('bounds a stalled import rollback %s response', async action => {
+    const storage = new NodeStorage()
+    ;(storage as any).authFetch = vi.fn(() => new Promise(() => {}))
+    const request = (action === 'cleanup' ? storage.cleanupImportAssets([], 'id') : storage.prepareImportRollback('id')).catch(e => e.code)
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(await request).toBe('STORAGE_WRITE_TIMEOUT')
+    expect(storage.pendingSaveRequests).toBe(0)
+})
+
+it('keeps the HTTP status when the rollback error body is not JSON', async () => {
+    const storage = new NodeStorage()
+    ;(storage as any).authFetch = vi.fn(async () => new Response('<html>proxy failure</html>', { status: 502 }))
+    await expect(storage.cleanupImportAssets([], 'id')).rejects.toThrow('Import rollback failed (502)')
+})
+
 it.each(['CANONICAL_FILES_CHANGED', 'EXTERNAL_EDIT_MODE'])('preserves %s through the bounded save transport', async code => {
     const storage = new NodeStorage()
     ;(storage as any).authFetch = vi.fn(async () => Response.json({code, error: 'conflict', currentEtag: 'new'}, {status: 409}))

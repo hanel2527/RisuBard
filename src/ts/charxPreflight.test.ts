@@ -2,6 +2,15 @@ import { describe, expect, test } from 'vitest'
 import { zipSync, strToU8 } from 'fflate'
 import { classifyCharx, inspectCharx } from './charxPreflight'
 
+function prependJpeg(bytes: Uint8Array) {
+    // JPEG+ZIP exports retain offsets relative to the original ZIP.
+    const prefix = Uint8Array.of(0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0, 0xff, 0xd9)
+    const combined = new Uint8Array(prefix.length + bytes.length)
+    combined.set(prefix)
+    combined.set(bytes, prefix.length)
+    return combined
+}
+
 describe('CHARX installation type', () => {
     test('module suffix wins, including mixed case', () => {
         expect(classifyCharx('Pack.MODULE.CHARX', 1, 0)).toBe('module')
@@ -20,6 +29,11 @@ describe('CHARX installation type', () => {
     })
     test('rejects incomplete ZIP before any import can start', async () => {
         await expect(inspectCharx(new Uint8Array(30))).rejects.toThrow()
+    })
+    test.each(['bytes', 'blob'])('counts JPEG-prefixed CHARX assets from %s', async type => {
+        const bytes = prependJpeg(zipSync({ 'card.json': strToU8('{}'), 'assets/a.png': Uint8Array.of(1) }))
+        const source = type === 'blob' ? new Blob([bytes]) : bytes
+        expect(await inspectCharx(source)).toEqual({ bytes: bytes.length, assets: 1 })
     })
     test('reads ZIP64 directory metadata without expanding assets', async () => {
         const original = zipSync({ 'card.json': strToU8('{}'), 'assets/a.png': Uint8Array.of(1) })
@@ -40,5 +54,8 @@ describe('CHARX installation type', () => {
         view.setUint32(end + 72, 1, true)
         view.setUint16(end + 76 + 10, 65535, true)
         expect((await inspectCharx(archive)).assets).toBe(1)
+        const prefixed = prependJpeg(archive)
+        expect((await inspectCharx(prefixed)).assets).toBe(1)
+        expect((await inspectCharx(new Blob([prefixed]))).assets).toBe(1)
     })
 })

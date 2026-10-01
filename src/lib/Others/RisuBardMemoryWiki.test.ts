@@ -733,7 +733,7 @@ describe('RisuBardMemoryWiki', () => {
         ).toBe(updated.content))
         expect(document.body.textContent).not.toContain('저장하지 않은 변경')
         expect(document.querySelector('[data-wiki-recent-update]')
-            ?.parentElement?.getAttribute('aria-label')).toBe('아만다 다인 ')
+            ?.parentElement?.getAttribute('aria-label')).toBe('아만다 다인, 관련 있을 때 포함')
     })
 
     test('loads and restores the process-lifetime BARDCHAT snapshot', async () => {
@@ -798,7 +798,7 @@ describe('RisuBardMemoryWiki', () => {
             document.querySelector('[data-wiki-editor]')
         ).not.toBeNull())
         const secondButton = [...document.querySelectorAll('button')]
-            .find((button) => button.textContent?.trim() === '두 번째')!
+            .find((button) => button.getAttribute('aria-label') === '두 번째, 관련 있을 때 포함')!
         secondButton.click()
         await tick()
         const tree = document.querySelector<HTMLElement>('.file-tree')!

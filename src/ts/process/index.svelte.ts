@@ -1736,6 +1736,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             wikiInquiryAttempted = true
             optionalWikiBudget = reserveRequiredWikiBudget(optionalWikiBudget, requiredWikiSources)
         } catch (error) {
+            // We cannot promise mandatory context when its source cannot be read.
             if (!arg.signal?.aborted) throwError(`항상 포함할 바드위키를 확인하지 못해 응답 생성을 중단했습니다. 위키 상태와 토큰 상한을 확인해 주세요.\n${error instanceof Error ? error.message : String(error)}`)
             endGeneration(genKey)
             if (realChatId) clearPendingSend(realChatId)
@@ -2995,6 +2996,20 @@ export async function sendChat(chatProcessIndex = -1,arg:{
 
     formated = await runLuaEditTrigger(currentChar, 'editRequest', formated)
     for(const message of formated) syncRequestStatusSource(message)
+    if (requiredWikiMessage) {
+        formated.unshift(requiredWikiMessage)
+        if (narrativeContextObservation.mode !== 'current') narrativeContextObservation.reason = 'required-wiki-injected'
+        narrativeContextObservation.mode = 'current'
+        narrativeContextObservation.promptMode = 'v2-current'
+    }
+    narrativeContextObservation.inspectedNodeCount = Math.max(requiredWikiDocumentCount, narrativeContextObservation.inspectedNodeCount)
+    narrativeContextObservation.selectedSourceIds = wikiInquirySources.map(source => source.id)
+    narrativeContextObservation.selectedNodeCount = wikiInquirySources.length
+    narrativeContextObservation.selectedTokens = wikiInquirySources.reduce((sum, source) => sum + source.tokens, 0)
+    narrativeContextObservation.inquiryDurationMs += requiredWikiDurationMs
+
+    // Inject after preset/script assembly, before the model's token check. This
+    // survives optional retrieval failure and presets without a description block.
     if (requiredWikiMessage) {
         formated.unshift(requiredWikiMessage)
         if (narrativeContextObservation.mode !== 'current') narrativeContextObservation.reason = 'required-wiki-injected'

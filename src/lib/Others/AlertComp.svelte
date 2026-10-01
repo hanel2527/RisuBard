@@ -2,7 +2,7 @@
     import { alertGenerationInfoStore } from "../../ts/alert";
     
     import { DBState, loadedStore } from 'src/ts/stores.svelte';
-    import { importSession, cancelImport, retryImportRollback, checkImportRecovery } from 'src/ts/importSession';
+    import { importSession, cancelImport, retryImportRollback, checkImportRecovery, dismissImportRecovery } from 'src/ts/importSession';
     import { importProgress } from 'src/ts/importProgress';
     import ImportActivity from './ImportActivity.svelte';
     import { getCharImage } from '../../ts/characters';
@@ -893,7 +893,7 @@
 </ShDialog>
 
 <ShLoadingDialog
-    open={$importSession.phase !== 'recovery' && ($alertStore.type === 'wait' || $alertStore.type === 'wait2' || $alertStore.type === 'progress' || $importSession.phase === 'rolling-back')}
+    open={($importSession.phase !== 'recovery' || $importSession.dismissed) && ($alertStore.type === 'wait' || $alertStore.type === 'wait2' || $alertStore.type === 'progress' || $importSession.phase === 'rolling-back')}
     message={$importSession.phase === 'rolling-back' ? language.importInstall.rollbackMessage : $importProgress.active && $importProgress.server ? (language.importInstall.stages[$importProgress.stage as keyof typeof language.importInstall.stages] ?? language.importInstall.saving) : $alertStore.msg}
     submessage={$alertStore.type !== 'progress' ? ($alertStore.submsg ?? '') : ''}
     progress={$importProgress.active ? ($importProgress.percent ?? null) : $importSession.phase !== 'rolling-back' && $alertStore.type === 'progress' ? parseFloat($alertStore.submsg ?? '0') : null}
@@ -910,11 +910,12 @@
     {/snippet}
 </ShLoadingDialog>
 
-<ShDialog open={$importSession.phase === 'recovery'} tier="top" closable={false} closeOnOutsideClick={false}>
+<ShDialog open={$importSession.phase === 'recovery' && !$importSession.dismissed} tier="top" closable={false} closeOnOutsideClick={false}>
     {#snippet title()}{language.importInstall.recoveryTitle}{/snippet}
     <p class="text-textcolor whitespace-pre-wrap break-words">{language.importInstall.recoveryMessage}</p>
     {#if $importSession.error}<p class="text-sm text-textcolor2 break-words">{$importSession.error}</p>{/if}
     {#snippet footer()}
+        <ShButton variant="outline" onclick={dismissImportRecovery}>{language.importInstall.dismiss}</ShButton>
         <ShButton onclick={retryImportRollback}>{language.importInstall.retry}</ShButton>
     {/snippet}
 </ShDialog>
