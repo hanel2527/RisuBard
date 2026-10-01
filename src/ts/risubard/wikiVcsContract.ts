@@ -6,6 +6,13 @@
  * only need stable identity comparison, so they use a compact 64-bit FNV-1a
  * digest that both runtimes can compute without a crypto library.
  */
+import type { CanonicalTurnReceipt } from './canonicalTurnReceipt'
+
+export interface WikiAnalysisReceiptResult {
+    receipt: CanonicalTurnReceipt
+    /** Historical commits without a receipt cannot prove their original retry status. */
+    provenance: 'commit' | 'reconstructed'
+}
 
 export const WIKI_VCS_SCHEMA_VERSION = 1 as const
 
@@ -169,6 +176,8 @@ export interface WikiPublishChangesRequest {
     kind: WikiCommitKind
     chatAnchor?: WikiChatAnchor
     expectedHead: string | null
+    /** Receipt body is stored before computing the commit ID. */
+    analysisReceipt?: CanonicalTurnReceipt
     changes: Array<{ path: string; contents: string | null }>
 }
 

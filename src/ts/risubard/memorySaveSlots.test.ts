@@ -404,7 +404,10 @@ describe('memory save slot client', () => {
         const runtime = require('../../../server/node/risubard-memory-runtime.cjs')
         const root = await mkdtemp(join(tmpdir(), 'risubard-save-client-contract-'))
         try {
-            const service = runtime.createRuntimeMemoryService(root)
+            const { createUserDataRepository } = require('../../../server/node/user-data-repository.cjs')
+            const canonical = createUserDataRepository({ dataRoot: root })
+            canonical.importLegacyDatabase({ characters: [{ chaId: 'character', name: 'Aria', chats: [chat] }] })
+            const service = runtime.createRuntimeMemoryService(root, { canonicalRepository: canonical })
             const manualRuntimeResult = await service.createMemorySave({
                 characterId: 'character',
                 sourceChatId: 'chat-1',

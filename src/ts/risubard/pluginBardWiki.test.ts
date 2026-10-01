@@ -146,6 +146,7 @@ describe('BardWiki plugin service', () => {
                     graphRevision: 1,
                     indexRevision: 1,
                     cacheStatus: 'current',
+                    wikiCommitId: null,
                     sources: [{
                         id: 'wiki:event-1',
                         kind: 'memory',
@@ -197,6 +198,7 @@ describe('BardWiki plugin service', () => {
                 graphRevision: 1,
                 indexRevision: 1,
                 cacheStatus: 'current',
+                wikiCommitId: null,
                 sources: [],
                 evidenceRequests: [],
                 rerankCandidates: [],
@@ -320,6 +322,7 @@ describe('BardWiki plugin service', () => {
             graphRevision: 1,
             indexRevision: 1,
             cacheStatus: 'current' as const,
+            wikiCommitId: null,
             sources: [{
                 id: 'wiki:1',
                 kind: 'memory' as const,

@@ -20,7 +20,7 @@
     import { changeChatTo, createChatCopyName, forageStorage, requestImmediateSave } from 'src/ts/globalApi.svelte';
     import type { Chat, WikiChatRecoveryPending, WikiChatRecoveryStep } from 'src/ts/storage/database.svelte';
     import { completeMemoryWikiFork } from 'src/ts/risubard/memoryWikiFork';
-    import { countChatTurns, createMemorySaveSlot, deleteMemorySaveSlot, latestChatMessageId, listMemorySaveSlots, prepareMemorySaveLoad, prepareReferenceSaveLoad, shouldConfirmMemorySaveLoad, writeReferenceAutosave, type MemorySaveSlotSummary } from 'src/ts/risubard/memorySaveSlots';
+    import { countChatTurns, createMemorySaveSlot, deleteMemorySaveSlot, latestChatMessageId, listAllMemorySaveSlots, prepareMemorySaveLoad, prepareReferenceSaveLoad, shouldConfirmMemorySaveLoad, writeReferenceAutosave, type MemorySaveSlotSummary } from 'src/ts/risubard/memorySaveSlots';
     import { ensureWikiBaselineForChat } from 'src/ts/risubard/wikiChatCoordinator';
     import { checkoutWikiVersion, forkWikiVersion, captureWikiVersion, listWikiHistory, discardWikiFork } from 'src/ts/risubard/wikiVersionClient';
     import { cleanupWikiRebootWorkspace } from 'src/ts/risubard/wikiRebootTransport';
@@ -269,6 +269,7 @@
             if(!character.chaId || !chat.id){
                 throw new Error('채팅 저장에는 안정적인 캐릭터와 채팅 ID가 필요합니다.')
             }
+            await requestImmediateSave({ rejectOnFailure: true })
             const saved = await createMemorySaveSlot({
                 characterId: character.chaId,
                 chat,
@@ -291,7 +292,7 @@
         characterId: string,
         chatId: string,
     ): Promise<MemorySaveSlotSummary[]> {
-        return listMemorySaveSlots({
+        return listAllMemorySaveSlots({
             characterId,
             sourceChatId: chatId,
             fetchImpl: fetch,
@@ -351,6 +352,7 @@
             const saveId = autoSaveId(chatId, turnCount, interval, retention)
             // Reference autosave: the wiki is referenced by the commit it sits
             // at, so no workspace copy happens here.
+            await requestImmediateSave({ rejectOnFailure: true })
             await writeReferenceAutosave({
                 characterId,
                 chat,

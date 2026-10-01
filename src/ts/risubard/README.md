@@ -31,9 +31,13 @@ is visible in its own folder but remains read-only.
 ## Durable publication and historical chat transitions
 
 Confirmation waits for the owning chat's canonical disk flush before sending
-its evidence anchor. A changed or deleted persisted source rejects publication.
-A valid confirmation with no document changes still records an anchored commit
-and a receipt, so historical prefix lookup includes quiet confirmed turns.
+its evidence anchor. It pins the Wiki head before reading documents or calling
+the model; an intervening supported or external edit rejects the stale batch.
+A changed or deleted persisted source also rejects publication. A valid
+confirmation with no document changes still records an anchored commit.
+Each analysis stores its receipt as an immutable blob before computing the
+commit ID. The publication journal applies both that receipt and the canonical
+message's confirmation state, including after interruption or response loss.
 
 Native writes stage only their changed paths. Manual rename and backlink updates
 publish together; staging failure leaves both live files and head unchanged.
@@ -50,9 +54,14 @@ startup and before subsequent storage transitions.
 
 Public checkout and fork publish the Wiki head and full canonical chat snapshot
 through that decision. Historical prefixes restore scriptstate from response
-checkpoints and remove receipts outside the target commit ancestry or retained
-messages. Missing historical scriptstate checkpoints fail explicitly. UI save
-failure after publication does not compensate by restoring the old chat.
+checkpoints and retain only reachable per-analysis receipts whose source
+messages remain present. Synthetic first-message sources survive inherited
+forks when the greeting selection still matches. A fully reachable legacy
+receipt is preserved; a partially retained legacy receipt is reconstructed from
+committed document changes and remains unconfirmed because its original
+warnings and retry status were never stored. Missing historical scriptstate
+checkpoints fail explicitly. UI save failure after publication does not
+compensate by restoring the old chat.
 Reboot seeding is a separate temporary Wiki-only operation, not a visible chat.
 
 Internal writes do not traverse every document's stat metadata. Background
@@ -65,6 +74,20 @@ sync. Portable v1 saves use their embedded full workspace when optional source
 history is absent, incomplete or does not match the saved Wiki; inaccessible
 foreign receipts are cleared. Their workspace replacement and canonical chat
 publication share the recoverable journal decision.
+
+Manual and reference saves flush the source chat first, then validate the saved
+story revision and Wiki prefix under the shared storage barrier. Snapshot
+normalization is shared with that check: sidebar model/prompt/persona/toggle
+preferences and transient streaming fields are excluded. Old messages, story
+variables or greeting selections cannot be paired with a newer head. Autosave
+retention inspects both snapshot and reference slots.
+Removing a deleted chat's final recovery ref also removes its branch pin before
+collection; other branches, saves and recovery refs still retain shared blobs.
+Chat-state storage uses immutable message chunks and a bounded persistent tree.
+Warm saves rewrite only changed messages, leaves, ancestors and the small root
+manifest; unchanged snapshots reuse their root. Restart reads, shared-root
+collection and legacy flat manifests remain supported.
+
 
 Backup export freezes inventory bytes and the compatibility database under the
 storage/Wiki barriers, then streams the frozen files without holding the write
@@ -93,8 +116,14 @@ requests retain that traversal. Recent raw messages remain the primary current
 scene evidence, so a current-scene page is optional rather than auto-required.
 Each canonical document also has a program-owned `context` policy: `always`
 is required input, `auto` needs a positive lexical match, and `never` is
-excluded from automatic inquiry. Required context that exceeds the fixed
-twelve-document limit fails explicitly instead of silently dropping a page.
+excluded from automatic inquiry. Required pages are fetched first and inserted
+as a non-removable system message even when optional retrieval is skipped.
+Their tokens reserve space within the same Wiki budget. Required and automatic
+queries, semantic reranking and historical-source resolution share one
+request-scoped `wikiCommitId`; a changed head returns HTTP 409 `source-changed`
+and stops generation instead of mixing revisions. Document counts are not
+revision identities. Required context that exceeds the twelve-document or
+token limit fails explicitly instead of silently dropping a page.
 
 The Markdown view derives bounded health diagnostics from the loaded files:
 unresolved `[[wikilinks]]` and canonical pages with no current connection. The

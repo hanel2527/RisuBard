@@ -68,6 +68,7 @@ describe('actual narrative inquiry prompt', () => {
         const request = { messageId: 'm', eventTitle: 'Archive', documentId: 'event' }
         const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
             mode: 'v2-current', graphRevision: 0, indexRevision: 0, cacheStatus: 'current',
+            wikiCommitId: null,
             sources: [], evidenceRequests: [request],
             metrics: { candidateCount: 1, inspectedNodeCount: 1, inspectedEdgeCount: 0,
                 selectedNodeCount: 0, selectedTokens: 0, hopCount: 0, auxiliaryModelCalls: 0 },
@@ -126,6 +127,7 @@ describe('actual narrative inquiry prompt', () => {
                 graphRevision: 0,
                 indexRevision: 0,
                 cacheStatus: 'missing-or-stale',
+                wikiCommitId: null,
                 sources: [],
                 entityCandidates: [],
                 metrics: {
@@ -158,6 +160,7 @@ describe('actual narrative inquiry prompt', () => {
             graphRevision: 0,
             indexRevision: 0,
             cacheStatus: 'missing-or-stale',
+            wikiCommitId: null,
             sources: [],
             entityCandidates: [],
             metrics: {
@@ -253,6 +256,7 @@ describe('actual narrative inquiry prompt', () => {
             graphRevision: 0,
             indexRevision: 0,
             cacheStatus: 'current',
+            wikiCommitId: null,
             sources: [],
             entityCandidates: [],
             metrics: {
@@ -288,6 +292,7 @@ describe('actual narrative inquiry prompt', () => {
             graphRevision: 4,
             indexRevision: 4,
             cacheStatus: 'current',
+            wikiCommitId: null,
             sources: [{
                 id: 'narrative-memory:event:bridge',
                 kind: 'memory',
@@ -380,6 +385,7 @@ describe('actual narrative inquiry prompt', () => {
             createAuth: async () => 'auth',
             fetchImpl: vi.fn(async () => new Response(JSON.stringify({
                 mode: 'v2-current', graphRevision: 1, indexRevision: 1, cacheStatus: 'current',
+                wikiCommitId: null,
                 sources: [source],
                 metrics: { candidateCount: 1, inspectedNodeCount: 1, inspectedEdgeCount: 0,
                     selectedNodeCount: 1, selectedTokens: 5000, hopCount: 0, auxiliaryModelCalls: 0 },
@@ -400,6 +406,7 @@ describe('actual narrative inquiry prompt', () => {
             graphRevision: 7,
             indexRevision: 7,
             cacheStatus: 'current',
+            wikiCommitId: null,
             sources: [],
             metrics: {
                 candidateCount: 7,
@@ -429,6 +436,7 @@ describe('actual narrative inquiry prompt', () => {
             graphRevision: 2,
             indexRevision: 2,
             cacheStatus: 'current',
+            wikiCommitId: null,
             entityCandidates: [],
             metrics: {
                 candidateCount: 2,
@@ -532,6 +540,7 @@ describe('actual narrative inquiry prompt', () => {
             graphRevision: 2_000,
             indexRevision: 2_000,
             cacheStatus: 'current',
+            wikiCommitId: null,
             sources: [],
             metrics: {
                 candidateCount: 64,
@@ -773,5 +782,36 @@ describe('selectNarrativeWorkingMessages', () => {
         expect(shouldIncludeNarrativeFirstMessage(11, 12)).toBe(true)
         expect(shouldIncludeNarrativeFirstMessage(12, 12)).toBe(false)
         expect(shouldIncludeNarrativeFirstMessage(20, 12)).toBe(false)
+    })
+})
+
+describe('VCS synchronization regression', () => {
+    const reply = (wikiCommitId: string | null) => ({
+        mode: 'v2-current', wikiCommitId, graphRevision: 1, indexRevision: 1, cacheStatus: 'current',
+        sources: [], metrics: { candidateCount: 1, inspectedNodeCount: 1, inspectedEdgeCount: 0,
+            selectedNodeCount: 0, selectedTokens: 0, hopCount: 0, auxiliaryModelCalls: 0 },
+    })
+
+    it.each([null, 'a'.repeat(64)])('rejects a successful response from a different commit after pinning %s', async first => {
+        const wikiSnapshot = {}
+        const input = { characterId: 'c', chatId: 'chat', currentInput: 'Keep', wikiSnapshot,
+            createAuth: async () => 'auth' }
+        await loadNarrativeInquiry({ ...input, fetchImpl: async () => Response.json(reply(first)) })
+        await expect(loadNarrativeInquiry({ ...input, fetchImpl: async () => Response.json(reply('b'.repeat(64))) }))
+            .rejects.toMatchObject({ code: 'source-changed', httpStatus: 409 })
+    })
+
+    it('does not replace the pinned commit while resolving historical source excerpts', async () => {
+        let head = 'a'.repeat(64)
+        await expect(loadNarrativeInquiry({
+            characterId: 'c', chatId: 'chat', currentInput: 'Keep', createAuth: async () => 'auth',
+            fetchImpl: async () => Response.json({ ...reply(head),
+                evidenceRequests: [{ messageId: 'm1', eventTitle: 'Arrival', documentId: 'event' }] }),
+            resolveSourceMatches: async () => {
+                head = 'b'.repeat(64)
+                return [{ messageId: 'm1', role: 'assistant', occurredAt: 1, score: 10,
+                    content: 'The original arrival at the keep.' }]
+            },
+        })).rejects.toMatchObject({ code: 'source-changed', httpStatus: 409 })
     })
 })

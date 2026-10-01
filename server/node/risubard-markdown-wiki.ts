@@ -422,7 +422,7 @@ function serializeDocument(
     ].join('\n')
 }
 
-function parseDocument(
+export function parseDocument(
     contents: string,
     relativePath: string
 ): MarkdownWikiDocument {
@@ -1134,20 +1134,9 @@ export function createMarkdownNarrativeWiki(
                 if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
                 throw error
             }
-            const loaded = await Promise.all(files.map(async (file) => ({
-                file: join(directory, basename(file)),
-                document: await readDocument(
-                    workspace, join(directory, basename(file)), `${prefix}/${file}`
-                ),
-            })))
-            for (const item of loaded) {
-                if (item.document.type === 'event'
-                    && item.document.status === 'retracted') {
-                    await fileSystem.rm(item.file, { force: true })
-                    continue
-                }
-                documents.push(item.document)
-            }
+            documents.push(...await Promise.all(files.map(file => readDocument(
+                workspace, join(directory, basename(file)), `${prefix}/${file}`
+            ))))
         }
         const cache = parsedDocuments.get(workspace.directory)
         if (cache) {
@@ -1394,6 +1383,13 @@ export function createMarkdownNarrativeWiki(
             await rebuildIndex(characterId, chatId)
         },
 
+        async readHead(characterId: string, chatId: string): Promise<string | null> {
+            const port = requireTransactionalVersioning()
+            await port.ensureBaseline({ characterId, chatId })
+            await port.captureExternalChanges({ characterId, chatId })
+            return port.readHead(characterId, chatId)
+        },
+
         /**
          * Opens an operation batch. Writes inside it are not committed
          * individually; `publishWriteBatch` records all of them as one commit.
@@ -1404,6 +1400,7 @@ export function createMarkdownNarrativeWiki(
             operationId: string
             kind: WikiCommitKind
             chatAnchor?: WikiChatAnchor
+            expectedHead?: string | null
         }): Promise<{ expectedHead: string | null }> {
             const key = batchKey(input.characterId, input.chatId)
             if (writeBatches.has(key)) {
@@ -1427,6 +1424,10 @@ export function createMarkdownNarrativeWiki(
                 ...(input.chatAnchor
                     ? { chatAnchor: input.chatAnchor } : {}),
             })
+            if (input.expectedHead !== undefined
+                && input.expectedHead !== baseline.commitId) {
+                throw new Error('Wiki commit conflict: the branch head changed')
+            }
             const batch: WriteBatch = {
                 operationId: input.operationId,
                 kind: input.kind,
@@ -1447,6 +1448,7 @@ export function createMarkdownNarrativeWiki(
             chatId: string
             operationId: string
             chatAnchor?: WikiChatAnchor
+            analysisReceipt?: CanonicalTurnReceipt
         }, signal?: AbortSignal): Promise<{ commitId: string | null; changedPaths: string[] }> {
             const key = batchKey(input.characterId, input.chatId)
             const port = requireTransactionalVersioning()
@@ -1498,6 +1500,8 @@ export function createMarkdownNarrativeWiki(
                     expectedHead: batch.expectedHead,
                     changes,
                     ...(anchor ? { chatAnchor: anchor } : {}),
+                    ...(input.analysisReceipt
+                        ? { analysisReceipt: input.analysisReceipt } : {}),
                 }, signal)
                 await persistBatchAuxiliaryFiles(batch)
                 return result
@@ -2788,6 +2792,9 @@ export function createMarkdownNarrativeWiki(
         },
 
         async inquire(input: {
+            contextSelection?: 'required' | 'auto'
+            /** Server-owned committed path hashes; not accepted from HTTP clients. */
+            expectedPaths?: Readonly<Record<string, string>>
             characterId: string
             chatId: string
             currentInput: string
@@ -2817,11 +2824,22 @@ export function createMarkdownNarrativeWiki(
                 maximum: number
             }
         }) {
+            let documents = await loadDocuments(input.characterId, input.chatId)
+            if (input.expectedPaths) {
+                const paths = Object.keys(input.expectedPaths)
+                    .filter(path => trackedWikiPath(path) && !path.startsWith('.'))
+                // Markdown edit tokens encode the same SHA-256 as base64url; VCS uses hex.
+                const matches = () => paths.length === documents.length && documents.every(document =>
+                    input.expectedPaths![document.relativePath]
+                        === Buffer.from(document.contentHash, 'base64url').toString('hex'))
+                if (!matches()) {
+                    documents = await refreshDocuments(input.characterId, input.chatId)
+                    if (!matches()) throw new Error('Wiki inquiry conflict: the working documents changed')
+                }
+            }
             return inquireMarkdownDocuments({
-                documents: await loadDocuments(
-                    input.characterId,
-                    input.chatId
-                ),
+                contextSelection: input.contextSelection,
+                documents,
                 currentInput: input.currentInput,
                 ...(input.retrievalLimits ? { retrievalLimits: input.retrievalLimits } : {}),
                 ...(input.entityHints ? { entityHints: input.entityHints } : {}),

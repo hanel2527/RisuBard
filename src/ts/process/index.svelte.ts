@@ -1,5 +1,6 @@
 import { captureGenerationTarget, createGenerationScope, type GenerationTarget } from "./generationTarget";
 import { isOocAssistantTurn } from '../risubard/oocTurns'
+import { createRequiredWikiMessage, reserveRequiredWikiBudget, type WikiInquiryBudget } from '../risubard/requiredWikiContext'
 import { createWikiInquiryDiagnostic, formatWikiInquiryDiagnostic, wikiInquiryFailure, type WikiInquiryFailure } from '../risubard/wikiInquiryDiagnostics'
 import { get } from "svelte/store";
 import { type Database, type character, type MessageGenerationInfo, type Chat, type MessagePresetInfo, changeToPreset, getActivePromptOverlayToggleTemplate, type Message, normalizeChat, type StreamingDisplayOptimizationMode } from "../storage/database.svelte";
@@ -56,6 +57,8 @@ import {
     selectNarrativeWorkingMessages,
     shouldIncludeNarrativeFirstMessage,
     countNarrativeTurns,
+    type WikiInquirySnapshot,
+    type NarrativeInquiryResponse,
 } from "../risubard/narrativeContext";
 import {
     createRisuBardContextTrace,
@@ -1697,7 +1700,48 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     const lorepmt = await loadLoreBookV3Prompt({ character: generationScope.character, chat: generationScope.chat })
     let wikiInquiryAttempted = false
     let wikiInquiryError: WikiInquiryFailure | undefined
-    let wikiInquirySources: Awaited<ReturnType<typeof loadNarrativeInquiry>>['sources'] = []
+    let wikiInquirySources: NarrativeInquiryResponse['sources'] = []
+    const wikiSnapshot: WikiInquirySnapshot = {}
+    let requiredWikiSources: typeof wikiInquirySources = []
+    let requiredWikiDocumentCount = 0
+    let requiredWikiDurationMs = 0
+    const responseWikiPromptPreset = resolveWikiPromptPreset(
+        requestSettings.risuBardWikiPromptPresets,
+        requestSettings.risuBardChatWikiPromptPresetId
+    )
+    const responseWikiPromptGuide = responseWikiPromptPreset
+        ? renderWikiPromptGuide(compileWikiPromptGuide(responseWikiPromptPreset), currentChar).response
+        : ''
+    const wikiSettings = resolvedRisuBardSettings(currentChat, true)
+    let optionalWikiBudget: WikiInquiryBudget | null = {
+        target: wikiSettings.risuBardInquiryTargetTokenBudget,
+        events: wikiSettings.risuBardInquiryEventTokenBudget,
+        perSource: wikiSettings.risuBardInquirySourceTokenBudget,
+        maximum: wikiSettings.risuBardInquiryMaximumTokenBudget,
+    }
+    if (isNarrativeContextOptedIn()) {
+        const requiredStartedAt = performance.now()
+        try {
+            const required = await loadNarrativeInquiry({
+                characterId: currentChar.chaId, chatId: narrativeSessionChatId,
+                currentInput: '', contextSelection: 'required', wikiSnapshot,
+                tokenBudget: optionalWikiBudget, fetchImpl: fetch,
+                createAuth: () => forageStorage.createAuth(),
+                timeoutMs: wikiSettings.risuBardInquiryTimeoutMs, signal: arg.signal,
+            })
+            requiredWikiSources = required.sources
+            requiredWikiDocumentCount = required.metrics.inspectedNodeCount
+            requiredWikiDurationMs = performance.now() - requiredStartedAt
+            wikiInquirySources = [...requiredWikiSources]
+            wikiInquiryAttempted = true
+            optionalWikiBudget = reserveRequiredWikiBudget(optionalWikiBudget, requiredWikiSources)
+        } catch (error) {
+            if (!arg.signal?.aborted) throwError(`항상 포함할 바드위키를 확인하지 못해 응답 생성을 중단했습니다. 위키 상태와 토큰 상한을 확인해 주세요.\n${error instanceof Error ? error.message : String(error)}`)
+            endGeneration(genKey)
+            if (realChatId) clearPendingSend(realChatId)
+            return false
+        }
+    }
     const narrativeContextObservation: {
         mode: 'disabled' | 'legacy' | 'current'
         promptMode: 'disabled' | 'v2-current' | 'bounded-v1-fallback'
@@ -1765,10 +1809,9 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                 (message) => message.role === 'user'
                     && typeof message.data === 'string'
             )?.data ?? ''
-            let sources: Awaited<
-                ReturnType<typeof loadNarrativeInquiry>
-            >['sources'] = []
+            let sources: NarrativeInquiryResponse['sources'] = []
             if (!narrativeContext.sourceChanged
+                && optionalWikiBudget
                 && currentInput.trim().length > 0) {
                 const inquiryStartedAt = performance.now()
                 wikiInquiryAttempted = true
@@ -1799,6 +1842,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                         inquirySettings.risuBardHistoricalSourceMatchLimit,
                     )
                     const loadInquiry = (semanticMatches?: readonly WikiSemanticMatch[]) => loadNarrativeInquiry({
+                        contextSelection: 'auto', wikiSnapshot,
                         characterId: currentChar.chaId,
                         chatId: narrativeSessionChatId,
                         currentInput,
@@ -1811,12 +1855,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                             )
                         ),
                         entityHints: lorepmt.bardWikiEntityHints,
-                        tokenBudget: {
-                            target: inquirySettings.risuBardInquiryTargetTokenBudget,
-                            events: inquirySettings.risuBardInquiryEventTokenBudget,
-                            perSource: inquirySettings.risuBardInquirySourceTokenBudget,
-                            maximum: inquirySettings.risuBardInquiryMaximumTokenBudget,
-                        },
+                        tokenBudget: optionalWikiBudget,
                         sourceMatches: historicalMatches,
                         sourceLimit:
                             inquirySettings.risuBardHistoricalSourceMatchLimit,
@@ -1863,7 +1902,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                         }
                         : initialInquiry
                     sources = inquiry.sources
-                    wikiInquirySources = sources
+                    wikiInquirySources = [...requiredWikiSources, ...sources]
                     narrativeContextObservation.promptMode = inquiry.mode
                     narrativeContextObservation.graphRevision =
                         inquiry.graphRevision
@@ -1886,6 +1925,12 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                 }
                 catch (error) {
                     wikiInquiryError = wikiInquiryFailure(error)
+                    if (wikiInquiryError.code === 'source-changed') {
+                        throwError('위키 조회 중 내용이 변경되어 응답 생성을 중단했습니다. 다시 생성해 주세요.')
+                        endGeneration(genKey)
+                        if (realChatId) clearPendingSend(realChatId)
+                        return false
+                    }
                     narrativeContext.sourceChanged = true
                     narrativeContextObservation.mode = 'legacy'
                     narrativeContextObservation.promptMode =
@@ -1899,23 +1944,13 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                         performance.now() - inquiryStartedAt
                 }
             }
-            const responseWikiPromptPreset = resolveWikiPromptPreset(
-                requestSettings.risuBardWikiPromptPresets,
-                requestSettings.risuBardChatWikiPromptPresetId
-            )
-            const responseWikiPromptGuide = responseWikiPromptPreset
-                ? renderWikiPromptGuide(
-                    compileWikiPromptGuide(responseWikiPromptPreset),
-                    currentChar,
-                ).response
-                : ''
             const currentPrompt = narrativeContext.sourceChanged
                 ? null
                 : createNarrativeSourcesPrompt(
                     sources,
                     narrativeContext.baseline ?? '',
                     undefined,
-                    responseWikiPromptGuide
+                    requiredWikiSources.length ? '' : responseWikiPromptGuide
                 )
             if (currentPrompt) {
                 narrativeContextObservation.mode = 'current'
@@ -2102,6 +2137,8 @@ export async function sendChat(chatProcessIndex = -1,arg:{
 
     //await tokenize currernt
     let currentTokens = maxResponseTokens
+    const requiredWikiMessage = createRequiredWikiMessage(requiredWikiSources, responseWikiPromptGuide)
+    if (requiredWikiMessage) currentTokens += await tokenizer.tokenizeChat(requiredWikiMessage)
     let supaMemoryCardUsed = false
     
     //for unexpected error
@@ -2569,7 +2606,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         while(currentTokens > maxContextTokens){
             if(chats.length <= 1){
                 throwError(language.errors.toomuchtoken + "\n\nRequired Tokens: " + currentTokens)
-
+                endGeneration(genKey)
                 if (realChatId) clearPendingSend(realChatId)
                 return false
             }
@@ -2958,9 +2995,21 @@ export async function sendChat(chatProcessIndex = -1,arg:{
 
     formated = await runLuaEditTrigger(currentChar, 'editRequest', formated)
     for(const message of formated) syncRequestStatusSource(message)
+    if (requiredWikiMessage) {
+        formated.unshift(requiredWikiMessage)
+        if (narrativeContextObservation.mode !== 'current') narrativeContextObservation.reason = 'required-wiki-injected'
+        narrativeContextObservation.mode = 'current'
+        narrativeContextObservation.promptMode = 'v2-current'
+    }
+    narrativeContextObservation.inspectedNodeCount = Math.max(requiredWikiDocumentCount, narrativeContextObservation.inspectedNodeCount)
+    narrativeContextObservation.selectedSourceIds = wikiInquirySources.map(source => source.id)
+    narrativeContextObservation.selectedNodeCount = wikiInquirySources.length
+    narrativeContextObservation.selectedTokens = wikiInquirySources.reduce((sum, source) => sum + source.tokens, 0)
+    narrativeContextObservation.inquiryDurationMs += requiredWikiDurationMs
 
     if(requestSettings.promptInfoInsideChat && requestSettings.promptTextInfoInsideChat){
         promptBodyformatedForChatStore = await runLuaEditTrigger(currentChar, 'editRequest', promptBodyformatedForChatStore)
+        if (requiredWikiMessage) promptBodyformatedForChatStore.unshift(requiredWikiMessage)
         promptInfo.promptText = promptBodyformatedForChatStore
     }
 
@@ -2974,11 +3023,13 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         inputTokens += messageTokens
     }
 
-    if(inputTokens > maxContextTokens){
+    const inputTokenLimit = requiredWikiMessage ? maxContextTokens - maxResponseTokens : maxContextTokens
+    if(inputTokens > inputTokenLimit){
         let pointer = 0
-        while(inputTokens > maxContextTokens){
+        while(inputTokens > inputTokenLimit){
             if(pointer >= formated.length){
                 throwError(language.errors.toomuchtoken + "\n\nAt token rechecking. Required Tokens: " + inputTokens)
+                endGeneration(genKey)
                 if (realChatId) clearPendingSend(realChatId)
                 return false
             }

@@ -314,6 +314,10 @@ export interface NarrativeGraphWriteService {
 }
 
 export interface NarrativeMarkdownWikiWriteService {
+    /** Pins the head before any documents or model inputs are read. */
+    readHead?(
+        characterId: string, chatId: string, signal?: AbortSignal
+    ): Promise<string | null>
     inquire(input: {
         characterId: string
         chatId: string
@@ -384,12 +388,14 @@ export interface NarrativeMarkdownWikiWriteService {
         operationId: string
         kind: 'analysis' | 'manual' | 'admin' | 'review' | 'rebuild'
         chatAnchor?: WikiChatAnchor
+        expectedHead?: string | null
     }, signal?: AbortSignal): void | Promise<void>
     publishWriteBatch?(input: {
         characterId: string
         chatId: string
         chatAnchor?: WikiChatAnchor
         operationId: string
+        analysisReceipt?: CanonicalTurnReceipt
     }, signal?: AbortSignal): Promise<{ commitId: string | null; changedPaths: string[] }>
     abandonWriteBatch?(input: {
         characterId: string
@@ -1186,9 +1192,6 @@ export function createMemoryAnalysisRunner(
             })
         )
         if (options.nativeV2Analysis && options.markdownWikiService) {
-            // The newest commit produced by this analysis, recorded on the
-            // receipt so the chat can point at the exact wiki state it made.
-            let lastCommitId: string | undefined
             // One analysis is one operation, so its events and canonical
             // documents must land as a single commit rather than one per file.
             const batchOperationId = `analysis:${snapshot.characterId}`
@@ -1214,6 +1217,14 @@ export function createMemoryAnalysisRunner(
             let rebootRecoveryStarted = false
             let documents: LoadedCanonicalDocument[] = []
             let documentsLoaded = false
+            if (options.markdownWikiService.beginWriteBatch
+                && !options.markdownWikiService.readHead) {
+                throw new Error('Wiki analysis head reader is unavailable')
+            }
+            const expectedHead = await options.markdownWikiService.readHead?.(
+                snapshot.characterId, snapshot.chatId,
+                ...optionalSignalArgument(signal)
+            )
             if (options.markdownWikiService.loadDocuments) {
                 try {
                     documents = await options.markdownWikiService.loadDocuments(
@@ -1482,26 +1493,23 @@ export function createMemoryAnalysisRunner(
                         operationId: batchOperationId,
                         kind: snapshot.rebootTurns ? 'rebuild' : 'analysis',
                         chatAnchor: anchor,
+                        expectedHead,
                     }, ...optionalSignalArgument(signal))
                     batchOpen = true
                 }
-                let commitId: string | null = null
+                const canonicalReceipt: CanonicalTurnReceipt = {
+                    sourceMessageIds, eventIds: [], changes: [], warnings: [],
+                    recordedAt: new Date().toISOString(),
+                }
                 if (batchOpen && options.markdownWikiService.publishWriteBatch) {
                     signal?.throwIfAborted()
                     const published = await options.markdownWikiService.publishWriteBatch({
                         characterId: snapshot.characterId, chatId: snapshot.chatId,
                         operationId: batchOperationId, chatAnchor: anchor,
+                        analysisReceipt: canonicalReceipt,
                     }, ...optionalSignalArgument(signal))
                     batchOpen = false
-                    commitId = published.commitId
-                }
-                const canonicalReceipt: CanonicalTurnReceipt = {
-                    sourceMessageIds,
-                    eventIds: [],
-                    changes: [],
-                    warnings: [],
-                    recordedAt: new Date().toISOString(),
-                    ...(commitId ? { vcsCommitIds: [commitId] } : {}),
+                    if (published.commitId) canonicalReceipt.vcsCommitIds = [published.commitId]
                 }
                 if (rebootRecoveryStarted) {
                     if (!options.markdownWikiService
@@ -1553,6 +1561,7 @@ export function createMemoryAnalysisRunner(
                     operationId: batchOperationId,
                     kind: snapshot.rebootTurns ? 'rebuild' : 'analysis',
                     chatAnchor: analysisAnchor,
+                    expectedHead,
                 }, ...optionalSignalArgument(signal))
                 batchOpen = true
             }
@@ -1603,9 +1612,6 @@ export function createMemoryAnalysisRunner(
                     }, ...optionalSignalArgument(signal))
                 if (savedEvent && typeof savedEvent.id === 'string') {
                     savedEvents.push(savedEvent)
-                    if (typeof savedEvent.vcsCommitId === 'string') {
-                        lastCommitId = savedEvent.vcsCommitId
-                    }
                     priorTimeline.push(savedEvent.retrievalMetadata?.storyTime
                         ?? retrievalMetadata?.storyTime ?? { day: null, precision: 'unknown' })
                 }
@@ -2130,9 +2136,6 @@ export function createMemoryAnalysisRunner(
                                             : sourceMessageIds
                                     ),
                                     }, ...optionalSignalArgument(signal))
-                                if (typeof saved.vcsCommitId === 'string') {
-                                    lastCommitId = saved.vcsCommitId
-                                }
                                 receiptChanges.push({
                                     documentId: saved.id,
                                     type: saved.type as Exclude<
@@ -2168,6 +2171,14 @@ export function createMemoryAnalysisRunner(
             }
             // Everything this analysis wrote is published as one commit, so a
             // checkout at this boundary restores events and documents together.
+            const canonicalReceipt: CanonicalTurnReceipt = {
+                sourceMessageIds,
+                eventIds: savedEvents.map((event) => event.id),
+                changes: receiptChanges,
+                warnings: receiptWarnings,
+                recordedAt: new Date().toISOString(),
+                recovery: { inputHash, deferred },
+            }
             if (batchOpen && options.markdownWikiService.publishWriteBatch) {
                 signal?.throwIfAborted()
                 try {
@@ -2177,25 +2188,17 @@ export function createMemoryAnalysisRunner(
                             chatId: snapshot.chatId,
                             operationId: batchOperationId,
                             chatAnchor: analysisAnchor,
+                            analysisReceipt: canonicalReceipt,
                         }, ...optionalSignalArgument(signal))
                     batchOpen = false
                     if (published.commitId) {
-                        lastCommitId = published.commitId
+                        canonicalReceipt.vcsCommitIds = [published.commitId]
                     }
                 }
                 catch (error) {
                     await reportError(error)
                     throw error
                 }
-            }
-            const canonicalReceipt: CanonicalTurnReceipt = {
-                sourceMessageIds,
-                eventIds: savedEvents.map((event) => event.id),
-                changes: receiptChanges,
-                warnings: receiptWarnings,
-                recordedAt: new Date().toISOString(),
-                recovery: { inputHash, deferred },
-                ...(lastCommitId ? { vcsCommitIds: [lastCommitId] } : {}),
             }
             if (rebootRecoveryStarted) {
                 if (!options.markdownWikiService.recordRebootBatchReceipt) {

@@ -12,7 +12,7 @@ import type {
     NarrativeMemoryState,
 } from '../../../packages/risubard-core/src/memoryDelta'
 import { invokeBrowserFetch } from './browserFetch'
-import { recoverWikiOperationResult } from './wikiVersionClient'
+import { captureWikiVersion, ensureWikiVersion, recoverWikiOperationResult } from './wikiVersionClient'
 import type {
     NarrativeSourceSnapshot,
 } from '../../../packages/risubard-core/src/sourceSnapshot'
@@ -968,12 +968,25 @@ export function createStoredResponseMemoryAnalysis(
          * on the server, so a checkout or receipt lookup during the analysis
          * still sees a single consistent commit at the end.
          */
+        async readHead(characterId: string, chatId: string, signal?: AbortSignal) {
+            signal?.throwIfAborted()
+            const transport = {
+                characterId, chatId,
+                fetchImpl: (request: RequestInfo | URL, init?: RequestInit) =>
+                    analysisFetch(request, { ...init, signal }),
+                createAuth: options.createAuth,
+            }
+            await captureWikiVersion(transport)
+            signal?.throwIfAborted()
+            return (await ensureWikiVersion(transport)).commitId
+        },
         async beginWriteBatch(input: {
             characterId: string
             chatId: string
             operationId: string
             kind: 'analysis' | 'manual' | 'admin' | 'review' | 'rebuild'
             chatAnchor?: WikiChatAnchor
+            expectedHead?: string | null
         }, signal?: AbortSignal) {
             await readJson(await postJson(
                 analysisFetch,
@@ -985,6 +998,8 @@ export function createStoredResponseMemoryAnalysis(
                     operationId: input.operationId,
                     kind: input.kind,
                     ...(input.chatAnchor ? { chatAnchor: input.chatAnchor } : {}),
+                    ...(input.expectedHead === undefined
+                        ? {} : { expectedHead: input.expectedHead }),
                 },
                 signal
             ))
@@ -994,6 +1009,7 @@ export function createStoredResponseMemoryAnalysis(
             chatId: string
             chatAnchor?: WikiChatAnchor
             operationId: string
+            analysisReceipt?: import('./canonicalTurnReceipt').CanonicalTurnReceipt
         }, signal?: AbortSignal) {
             signal?.throwIfAborted()
             let value: unknown
@@ -1007,6 +1023,8 @@ export function createStoredResponseMemoryAnalysis(
                     chatId: input.chatId,
                     operationId: input.operationId,
                     ...(input.chatAnchor ? { chatAnchor: input.chatAnchor } : {}),
+                    ...(input.analysisReceipt
+                        ? { analysisReceipt: input.analysisReceipt } : {}),
                 },
                 signal
             ))

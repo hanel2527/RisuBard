@@ -640,6 +640,8 @@ function registerRisuBardMemoryRoutes(app, options) {
             ]
             const validShape = hasExactKeys(req.body, [
                 ...inquiryKeys,
+                ...(req.body.contextSelection === undefined ? [] : ['contextSelection']),
+                ...(req.body.expectedWikiCommitId === undefined ? [] : ['expectedWikiCommitId']),
                 ...(req.body.tokenBudget === undefined
                     ? []
                     : ['tokenBudget']),
@@ -661,11 +663,15 @@ function registerRisuBardMemoryRoutes(app, options) {
                 ...(req.body.retrievalLimits === undefined ? [] : ['retrievalLimits']),
             ])
             if (!validShape
+                || (req.body.contextSelection !== undefined && !['required', 'auto'].includes(req.body.contextSelection))
+                || (req.body.expectedWikiCommitId !== undefined && req.body.expectedWikiCommitId !== null
+                    && (typeof req.body.expectedWikiCommitId !== 'string'
+                        || !/^[a-f0-9]{64}$/.test(req.body.expectedWikiCommitId)))
                 || (req.body.retrievalLimits !== undefined && !validRetrievalLimits(req.body.retrievalLimits))
                 || !hasBoundedId(req.body.characterId)
                 || !hasBoundedId(req.body.chatId)
                 || typeof req.body.currentInput !== 'string'
-                || req.body.currentInput.trim().length === 0
+                || (req.body.contextSelection !== 'required' && req.body.currentInput.trim().length === 0)
                 || req.body.currentInput.length > 4_096
                 || (req.body.fallbackInput !== undefined
                     && (typeof req.body.fallbackInput !== 'string'
@@ -695,6 +701,10 @@ function registerRisuBardMemoryRoutes(app, options) {
         catch (error) {
             // Return bounded categories, never filesystem paths or document text.
             const message = error instanceof Error ? error.message : ''
+            if (message.startsWith('Wiki inquiry conflict:')) {
+                res.status(409).send({ error: 'BardWiki inquiry snapshot changed', code: 'source-changed' })
+                return
+            }
             const code = /^Required wiki context exceeds /.test(message)
                 ? 'budget-exceeded'
                 : /^(Invalid|Missing) Markdown wiki /.test(message)
@@ -1492,6 +1502,21 @@ function registerRisuBardMemoryRoutes(app, options) {
         catch (error) { sendWikiFailure(error, res, next) }
     })
 
+    app.post('/api/risubard/memory/wiki/version/analysis-receipt', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            if (!hasExactKeys(req.body, ['characterId', 'chatId', 'commitId'])
+                || !hasBoundedId(req.body.characterId)
+                || !hasBoundedId(req.body.chatId)
+                || !/^[a-f0-9]{64}$/.test(req.body.commitId)) {
+                res.status(400).send({ error: 'Invalid wiki analysis receipt request' })
+                return
+            }
+            res.send(await options.service.wikiAnalysisReceipt(req.body))
+        }
+        catch (error) { sendWikiFailure(error, res, next) }
+    })
+
     app.post('/api/risubard/memory/wiki/version/history', async (req, res, next) => {
         try {
             if (!await options.auth(req, res)) return
@@ -1898,6 +1923,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             if (!await options.auth(req, res)) return
             const allowed = [
                 'characterId', 'chatId', 'operationId', 'kind', 'chatAnchor',
+                'expectedHead',
             ]
             if (!isRecord(req.body)
                 || Object.keys(req.body).some((key) => !allowed.includes(key))
@@ -1907,7 +1933,10 @@ function registerRisuBardMemoryRoutes(app, options) {
                 || !['analysis', 'manual', 'admin', 'review', 'rebuild']
                     .includes(req.body.kind)
                 || (req.body.chatAnchor !== undefined
-                    && !validWikiChatAnchor(req.body.chatAnchor))) {
+                    && !validWikiChatAnchor(req.body.chatAnchor))
+                || (req.body.expectedHead !== undefined
+                    && req.body.expectedHead !== null
+                    && !/^[a-f0-9]{64}$/.test(req.body.expectedHead))) {
                 res.status(400).send({ error: 'Invalid write batch request' })
                 return
             }
@@ -1927,6 +1956,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             if (!await options.auth(req, res)) return
             const allowed = [
                 'characterId', 'chatId', 'operationId', 'chatAnchor',
+                'analysisReceipt',
             ]
             if (!isRecord(req.body)
                 || Object.keys(req.body).some((key) => !allowed.includes(key))
@@ -1934,7 +1964,10 @@ function registerRisuBardMemoryRoutes(app, options) {
                 || !hasBoundedId(req.body.chatId)
                 || !hasBoundedId(req.body.operationId)
                 || (req.body.chatAnchor !== undefined
-                    && !validWikiChatAnchor(req.body.chatAnchor))) {
+                    && !validWikiChatAnchor(req.body.chatAnchor))
+                || (req.body.analysisReceipt !== undefined
+                    && (!validCanonicalReceipt(req.body.analysisReceipt)
+                        || parseCanonicalTurnReceipt(req.body.analysisReceipt).vcsCommitIds?.length))) {
                 res.status(400).send({ error: 'Invalid write batch publish' })
                 return
             }

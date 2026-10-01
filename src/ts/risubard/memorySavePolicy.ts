@@ -1,7 +1,45 @@
+import type { Chat } from '../storage/database.svelte'
+
 export const DEFAULT_RISUBARD_AUTOSAVE_INTERVAL = 5
 export const DEFAULT_RISUBARD_AUTOSAVE_RETENTION = 5
 export const MAX_RISUBARD_AUTOSAVE_INTERVAL = 100
 export const MAX_RISUBARD_AUTOSAVE_RETENTION = 20
+
+export function applyMemorySavePromptSettings(chat: Chat, currentChat?: Chat): void {
+    // Save slots rewind story state, not the current sidebar preferences.
+    for (const key of [
+        'bindedPersona', 'bindedBotPreset', 'usePromptPresetParams',
+        'useModelPreset', 'modelBinding', 'useLocallySetGlobalVariables',
+        'togglePresetBaseline',
+    ] as const) {
+        delete chat[key]
+        if (currentChat?.[key] !== undefined) {
+            Object.assign(chat, { [key]: currentChat[key] })
+        }
+    }
+    delete chat.savedToggleValues
+    const legacyToggles = currentChat?.GLGlobalVariables === undefined
+        ? currentChat?.savedToggleValues
+        : undefined
+    const currentVariables = currentChat?.GLGlobalVariables ?? legacyToggles ?? {}
+    const variables = Object.fromEntries([
+        ...Object.entries(chat.GLGlobalVariables ?? {})
+            .filter(([key]) => !key.startsWith('toggle_')),
+        ...Object.entries(currentVariables)
+            .filter(([key]) => key.startsWith('toggle_')),
+    ])
+    if (Object.keys(variables).length > 0) chat.GLGlobalVariables = variables
+    else delete chat.GLGlobalVariables
+    // Normalize only the current chat's old pin format; never migrate saved settings.
+    if (legacyToggles) chat.useLocallySetGlobalVariables = true
+}
+
+export function prepareMemorySaveChatSnapshot(chat: Chat): void {
+    applyMemorySavePromptSettings(chat)
+    delete chat._placeholder
+    chat.isStreaming = false
+    delete chat.activeStreamingDisplayOptimizationMode
+}
 
 const QUICK_PREFIX = '__risubard_quick__'
 const AUTO_PREFIX = '__risubard_auto__'

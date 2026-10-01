@@ -86,6 +86,7 @@ function selectTokenBoundedExcerpt(
 }
 
 export interface MarkdownInquiryInput {
+    contextSelection?: 'required' | 'auto'
     retrievalLimits?: WikiRetrievalLimits
     documents: readonly MarkdownWikiDocument[]
     currentInput: string
@@ -403,6 +404,27 @@ function semanticExcerpt(document: MarkdownWikiDocument, start: number, end: num
 export function inquireMarkdownDocuments(
     input: MarkdownInquiryInput
 ): MarkdownInquiryResult {
+    if (input.contextSelection === 'required') {
+        const documents = input.documents.filter(document => isEligible(document, input)
+            && (document.contextMode === 'always' || document.type === 'scene'))
+        if (documents.length > MAX_SELECTED_DOCUMENTS) throw new Error('Required wiki context exceeds 12 documents')
+        const maximum = normalizeRisuBardInquiryTokenBudget(input.tokenBudget?.target,
+            input.tokenBudget?.maximum, input.tokenBudget?.events, input.tokenBudget?.perSource).maximum
+        const sources = documents.map(document => ({
+            id: `narrative-memory:wiki:${document.relativePath}`,
+            kind: 'memory' as const, role: 'system' as const,
+            content: document.content, tokens: countInquiryTokens(document.content), priority: 200,
+        }))
+        const selectedTokens = sources.reduce((sum, source) => sum + source.tokens, 0)
+        if (selectedTokens > maximum) throw new Error('Required wiki context exceeds token budget')
+        return {
+            mode: 'v2-current', graphRevision: input.documents.length, indexRevision: input.documents.length,
+            cacheStatus: 'current', sources, evidenceRequests: [], entityCandidates: [],
+            metrics: { candidateCount: 0, inspectedNodeCount: input.documents.length, inspectedEdgeCount: 0,
+                selectedNodeCount: sources.length, selectedTokens, selectedEventTokens: 0,
+                semanticCandidateCount: 0, hopCount: 0, auxiliaryModelCalls: 0 },
+        }
+    }
     const { candidates: candidateLimit, directSeeds: directSeedLimit } = normalizeWikiRetrievalLimits(input.retrievalLimits)
     const currentNormalizedQuery = normalized(
         input.currentInput.slice(0, 4_096)
@@ -410,6 +432,10 @@ export function inquireMarkdownDocuments(
     let retrievalInput = input.currentInput.slice(0, 4_096)
     let normalizedQuery = currentNormalizedQuery
     let terms = queryTerms(retrievalInput)
+    const optionalDocumentLimit = input.contextSelection === 'auto'
+        ? Math.max(0, MAX_SELECTED_DOCUMENTS - input.documents.filter(document => document.status === 'active'
+            && document.contextMode !== 'never' && (document.contextMode === 'always' || document.type === 'scene')).length)
+        : MAX_SELECTED_DOCUMENTS
     const eligibleDocuments = input.documents.filter((document) =>
         isEligible(document, input))
     const characterTitles = new Set(eligibleDocuments
@@ -678,7 +704,7 @@ export function inquireMarkdownDocuments(
         input.tokenBudget?.perSource,
     )
     const prepared = [
-        ...requiredDocuments.map((document) => ({
+        ...(input.contextSelection === 'auto' ? [] : requiredDocuments).map((document) => ({
             document,
             score: 100,
             hop: candidates.get(document.id)?.hop ?? 0,
@@ -772,7 +798,7 @@ export function inquireMarkdownDocuments(
             ? tokenBudget.events
             : selectedMapTokenBudget
         if (selectedIds.has(candidate.document.id)
-            || selected.length >= MAX_SELECTED_DOCUMENTS
+            || selected.length >= optionalDocumentLimit
             || selectedTokens + candidate.tokens > tokenBudget.maximum
             || laneTokens + candidate.tokens > laneBudget) {
             return false

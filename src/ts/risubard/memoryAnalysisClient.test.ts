@@ -8,6 +8,15 @@ import {
     type MemoryAnalysisModelResponse,
 } from './memoryAnalysisClient'
 
+function emptyWikiVersionResponse(url: string): Response | undefined {
+    if (url.endsWith('/wiki/version/capture')) {
+        return Response.json({ commitId: null, changedPaths: [] })
+    }
+    if (url.endsWith('/wiki/version/ensure')) {
+        return Response.json({ created: false, commitId: null, branchId: 'branch:chat-1' })
+    }
+}
+
 describe('stored response memory analysis', () => {
     test('builds the recent inquiry fallback from the end within its character budget', () => {
         expect(buildBoundedNarrativeInquiryFallback([
@@ -347,12 +356,15 @@ describe('stored response memory analysis', () => {
                     return Response.json({ commitId: null, changedPaths: [] })
                 }
                 const url = String(input)
+                const version = emptyWikiVersionResponse(url)
+                if (version) return version
                 if (url.endsWith('/inquiry')) {
                     return new Response(JSON.stringify({
                         mode: 'bounded-v1-fallback',
                         graphRevision: 0,
                         indexRevision: 0,
                         cacheStatus: 'missing-or-stale',
+                        wikiCommitId: null,
                         sources: [],
                         entityCandidates: [],
                         metrics: {
@@ -451,6 +463,8 @@ describe('stored response memory analysis', () => {
             requestModel,
             fetchImpl: vi.fn(async (input) => {
                 const url = String(input)
+                const version = emptyWikiVersionResponse(url)
+                if (version) return version
                 if (url.endsWith('/view')) {
                     return new Response(JSON.stringify({
                         mode: 'markdown',
@@ -468,6 +482,7 @@ describe('stored response memory analysis', () => {
                         graphRevision: 0,
                         indexRevision: 0,
                         cacheStatus: 'missing-or-stale',
+                        wikiCommitId: null,
                         sources: [],
                         entityCandidates: [],
                         metrics: {
@@ -520,6 +535,8 @@ describe('stored response memory analysis', () => {
             requestModel,
             fetchImpl: vi.fn(async (input) => {
                 const url = String(input)
+                const version = emptyWikiVersionResponse(url)
+                if (version) return version
                 if (url.endsWith('/view')) {
                     return new Response(JSON.stringify({
                         mode: 'markdown', wikiPath: 'wiki', documents: [],
@@ -529,6 +546,7 @@ describe('stored response memory analysis', () => {
                 if (url.endsWith('/inquiry')) {
                     return new Response(JSON.stringify({
                         mode: 'v2-current', graphRevision: 0, indexRevision: 0,
+                        wikiCommitId: null,
                         cacheStatus: 'current', sources: [], metrics: {
                             candidateCount: 0, inspectedNodeCount: 0,
                             inspectedEdgeCount: 0, selectedNodeCount: 0,
@@ -574,6 +592,8 @@ describe('stored response memory analysis', () => {
             requestModel,
             fetchImpl: vi.fn(async (input) => {
                 const url = String(input)
+                const version = emptyWikiVersionResponse(url)
+                if (version) return version
                 if (url.endsWith('/view')) {
                     return new Response(JSON.stringify({
                         mode: 'markdown', wikiPath: 'wiki', documents: [],
@@ -583,6 +603,7 @@ describe('stored response memory analysis', () => {
                 if (url.endsWith('/inquiry')) {
                     return new Response(JSON.stringify({
                         mode: 'v2-current', graphRevision: 0, indexRevision: 0,
+                        wikiCommitId: null,
                         cacheStatus: 'current', sources: [], metrics: {
                             candidateCount: 0, inspectedNodeCount: 0,
                             inspectedEdgeCount: 0, selectedNodeCount: 0,
@@ -904,6 +925,8 @@ describe('stored response memory analysis', () => {
         })
         const fetchImpl = vi.fn(async (input, init) => {
             const url = String(input)
+            const version = emptyWikiVersionResponse(url)
+            if (version) return version
             if (url.endsWith('/view')) {
                 return new Response(JSON.stringify({
                     mode: 'markdown', wikiPath: 'wiki', documents: [],
@@ -913,6 +936,7 @@ describe('stored response memory analysis', () => {
             if (url.endsWith('/inquiry')) {
                 return new Response(JSON.stringify({
                     mode: 'v2-current', graphRevision: 0, indexRevision: 0,
+                    wikiCommitId: null,
                     cacheStatus: 'current', sources: [], metrics: {
                         candidateCount: 0, inspectedNodeCount: 0,
                         inspectedEdgeCount: 0, selectedNodeCount: 0,
@@ -1324,6 +1348,8 @@ describe('stored response memory analysis', () => {
                     : 'NONE',
             })),
             fetchImpl: vi.fn(async (input) => {
+                const version = emptyWikiVersionResponse(String(input))
+                if (version) return version
                 if (String(input).endsWith('/wiki/version/batch/publish')) {
                     return Response.json({ commitId: null, changedPaths: [] })
                 }
@@ -1333,6 +1359,7 @@ describe('stored response memory analysis', () => {
                         graphRevision: 0,
                         indexRevision: 0,
                         cacheStatus: 'missing-or-stale',
+                        wikiCommitId: null,
                         sources: [],
                         entityCandidates: [],
                         metrics: {
@@ -1392,6 +1419,8 @@ describe('stored response memory analysis', () => {
         const analysis = createStoredResponseMemoryAnalysis({
             requestModel,
             fetchImpl: vi.fn(async (input) => {
+                const version = emptyWikiVersionResponse(String(input))
+                if (version) return version
                 if (String(input).endsWith('/wiki/version/batch/publish')) {
                     return Response.json({ commitId: null, changedPaths: [] })
                 }
@@ -1401,6 +1430,7 @@ describe('stored response memory analysis', () => {
                         graphRevision: 0,
                         indexRevision: 0,
                         cacheStatus: 'missing-or-stale',
+                        wikiCommitId: null,
                         sources: [],
                         entityCandidates: [],
                         metrics: {
@@ -1460,6 +1490,8 @@ describe('stored response memory analysis', () => {
         const analysis = createStoredResponseMemoryAnalysis({
             requestModel: vi.fn(),
             fetchImpl: vi.fn(async (input, init) => {
+                const version = emptyWikiVersionResponse(String(input))
+                if (version) return version
                 if (String(input).endsWith('/view')) {
                     viewSignal = init?.signal ?? undefined
                     viewStarted()
@@ -1533,6 +1565,8 @@ describe('stored response memory analysis', () => {
             const analysis = createStoredResponseMemoryAnalysis({
                 requestModel: vi.fn(),
                 fetchImpl: vi.fn(async (input) => {
+                    const version = emptyWikiVersionResponse(String(input))
+                    if (version) return version
                     if (String(input).endsWith('/view')) {
                         viewStarted()
                         return new Promise<Response>(() => {})
@@ -1581,6 +1615,8 @@ describe('stored response memory analysis', () => {
             requestModel: vi.fn(),
             fetchImpl: vi.fn(async (input, init) => {
                 const url = String(input)
+                const version = emptyWikiVersionResponse(url)
+                if (version) return version
                 if (url.endsWith('/view')) {
                     return new Response(JSON.stringify({
                         mode: 'markdown',
@@ -1644,6 +1680,8 @@ describe('stored response memory analysis', () => {
             })),
             fetchImpl: vi.fn(async (input, init) => {
                 const url = String(input)
+                const version = emptyWikiVersionResponse(url)
+                if (version) return version
                 if (url.endsWith('/view')) {
                     return new Response(JSON.stringify({
                         mode: 'markdown',
@@ -1661,6 +1699,7 @@ describe('stored response memory analysis', () => {
                         graphRevision: 0,
                         indexRevision: 0,
                         cacheStatus: 'current',
+                        wikiCommitId: null,
                         sources: [],
                         entityCandidates: [],
                         metrics: {
@@ -1747,6 +1786,8 @@ describe('stored response memory analysis', () => {
             })),
             fetchImpl: vi.fn(async (input, init) => {
                 const url = String(input)
+                const version = emptyWikiVersionResponse(url)
+                if (version) return version
                 if (url.endsWith('/view')) {
                     return new Response(JSON.stringify({
                         mode: 'markdown', wikiPath: 'wiki', documents: [],
@@ -1756,6 +1797,7 @@ describe('stored response memory analysis', () => {
                 if (url.endsWith('/inquiry')) {
                     return new Response(JSON.stringify({
                         mode: 'v2-current', graphRevision: 0, indexRevision: 0,
+                        wikiCommitId: null,
                         cacheStatus: 'current', sources: [], metrics: {
                             candidateCount: 0, inspectedNodeCount: 0,
                             inspectedEdgeCount: 0, selectedNodeCount: 0,
@@ -1820,6 +1862,8 @@ describe('stored response memory analysis', () => {
                     return Response.json({ commitId: null, changedPaths: [] })
                 }
                 const url = String(input)
+                const version = emptyWikiVersionResponse(url)
+                if (version) return version
                 if (url.endsWith('/view')) {
                     return new Response(JSON.stringify({
                         mode: 'markdown', wikiPath: 'wiki', documents: [],
@@ -1830,6 +1874,7 @@ describe('stored response memory analysis', () => {
                     return new Response(JSON.stringify({
                         mode: 'v2-current', graphRevision: 0, indexRevision: 0,
                         cacheStatus: 'current', sources: [],
+                        wikiCommitId: null,
                         metrics: {
                             candidateCount: 0, inspectedNodeCount: 0,
                             inspectedEdgeCount: 0, selectedNodeCount: 0,
@@ -1912,6 +1957,8 @@ describe('stored response memory analysis', () => {
                     return Response.json({ commitId: null, changedPaths: [] })
                 }
                 const url = String(input)
+                const version = emptyWikiVersionResponse(url)
+                if (version) return version
                 if (url.endsWith('/view')) {
                     return new Response(JSON.stringify({
                         mode: 'markdown', wikiPath: 'wiki', documents: [],
@@ -1921,6 +1968,7 @@ describe('stored response memory analysis', () => {
                 if (url.endsWith('/inquiry')) {
                     return new Response(JSON.stringify({
                         mode: 'v2-current', graphRevision: 0, indexRevision: 0,
+                        wikiCommitId: null,
                         cacheStatus: 'current', sources: [], metrics: {
                             candidateCount: 0, inspectedNodeCount: 0,
                             inspectedEdgeCount: 0, selectedNodeCount: 0,
@@ -2049,6 +2097,8 @@ describe('stored response memory analysis', () => {
                     return Response.json({ commitId: null, changedPaths: [] })
                 }
                 const url = String(input)
+                const version = emptyWikiVersionResponse(url)
+                if (version) return version
                 if (url.endsWith('/view')) {
                     return new Response(JSON.stringify({
                         mode: 'markdown', wikiPath: 'wiki', documents: [],
@@ -2058,6 +2108,7 @@ describe('stored response memory analysis', () => {
                 if (url.endsWith('/inquiry')) {
                     return new Response(JSON.stringify({
                         mode: 'v2-current', graphRevision: 0, indexRevision: 0,
+                        wikiCommitId: null,
                         cacheStatus: 'current', sources: [], metrics: {
                             candidateCount: 0, inspectedNodeCount: 0,
                             inspectedEdgeCount: 0, selectedNodeCount: 0,
@@ -2134,6 +2185,8 @@ describe('stored response memory analysis', () => {
         const analysis = createStoredResponseMemoryAnalysis({
             requestModel,
             fetchImpl: vi.fn(async (input) => {
+                const version = emptyWikiVersionResponse(String(input))
+                if (version) return version
                 if (String(input).endsWith('/wiki/version/batch/publish')) {
                     return Response.json({ commitId: null, changedPaths: [] })
                 }
@@ -2144,6 +2197,7 @@ describe('stored response memory analysis', () => {
                         graphRevision: 0,
                         indexRevision: 0,
                         cacheStatus: 'current',
+                        wikiCommitId: null,
                         sources: [],
                         entityCandidates: [],
                         metrics: {
@@ -2319,11 +2373,14 @@ describe('stored response memory analysis', () => {
             }) }),
             fetchImpl: async (input, init) => {
                 const url = String(input)
+                const version = emptyWikiVersionResponse(url)
+                if (version) return version
                 if (url.endsWith('/view')) return new Response(JSON.stringify({
                     mode: 'markdown', wikiPath: 'wiki', documents: [], health: { danglingLinks: [], unlinkedDocumentIds: [] },
                 }))
                 if (url.endsWith('/inquiry')) return new Response(JSON.stringify({
                     mode: 'v2-current', graphRevision: 0, indexRevision: 0, cacheStatus: 'current', sources: [],
+                    wikiCommitId: null,
                     metrics: { candidateCount: 0, inspectedNodeCount: 0, inspectedEdgeCount: 0, selectedNodeCount: 0, selectedTokens: 0, hopCount: 0, auxiliaryModelCalls: 0 },
                 }))
                 if (url.endsWith('/batch/begin')) return new Response('{}')

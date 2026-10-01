@@ -1,5 +1,6 @@
 const failureLabels = {
     'budget-exceeded': '필수 위키의 문서 수 또는 토큰 상한 초과',
+    'source-changed': '조회 중 위키 revision 변경',
     'invalid-document': '위키 문서 형식 오류',
     'storage-error': '위키 파일 읽기 실패',
     'server-error': '위키 조회 서버 오류',

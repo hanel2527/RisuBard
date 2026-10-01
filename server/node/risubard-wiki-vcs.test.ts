@@ -946,13 +946,6 @@ describe('repository retention and isolation', () => {
             characterId: 'character', chatId: 'chat-1',
             contents: packer.pack(second).toString('base64'),
         })
-        const directory = join(
-            resolveWikiVcsRepository(root, 'character', 'chat-1').directory, 'chat-state'
-        )
-        const before = JSON.parse(await fs.readFile(join(directory, firstHash), 'utf8'))
-        const after = JSON.parse(await fs.readFile(join(directory, secondHash), 'utf8'))
-        expect(after.header).toBe(before.header)
-        expect(after.messages[0]).toBe(before.messages[0])
         await repository.collectChatState({
             characterId: 'character', chatId: 'chat-1', referencedHashes: [secondHash],
         })
@@ -963,5 +956,70 @@ describe('repository retention and isolation', () => {
         expect(await repository.readChatState({
             characterId: 'character', chatId: 'chat-1', hash: firstHash,
         })).toBeNull()
+    })
+})
+
+describe('VCS synchronization regression', () => {
+    test('restores immutable chat states across tree growth, edits, truncation and shared-root collection', async () => {
+        const root = await createRoot()
+        const repository = createWikiVcsRepository(root)
+        const input = { characterId: 'character', chatId: 'chat-1' }
+        const packer = new Packr({ useRecords: false })
+        const unpacker = new Unpackr({ useRecords: false })
+        const messages = Array.from({ length: 2049 }, (_, index) => ({
+            chatId: `m${index}`, role: index % 2 ? 'char' : 'user', data: `Message ${index}`,
+        }))
+        const retained = { id: 'chat-1', name: 'Retained', message: messages.slice(0, 64) }
+        const retainedHash = await repository.storeChatState({ ...input, contents: packer.pack(retained).toString('base64') })
+        const snapshots = [
+            ...[0, 1, 64, 65, 2048, 2049].map(count => ({ ...retained, message: messages.slice(0, count) })),
+            { ...retained, name: 'Edited header', message: messages },
+            { ...retained, message: messages.map((message, index) => index === 70
+                ? { ...message, data: 'Edited middle message' } : message) },
+            ...[2048, 65, 64, 1, 0].map(count => ({ ...retained, message: messages.slice(0, count) })),
+        ]
+        let latest = retainedHash
+        for (const snapshot of snapshots) {
+            latest = await repository.storeChatState({ ...input, contents: packer.pack(snapshot).toString('base64') })
+            await repository.collectChatState({ ...input, referencedHashes: [retainedHash, latest] })
+            const restarted = createWikiVcsRepository(root)
+            const restored = await restarted.readChatState({ ...input, hash: latest })
+            expect(unpacker.unpack(Buffer.from(restored!, 'base64'))).toEqual(snapshot)
+            expect(unpacker.unpack(Buffer.from((await restarted.readChatState({ ...input, hash: retainedHash }))!, 'base64')))
+                .toEqual(retained)
+        }
+        await repository.collectChatState({ ...input, referencedHashes: [latest] })
+        expect(await createWikiVcsRepository(root).readChatState({ ...input, hash: retainedHash })).toBeNull()
+    }, 60_000)
+
+    test('reads legacy flat manifests through collection and rejects corrupt shared message objects', async () => {
+        const root = await createRoot()
+        const repository = createWikiVcsRepository(root)
+        const input = { characterId: 'character', chatId: 'chat-1' }
+        const packer = new Packr({ useRecords: false })
+        const unpacker = new Unpackr({ useRecords: false })
+        const chat = { id: 'chat-1', name: 'Legacy story',
+            message: [{ chatId: 'm1', role: 'char', data: 'Saved before tree manifests existed.' }] }
+        const directory = join(resolveWikiVcsRepository(root, 'character', 'chat-1').directory, 'chat-state')
+        await fs.mkdir(directory, { recursive: true })
+        const storeLegacyObject = async (contents: string) => {
+            const hash = createHash('sha256').update(contents).digest('hex')
+            await fs.writeFile(join(directory, hash), contents)
+            return hash
+        }
+        const { message, ...header } = chat
+        const messageHash = await storeLegacyObject(packer.pack(message[0]).toString('base64'))
+        const legacyHash = await storeLegacyObject(JSON.stringify({ schemaVersion: 2,
+            header: await storeLegacyObject(packer.pack(header).toString('base64')), messages: [messageHash] }))
+        const treeHash = await repository.storeChatState({ ...input, contents: packer.pack(chat).toString('base64') })
+        await repository.collectChatState({ ...input, referencedHashes: [legacyHash, treeHash] })
+        for (const hash of [legacyHash, treeHash]) {
+            const restored = await createWikiVcsRepository(root).readChatState({ ...input, hash })
+            expect(unpacker.unpack(Buffer.from(restored!, 'base64'))).toEqual(chat)
+        }
+        await fs.writeFile(join(directory, messageHash), 'corrupt bytes')
+        for (const hash of [legacyHash, treeHash]) {
+            await expect(createWikiVcsRepository(root).readChatState({ ...input, hash })).rejects.toThrow(/corrupt/)
+        }
     })
 })

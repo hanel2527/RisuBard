@@ -1,9 +1,11 @@
 import * as nodeFs from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { dirname, join, relative, resolve } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import { Packr, Unpackr } from 'msgpackr'
 import { resolveMemoryWorkspace } from './risubard-memory-workspace'
 import { writeFileAtomically } from './file-store.cjs'
+import { parseCanonicalTurnReceipt, type CanonicalTurnReceipt } from '../../src/ts/risubard/canonicalTurnReceipt'
 import {
     computeWikiPrefixDigests,
     computeWikiPrefixDigest,
@@ -37,27 +39,52 @@ const REPOSITORY_DIRECTORY = 'wiki-vcs'
 const LINK_FILE = 'wiki-vcs-link.json'
 const WORKING_TREE_DIRECTORY = 'wiki'
 const AUTOSAVE_STATE_DIRECTORY = 'chat-state'
+const CHAT_STATE_CHUNK_SIZE = 64
+const CHAT_STATE_BRANCH_SIZE = 32
+const CHAT_STATE_CACHE_LIMIT = 4
 const HASH_PATTERN = /^[a-f0-9]{64}$/
 const PREFIX_DIGEST_PATTERN = /^[a-f0-9]{16}$/
 const JOURNAL_FILE = 'journal.json'
 const chatPacker = new Packr({ useRecords: false })
 const chatUnpacker = new Unpackr({ useRecords: false, int64AsType: 'number' })
 
-function parseChatStateManifest(contents: string): {
-    schemaVersion: 2
-    header: string
-    messages: string[]
-} | undefined {
+type ChatStateObject =
+    | { schemaVersion: 2; header: string; messages: string[] }
+    | { schemaVersion: 3; header: string; messageCount: number; messagesRoot: string | null }
+    | { schemaVersion: 1; kind: 'messages' | 'branch'; hashes: string[] }
+
+function parseChatStateObject(contents: string): ChatStateObject | undefined {
     if (!contents.startsWith('{')) return undefined
     const value = JSON.parse(contents)
-    if (value?.schemaVersion !== 2
-        || !HASH_PATTERN.test(value.header)
-        || !Array.isArray(value.messages)
-        || !value.messages.every((hash: unknown) =>
-            typeof hash === 'string' && HASH_PATTERN.test(hash))) {
-        throw new Error('Invalid chunked chat state')
+    if (value?.schemaVersion === 1 && ['messages', 'branch'].includes(value.kind)
+        && Array.isArray(value.hashes) && value.hashes.length > 0
+        && value.hashes.length <= (value.kind === 'messages'
+            ? CHAT_STATE_CHUNK_SIZE : CHAT_STATE_BRANCH_SIZE)
+        && value.hashes.every((hash: unknown) => typeof hash === 'string' && HASH_PATTERN.test(hash))) {
+        return value
     }
-    return value
+    if (typeof value?.header === 'string' && HASH_PATTERN.test(value.header)) {
+        if (value.schemaVersion === 2 && Array.isArray(value.messages)
+            && value.messages.every((hash: unknown) =>
+                typeof hash === 'string' && HASH_PATTERN.test(hash))) return value
+        if (value.schemaVersion === 3 && Number.isSafeInteger(value.messageCount)
+            && value.messageCount >= 0
+            && (value.messageCount === 0 ? value.messagesRoot === null
+                : typeof value.messagesRoot === 'string' && HASH_PATTERN.test(value.messagesRoot))) {
+            return value
+        }
+    }
+    throw new Error('Invalid chunked chat state')
+}
+
+function chatStateTreeLevel(count: number): number {
+    let capacity = CHAT_STATE_CHUNK_SIZE
+    let level = 0
+    while (capacity < count) {
+        capacity *= CHAT_STATE_BRANCH_SIZE
+        level += 1
+    }
+    return level
 }
 
 /**
@@ -234,6 +261,12 @@ export interface WikiVcsServiceOptions {
         characterId: string
         chatId: string
         forkToken: string
+    }) => Promise<void>
+    applyAnalysisReceipt?: (input: {
+        characterId: string
+        chatId: string
+        commit: WikiCommitRecord
+        receipt: CanonicalTurnReceipt
     }) => Promise<void>
 }
 
@@ -549,6 +582,16 @@ export function createWikiVcsRepository(
         hash: string
     }>()
     const pendingOperationCache = new Map<string, WikiOperationJournal[]>()
+    const chatStateCache = new Map<string, {
+        directory: string
+        hash: string
+        header: object
+        headerHash: string
+        messages: unknown[]
+        hashes: string[]
+        levels: string[][]
+        root: string | null
+    }>()
 
     const invalidatePendingOperationCache = (
         repository: WikiVcsRepository
@@ -1353,6 +1396,20 @@ export function createWikiVcsRepository(
             }
             await options.applyChatState({ ...input, previous, next })
         }
+        const publishedCommit = await requireCommit(repository, journal.commitId)
+        if (journal.mode === 'publish' && publishedCommit.analysisReceiptRef) {
+            if (!options.applyAnalysisReceipt) {
+                throw new Error('Wiki operation pending: canonical receipt writer is unavailable')
+            }
+            const receipt = parseCanonicalTurnReceipt(JSON.parse(
+                await readBlob(repository, publishedCommit.analysisReceiptRef)
+            ))
+            await options.applyAnalysisReceipt({
+                characterId: journal.characterId, chatId: journal.chatId,
+                commit: publishedCommit,
+                receipt: { ...receipt, vcsCommitIds: [publishedCommit.id] },
+            })
+        }
         if (journal.mode === 'publish' || journal.mode === 'checkout') {
             const receipt: WikiOperationReceipt = {
                 schemaVersion: 1,
@@ -1404,6 +1461,29 @@ export function createWikiVcsRepository(
         async readCommit(characterId: string, chatId: string, commitId: string) {
             const { repository } = await ensureRepositoryForChat(characterId, chatId)
             return readCommit(repository, commitId)
+        },
+
+        async readAnalysisReceipt(input) {
+            const { repository } = await ensureRepositoryForChat(input.characterId, input.chatId)
+            const commit = await requireCommit(repository, input.commitId)
+            if (!['analysis', 'rebuild'].includes(commit.kind)) {
+                throw new Error('Wiki commit does not contain an analysis')
+            }
+            if (commit.analysisReceiptRef) {
+                const receipt = parseCanonicalTurnReceipt(JSON.parse(
+                    await readBlob(repository, commit.analysisReceiptRef)
+                ))
+                return {
+                    commit, receipt: { ...receipt, vcsCommitIds: [commit.id] }, files: [],
+                }
+            }
+            const files: Array<{ path: string; contents: string; before: string | null }> = []
+            for (const change of commit.changes) {
+                if (change.after !== null) files.push({
+                    path: change.path, contents: await readBlob(repository, change.after), before: change.before,
+                })
+            }
+            return { commit, receipt: null, files }
         },
 
         async readPathMap(
@@ -1667,6 +1747,13 @@ export function createWikiVcsRepository(
                 }
             }
             signal?.throwIfAborted()
+            const analysisReceipt = input.analysisReceipt === undefined
+                ? undefined : parseCanonicalTurnReceipt(input.analysisReceipt)
+            if (analysisReceipt && (!['analysis', 'rebuild'].includes(input.kind)
+                || analysisReceipt.vcsCommitIds?.length
+                || !options.applyAnalysisReceipt)) {
+                throw new Error('Wiki analysis receipt publication is unavailable or invalid')
+            }
 
             const actual = new Map<string, string>()
             const base = branch.head
@@ -1724,6 +1811,11 @@ export function createWikiVcsRepository(
                 kind: input.kind,
                 changes: resolved,
                 chatAnchor: commitAnchor,
+                ...(analysisReceipt ? {
+                    analysisReceiptRef: await writeBlob(
+                        repository, JSON.stringify(analysisReceipt)
+                    ),
+                } : {}),
                 provenance: 'recorded',
                 createdAt: now().toISOString(),
             }
@@ -2246,9 +2338,8 @@ export function createWikiVcsRepository(
             kind: WikiRefKind
             id: string
         }): Promise<void> {
-            const { repository } = await ensureRepositoryForChat(
-                input.characterId, input.chatId
-            )
+            const repository = repositoryFor(input.characterId, input.chatId)
+            await ensureFormat(repository)
             const file = refPath(
                 refDirectoryFor(repository, input.kind), input.id
             )
@@ -2259,7 +2350,7 @@ export function createWikiVcsRepository(
             if (record.chatId !== input.chatId) {
                 throw new Error('Wiki ref belongs to another chat')
             }
-            await fileSystem.rm(file, { force: true })
+            await removeFileDurably(fileSystem, file)
         },
 
         /** New chat that shares this repository and starts from the commit. */
@@ -2400,18 +2491,62 @@ export function createWikiVcsRepository(
                 return storeObject(input.contents)
             }
             const { message, ...header } = decoded
-            const headerHash = await storeObject(
-                chatPacker.pack(header).toString('base64')
-            )
-            const messages: string[] = []
-            for (const item of message) {
-                messages.push(await storeObject(
-                    chatPacker.pack(item).toString('base64')
-                ))
+            const cacheKey = JSON.stringify([repository.directory, input.chatId])
+            const previous = chatStateCache.get(cacheKey)
+            const headerHash = previous && isDeepStrictEqual(previous.header, header)
+                ? previous.headerHash : await storeObject(chatPacker.pack(header).toString('base64'))
+            const hashes = new Array<string>(message.length)
+            for (let index = 0; index < message.length; index += 1) {
+                hashes[index] = previous && index < previous.messages.length
+                    && isDeepStrictEqual(previous.messages[index], message[index])
+                    ? previous.hashes[index]
+                    : await storeObject(chatPacker.pack(message[index]).toString('base64'))
             }
-            return storeObject(JSON.stringify({
-                schemaVersion: 2, header: headerHash, messages,
-            }))
+            const levels: string[][] = []
+            let children = hashes
+            let width = CHAT_STATE_CHUNK_SIZE
+            let root: string | null = null
+            while (children.length) {
+                const level = levels.length
+                const oldChildren = level === 0 ? previous?.hashes : previous?.levels[level - 1]
+                const nodes = new Array<string>(Math.ceil(children.length / width))
+                for (let index = 0; index < nodes.length; index += 1) {
+                    const start = index * width
+                    const count = Math.min(width, children.length - start)
+                    let unchanged = !!previous?.levels[level]?.[index] && !!oldChildren
+                        && Math.min(width, oldChildren.length - start) === count
+                    for (let offset = 0; unchanged && offset < count; offset += 1) {
+                        unchanged = children[start + offset] === oldChildren![start + offset]
+                    }
+                    nodes[index] = unchanged ? previous!.levels[level][index]
+                        : await storeObject(JSON.stringify({
+                            schemaVersion: 1, kind: level === 0 ? 'messages' : 'branch',
+                            hashes: children.slice(start, start + count),
+                        }))
+                }
+                levels.push(nodes)
+                if (nodes.length === 1) {
+                    root = nodes[0]
+                    break
+                }
+                children = nodes
+                width = CHAT_STATE_BRANCH_SIZE
+            }
+            const hash = previous && previous.headerHash === headerHash
+                && previous.root === root && previous.messages.length === message.length
+                ? previous.hash : await storeObject(JSON.stringify({
+                    schemaVersion: 3, header: headerHash,
+                    messageCount: message.length, messagesRoot: root,
+                }))
+            chatStateCache.delete(cacheKey)
+            chatStateCache.set(cacheKey, {
+                directory: repository.directory, hash, header, headerHash,
+                messages: message, hashes, levels, root,
+            })
+            if (chatStateCache.size > CHAT_STATE_CACHE_LIMIT) {
+                chatStateCache.delete(chatStateCache.keys().next().value!)
+            }
+            return hash
         },
 
         async readChatState(input: {
@@ -2431,8 +2566,9 @@ export function createWikiVcsRepository(
                     'utf8'
                 )
                 if (hashBytes(contents) !== input.hash) return null
-                const manifest = parseChatStateManifest(contents)
+                const manifest = parseChatStateObject(contents)
                 if (!manifest) return contents
+                if (manifest.schemaVersion === 1) throw new Error('Chat state root is not a manifest')
                 const readChunk = async (hash: string): Promise<unknown> => {
                     const chunk = await fileSystem.readFile(
                         join(repository.directory, AUTOSAVE_STATE_DIRECTORY, hash),
@@ -2445,8 +2581,28 @@ export function createWikiVcsRepository(
                 }
                 const header = await readChunk(manifest.header)
                 const message: unknown[] = []
-                for (const hash of manifest.messages) {
-                    message.push(await readChunk(hash))
+                if (manifest.schemaVersion === 2) {
+                    for (const hash of manifest.messages) message.push(await readChunk(hash))
+                } else if (manifest.messagesRoot) {
+                    const visit = async (hash: string, level: number, count: number): Promise<void> => {
+                        const contents = await fileSystem.readFile(
+                            join(repository.directory, AUTOSAVE_STATE_DIRECTORY, hash), 'utf8'
+                        )
+                        if (hashBytes(contents) !== hash) throw new Error('Chat state node is corrupt')
+                        const node = parseChatStateObject(contents)
+                        if (node?.schemaVersion !== 1 || node.kind !== (level === 0 ? 'messages' : 'branch')) {
+                            throw new Error('Invalid chat state tree level')
+                        }
+                        const capacity = CHAT_STATE_CHUNK_SIZE * CHAT_STATE_BRANCH_SIZE ** (level - 1)
+                        if (node.hashes.length !== (level === 0 ? count : Math.ceil(count / capacity))) {
+                            throw new Error('Invalid chat state tree length')
+                        }
+                        for (let index = 0; index < node.hashes.length; index += 1) {
+                            if (level === 0) message.push(await readChunk(node.hashes[index]))
+                            else await visit(node.hashes[index], level - 1, Math.min(capacity, count - index * capacity))
+                        }
+                    }
+                    await visit(manifest.messagesRoot, chatStateTreeLevel(manifest.messageCount), manifest.messageCount)
                 }
                 return chatPacker.pack({ ...(header as object), message })
                     .toString('base64')
@@ -2463,9 +2619,8 @@ export function createWikiVcsRepository(
             referencedHashes: readonly string[]
             dryRun?: boolean
         }): Promise<{ deletedObjects: number; deletedBytes: number }> {
-            const { repository } = await ensureRepositoryForChat(
-                input.characterId, input.chatId
-            )
+            const repository = repositoryFor(input.characterId, input.chatId)
+            await ensureFormat(repository)
             const directory = join(repository.directory, AUTOSAVE_STATE_DIRECTORY)
             const referenced = new Set(input.referencedHashes)
             for (const kind of REF_KINDS) {
@@ -2494,10 +2649,21 @@ export function createWikiVcsRepository(
                 if (hashBytes(contents) !== hash) {
                     throw new Error('Chat state root is corrupt')
                 }
-                const manifest = parseChatStateManifest(contents)
-                if (!manifest) continue
-                referenced.add(manifest.header)
-                for (const chunk of manifest.messages) referenced.add(chunk)
+                const object = parseChatStateObject(contents)
+                if (!object) continue
+                if (object.schemaVersion === 1) {
+                    for (const hash of object.hashes) referenced.add(hash)
+                } else {
+                    referenced.add(object.header)
+                    if (object.schemaVersion === 2) {
+                        for (const hash of object.messages) referenced.add(hash)
+                    } else if (object.messagesRoot) referenced.add(object.messagesRoot)
+                }
+            }
+            for (const [key, state] of chatStateCache) {
+                if (state.directory === repository.directory && !referenced.has(state.hash)) {
+                    chatStateCache.delete(key)
+                }
             }
             let deletedObjects = 0
             let deletedBytes = 0
@@ -2663,9 +2829,8 @@ export function createWikiVcsRepository(
             chatId: string
             dryRun?: boolean
         }): Promise<{ deletedObjects: number; deletedBytes: number }> {
-            const { repository } = await ensureRepositoryForChat(
-                input.characterId, input.chatId
-            )
+            const repository = repositoryFor(input.characterId, input.chatId)
+            await ensureFormat(repository)
             const roots = new Set<string>()
             const visitedCommits = new Set<string>()
             const retainCommitHistory = async (head: string): Promise<void> => {
@@ -2677,6 +2842,7 @@ export function createWikiVcsRepository(
                         if (change.before) roots.add(change.before)
                         if (change.after) roots.add(change.after)
                     }
+                    if (commit.analysisReceiptRef) roots.add(commit.analysisReceiptRef)
                     cursor = commit.parent
                 }
             }
@@ -2759,6 +2925,13 @@ export interface WikiVcsService {
         chatId: string,
         commitId: string
     ): Promise<WikiCommitRecord | undefined>
+    readAnalysisReceipt(input: {
+        characterId: string; chatId: string; commitId: string
+    }): Promise<{
+        commit: WikiCommitRecord
+        receipt: CanonicalTurnReceipt | null
+        files: Array<{ path: string; contents: string; before: string | null }>
+    }>
     readPathMap(
         characterId: string,
         chatId: string,

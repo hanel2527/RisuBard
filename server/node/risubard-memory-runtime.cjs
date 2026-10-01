@@ -1,5 +1,6 @@
 require('sucrase/register/ts')
 const { randomUUID } = require('node:crypto')
+const { isDeepStrictEqual } = require('node:util')
 const fs = require('node:fs/promises')
 const { watch, realpathSync } = require('node:fs')
 const { dirname, join, relative } = require('node:path')
@@ -21,12 +22,15 @@ const {
 } = require('./risubard-graph-service.ts')
 const {
     createMarkdownNarrativeWiki,
+    parseDocument,
 } = require('./risubard-markdown-wiki.ts')
 const {
     createWikiVersioning,
     newWikiOperationId,
 } = require('./risubard-wiki-versioning.ts')
 const { chatBoundaryAnchor, isWikiVcsTrackedPath } = require('../../src/ts/risubard/wikiVcsContract.ts')
+const { canonicalTurnNeedsRetry, mergeCanonicalTurnReceipts } = require('../../src/ts/risubard/canonicalTurnReceipt.ts')
+const { prepareMemorySaveChatSnapshot } = require('../../src/ts/risubard/memorySavePolicy.ts')
 const {
     completeMemoryWorkspaceFork,
     forkMemoryWorkspace,
@@ -88,6 +92,17 @@ function chatMessagesToAnchorMessages(messages) {
     })
 }
 
+function matchesChatAnchor(expected, storedMessages) {
+    const messages = chatMessagesToAnchorMessages(storedMessages)
+    const boundary = expected.boundaryMessageId === null ? -1
+        : messages.findIndex(message => message.messageId === expected.boundaryMessageId)
+    if (expected.boundaryMessageId !== null && boundary < 0) return false
+    return chatBoundaryAnchor(
+        expected.sourceChatId, expected.boundaryMessageId,
+        boundary < 0 ? [] : messages.slice(0, boundary + 1)
+    ).prefixDigest === expected.prefixDigest
+}
+
 function createRuntimeMemoryService(userDataDirectory, options = {}) {
     let canonicalRepository
     const canonical = () => canonicalRepository ||= options.canonicalRepository
@@ -110,6 +125,32 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
         )
         await options.onChatChanged?.({ characterId, chatId, chat })
     }
+    const applyAnalysisReceipt = async ({ characterId, chatId, commit, receipt }) => {
+        if (commit.kind === 'rebuild') {
+            await wiki.recordRebootBatchReceipt({ characterId, chatId, receipt })
+            return
+        }
+        canonical().recoverPendingTransactions()
+        const current = canonical().loadChat(characterId, chatId)
+        const anchor = commit.chatAnchor
+        if (anchor.sourceChatId !== chatId || !matchesChatAnchor(anchor, current.message)) {
+            throw new Error('Wiki chat conflict: the published analysis chat prefix changed')
+        }
+        const target = current.message.find(message =>
+            message.chatId === anchor.boundaryMessageId && message.role === 'char')
+        if (!target) throw new Error('Wiki chat conflict: the analysis target message is missing')
+        if (target.risubardCanonicalReceipt?.vcsCommitIds?.includes(commit.id)) return
+        const merged = mergeCanonicalTurnReceipts(target.risubardCanonicalReceipt, receipt)
+        const chat = {
+            ...current,
+            message: current.message.map(message => message === target ? {
+                ...message, risubardCanonicalReceipt: merged,
+                risubardMemoryConfirmed: !canonicalTurnNeedsRetry(merged),
+            } : message),
+        }
+        canonical().replaceChat(characterId, chatId, current, chat)
+        await options.onChatChanged?.({ characterId, chatId, chat })
+    }
     const memory = createNarrativeMemoryService(userDataDirectory)
     const sources = createSourceSnapshotAdapter(userDataDirectory)
     const graph = createNarrativeGraphService(userDataDirectory, {
@@ -121,6 +162,7 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
         userDataDirectory,
         {
             applyChatState,
+            applyAnalysisReceipt,
             applyMemoryFork: async ({ characterId, chatId, forkToken }) => {
                 await completeForkWorkspace({
                     userDataDirectory, characterId, destinationChatId: chatId,
@@ -146,22 +188,7 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
                     canonical(), characterId, expected.sourceChatId
                 )
                 if (!persisted) return false
-                const messages = chatMessagesToAnchorMessages(persisted)
-                const boundaryIndex = expected.boundaryMessageId === null
-                    ? -1
-                    : messages.findIndex((message) =>
-                        message.messageId === expected.boundaryMessageId)
-                if (expected.boundaryMessageId !== null && boundaryIndex < 0) {
-                    return false
-                }
-                const prefix = boundaryIndex < 0
-                    ? []
-                    : messages.slice(0, boundaryIndex + 1)
-                return chatBoundaryAnchor(
-                    expected.sourceChatId,
-                    expected.boundaryMessageId,
-                    prefix
-                ).prefixDigest === expected.prefixDigest
+                return matchesChatAnchor(expected, persisted)
             }),
         }
     )
@@ -351,13 +378,41 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
         return operation()
     }
 
-    const decodeChatSnapshot = (chatBase64, chatId) => {
-        if (typeof chatBase64 !== 'string') throw new Error('Wiki checkout requires a chat snapshot')
-        const chat = chatUnpacker.unpack(Buffer.from(chatBase64, 'base64'))
+    const decodeChatSnapshot = (contents, chatId) => {
+        if (typeof contents !== 'string' && !(contents instanceof Uint8Array)) {
+            throw new Error('Wiki checkout requires a chat snapshot')
+        }
+        const chat = chatUnpacker.unpack(typeof contents === 'string'
+            ? Buffer.from(contents, 'base64') : contents)
         if (!chat || chat.id !== chatId || !Array.isArray(chat.message)) {
             throw new Error('Invalid wiki checkout chat snapshot')
         }
         return chat
+    }
+    const validateSaveChat = async (input, head) => {
+        const snapshot = decodeChatSnapshot(input.chatBytes, input.sourceChatId)
+        let current
+        try { current = canonical().loadChat(input.characterId, input.sourceChatId) }
+        catch (error) {
+            if (error.code !== 'ENOENT') throw error
+            throw new Error('Wiki chat conflict: the save source chat no longer exists')
+        }
+        const revision = chat => {
+            const snapshot = JSON.parse(JSON.stringify(chat))
+            prepareMemorySaveChatSnapshot(snapshot)
+            snapshot.fmIndex ??= -1
+            snapshot.firstMessageDisabled = snapshot.firstMessageDisabled === true
+            return snapshot
+        }
+        if (!isDeepStrictEqual(revision(snapshot), revision(current))) {
+            throw new Error('Wiki chat conflict: the save snapshot is not the persisted chat revision')
+        }
+        if (head && !(await repository.previewCheckout({
+            characterId: input.characterId, chatId: input.sourceChatId,
+            commitId: head, messages: chatMessagesToAnchorMessages(snapshot.message),
+        })).exact) {
+            throw new Error('Wiki chat conflict: the save wiki does not match the chat prefix')
+        }
     }
     const checkoutChat = async (input, preparedChat) => {
         await ensureWikiRecovered(input.characterId, input.chatId)
@@ -696,10 +751,12 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
                 return completed
             }
         )),
-        createMemorySave: (input) => serializedMany([
+        createMemorySave: (input) => runChatTransition(() => serializedMany([
             [input.characterId, input.sourceChatId],
             [input.characterId, memorySaveWorkspaceId(input.saveId)],
         ], async () => {
+            await options.beforeChatTransition?.()
+            await ensureWikiRecovered(input.characterId, input.sourceChatId)
             await versioning.ensureBaseline({
                 characterId: input.characterId, chatId: input.sourceChatId,
             })
@@ -719,6 +776,7 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
             const head = await versioning.readHead(
                 input.characterId, input.sourceChatId
             )
+            await validateSaveChat(input, head)
             const view = await wiki.loadView(
                 input.characterId,
                 input.sourceChatId
@@ -783,7 +841,7 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
                 ...(capture.commitId
                     ? { capturedCommitId: capture.commitId } : {}),
             }
-        }),
+        })),
         listMemorySaves: (input) => listSaveSlots({
             userDataDirectory,
             ...input,
@@ -982,10 +1040,12 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
          * without copying the wiki tree. Chat bytes are deduplicated by hash, so
          * an unchanged chat adds no storage.
          */
-        writeReferenceAutosave: (input) => serializedMany([
+        writeReferenceAutosave: (input) => runChatTransition(() => serializedMany([
             [input.characterId, input.sourceChatId],
             [input.characterId, memorySaveWorkspaceId(input.saveId)],
         ], async () => {
+            await options.beforeChatTransition?.()
+            await ensureWikiRecovered(input.characterId, input.sourceChatId)
             await versioning.ensureBaseline({
                 characterId: input.characterId, chatId: input.sourceChatId,
             })
@@ -996,6 +1056,7 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
             const head = await versioning.readHead(
                 input.characterId, input.sourceChatId
             )
+            await validateSaveChat(input, head)
             const chatBytes = Buffer.isBuffer(input.chatBytes)
                 ? input.chatBytes
                 : Buffer.from(input.chatBytes)
@@ -1035,7 +1096,7 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
                 ...(capture.commitId
                     ? { capturedCommitId: capture.commitId } : {}),
             }
-        }),
+        })),
         /**
          * Loads a reference save: the wiki is materialized in the destination
          * chat from the pinned commit, and the chat bytes come from the
@@ -1229,7 +1290,19 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
         inquireNarrative: (input) => serialized(
             input.characterId, input.chatId, async () => {
                 await ensureWikiRecovered(input.characterId, input.chatId)
-                return wiki.inquire(input)
+                const captured = await versioning.captureExternalChanges({
+                    characterId: input.characterId, chatId: input.chatId,
+                })
+                if (captured.commitId) {
+                    await wiki.rebuildDerivedFiles(input.characterId, input.chatId)
+                }
+                const wikiCommitId = await versioning.readHead(input.characterId, input.chatId)
+                if (input.expectedWikiCommitId !== undefined && input.expectedWikiCommitId !== wikiCommitId) {
+                    throw new Error('Wiki inquiry conflict: the branch head changed')
+                }
+                const expectedPaths = wikiCommitId
+                    ? await versioning.readPathMap(input.characterId, input.chatId, wikiCommitId) : {}
+                return { ...await wiki.inquire({ ...input, expectedPaths }), wikiCommitId }
             }
         ),
         embeddingCatalog: (input) => serialized(
@@ -1251,7 +1324,7 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
                 return wiki.beginWriteBatch(input)
             }
         ),
-        publishWikiWriteBatch: (input, signal) => runChatTransition(() => serialized(
+        publishWikiWriteBatch: (input, signal) => withChatTransition(input.characterId, input.chatId, () => serialized(
             input.characterId, input.chatId, async () => {
                 await options.beforeChatTransition?.()
                 return wiki.publishWriteBatch(input, signal)
@@ -1437,6 +1510,39 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
             input.characterId, input.chatId,
             () => versioning.readCommitAncestors(input)
         ),
+        wikiAnalysisReceipt: (input) => serialized(
+            input.characterId, input.chatId, async () => {
+                const { commit, receipt, files } = await repository.readAnalysisReceipt(input)
+                if (receipt) return { provenance: 'commit', receipt }
+                // Older commits predate immutable receipts. Reconstruct only
+                // facts recorded by that commit, never the later merged receipt.
+                const documents = files.filter(file => !file.path.startsWith('.'))
+                    .map(file => ({
+                        document: parseDocument(file.contents, file.path),
+                        action: file.before === null ? 'create' : 'update',
+                    }))
+                const sourceMessageIds = new Set(documents.flatMap(({ document }) =>
+                    document.sourceMessageIds))
+                if (commit.chatAnchor.boundaryMessageId) {
+                    sourceMessageIds.add(commit.chatAnchor.boundaryMessageId)
+                }
+                const reconstructed = {
+                    sourceMessageIds: [...sourceMessageIds],
+                    eventIds: documents.filter(({ document }) => document.type === 'event')
+                        .map(({ document }) => document.id),
+                    changes: documents.filter(({ document }) => document.type !== 'event')
+                        .map(({ document, action }) => ({
+                            documentId: document.id, type: document.type, title: document.title,
+                            relativePath: document.relativePath,
+                            action,
+                            afterHash: document.contentHash,
+                        })),
+                    warnings: ['이전 커밋의 receipt를 변경 기록에서 복원했습니다. 원래 분석의 경고·재시도 정보는 이 커밋에 저장되어 있지 않습니다.'],
+                    recordedAt: commit.createdAt, vcsCommitIds: [commit.id],
+                }
+                return { provenance: 'reconstructed', receipt: reconstructed }
+            }
+        ),
         wikiHistory: (input) => serialized(
             input.characterId,
             input.chatId,
@@ -1543,26 +1649,29 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
                 return { ref, chatBase64 }
             }
         ),
-        deleteWikiRef: (input) => serialized(
+        deleteWikiRef: (input) => runChatTransition(() => serialized(
             input.characterId,
             input.chatId,
             async () => {
                 const deleted = (await versioning.listRefs(input))
                     .find((ref) => ref.id === input.id)
-                await versioning.deleteRef(input)
                 if (deleted?.reason === 'chat-delete') {
-                    const remaining = await versioning.listRefs({
+                    const remaining = (await versioning.listRefs({
                         ...input, kind: 'recovery',
-                    })
-                    const canonical = require('./db.cjs').repository.loadChat(
-                        input.characterId, input.chatId
-                    )
-                    if (!canonical && remaining.length === 0) {
+                    })).filter(ref => ref.id !== input.id)
+                    let exists = true
+                    try { canonical().loadChat(input.characterId, input.chatId) }
+                    catch (error) {
+                        if (error.code !== 'ENOENT') throw error
+                        exists = false
+                    }
+                    if (!exists && remaining.length === 0) {
                         await repository.discardChatBranch(
                             input.characterId, input.chatId
                         )
                     }
                 }
+                await versioning.deleteRef(input)
                 await repository.collectChatState({
                     characterId: input.characterId,
                     chatId: input.chatId,
@@ -1575,7 +1684,7 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
                     chatId: input.chatId,
                 })
             }
-        ),
+        )),
         wikiCommitPathMap: (input) => serialized(
             input.characterId,
             input.chatId,

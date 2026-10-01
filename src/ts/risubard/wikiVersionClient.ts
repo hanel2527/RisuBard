@@ -5,6 +5,7 @@ import type { Chat } from '../storage/database.svelte'
 import { encodeMemorySaveChat } from './memorySaveSlots'
 import type {
     WikiAnchorMessage,
+    WikiAnalysisReceiptResult,
     WikiChatAnchor,
     WikiCheckoutPreview,
     WikiCommitKind,
@@ -16,6 +17,7 @@ import type {
     WikiRefRecord,
 } from './wikiVcsContract'
 import { computeWikiPrefixDigests } from './wikiVcsContract'
+import { canonicalTurnNeedsRetry, mergeCanonicalTurnReceipts, parseCanonicalTurnReceipt, type CanonicalTurnReceipt } from './canonicalTurnReceipt'
 
 function prefixCheckpoints(messages: readonly WikiAnchorMessage[]) {
     const digests = computeWikiPrefixDigests(messages)
@@ -242,12 +244,17 @@ async function retainReachableReceipts(
     input: WikiVersionClientInput, chat: Chat, commitId: string,
 ): Promise<void> {
     const messageIds = new Set(chat.message.map(message => message.chatId))
+    const retainsSource = (id: string) => {
+        if (messageIds.has(id)) return true
+        const greeting = /^first-message:.+:(-?\d+)$/u.exec(id)
+        return !!greeting && !chat.firstMessageDisabled
+            && Number(greeting[1]) === (chat.fmIndex ?? -1)
+    }
     const wanted = new Set<string>()
     for (const message of chat.message) {
         const receipt = message.risubardCanonicalReceipt
         if (!receipt) continue
-        if (!receipt.vcsCommitIds?.length
-            || receipt.sourceMessageIds.some(id => !messageIds.has(id))) {
+        if (!receipt.vcsCommitIds?.length) {
             delete message.risubardCanonicalReceipt
             message.risubardMemoryConfirmed = false
             continue
@@ -278,7 +285,38 @@ async function retainReachableReceipts(
     }
     for (const message of chat.message) {
         const receipt = message.risubardCanonicalReceipt
-        if (receipt?.vcsCommitIds?.some(id => !reachable.has(id))) {
+        if (!receipt?.vcsCommitIds?.length) continue
+        const retained = receipt.vcsCommitIds.filter(id => reachable.has(id))
+        if (retained.length === receipt.vcsCommitIds.length
+            && receipt.sourceMessageIds.every(retainsSource)) continue
+        if (!retained.length) {
+            delete message.risubardCanonicalReceipt
+            message.risubardMemoryConfirmed = false
+            continue
+        }
+        let restored: CanonicalTurnReceipt | undefined
+        let complete = true
+        for (const id of retained) {
+            const result = await postJson<WikiAnalysisReceiptResult>(
+                input, '/api/risubard/memory/wiki/version/analysis-receipt',
+                { characterId: input.characterId, chatId: input.chatId, commitId: id },
+                'Wiki analysis receipt',
+            )
+            if (!['commit', 'reconstructed'].includes(result.provenance)) {
+                throw new Error('Invalid wiki analysis receipt provenance')
+            }
+            const part = parseCanonicalTurnReceipt(result.receipt)
+            if (part.vcsCommitIds?.length !== 1 || part.vcsCommitIds[0] !== id) {
+                throw new Error('Invalid wiki analysis receipt commit')
+            }
+            if (part.sourceMessageIds.some(source => !retainsSource(source))) continue
+            if (result.provenance === 'reconstructed') complete = false
+            restored = mergeCanonicalTurnReceipts(restored, part)
+        }
+        if (restored) {
+            message.risubardCanonicalReceipt = restored
+            message.risubardMemoryConfirmed = complete && !canonicalTurnNeedsRetry(restored)
+        } else {
             delete message.risubardCanonicalReceipt
             message.risubardMemoryConfirmed = false
         }

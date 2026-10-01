@@ -40,6 +40,7 @@ export function findNarrativeSessionChat<T extends { id?: string }>(
 
 export interface NarrativeInquiryResponse {
     mode: 'v2-current' | 'bounded-v1-fallback'
+    wikiCommitId: string | null
     graphRevision: number
     indexRevision: number
     cacheStatus: 'current' | 'missing-or-stale'
@@ -110,7 +111,13 @@ function boundedMetric(value: unknown, maximum = Number.MAX_SAFE_INTEGER) {
     return value as number
 }
 
+export interface WikiInquirySnapshot {
+    commitId?: string | null
+}
+
 export async function loadNarrativeInquiry(input: {
+    contextSelection?: 'required' | 'auto'
+    wikiSnapshot?: WikiInquirySnapshot
     retrievalLimits?: { candidates: number; directSeeds: number }
     characterId: string
     chatId: string
@@ -144,6 +151,7 @@ export async function loadNarrativeInquiry(input: {
     timeoutMs?: number
     signal?: AbortSignal
 }): Promise<NarrativeInquiryResponse> {
+    const wikiSnapshot: WikiInquirySnapshot = input.wikiSnapshot ?? {}
     const timeoutMs = input.timeoutMs ?? RISUBARD_INQUIRY_TIMEOUT_MS_DEFAULT
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1
         || timeoutMs > 10_000) {
@@ -175,6 +183,9 @@ export async function loadNarrativeInquiry(input: {
                             characterId: input.characterId,
                             chatId: input.chatId,
                             currentInput: input.currentInput.slice(0, 4_096),
+                            ...(input.contextSelection ? { contextSelection: input.contextSelection } : {}),
+                            ...(wikiSnapshot.commitId === undefined ? {}
+                                : { expectedWikiCommitId: wikiSnapshot.commitId }),
                             ...(input.retrievalLimits ? { retrievalLimits: input.retrievalLimits } : {}),
                             ...(input.fallbackInput === undefined
                                 ? {}
@@ -239,6 +250,7 @@ export async function loadNarrativeInquiry(input: {
     if (!isRecord(value)
         || !hasRequiredAndOnlyKeys(value, [
             'mode',
+            'wikiCommitId',
             'graphRevision',
             'indexRevision',
             'cacheStatus',
@@ -303,6 +315,15 @@ export async function loadNarrativeInquiry(input: {
             'RisuBard Memory Wiki 조회 응답이 현재 앱과 호환되지 않습니다. 앱과 서버를 다시 시작해 주세요.'
         )
     }
+    if (!(value.wikiCommitId === null || typeof value.wikiCommitId === 'string'
+        && /^[a-f0-9]{64}$/.test(value.wikiCommitId))) {
+        throw new Error('Invalid wiki inquiry commit revision')
+    }
+    const wikiCommitId = value.wikiCommitId as string | null
+    if (wikiSnapshot.commitId !== undefined && wikiSnapshot.commitId !== wikiCommitId) {
+        throw new WikiInquiryError('source-changed', 409)
+    }
+    wikiSnapshot.commitId = wikiCommitId
     const sources = value.sources.map((source): ContextSource => {
         if (!isRecord(source)
             || !(hasExactKeys(source, [
@@ -464,6 +485,7 @@ export async function loadNarrativeInquiry(input: {
             || (input.sourceMatches ?? []).find(item => item.messageId === match.messageId)?.content !== match.content)) {
             return loadNarrativeInquiry({
                 ...input,
+                wikiSnapshot,
                 sourceMatches: merged,
                 resolveSourceMatches: undefined,
             })
@@ -471,6 +493,7 @@ export async function loadNarrativeInquiry(input: {
     }
     return {
         mode: value.mode as NarrativeInquiryResponse['mode'],
+        wikiCommitId,
         graphRevision: boundedMetric(value.graphRevision),
         indexRevision: boundedMetric(value.indexRevision),
         cacheStatus: value.cacheStatus as NarrativeInquiryResponse['cacheStatus'],
