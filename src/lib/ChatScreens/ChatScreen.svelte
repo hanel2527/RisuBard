@@ -22,7 +22,7 @@
     import { completeMemoryWikiFork } from 'src/ts/risubard/memoryWikiFork';
     import { countChatTurns, createMemorySaveSlot, deleteMemorySaveSlot, latestChatMessageId, listMemorySaveSlots, prepareMemorySaveLoad, prepareReferenceSaveLoad, shouldConfirmMemorySaveLoad, writeReferenceAutosave, type MemorySaveSlotSummary } from 'src/ts/risubard/memorySaveSlots';
     import { ensureWikiBaselineForChat } from 'src/ts/risubard/wikiChatCoordinator';
-    import { checkoutWikiVersion, captureWikiVersion, listWikiHistory, discardWikiFork } from 'src/ts/risubard/wikiVersionClient';
+    import { checkoutWikiVersion, forkWikiVersion, captureWikiVersion, listWikiHistory, discardWikiFork } from 'src/ts/risubard/wikiVersionClient';
     import { cleanupWikiRebootWorkspace } from 'src/ts/risubard/wikiRebootTransport';
     import { autoSaveId, normalizeAutosaveInterval, normalizeAutosaveRetention, obsoleteAutosaveIds, quickSaveId, shouldCreateAutosave } from 'src/ts/risubard/memorySavePolicy';
     import { isWikiGenerating } from 'src/ts/risubard/wikiGenerationState';
@@ -100,6 +100,7 @@
                     await checkoutWikiVersion({
                         ...context, chatId: step.chatId,
                         commitId: step.commitId, reason: step.reason,
+                        chat,
                     })
                     break
                 case 'discard-fork':
@@ -426,144 +427,32 @@
         loadedChat.isStreaming = false
         delete loadedChat.activeStreamingDisplayOptimizationMode
         delete loadedChat._placeholder
-        if(asNewChat){
-            loadedChat.name = createChatCopyName(loadedChat.name, 'Copy')
-            character.chats.unshift(loadedChat)
-        }
-        else {
-            character.chats[chatIdx] = loadedChat
-        }
-        character.chats = character.chats
-        try {
-            await requestImmediateSave({
-                forceFullWrite: true,
-                rejectOnFailure: true,
-            })
-        }
-        catch(error){
+        if(asNewChat) loadedChat.name = createChatCopyName(loadedChat.name, 'Copy')
+        if(reference?.wikiCommitId){
+            const transport = {
+                characterId: character.chaId, fetchImpl: fetch,
+                createAuth: () => forageStorage.createAuth(),
+            }
             if(asNewChat){
-                character.chats.splice(0, 1)
+                await forkWikiVersion({
+                    ...transport, sourceChatId: reference.sourceChatId,
+                    destinationChatId, commitId: reference.wikiCommitId, chat: loadedChat,
+                })
+                character.chats.unshift(loadedChat)
             }
             else {
-                character.chats[chatIdx] = currentChat
+                await checkoutWikiVersion({
+                    ...transport, chatId: destinationChatId,
+                    commitId: reference.wikiCommitId, reason: 'save-load', chat: loadedChat,
+                })
+                character.chats[chatIdx] = loadedChat
             }
             character.chats = character.chats
-
-            const recoveryFailures: string[] = []
-            const pendingSteps: WikiChatRecoveryStep[] = []
-            if(forkToken){
-                try {
-                    await completeMemoryWikiFork({
-                        characterId: character.chaId,
-                        destinationChatId,
-                        forkToken,
-                        action: 'discard',
-                        fetchImpl: fetch,
-                        createAuth: () => forageStorage.createAuth(),
-                    })
-                }
-                catch(recoveryError){
-                    const detail = recoveryError instanceof Error
-                        ? recoveryError.message : String(recoveryError)
-                    recoveryFailures.push(`Memory Wiki fork cleanup: ${detail}`)
-                    pendingSteps.push({
-                        kind: 'discard-memory-fork',
-                        chatId: destinationChatId,
-                        forkToken,
-                    })
-                }
-            }
-            if(reference?.wikiForked){
-                try {
-                    await discardWikiFork({
-                        characterId: character.chaId,
-                        chatId: destinationChatId,
-                        fetchImpl: fetch,
-                        createAuth: () => forageStorage.createAuth(),
-                    })
-                }
-                catch(recoveryError){
-                    const detail = recoveryError instanceof Error
-                        ? recoveryError.message : String(recoveryError)
-                    recoveryFailures.push(`Memory Wiki fork cleanup: ${detail}`)
-                    pendingSteps.push({
-                        kind: 'discard-fork',
-                        chatId: destinationChatId,
-                    })
-                }
-            }
-            if(reference?.wikiCheckedOut && reference.previousWikiHead){
-                try {
-                    await checkoutWikiVersion({
-                        characterId: character.chaId,
-                        chatId: destinationChatId,
-                        commitId: reference.previousWikiHead,
-                        reason: 'save-load',
-                        fetchImpl: fetch,
-                        createAuth: () => forageStorage.createAuth(),
-                    })
-                }
-                catch(recoveryError){
-                    const detail = recoveryError instanceof Error
-                        ? recoveryError.message : String(recoveryError)
-                    recoveryFailures.push(`Memory Wiki checkout recovery: ${detail}`)
-                    pendingSteps.push({
-                        kind: 'checkout',
-                        chatId: destinationChatId,
-                        commitId: reference.previousWikiHead,
-                        reason: 'save-load',
-                    })
-                }
-            }
-            const originalError = error instanceof Error ? error.message : String(error)
-            let pendingMarker: WikiChatRecoveryPending | undefined
-            if (recoveryFailures.length > 0) {
-                pendingSteps.push({ kind: 'save-chat', chatId: currentChat.id })
-                pendingMarker = {
-                    id: v4(),
-                    error: `${originalError}; ${recoveryFailures.join('; ')}`,
-                    steps: pendingSteps,
-                }
-                currentChat.risuBardWikiRecoveryPending = pendingMarker
-            }
-            try {
-                await requestImmediateSave({
-                    forceFullWrite: true,
-                    rejectOnFailure: true,
-                })
-            }
-            catch(recoveryError){
-                const detail = recoveryError instanceof Error
-                    ? recoveryError.message : String(recoveryError)
-                pendingMarker ??= {
-                    id: v4(), error: originalError, steps: [],
-                }
-                if (!pendingMarker.steps.some(step => step.kind === 'save-chat')) {
-                    pendingMarker.steps.push({
-                        kind: 'save-chat', chatId: currentChat.id,
-                    })
-                }
-                pendingMarker.error = `${originalError}; ${recoveryFailures.join('; ')}`
-                currentChat.risuBardWikiRecoveryPending = pendingMarker
-                try {
-                    await requestImmediateSave({
-                        forceFullWrite: true,
-                        rejectOnFailure: true,
-                    })
-                }
-                catch(retryError){
-                    pendingMarker.error += `; Original chat save retry: ${retryError instanceof Error
-                        ? retryError.message : String(retryError)}`
-                }
-            }
-            if(recoveryFailures.length){
-                const recoveryMessage = recoveryFailures.join('; ')
-                notifyError(`Chat load failed (${originalError}); recovery is pending: ${recoveryMessage}`)
-                throw new Error(`Chat load failed (${originalError}); recovery is pending: ${recoveryMessage}`, {
-                    cause: error,
-                })
-            }
-            throw error
+            changeChatTo(asNewChat ? 0 : chatIdx)
+            await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+            saveSlotsOpen = false
+            notifySuccess('스토리 불러오기 완료', { duration: 3000 })
+            return
         }
         if(forkToken){
             await completeMemoryWikiFork({
@@ -571,10 +460,15 @@
                 destinationChatId,
                 forkToken,
                 action: 'finalize',
+                chat: $state.snapshot(loadedChat),
                 fetchImpl: fetch,
                 createAuth: () => forageStorage.createAuth(),
             })
         }
+        if(asNewChat) character.chats.unshift(loadedChat)
+        else character.chats[chatIdx] = loadedChat
+        character.chats = character.chats
+        await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
         changeChatTo(asNewChat ? 0 : chatIdx)
         saveSlotsOpen = false
         notifySuccess('스토리 불러오기 완료', { duration: 3000 })

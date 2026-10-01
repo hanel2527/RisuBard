@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { isDeepStrictEqual } = require('node:util');
 const {
     atomicWriteJson,
     commitTransaction,
@@ -500,6 +501,39 @@ function createUserDataRepository(options = {}) {
     function loadChat(characterId, chatId, options = {}) {
         const metadata = readJson(chatMetadataPath(characterId, chatId), options);
         return { ...metadata, message: loadMessages(characterId, chatId) };
+    }
+
+    function replaceChat(characterId, chatId, expected, chat) {
+        if (!isPlainObject(chat) || chat.id !== chatId || !Array.isArray(chat.message)) {
+            throw new Error('Invalid canonical chat replacement');
+        }
+        let current;
+        try { current = loadChat(characterId, chatId); }
+        catch (error) {
+            if (expected !== null || error.code !== 'ENOENT') throw error;
+            current = null;
+        }
+        const next = JSON.parse(JSON.stringify(chat));
+        if (isDeepStrictEqual(current, next)) return;
+        if (!isDeepStrictEqual(current, expected)) {
+            throw new Error('Wiki chat conflict: the persisted chat changed during checkout');
+        }
+        const index = loadSidebarIndex();
+        const character = index.characters.find(item => item.id === stableId(characterId, 'character'));
+        if (!character) throw new Error('Wiki chat conflict: the source character is missing');
+        let summary = character.chats.find(item => item.id === stableId(chatId, 'chat'));
+        if (!summary) {
+            if (expected !== null) throw new Error('Wiki chat conflict: the source chat is missing');
+            summary = { id: stableId(chatId, 'chat') };
+            character.chats.unshift(summary);
+        }
+        Object.assign(summary, { name: next.name || '', lastDate: next.lastDate ?? 0, legacyMessagePresent: true });
+        index.updatedAt = Date.now();
+        commitTransaction(dataRoot, [
+            { path: chatMetadataPath(characterId, chatId), data: jsonBytes(without(next, new Set(['message']))) },
+            { path: messagesPath(characterId, chatId), chunks: () => messageChunks(next.message) },
+            { path: 'index/sidebar.json', data: jsonBytes(index) },
+        ]);
     }
 
     function appendMessage(characterId, chatId, message) {
@@ -1160,6 +1194,7 @@ function createUserDataRepository(options = {}) {
         loadSidebarIndex,
         reconcileCanonicalProjection,
         recoverPendingTransactions: () => recoverTransactions(dataRoot),
+        replaceChat,
         saveAssistantDraft,
         publishCharacterDirectoryMapping,
         refreshCharacterDirectoryMapping,

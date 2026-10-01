@@ -1693,44 +1693,6 @@ describe('sparse Markdown wiki write batches', () => {
         })
     })
 
-    test('a no-change publish preserves and records an intervening disk edit', async () => {
-        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
-        temporaryDirectories.push(root)
-        const versioning = createWikiVersioning(root)
-        const wiki = createMarkdownNarrativeWiki(root, { versioning })
-        const document = await wiki.saveManualDocument({
-            characterId: 'character',
-            chatId: 'chat',
-            type: 'concept',
-            title: 'Clock',
-            markdown: '# Clock\n\n## State\n\n- Original.',
-        })
-        const workspace = resolveMarkdownWikiWorkspace(root, 'character', 'chat')
-        const file = join(workspace.directory, ...document.relativePath.split('/'))
-        await wiki.beginWriteBatch({
-            characterId: 'character',
-            chatId: 'chat',
-            operationId: 'analysis-no-change',
-            kind: 'analysis',
-        })
-        const externalBytes = (await fs.readFile(file, 'utf8'))
-            .replace('Original.', 'External edit.')
-        await fs.writeFile(file, externalBytes, 'utf8')
-
-        await expect(wiki.publishWriteBatch({
-            characterId: 'character',
-            chatId: 'chat',
-            operationId: 'analysis-no-change',
-        })).rejects.toThrow('Wiki commit conflict')
-        expect(await fs.readFile(file, 'utf8')).toBe(externalBytes)
-        const head = await versioning.readHead('character', 'chat')
-        expect(head).not.toBeNull()
-        const pathMap = await versioning.readPathMap(
-            'character', 'chat', head!
-        )
-        expect(pathMap[document.relativePath])
-            .toBe(createHash('sha256').update(externalBytes).digest('hex'))
-    })
 
     test('abandoning staged canonical edits leaves the live document unchanged', async () => {
         const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
@@ -1809,6 +1771,48 @@ describe('sparse Markdown wiki write batches', () => {
             operationId: 'analysis-unsupported',
             kind: 'analysis',
         })).rejects.toThrow('transactional versioning support')
+    })
+
+    test('keeps a failed rename and its backlinks unpublished, then retries them together', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-rename-'))
+        temporaryDirectories.push(root)
+        const scope = { characterId: 'character', chatId: 'chat' }
+        const versioning = createWikiVersioning(root)
+        let failBacklink = false
+        let backlinkPath = ''
+        const wiki = createMarkdownNarrativeWiki(root, {
+            versioning,
+            fileSystem: {
+                ...fs,
+                rename: async (from, to) => {
+                    if (failBacklink && String(to).endsWith(backlinkPath)) {
+                        failBacklink = false
+                        throw Object.assign(new Error('backlink EIO'), { code: 'EIO' })
+                    }
+                    return fs.rename(from, to)
+                },
+            },
+        })
+        const character = await wiki.saveManualDocument({
+            ...scope, type: 'character', title: 'Alice', markdown: '## Alice\n\nAt home.',
+        })
+        const diary = await wiki.saveManualDocument({
+            ...scope, type: 'concept', title: 'Diary', markdown: '## Diary\n\nMet [[Alice]].',
+        })
+        backlinkPath = diary.relativePath
+        const before = await versioning.readHead('character', 'chat')
+        const rename = { ...scope, type: 'character' as const, documentId: character.id, title: 'Beth', markdown: '## Beth\n\nAt home.' }
+        failBacklink = true
+        await expect(wiki.saveManualDocument(rename)).rejects.toMatchObject({ code: 'EIO' })
+        const unchanged = (await wiki.loadView('character', 'chat')).documents
+        expect(unchanged.find(document => document.id === character.id)?.title).toBe('Alice')
+        expect(unchanged.find(document => document.id === diary.id)?.content).toContain('[[Alice]]')
+        expect(await versioning.readHead('character', 'chat')).toBe(before)
+        const renamed = await wiki.saveManualDocument(rename)
+        const published = (await wiki.loadView('character', 'chat')).documents
+        expect(published.find(document => document.id === character.id)?.title).toBe('Beth')
+        expect(published.find(document => document.id === diary.id)?.content).toContain('[[Beth]]')
+        expect(await versioning.readHead('character', 'chat')).toBe(renamed.vcsCommitId)
     })
 
 })

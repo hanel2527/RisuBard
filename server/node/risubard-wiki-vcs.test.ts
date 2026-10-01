@@ -770,6 +770,86 @@ describe('wiki VCS repository', () => {
         expect(preview.exact).toBe(true)
         expect(preview.chatAnchor.boundaryMessageId).toBe('assistant-2')
     })
+    test('records unchanged confirmed boundaries and retries their durable publication', async () => {
+        const root = await createRoot()
+        const repository = createWikiVcsRepository(root)
+        const scope = { characterId: 'character', chatId: 'chat-1' }
+        await writeWorkingTree(root, 'chat-1', { 'characters/aria.md': 'Unchanged story' })
+        const messages = [
+            { messageId: 'm1', role: 'assistant' as const, data: 'Aria arrived.' },
+            { messageId: 'm2', role: 'assistant' as const, data: 'Aria waited.' },
+        ]
+        const baseline = await repository.ensureBaseline({
+            ...scope, chatAnchor: chatBoundaryAnchor('chat-1', 'm1', messages.slice(0, 1)),
+        })
+        const input = {
+            ...scope, operationId: 'quiet-turn', kind: 'analysis' as const,
+            expectedHead: baseline.commitId, changes: [],
+            chatAnchor: chatBoundaryAnchor('chat-1', 'm2', messages),
+        }
+        const published = await repository.publishChanges(input)
+        expect(published.commitId).not.toBe(baseline.commitId)
+        expect(await repository.readPathMap('character', 'chat-1', published.commitId!))
+            .toEqual(await repository.readPathMap('character', 'chat-1', baseline.commitId!))
+        const reopened = createWikiVcsRepository(root)
+        expect(await reopened.publishChanges(input)).toEqual(published)
+        const versioning = createWikiVersioning(root, { loadChatAnchor: async () => undefined })
+        expect(await versioning.publishChanges(input)).toEqual(published)
+        const digests = computeWikiPrefixDigests(messages)
+        expect(await reopened.findCommitForPrefixes({
+            ...scope, minimumBoundaryMessageId: 'm2',
+            prefixes: messages.map((message, index) => ({
+                messageId: message.messageId, prefixDigest: digests[index],
+            })),
+        })).toBe(published.commitId)
+        expect((await reopened.listHistory(scope))[0].boundaryMessageId).toBe('m2')
+    })
+
+    test('rejects a deleted source chat before publishing staged analysis', async () => {
+        const root = await createRoot()
+        const expected = anchor('chat-1')
+        let current: typeof expected | undefined = expected
+        const versioning = createWikiVersioning(root, { loadChatAnchor: async () => current })
+        const scope = { characterId: 'character', chatId: 'chat-1' }
+        await writeWorkingTree(root, 'chat-1', { 'characters/aria.md': 'Before deletion' })
+        const baseline = await versioning.ensureBaseline({ ...scope, chatAnchor: expected })
+        current = undefined
+        await expect(versioning.publishChanges({
+            ...scope, operationId: 'deleted-source', kind: 'analysis',
+            expectedHead: baseline.commitId, chatAnchor: expected,
+            changes: [{ path: 'characters/aria.md', contents: 'Late result' }],
+        })).rejects.toThrow('persisted source chat is missing')
+        expect((await versioning.listHistory(scope))[0].commitId).toBe(baseline.commitId)
+        expect(await fs.readFile(join(
+            resolveWikiVcsRepository(root, 'character', 'chat-1').workingTreeDirectory,
+            'characters/aria.md',
+        ), 'utf8')).toBe('Before deletion')
+    })
+
+    test('preserves unrelated external edits and captures a conflicting target before rejecting', async () => {
+        const root = await createRoot()
+        const repository = createWikiVcsRepository(root)
+        const scope = { characterId: 'character', chatId: 'chat-1' }
+        await writeWorkingTree(root, 'chat-1', { 'characters/aria.md': 'Old Aria', 'locations/keep.md': 'Old keep' })
+        const baseline = await repository.ensureBaseline({ ...scope, chatAnchor: anchor('chat-1') })
+        await writeWorkingTree(root, 'chat-1', { 'locations/keep.md': 'External keep' })
+        const published = await repository.publishChanges({
+            ...scope, operationId: 'internal-write', kind: 'manual', expectedHead: baseline.commitId,
+            chatAnchor: anchor('chat-1'), changes: [{ path: 'characters/aria.md', contents: 'New Aria' }],
+        })
+        const workspace = resolveWikiVcsRepository(root, 'character', 'chat-1')
+        expect(await fs.readFile(join(workspace.workingTreeDirectory, 'locations/keep.md'), 'utf8')).toBe('External keep')
+        await writeWorkingTree(root, 'chat-1', { 'characters/aria.md': 'External Aria' })
+        await expect(repository.publishChanges({
+            ...scope, operationId: 'stale-write', kind: 'manual', expectedHead: published.commitId,
+            chatAnchor: anchor('chat-1'), changes: [{ path: 'characters/aria.md', contents: 'Would erase external edit' }],
+        })).rejects.toThrow('working path changed')
+        const captured = (await repository.listHistory(scope))[0]
+        expect(captured.kind).toBe('external')
+        expect(captured.changedPaths).toEqual(['characters/aria.md', 'locations/keep.md'])
+        expect(await fs.readFile(join(workspace.workingTreeDirectory, 'characters/aria.md'), 'utf8')).toBe('External Aria')
+    })
+
 })
 
 describe('repository retention and isolation', () => {

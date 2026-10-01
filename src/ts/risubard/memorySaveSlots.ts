@@ -642,9 +642,7 @@ export async function prepareReferenceSaveLoad(input: {
 }): Promise<{
     chat: Chat
     wikiCommitId?: string
-    wikiForked: boolean
-    wikiCheckedOut: boolean
-    previousWikiHead?: string
+    sourceChatId: string
 } | null> {
     const response = await withMemorySaveTimeout(async (signal) =>
         invokeBrowserFetch(
@@ -679,7 +677,9 @@ export async function prepareReferenceSaveLoad(input: {
     const value: unknown = await response.json()
     if (!isRecord(value)
         || typeof value.chatBase64 !== 'string'
-        || value.chatBase64.length === 0) {
+        || value.chatBase64.length === 0
+        || !isRecord(value.save)
+        || typeof value.save.sourceChatId !== 'string') {
         throw new Error('Reference save load returned an invalid response')
     }
     const bytes = Uint8Array.from(
@@ -701,10 +701,7 @@ export async function prepareReferenceSaveLoad(input: {
     )
     return {
         chat,
-        wikiForked: value.wikiForked === true,
-        wikiCheckedOut: value.wikiCheckedOut === true,
-        ...(typeof value.previousWikiHead === 'string'
-            ? { previousWikiHead: value.previousWikiHead } : {}),
+        sourceChatId: boundedId(value.save.sourceChatId, 'Source chat ID'),
         ...(typeof value.wikiCommitId === 'string'
             ? { wikiCommitId: value.wikiCommitId } : {}),
     }

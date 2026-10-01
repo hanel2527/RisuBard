@@ -487,6 +487,25 @@ function registerRisuBardMemoryRoutes(app, options) {
         }
     })
 
+    app.post('/api/risubard/memory/reboot/seed', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            if (!hasExactKeys(req.body, ['characterId', 'sourceChatId', 'stagingChatId', 'commitId'])
+                || !hasBoundedId(req.body.characterId)
+                || !hasBoundedId(req.body.sourceChatId)
+                || !hasBoundedId(req.body.stagingChatId)
+                || !req.body.stagingChatId.startsWith('reboot-')
+                || req.body.sourceChatId === req.body.stagingChatId
+                || !hasBoundedId(req.body.commitId)) {
+                res.status(400).send({ error: 'Invalid memory reboot seed' })
+                return
+            }
+            res.send(await options.service.seedWikiReboot(req.body))
+        } catch (error) {
+            sendWikiFailure(error, res, next)
+        }
+    })
+
     app.post('/api/risubard/memory/reboot/replace', async (req, res, next) => {
         try {
             if (!await options.auth(req, res)) return
@@ -559,11 +578,16 @@ function registerRisuBardMemoryRoutes(app, options) {
             if (!await options.auth(req, res)) return
             if (!hasExactKeys(req.body, [
                 'characterId', 'destinationChatId', 'forkToken', 'action',
+                ...(req.body?.chatBase64 === undefined ? [] : ['chatBase64']),
             ])
                 || !hasBoundedId(req.body.characterId)
                 || !hasBoundedId(req.body.destinationChatId)
                 || !hasBoundedId(req.body.forkToken)
-                || !['finalize', 'discard'].includes(req.body.action)) {
+                || !['finalize', 'discard'].includes(req.body.action)
+                || (req.body.chatBase64 !== undefined
+                    && (req.body.action !== 'finalize'
+                        || typeof req.body.chatBase64 !== 'string'
+                        || req.body.chatBase64.length > 64 * 1024 * 1024))) {
                 res.status(400).send({
                     error: 'Invalid memory fork completion request',
                 })
@@ -1439,6 +1463,35 @@ function registerRisuBardMemoryRoutes(app, options) {
         }
     })
 
+    app.post('/api/risubard/memory/wiki/version/operation', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            if (!hasExactKeys(req.body, ['characterId', 'chatId', 'operationId'])
+                || !hasBoundedId(req.body.characterId) || !hasBoundedId(req.body.chatId)
+                || !hasBoundedId(req.body.operationId)) {
+                res.status(400).send({ error: 'Invalid wiki operation request' })
+                return
+            }
+            res.send(await options.service.wikiOperationResult(req.body))
+        }
+        catch (error) { sendWikiFailure(error, res, next) }
+    })
+
+    app.post('/api/risubard/memory/wiki/version/ancestors', async (req, res, next) => {
+        try {
+            if (!await options.auth(req, res)) return
+            if (!hasExactKeys(req.body, ['characterId', 'chatId', 'commitId'])
+                || !hasBoundedId(req.body.characterId)
+                || !hasBoundedId(req.body.chatId)
+                || !hasBoundedId(req.body.commitId)) {
+                res.status(400).send({ error: 'Invalid wiki ancestry request' })
+                return
+            }
+            res.send(await options.service.wikiAncestors(req.body))
+        }
+        catch (error) { sendWikiFailure(error, res, next) }
+    })
+
     app.post('/api/risubard/memory/wiki/version/history', async (req, res, next) => {
         try {
             if (!await options.auth(req, res)) return
@@ -1458,9 +1511,11 @@ function registerRisuBardMemoryRoutes(app, options) {
     app.post('/api/risubard/memory/wiki/version/capture', async (req, res, next) => {
         try {
             if (!await options.auth(req, res)) return
-            if (!hasExactKeys(req.body, ['characterId', 'chatId'])
+            if (!hasExactKeys(req.body, ['characterId', 'chatId',
+                ...(req.body?.poll === undefined ? [] : ['poll'])])
                 || !hasBoundedId(req.body.characterId)
-                || !hasBoundedId(req.body.chatId)) {
+                || !hasBoundedId(req.body.chatId)
+                || (req.body.poll !== undefined && typeof req.body.poll !== 'boolean')) {
                 res.status(400).send({ error: 'Invalid wiki capture request' })
                 return
             }
@@ -1495,11 +1550,15 @@ function registerRisuBardMemoryRoutes(app, options) {
     app.post('/api/risubard/memory/wiki/version/checkout', async (req, res, next) => {
         try {
             if (!await options.auth(req, res)) return
-            const keys = ['characterId', 'chatId', 'commitId']
-            const allowed = [...keys, 'reason']
+            const keys = ['characterId', 'chatId', 'commitId', 'operationId']
+            const allowed = [...keys, 'reason', 'chatBase64', 'expectedChatAnchor']
             if (!isRecord(req.body)
                 || Object.keys(req.body).some((key) => !allowed.includes(key))
                 || !keys.every((key) => hasBoundedId(req.body[key]))
+                || typeof req.body.chatBase64 !== 'string'
+                || req.body.chatBase64.length > 64 * 1024 * 1024
+                || (req.body.expectedChatAnchor !== undefined
+                    && !validWikiChatAnchor(req.body.expectedChatAnchor))
                 || (req.body.reason !== undefined
                     && !wikiRecoveryReasons.includes(req.body.reason))) {
                 res.status(400).send({ error: 'Invalid wiki checkout request' })
@@ -1521,11 +1580,15 @@ function registerRisuBardMemoryRoutes(app, options) {
             if (!await options.auth(req, res)) return
             if (!hasExactKeys(req.body, [
                 'characterId', 'sourceChatId', 'destinationChatId', 'commitId',
+                'operationId', 'chatBase64',
             ])
                 || !hasBoundedId(req.body.characterId)
                 || !hasBoundedId(req.body.sourceChatId)
                 || !hasBoundedId(req.body.destinationChatId)
                 || !hasBoundedId(req.body.commitId)
+                || !hasBoundedId(req.body.operationId)
+                || typeof req.body.chatBase64 !== 'string'
+                || req.body.chatBase64.length > 64 * 1024 * 1024
                 || req.body.sourceChatId === req.body.destinationChatId) {
                 res.status(400).send({ error: 'Invalid wiki fork request' })
                 return
@@ -1770,10 +1833,6 @@ function registerRisuBardMemoryRoutes(app, options) {
                         : {}),
                 },
                 chatBase64: prepared.chatBytes.toString('base64'),
-                wikiForked: prepared.wikiForked === true,
-                wikiCheckedOut: prepared.wikiCheckedOut === true,
-                ...(prepared.previousWikiHead
-                    ? { previousWikiHead: prepared.previousWikiHead } : {}),
                 ...(prepared.reference.wikiCommitId
                     ? { wikiCommitId: prepared.reference.wikiCommitId } : {}),
             })
@@ -1861,6 +1920,9 @@ function registerRisuBardMemoryRoutes(app, options) {
     })
 
     app.post('/api/risubard/memory/wiki/version/batch/publish', async (req, res, next) => {
+        const controller = new AbortController()
+        const onClosed = () => { if (!res.writableEnded) controller.abort() }
+        res.once('close', onClosed)
         try {
             if (!await options.auth(req, res)) return
             const allowed = [
@@ -1876,7 +1938,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                 res.status(400).send({ error: 'Invalid write batch publish' })
                 return
             }
-            res.send(await options.service.publishWikiWriteBatch(req.body))
+            res.send(await options.service.publishWikiWriteBatch(req.body, controller.signal))
         }
         catch (error) {
             if (error instanceof Error
@@ -1886,6 +1948,7 @@ function registerRisuBardMemoryRoutes(app, options) {
             }
             sendWikiFailure(error, res, next)
         }
+        finally { res.off('close', onClosed) }
     })
 
     app.post('/api/risubard/memory/wiki/version/batch/abandon', async (req, res, next) => {

@@ -3,6 +3,7 @@ import {
     attachScriptstateCheckpoint,
     getSwipeScriptstateCheckpoints,
     restoreScriptstateBeforeReroll,
+    restoreScriptstateForPrefix,
     restoreSelectedSwipeScriptstate,
     selectResponseScriptstateBefore,
     snapshotChatScriptstate,
@@ -79,5 +80,34 @@ describe('chat script-state checkpoints', () => {
         expect(message).not.toHaveProperty('scriptstateCheckpoint')
         expect(restoreScriptstateBeforeReroll(chat, message)).toBe(false)
         expect(chat.scriptstate).toEqual({ '$Likeability': '109' })
+    })
+
+    it('restores only the retained response state and keeps checkpoints immutable', () => {
+        const chat = { scriptstate: { score: 300 } }
+        const messages = [
+            { role: 'char', scriptstateCheckpoint: { before: { score: 0 }, after: { score: 100 } } },
+            { role: 'char', scriptstateCheckpoint: { before: { score: 100 }, after: { score: 300 } } },
+        ]
+        restoreScriptstateForPrefix(chat, messages.slice(0, 1), messages)
+        expect(chat.scriptstate).toEqual({ score: 100 })
+        chat.scriptstate.score = 999
+        expect(messages[0].scriptstateCheckpoint.after).toEqual({ score: 100 })
+    })
+
+    it('restores the state before the first response when no response is retained', () => {
+        const chat: { scriptstate?: { score: number } } = { scriptstate: { score: 300 } }
+        const messages = [{ role: 'char', scriptstateCheckpoint: { before: null, after: { score: 300 } } }]
+        restoreScriptstateForPrefix(chat, [], messages)
+        expect(chat.scriptstate).toBeUndefined()
+    })
+
+    it('refuses an unrecorded historical prefix instead of inheriting future variables', () => {
+        const chat = { scriptstate: { score: 300 } }
+        const messages = [{ role: 'char' }, { role: 'char' }]
+        expect(() => restoreScriptstateForPrefix(chat, messages.slice(0, 1), messages))
+            .toThrow('체크포인트')
+        expect(chat.scriptstate).toEqual({ score: 300 })
+        restoreScriptstateForPrefix(chat, messages, messages)
+        expect(chat.scriptstate).toEqual({ score: 300 })
     })
 })

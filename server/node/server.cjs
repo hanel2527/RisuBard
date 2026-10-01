@@ -7,7 +7,7 @@ const path = require('path');
 const net = require('net');
 const compression = require('compression');
 const htmlparser = require('node-html-parser');
-const { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, unlinkSync } = require('fs');
+const { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, unlinkSync, createReadStream, createWriteStream } = require('fs');
 const fs = require('fs/promises')
 const nodeCrypto = require('crypto')
 const zlib = require('zlib')
@@ -39,7 +39,7 @@ const { createRequestLogs } = require('./request-logs.cjs');
 const { createSaveObservation } = require('./save-observation.cjs');
 const { createProjectionShadow } = require('./projection-shadow.cjs');
 const { generateStorageDiagnosticReport } = require('./storage-diagnostic-report.cjs');
-const { commitTransaction, moveToTrash } = require('./file-store.cjs');
+const { commitTransaction, moveToTrash, fsyncDirectory } = require('./file-store.cjs');
 const { createRuntimeMemoryService } = require('./risubard-memory-runtime.cjs');
 const { openServerBrowser } = require('./open-server-browser.cjs');
 const { releaseToUpdateInfo } = require('./release-update.cjs');
@@ -48,7 +48,7 @@ const { createChatContentUploads, MAX_CHUNK_BYTES: CHAT_UPLOAD_MAX_CHUNK_BYTES }
 const chatContentUploads = createChatContentUploads();
 const { stageBackupEntries } = require('./backup-entry-stream.cjs');
 const { decodeCanonicalBackupName } = require('./canonical-backup-name.cjs');
-const { CANONICAL_BACKUP_DIRECTORIES, listCanonicalBackupEntries } = require('./canonical-backup-inventory.cjs');
+const { CANONICAL_BACKUP_DIRECTORIES, listCanonicalBackupEntries, createBackupSnapshot, cleanupBackupSnapshots } = require('./canonical-backup-inventory.cjs');
 const { publishBackupRestore } = require('./backup-restore-transaction.cjs');
 const { createCanonicalProjectionSync } = require('./canonical-projection-sync.cjs');
 const { createProjectionRevisionStore } = require('./projection-revision-store.cjs');
@@ -117,8 +117,13 @@ function computeDatabaseEtagFromObject(databaseObject) {
 
 let storageOperationQueue = Promise.resolve();
 let pendingImportWork = null;
+let recoverPendingWikiChatTransitions;
 function queueStorageOperation(operation) {
-    const operationRun = storageOperationQueue.then(operation, operation);
+    const run = async () => {
+        await recoverPendingWikiChatTransitions?.();
+        return operation();
+    };
+    const operationRun = storageOperationQueue.then(run, run);
     storageOperationQueue = operationRun.catch(() => {});
     return operationRun;
 }
@@ -2449,13 +2454,23 @@ function setupProxyStreamWebSocket(server) {
     });
 }
 
-function encodeBackupEntry(name, data) {
-    const encodedName = Buffer.from(name, 'utf-8');
-    const nameLength = Buffer.allocUnsafe(4);
-    nameLength.writeUInt32LE(encodedName.length, 0);
-    const dataLength = Buffer.allocUnsafe(4);
-    dataLength.writeUInt32LE(data.length, 0);
-    return Buffer.concat([nameLength, encodedName, dataLength, data]);
+function encodeBackupEntryHeader(name, size) {
+    const nameLength = Buffer.byteLength(name, 'utf8');
+    const header = Buffer.allocUnsafe(8 + nameLength);
+    header.writeUInt32LE(nameLength, 0);
+    header.write(name, 4, nameLength, 'utf8');
+    header.writeUInt32LE(size, 4 + nameLength);
+    return header;
+}
+
+async function* encodeBackupSnapshot(snapshot, signal, onEntry) {
+    for (let index = 0; index < snapshot.entries.length; index++) {
+        signal?.throwIfAborted();
+        const entry = snapshot.entries[index];
+        yield encodeBackupEntryHeader(entry.backupName, entry.size);
+        yield* createReadStream(entry.sourcePath);
+        onEntry?.(entry, index + 1);
+    }
 }
 
 function isInvalidBackupPathSegment(name) {
@@ -4282,7 +4297,20 @@ app.delete('/api/logs', async (req, res, next) => {
 // endpoints use.
 const requestLogs = createRequestLogs({ saveDir: savePath });
 requestLogs.registerRoutes(app, { auth: checkAuth, activeSession: checkActiveSession });
-const narrativeMemoryService = createRuntimeMemoryService(savePath);
+const narrativeMemoryService = createRuntimeMemoryService(savePath, {
+    canonicalRepository: userDataRepository,
+    runChatTransition: queueStorageOperation,
+    beforeChatTransition: () => flushPendingDbWithinQueue({ materialize: false }),
+    onChatChanged: () => {
+        invalidateDbCache();
+        compatibilityCache.invalidate();
+        compatibilityCache.materialize('wiki-checkout');
+        canonicalProjectionSync.accept();
+        liveCharacterFiles.invalidate();
+        canonicalProjectionReady = true;
+    },
+});
+recoverPendingWikiChatTransitions = narrativeMemoryService.recoverPendingChatTransitionsWithinQueue;
 registerRisuBardMemoryRoutes(app, {
     auth: checkAuth,
     service: narrativeMemoryService,
@@ -4870,6 +4898,56 @@ async function buildSettingsOnlyPlan({ includeModuleAssets = true } = {}) {
     };
 }
 
+async function prepareBackupSnapshot({
+    target = 'nodeonly', settingsOnly = false, includeModuleAssets = true,
+} = {}, signal) {
+    return queueStorageOperation(async () => {
+        signal?.throwIfAborted();
+        await flushPendingDbWithinQueue({ materialize: true });
+        return narrativeMemoryService.withConsistentSnapshot(async () => {
+            const settings = settingsOnly ? await buildSettingsOnlyPlan({ includeModuleAssets }) : null;
+            if (settingsOnly && !settings) throw new Error('database.bin missing');
+            const inlayFiles = settingsOnly || target === 'upstream' ? [] : await listInlayFiles();
+            const inlayEntries = await Promise.all(inlayFiles.map(async (entry) => ({
+                kind: 'file', sourcePath: entry.filePath,
+                backupName: `inlay/${entry.id}.${entry.ext}`, sortKey: `inlay/${entry.id}`,
+                size: (await fs.stat(entry.filePath)).size,
+            })));
+            const sidecarEntries = await Promise.all(inlayFiles.map(async (entry) => {
+                const sourcePath = getInlaySidecarPath(entry.id);
+                try {
+                    return { kind: 'file', sourcePath, backupName: `inlay_sidecar/${entry.id}`,
+                        sortKey: `inlay_sidecar/${entry.id}`, size: (await fs.stat(sourcePath)).size };
+                } catch (error) {
+                    if (error.code === 'ENOENT') return null;
+                    throw error;
+                }
+            }));
+            const namespacedEntries = [
+                ...kvListWithSizes('assets/')
+                    .filter(entry => !settings || settings.keepNames.has(path.basename(entry.key)))
+                    .map(entry => ({ kind: 'kv', key: entry.key, backupName: path.basename(entry.key),
+                        sortKey: entry.key, size: entry.size })),
+                ...(settingsOnly ? [] : listColdStorageBackupEntries()),
+                ...(inlayFiles.length ? kvListWithSizes('inlay_meta/').map(entry => ({
+                    kind: 'kv', key: entry.key, backupName: entry.key, sortKey: entry.key, size: entry.size,
+                })) : []),
+                ...inlayEntries,
+                ...sidecarEntries.filter(Boolean),
+                ...(!settingsOnly && target === 'nodeonly' ? await listCanonicalBackupEntries(savePath) : []),
+            ].sort((left, right) => left.sortKey.localeCompare(right.sortKey));
+            const assetCount = namespacedEntries.length;
+            if (settings) namespacedEntries.push({ kind: 'buffer', backupName: 'database.risudat', buffer: settings.dbValue });
+            else if (kvSize('database/database.bin')) namespacedEntries.push({
+                kind: 'kv', key: 'database/database.bin', backupName: 'database.risudat',
+            });
+            const snapshot = await createBackupSnapshot(namespacedEntries, kvGet, { dataRoot: savePath, signal });
+            snapshot.assetCount = assetCount;
+            return snapshot;
+        });
+    });
+}
+
 // Size breakdown for the settings-only confirm dialog. Kept separate from
 // /api/db/stats because it has to decode and re-encode the DB, which that
 // dashboard poll should not pay for on every load.
@@ -4890,156 +4968,32 @@ app.get('/api/backup/export/settings-estimate', async (req, res, next) => {
 
 app.get('/api/backup/export', async (req, res, next) => {
     if(!await checkBackupDownloadAuth(req, res)){ return; }
+    let snapshot;
+    const controller = new AbortController();
+    const onClosed = () => { if (!res.writableEnded) controller.abort(); };
+    res.once('close', onClosed);
+    if (res.destroyed) controller.abort();
     try {
-        // ?target=upstream is the lossy original-RisuAI format: it excludes
-        // inlays plus RisuBard's canonical BardWiki/manuscript files. Ordinary
-        // exports keep those canonical files under reversible flat names, so
-        // Other compatible importers can retain them without understanding them.
-        const target = req.query.target === 'upstream' ? 'upstream' : 'nodeonly';
-        // ?mode=settings drops characters, chats and inlay images — see
-        // buildSettingsOnlyPlan above. &moduleAssets=0 additionally leaves out
-        // asset-pack module images, which is where the bulk usually lives.
         const settingsOnly = req.query.mode === 'settings';
-        const includeModuleAssets = req.query.moduleAssets !== '0';
-        // Flush any pending patches to ensure export includes latest data
-        await flushPendingDb();
-
-        // Settings-only re-encodes a trimmed DB up front, and the trimmed
-        // object drives the asset filter below. Safe to hold in memory — with
-        // characters gone this is orders of magnitude smaller than the live blob.
-        let settingsDbValue = null;
-        let settingsAssetNames = null;
-        if (settingsOnly) {
-            const plan = await buildSettingsOnlyPlan({ includeModuleAssets });
-            if (!plan) {
-                res.status(500).json({ error: 'database.bin missing' });
-                return;
-            }
-            settingsDbValue = plan.dbValue;
-            settingsAssetNames = plan.keepNames;
-        }
-
-        // Inlay images only ever attach to chat messages, so a settings-only
-        // export skips those namespaces for the same reason upstream does.
-        const skipInlay = settingsOnly || target === 'upstream';
-        const inlayFiles = skipInlay ? [] : await listInlayFiles();
-        const inlayEntries = await Promise.all(inlayFiles.map(async (entry) => {
-            const stat = await fs.stat(entry.filePath);
-            return {
-                kind: 'file',
-                sourcePath: entry.filePath,
-                backupName: `inlay/${entry.id}.${entry.ext}`,
-                sortKey: `inlay/${entry.id}`,
-                size: stat.size,
-            };
-        }));
-        const sidecarEntries = await Promise.all(inlayFiles.map(async (entry) => {
-            const sidecarPath = getInlaySidecarPath(entry.id);
-            try {
-                const stat = await fs.stat(sidecarPath);
-                return {
-                    kind: 'sidecar',
-                    sourcePath: sidecarPath,
-                    backupName: `inlay_sidecar/${entry.id}`,
-                    sortKey: `inlay_sidecar/${entry.id}`,
-                    size: stat.size,
-                };
-            } catch {
-                return null;
-            }
-        }));
-        const inlayMetaEntries = skipInlay ? [] : kvListWithSizes('inlay_meta/').map((entry) => ({
-            kind: 'kv',
-            key: entry.key,
-            backupName: entry.key,
-            sortKey: entry.key,
-            size: entry.size,
-        }));
-        const canonicalEntries = !settingsOnly && target === 'nodeonly'
-            ? await listCanonicalBackupEntries(savePath)
-            : [];
-        const namespacedEntries = [
-            ...kvListWithSizes('assets/')
-                // Settings-only keeps just the assets the trimmed DB still
-                // points at — persona icons, theme background, notification
-                // sounds, module assets. Character art falls out here, which is
-                // what actually shrinks the file.
-                .filter((entry) => !settingsAssetNames || settingsAssetNames.has(path.basename(entry.key)))
-                .map((entry) => ({
-                    kind: 'kv',
-                    key: entry.key,
-                    backupName: path.basename(entry.key),
-                    sortKey: entry.key,
-                    size: entry.size,
-                })),
-            // Cold storage holds character payloads only — nothing left to carry
-            // once characters are stripped.
-            ...(settingsOnly ? [] : listColdStorageBackupEntries()),
-            ...inlayMetaEntries,
-            ...inlayEntries,
-            ...sidecarEntries.filter(Boolean),
-            ...canonicalEntries,
-        ].sort((a, b) => a.sortKey.localeCompare(b.sortKey));
-        const dbSize = settingsOnly ? settingsDbValue.length : kvSize('database/database.bin');
-
-        // Settings-only files get their own name — they are kept around and
-        // reused across instances, so they have to be tellable apart from a full
-        // backup months later.
+        const target = req.query.target === 'upstream' ? 'upstream' : 'nodeonly';
+        snapshot = await prepareBackupSnapshot({
+            target, settingsOnly, includeModuleAssets: req.query.moduleAssets !== '0',
+        }, controller.signal);
         const filenameBase = settingsOnly ? 'risu-settings' : 'risu-backup';
         const filenameSuffix = settingsOnly ? '' : target === 'upstream' ? '-upstream' : '';
         res.setHeader('content-type', 'application/octet-stream');
         res.setHeader('content-disposition', `attachment; filename="${filenameBase}-${Date.now()}${filenameSuffix}.bin"`);
-        // These are live files, not a byte snapshot: logs, settings and the DB
-        // can change after inventory. A stale Content-Length makes the browser
-        // truncate a growing backup (or wait for bytes from a shrinking one).
-        // Let HTTP frame the stream using the bytes actually written instead.
-        res.setHeader('x-risu-backup-assets', namespacedEntries.length);
-
-        let closed = false;
-        res.once('close', () => { closed = true; });
-
-        function waitForDrain() {
-            if (closed) return Promise.resolve();
-            return new Promise(resolve => {
-                function done() {
-                    res.removeListener('drain', done);
-                    res.removeListener('close', done);
-                    resolve();
-                }
-                res.once('drain', done);
-                res.once('close', done);
-            });
-        }
-
-        for (const entry of namespacedEntries) {
-            if (closed) break;
-            const value = entry.kind === 'kv'
-                ? kvGet(entry.key)
-                : entry.kind === 'buffer'
-                    ? entry.buffer
-                    : await fs.readFile(entry.sourcePath);
-            if (closed) break;
-            if (value) {
-                const ok = res.write(encodeBackupEntry(entry.backupName, value));
-                if (!ok) {
-                    await waitForDrain();
-                    if (closed) break;
-                }
-            }
-        }
-
-        if (!closed && dbSize) {
-            const dbValue = settingsOnly ? settingsDbValue : kvGet('database/database.bin');
-            if (dbValue) {
-                const ok = res.write(encodeBackupEntry('database.risudat', dbValue));
-                if (!ok) {
-                    await waitForDrain();
-                }
-            }
-        }
-        if (!closed) res.end();
+        res.setHeader('x-risu-backup-assets', snapshot.assetCount);
+        await pipeline(
+            Readable.from(encodeBackupSnapshot(snapshot, controller.signal), { objectMode: false }),
+            res, { signal: controller.signal },
+        );
     } catch (error) {
         next(error);
+    }
+    finally {
+        res.off('close', onClosed);
+        if (snapshot) await fs.rm(snapshot.directory, { recursive: true, force: true });
     }
 });
 
@@ -5182,6 +5136,11 @@ app.post('/api/backup/import', async (req, res, next) => {
 app.post('/api/backup/server/save', async (req, res, next) => {
     if (!await checkAuth(req, res)) { return; }
     if (!checkActiveSession(req, res)) return;
+    let snapshot;
+    const controller = new AbortController();
+    const onClosed = () => { if (!res.writableEnded) controller.abort(); };
+    res.once('close', onClosed);
+    if (res.destroyed) controller.abort();
     try {
         await flushPendingDb();
 
@@ -5206,30 +5165,9 @@ app.post('/api/backup/server/save', async (req, res, next) => {
             console.warn('[Backup] pre-flight disk check failed:', e?.message || e);
         }
 
-        const inlayFiles = await listInlayFiles();
-        const inlayEntries = await Promise.all(inlayFiles.map(async (entry) => {
-            const stat = await fs.stat(entry.filePath);
-            return { kind: 'file', sourcePath: entry.filePath, backupName: `inlay/${entry.id}.${entry.ext}`, size: stat.size };
-        }));
-        const sidecarEntries = (await Promise.all(inlayFiles.map(async (entry) => {
-            const sidecarPath = getInlaySidecarPath(entry.id);
-            try {
-                const stat = await fs.stat(sidecarPath);
-                return { kind: 'sidecar', sourcePath: sidecarPath, backupName: `inlay_sidecar/${entry.id}`, size: stat.size };
-            } catch { return null; }
-        }))).filter(Boolean);
-
-        const namespacedEntries = [
-            ...kvListWithSizes('assets/').map((e) => ({ kind: 'kv', key: e.key, backupName: path.basename(e.key), size: e.size })),
-            ...listColdStorageBackupEntries(),
-            ...kvListWithSizes('inlay_meta/').map((e) => ({ kind: 'kv', key: e.key, backupName: e.key, size: e.size })),
-            ...inlayEntries,
-            ...sidecarEntries,
-            ...await listCanonicalBackupEntries(savePath),
-        ];
-
-        const totalEntries = namespacedEntries.length + 1; // +1 for database
-        const totalBytes = namespacedEntries.reduce((sum, e) => sum + e.size, 0);
+        snapshot = await prepareBackupSnapshot({}, controller.signal);
+        const totalEntries = snapshot.entries.length;
+        const totalBytes = snapshot.entries.reduce((sum, entry) => sum + entry.size, 0);
 
         // Stream progress as NDJSON
         res.setHeader('content-type', 'application/x-ndjson');
@@ -5238,51 +5176,28 @@ app.post('/api/backup/server/save', async (req, res, next) => {
         const filename = `risu-backup-${Date.now()}.bin`;
         const finalPath = path.join(backupsDir, filename);
         const tmpPath = finalPath + '.tmp';
-        const { createWriteStream: createFsWriteStream } = require('fs');
-        const writeStream = createFsWriteStream(tmpPath);
+        const writeStream = createWriteStream(tmpPath);
 
-        let closed = false;
         let writeComplete = false;
-        res.once('close', () => { closed = true; });
 
         try {
-            await new Promise((resolve, reject) => {
-                writeStream.on('error', reject);
-
-                (async () => {
-                    let written = 0;
-                    let bytesWritten = 0;
-                    for (const entry of namespacedEntries) {
-                        if (closed) break;
-                        const value = entry.kind === 'kv'
-                            ? kvGet(entry.key)
-                            : entry.kind === 'buffer'
-                                ? entry.buffer
-                                : await fs.readFile(entry.sourcePath);
-                        if (value) {
-                            const ok = writeStream.write(encodeBackupEntry(entry.backupName, value));
-                            if (!ok) await new Promise(r => writeStream.once('drain', r));
-                            bytesWritten += value.length;
-                        }
-                        written++;
-                        if (written % 50 === 0 || written === namespacedEntries.length) {
-                            res.write(JSON.stringify({ type: 'progress', current: written, total: totalEntries, bytes: bytesWritten, totalBytes }) + '\n');
-                        }
+            let bytesWritten = 0;
+            await pipeline(
+                Readable.from(encodeBackupSnapshot(snapshot, controller.signal, (entry, written) => {
+                    bytesWritten += entry.size;
+                    if (written % 50 === 0 || written === totalEntries) {
+                        res.write(JSON.stringify({ type: 'progress', current: written, total: totalEntries,
+                            bytes: bytesWritten, totalBytes }) + '\n');
                     }
-                    if (closed) throw new Error('Client disconnected during backup save');
-                    const dbValue = kvGet('database/database.bin');
-                    if (dbValue) {
-                        const ok = writeStream.write(encodeBackupEntry('database.risudat', dbValue));
-                        if (!ok) await new Promise(r => writeStream.once('drain', r));
-                        bytesWritten += dbValue.length;
-                    }
-                    res.write(JSON.stringify({ type: 'progress', current: totalEntries, total: totalEntries, bytes: bytesWritten, totalBytes }) + '\n');
-                    writeStream.end(resolve);
-                })().catch(reject);
-            });
+                }), { objectMode: false }),
+                writeStream, { signal: controller.signal },
+            );
+            const file = await fs.open(tmpPath, 'r+');
+            try { await file.sync(); } finally { await file.close(); }
 
             // Atomic rename: only expose the file after successful write
             await fs.rename(tmpPath, finalPath);
+            fsyncDirectory(backupsDir);
             writeComplete = true;
 
             const stat = await fs.stat(finalPath);
@@ -5292,17 +5207,21 @@ app.post('/api/backup/server/save', async (req, res, next) => {
         } catch (innerError) {
             // Clean up incomplete temp file
             if (!writeComplete) {
-                await fs.unlink(tmpPath).catch(() => {});
+                await fs.rm(tmpPath, { force: true });
             }
             throw innerError;
         }
     } catch (error) {
-        if (!res.headersSent) {
+        if (!res.headersSent || res.destroyed) {
             next(error);
         } else {
             res.write(JSON.stringify({ type: 'error', message: error.message }) + '\n');
             res.end();
         }
+    }
+    finally {
+        res.off('close', onClosed);
+        if (snapshot) await fs.rm(snapshot.directory, { recursive: true, force: true });
     }
 });
 
@@ -7333,6 +7252,8 @@ async function getHttpsOptions() {
 
 async function startServer() {
     try {
+        await narrativeMemoryService.recoverWikiOperations();
+        await cleanupBackupSnapshots(savePath);
         await migrateInlaysToFilesystem();
         await migrateRemoteBlocksIfNeeded();
         const port = process.env.PORT || DEFAULT_PORT;

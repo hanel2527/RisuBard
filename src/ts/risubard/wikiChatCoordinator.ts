@@ -1,4 +1,5 @@
 import type { Chat, Message } from '../storage/database.svelte'
+import { restoreScriptstateForPrefix } from '../chatScriptstateCheckpoint'
 import {
     chatBoundaryAnchor,
     type WikiAnchorMessage,
@@ -122,25 +123,35 @@ export async function planWikiRollback(
 }
 
 /**
- * Moves the wiki to match an already-changed chat. The previous head is kept as
- * a recovery ref by the server, so the replaced future stays recoverable.
+ * Publishes the target chat and its matching wiki under one durable decision.
  */
 export async function applyWikiRollback(
     context: WikiChatContext,
-    remainingMessages: readonly Message[],
-    reason: 'truncate' | 'reroll'
+    chat: Chat,
+    reason: 'truncate' | 'reroll',
+    previousChat?: Chat,
 ): Promise<
     | { applied: true; commitId: string; previousHead: string | null; changedPaths: string[] }
     | { applied: false; requiresRebuild: true }
 > {
-    const plan = await planWikiRollback(context, remainingMessages)
+    if (reason === 'truncate' && previousChat) {
+        restoreScriptstateForPrefix(chat, chat.message, previousChat.message)
+    }
+    const plan = await planWikiRollback(context, chat.message)
     if (!plan.commitId || plan.requiresRebuild) {
         return { applied: false, requiresRebuild: true }
     }
+    const previousAnchors = previousChat ? anchorMessagesFromChat(previousChat.message) : undefined
     const result = await checkoutWikiVersion({
         ...clientInput(context),
         commitId: plan.commitId,
         reason,
+        chat,
+        ...(previousAnchors ? {
+            expectedChatAnchor: chatBoundaryAnchor(
+                context.chatId, previousAnchors.at(-1)?.messageId ?? null, previousAnchors,
+            ),
+        } : {}),
     })
     if (result.changedPaths.length > 0) {
         announceRisuBardMemoryUpdated({
@@ -166,11 +177,15 @@ export async function createWikiBranchAt(
         characterId: string
         sourceChatId: string
         destinationChatId: string
-        forkMessages: readonly Message[]
+        forkChat: Chat
+        sourceMessages: readonly Message[]
         fetchImpl: typeof fetch
         createAuth(): Promise<string>
     }
 ): Promise<{ commitId: string } | null> {
+    if (input.forkChat.message.length < input.sourceMessages.length) {
+        restoreScriptstateForPrefix(input.forkChat, input.forkChat.message, input.sourceMessages)
+    }
     const source = {
         characterId: input.characterId,
         chatId: input.sourceChatId,
@@ -178,12 +193,12 @@ export async function createWikiBranchAt(
         createAuth: input.createAuth,
     }
     await ensureWikiVersion(clientInput(source))
-    const anchors = anchorMessagesFromChat(input.forkMessages)
+    const anchors = anchorMessagesFromChat(input.forkChat.message)
     if (anchors.length === 0) return null
     const commitId = await findWikiCommitForPrefix({
         ...clientInput(source),
         messages: anchors,
-        minimumBoundaryMessageId: latestConfirmedBoundary(input.forkMessages),
+        minimumBoundaryMessageId: latestConfirmedBoundary(input.forkChat.message),
     })
     if (!commitId) return null
     const forked = await forkWikiVersion({
@@ -191,6 +206,7 @@ export async function createWikiBranchAt(
         sourceChatId: input.sourceChatId,
         destinationChatId: input.destinationChatId,
         commitId,
+        chat: input.forkChat,
         fetchImpl: input.fetchImpl,
         createAuth: input.createAuth,
     })

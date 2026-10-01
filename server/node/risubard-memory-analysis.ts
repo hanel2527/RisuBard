@@ -384,13 +384,13 @@ export interface NarrativeMarkdownWikiWriteService {
         operationId: string
         kind: 'analysis' | 'manual' | 'admin' | 'review' | 'rebuild'
         chatAnchor?: WikiChatAnchor
-    }): void | Promise<void>
+    }, signal?: AbortSignal): void | Promise<void>
     publishWriteBatch?(input: {
         characterId: string
         chatId: string
         chatAnchor?: WikiChatAnchor
         operationId: string
-    }): Promise<{ commitId: string | null; changedPaths: string[] }>
+    }, signal?: AbortSignal): Promise<{ commitId: string | null; changedPaths: string[] }>
     abandonWriteBatch?(input: {
         characterId: string
         chatId: string
@@ -1475,23 +1475,33 @@ export function createMemoryAnalysisRunner(
                     .filter((candidate) => !isStoryArcCandidate(candidate)),
             }
             if (!hasMemoryWriterContent(draft)) {
-                // The batch opened before the writes, so an empty analysis still
-                // has to close it without leaving the branch dirty.
-                if (batchOpen) {
-                    await options.markdownWikiService.abandonWriteBatch?.({
-                        characterId: snapshot.characterId,
-                        chatId: snapshot.chatId,
+                const anchor = evidenceAnchor(snapshot, sourceMessageIds)
+                if (!batchOpen && options.markdownWikiService.beginWriteBatch) {
+                    await options.markdownWikiService.beginWriteBatch({
+                        characterId: snapshot.characterId, chatId: snapshot.chatId,
                         operationId: batchOperationId,
-                    })
-                    batchOpen = false
+                        kind: snapshot.rebootTurns ? 'rebuild' : 'analysis',
+                        chatAnchor: anchor,
+                    }, ...optionalSignalArgument(signal))
+                    batchOpen = true
                 }
-                if (!snapshot.rebootTurns) return emptyNativeState()
+                let commitId: string | null = null
+                if (batchOpen && options.markdownWikiService.publishWriteBatch) {
+                    signal?.throwIfAborted()
+                    const published = await options.markdownWikiService.publishWriteBatch({
+                        characterId: snapshot.characterId, chatId: snapshot.chatId,
+                        operationId: batchOperationId, chatAnchor: anchor,
+                    }, ...optionalSignalArgument(signal))
+                    batchOpen = false
+                    commitId = published.commitId
+                }
                 const canonicalReceipt: CanonicalTurnReceipt = {
                     sourceMessageIds,
                     eventIds: [],
                     changes: [],
                     warnings: [],
                     recordedAt: new Date().toISOString(),
+                    ...(commitId ? { vcsCommitIds: [commitId] } : {}),
                 }
                 if (rebootRecoveryStarted) {
                     if (!options.markdownWikiService
@@ -1506,7 +1516,7 @@ export function createMemoryAnalysisRunner(
                             characterId: snapshot.characterId,
                             chatId: snapshot.chatId,
                             receipt: canonicalReceipt,
-                        }, ...optionalSignalArgument(signal))
+                        })
                     }
                     catch (error) {
                         await reportError(error)
@@ -1543,7 +1553,7 @@ export function createMemoryAnalysisRunner(
                     operationId: batchOperationId,
                     kind: snapshot.rebootTurns ? 'rebuild' : 'analysis',
                     chatAnchor: analysisAnchor,
-                })
+                }, ...optionalSignalArgument(signal))
                 batchOpen = true
             }
             for (const event of eventDrafts) {
@@ -2159,6 +2169,7 @@ export function createMemoryAnalysisRunner(
             // Everything this analysis wrote is published as one commit, so a
             // checkout at this boundary restores events and documents together.
             if (batchOpen && options.markdownWikiService.publishWriteBatch) {
+                signal?.throwIfAborted()
                 try {
                     const published = await options.markdownWikiService
                         .publishWriteBatch({
@@ -2166,14 +2177,13 @@ export function createMemoryAnalysisRunner(
                             chatId: snapshot.chatId,
                             operationId: batchOperationId,
                             chatAnchor: analysisAnchor,
-                        })
+                        }, ...optionalSignalArgument(signal))
                     batchOpen = false
                     if (published.commitId) {
                         lastCommitId = published.commitId
                     }
                 }
                 catch (error) {
-                    signal?.throwIfAborted()
                     await reportError(error)
                     throw error
                 }
@@ -2197,7 +2207,7 @@ export function createMemoryAnalysisRunner(
                             characterId: snapshot.characterId,
                             chatId: snapshot.chatId,
                             receipt: canonicalReceipt,
-                        }, ...optionalSignalArgument(signal))
+                        })
                 }
                 catch (error) {
                     await reportError(error)

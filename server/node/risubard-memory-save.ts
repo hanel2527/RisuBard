@@ -1,4 +1,5 @@
 import * as nodeFs from 'node:fs/promises'
+import { writeFileAtomically } from './file-store.cjs'
 import { dirname, join } from 'node:path'
 import {
     completeMemoryWorkspaceFork,
@@ -92,8 +93,9 @@ const SAVE_REFERENCE_MANIFEST = 'risubard-save-reference.json'
 type SaveFileSystem = Pick<
     typeof nodeFs,
     'lstat' | 'mkdir' | 'readdir' | 'readFile' | 'rm' | 'writeFile'
-    | 'copyFile' | 'rename' | 'realpath'
+    | 'copyFile' | 'rename' | 'realpath' | 'open'
 >
+
 
 function required(value: unknown, label: string, maximum = 1_024): string {
     if (typeof value !== 'string'
@@ -312,12 +314,12 @@ export async function createMemorySaveSlot(input: {
         await fileSystem.writeFile(
             join(directory, SAVE_CHAT),
             input.chatBytes,
-            { flag: 'wx', mode: 0o600 }
+            { flag: 'wx', mode: 0o600, flush: true }
         )
         await fileSystem.writeFile(
             join(directory, SAVE_MANIFEST),
             JSON.stringify(manifest),
-            { encoding: 'utf8', flag: 'wx', mode: 0o600 }
+            { encoding: 'utf8', flag: 'wx', mode: 0o600, flush: true }
         )
         // The sidecar records how the snapshot relates to version history but
         // never changes what a v1 reader sees.
@@ -333,7 +335,7 @@ export async function createMemorySaveSlot(input: {
             await fileSystem.writeFile(
                 join(directory, SAVE_VCS_SIDECAR),
                 JSON.stringify(sidecar),
-                { encoding: 'utf8', flag: 'wx', mode: 0o600 }
+                { encoding: 'utf8', flag: 'wx', mode: 0o600, flush: true }
             )
         }
         await completeMemoryWorkspaceFork({
@@ -522,11 +524,7 @@ export async function renameMemorySaveSlot(input: {
         ...saved.manifest,
         sourceChatName: name,
     }
-    await fileSystem.writeFile(
-        saved.manifestPath,
-        JSON.stringify(manifest),
-        { encoding: 'utf8', mode: 0o600 }
-    )
+    await writeFileAtomically(fileSystem, saved.manifestPath, JSON.stringify(manifest))
     return summaryOf(manifest)
 }
 
@@ -608,11 +606,8 @@ export async function writeMemorySaveReference(input: {
     const workspace = workspaceFor(
         input.userDataDirectory, input.characterId, saveId
     )
-    await fileSystem.mkdir(workspace.directory, { recursive: true })
-    await fileSystem.writeFile(
-        join(workspace.directory, SAVE_REFERENCE_MANIFEST),
-        JSON.stringify(record),
-        { encoding: 'utf8', flag: 'w', mode: 0o600 }
+    await writeFileAtomically(
+        fileSystem, join(workspace.directory, SAVE_REFERENCE_MANIFEST), JSON.stringify(record)
     )
     return record
 }
@@ -640,10 +635,8 @@ export async function renameMemorySaveReference(input: {
     const workspace = workspaceFor(
         input.userDataDirectory, input.characterId, existing.saveId
     )
-    await fileSystem.writeFile(
-        join(workspace.directory, SAVE_REFERENCE_MANIFEST),
-        JSON.stringify(record),
-        { encoding: 'utf8', flag: 'w', mode: 0o600 }
+    await writeFileAtomically(
+        fileSystem, join(workspace.directory, SAVE_REFERENCE_MANIFEST), JSON.stringify(record)
     )
     return record
 }

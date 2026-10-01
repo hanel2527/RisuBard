@@ -95,4 +95,45 @@ async function listCanonicalBackupEntries(dataRoot) {
     return entries.sort((left, right) => left.sortKey.localeCompare(right.sortKey));
 }
 
-module.exports = { CANONICAL_BACKUP_DIRECTORIES, listCanonicalBackupEntries };
+const BACKUP_SNAPSHOT_OWNER = 'RisuBard temporary backup snapshot v1';
+
+async function createBackupSnapshot(entries, readValue, { dataRoot, signal }) {
+    const directory = await fs.mkdtemp(path.join(dataRoot, '.backup-snapshot-'));
+    try {
+        await fs.writeFile(path.join(directory, '.owner'), BACKUP_SNAPSHOT_OWNER, { flag: 'wx' });
+        const frozen = [];
+        for (const entry of entries) {
+            signal?.throwIfAborted();
+            const sourcePath = path.join(directory, String(frozen.length));
+            if (entry.kind === 'kv' || entry.kind === 'buffer') {
+                const value = entry.kind === 'buffer' ? entry.buffer : readValue(entry.key);
+                if (value === undefined || value === null) throw new Error(`Backup entry disappeared: ${entry.backupName}`);
+                await fs.writeFile(sourcePath, value, { flag: 'wx' });
+            } else {
+                await fs.copyFile(entry.sourcePath, sourcePath, syncFs.constants.COPYFILE_FICLONE);
+            }
+            const { size } = await fs.stat(sourcePath);
+            if (!Number.isSafeInteger(size) || size > 0xffffffff) {
+                throw new Error(`Backup entry exceeds the binary format limit: ${entry.backupName}`);
+            }
+            frozen.push({ sourcePath, backupName: entry.backupName, size });
+        }
+        return { directory, entries: frozen };
+    } catch (error) {
+        await fs.rm(directory, { recursive: true, force: true });
+        throw error;
+    }
+}
+
+async function cleanupBackupSnapshots(dataRoot) {
+    for (const entry of await fs.readdir(dataRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory() || !/^\.backup-snapshot-[A-Za-z0-9]+$/.test(entry.name)) continue;
+        const directory = path.join(dataRoot, entry.name);
+        let owner;
+        try { owner = await fs.readFile(path.join(directory, '.owner'), 'utf8'); }
+        catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+        if (owner === BACKUP_SNAPSHOT_OWNER) await fs.rm(directory, { recursive: true, force: true });
+    }
+}
+
+module.exports = { CANONICAL_BACKUP_DIRECTORIES, listCanonicalBackupEntries, createBackupSnapshot, cleanupBackupSnapshots };

@@ -69,6 +69,32 @@ export function restoreScriptstateBeforeReroll(
     return true
 }
 
+/** Restores a historical prefix without carrying variables from removed turns. */
+export function restoreScriptstateForPrefix(
+    chat: ChatScriptstateCarrier,
+    messages: readonly (ChatScriptstateCheckpointMessage & { role: string })[],
+    originalMessages: readonly (ChatScriptstateCheckpointMessage & { role: string })[],
+): void {
+    if (messages.length === originalMessages.length) return
+    const lastResponse = messages.findLast(message => message.role === 'char')
+    const checkpoint = lastResponse?.scriptstateCheckpoint
+    if (checkpoint) {
+        restoreChatScriptstate(chat, checkpoint.after)
+        return
+    }
+    if (!lastResponse) {
+        const firstResponse = originalMessages.find(message => message.role === 'char')
+        if (firstResponse?.scriptstateCheckpoint) {
+            restoreChatScriptstate(chat, firstResponse.scriptstateCheckpoint.before)
+            return
+        }
+    }
+    if (Object.keys(chat.scriptstate ?? {}).length > 0
+        || originalMessages.some(message => message.scriptstateCheckpoint)) {
+        throw new Error('이 시점의 scriptstate 체크포인트가 없어 과거 상태를 복원할 수 없습니다.')
+    }
+}
+
 export function getSwipeScriptstateCheckpoints(
     message: ChatScriptstateCheckpointMessage,
     swipeCount: number,

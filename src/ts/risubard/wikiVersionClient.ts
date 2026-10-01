@@ -1,4 +1,8 @@
 import { invokeBrowserFetch } from './browserFetch'
+import { v4 as uuid } from 'uuid'
+import { Buffer } from 'buffer'
+import type { Chat } from '../storage/database.svelte'
+import { encodeMemorySaveChat } from './memorySaveSlots'
 import type {
     WikiAnchorMessage,
     WikiChatAnchor,
@@ -6,6 +10,7 @@ import type {
     WikiCommitKind,
     WikiCommitProvenance,
     WikiHistoryEntry,
+    WikiOperationReceipt,
     WikiRecoveryReason,
     WikiRefKind,
     WikiRefRecord,
@@ -151,7 +156,7 @@ export async function ensureWikiVersion(
 }
 
 export async function captureWikiVersion(
-    input: WikiVersionClientInput
+    input: WikiVersionClientInput & { poll?: boolean }
 ): Promise<{ commitId: string | null; changedPaths: string[] }> {
     const value = await postJson<Record<string, unknown>>(
         input,
@@ -159,6 +164,7 @@ export async function captureWikiVersion(
         {
             characterId: boundedId(input.characterId, 'Character ID'),
             chatId: boundedId(input.chatId, 'Chat ID'),
+            ...(input.poll === undefined ? {} : { poll: input.poll }),
         },
         'Wiki version capture'
     )
@@ -186,6 +192,97 @@ export async function listWikiHistory(
     )
     if (!Array.isArray(value)) throw new Error('Invalid wiki history response')
     return value.map(parseHistoryEntry)
+}
+
+export async function readWikiOperationResult(
+    input: WikiVersionClientInput & { operationId: string },
+): Promise<WikiOperationReceipt | null> {
+    const value = await postJson<Record<string, unknown>>(
+        input, '/api/risubard/memory/wiki/version/operation',
+        { characterId: input.characterId, chatId: input.chatId, operationId: input.operationId },
+        'Wiki operation result',
+    )
+    if (value.receipt === null) return null
+    const receipt = value.receipt
+    if (!isRecord(receipt) || receipt.schemaVersion !== 1 || receipt.status !== 'completed'
+        || receipt.operationId !== input.operationId || receipt.characterId !== input.characterId
+        || receipt.chatId !== input.chatId || typeof receipt.branchId !== 'string'
+        || typeof receipt.commitId !== 'string'
+        || !(receipt.previousHead === null || typeof receipt.previousHead === 'string')
+        || !Array.isArray(receipt.changedPaths) || receipt.changedPaths.some(path => typeof path !== 'string')
+        || typeof receipt.checkpointCreated !== 'boolean' || typeof receipt.createdAt !== 'string'
+        || (receipt.recoveryRefId !== undefined && typeof receipt.recoveryRefId !== 'string')) {
+        throw new Error('Invalid Wiki operation receipt')
+    }
+    return receipt as unknown as WikiOperationReceipt
+}
+
+export class WikiOperationOutcomeUnknownError extends Error {
+    readonly operationId: string
+    constructor(operationId: string, cause: unknown) {
+        super(`Wiki operation outcome is unknown; operation ID: ${operationId}`, { cause })
+        this.name = 'WikiOperationOutcomeUnknownError'
+        this.operationId = operationId
+    }
+}
+
+/** A lost/aborted response is not proof that the durable decision was cancelled. */
+export async function recoverWikiOperationResult(
+    input: WikiVersionClientInput & { operationId: string }, failure: unknown,
+): Promise<WikiOperationReceipt> {
+    let receipt: WikiOperationReceipt | null
+    try { receipt = await readWikiOperationResult(input) }
+    catch (error) { throw new WikiOperationOutcomeUnknownError(input.operationId, new AggregateError([failure, error])) }
+    if (!receipt) throw failure
+    return receipt
+}
+
+/** Reconciles the supplied detached snapshot with the target commit's ancestry. */
+async function retainReachableReceipts(
+    input: WikiVersionClientInput, chat: Chat, commitId: string,
+): Promise<void> {
+    const messageIds = new Set(chat.message.map(message => message.chatId))
+    const wanted = new Set<string>()
+    for (const message of chat.message) {
+        const receipt = message.risubardCanonicalReceipt
+        if (!receipt) continue
+        if (!receipt.vcsCommitIds?.length
+            || receipt.sourceMessageIds.some(id => !messageIds.has(id))) {
+            delete message.risubardCanonicalReceipt
+            message.risubardMemoryConfirmed = false
+            continue
+        }
+        for (const id of receipt.vcsCommitIds) wanted.add(id)
+    }
+    if (!wanted.size) return
+    const reachable = new Set<string>()
+    const visited = new Set<string>()
+    let cursor: string | null = commitId
+    while (cursor && wanted.size) {
+        if (visited.has(cursor)) throw new Error('Wiki commit history contains a cycle')
+        visited.add(cursor)
+        const page: { commitIds: string[]; nextCommitId: string | null } = await postJson(
+            input, '/api/risubard/memory/wiki/version/ancestors',
+            { characterId: input.characterId, chatId: input.chatId, commitId: cursor },
+            'Wiki receipt ancestry',
+        )
+        if (!Array.isArray(page.commitIds)
+            || page.commitIds.some(id => typeof id !== 'string')
+            || (page.nextCommitId !== null && typeof page.nextCommitId !== 'string')) {
+            throw new Error('Invalid wiki ancestry response')
+        }
+        for (const id of page.commitIds) {
+            if (wanted.delete(id)) reachable.add(id)
+        }
+        cursor = page.nextCommitId
+    }
+    for (const message of chat.message) {
+        const receipt = message.risubardCanonicalReceipt
+        if (receipt?.vcsCommitIds?.some(id => !reachable.has(id))) {
+            delete message.risubardCanonicalReceipt
+            message.risubardMemoryConfirmed = false
+        }
+    }
 }
 
 export async function previewWikiCheckout(
@@ -238,6 +335,9 @@ export async function checkoutWikiVersion(
     input: WikiVersionClientInput & {
         commitId: string
         reason?: WikiRecoveryReason
+        chat: Chat
+        expectedChatAnchor?: WikiChatAnchor
+        operationId?: string
     }
 ): Promise<{
     branchId: string
@@ -246,7 +346,11 @@ export async function checkoutWikiVersion(
     changedPaths: string[]
     recoveryRefId: string | null
 }> {
-    const value = await postJson<Record<string, unknown>>(
+    await retainReachableReceipts(input, input.chat, input.commitId)
+    const operationId = input.operationId ?? `checkout:${uuid()}`
+    let value: Record<string, unknown> | WikiOperationReceipt
+    try {
+    value = await postJson<Record<string, unknown>>(
         input,
         '/api/risubard/memory/wiki/version/checkout',
         {
@@ -254,9 +358,14 @@ export async function checkoutWikiVersion(
             chatId: boundedId(input.chatId, 'Chat ID'),
             commitId: boundedId(input.commitId, 'Commit ID'),
             ...(input.reason ? { reason: input.reason } : {}),
+            operationId,
+            chatBase64: Buffer.from(encodeMemorySaveChat(input.chat)).toString('base64'),
+            ...(input.expectedChatAnchor ? { expectedChatAnchor: input.expectedChatAnchor } : {}),
         },
         'Wiki checkout'
     )
+    }
+    catch (error) { value = await recoverWikiOperationResult({ ...input, operationId }, error) }
     return {
         branchId: String(value.branchId ?? ''),
         commitId: String(value.commitId ?? ''),
@@ -280,11 +389,17 @@ export async function forkWikiVersion(
         sourceChatId: string
         destinationChatId: string
         commitId: string
+        chat: Chat
+        operationId?: string
         fetchImpl: typeof fetch
         createAuth(): Promise<string>
     }
 ): Promise<{ branchId: string; commitId: string; changedPaths: string[] }> {
-    const value = await postJson<Record<string, unknown>>(
+    await retainReachableReceipts({ ...input, chatId: input.sourceChatId }, input.chat, input.commitId)
+    const operationId = input.operationId ?? `fork:${uuid()}`
+    let value: Record<string, unknown> | WikiOperationReceipt
+    try {
+    value = await postJson<Record<string, unknown>>(
         input,
         '/api/risubard/memory/wiki/version/fork',
         {
@@ -294,9 +409,15 @@ export async function forkWikiVersion(
                 input.destinationChatId, 'Destination chat ID'
             ),
             commitId: boundedId(input.commitId, 'Commit ID'),
+            operationId,
+            chatBase64: Buffer.from(encodeMemorySaveChat(input.chat)).toString('base64'),
         },
         'Wiki fork'
     )
+    }
+    catch (error) {
+        value = await recoverWikiOperationResult({ ...input, chatId: input.destinationChatId, operationId }, error)
+    }
     return {
         branchId: String(value.branchId ?? ''),
         commitId: String(value.commitId ?? ''),

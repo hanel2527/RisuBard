@@ -50,6 +50,21 @@ async function post(
     return response.json()
 }
 
+/** Seeds a temporary Wiki tree without publishing a user-visible chat. */
+export async function seedWikiReboot(input: TransportBase & {
+    sourceChatId: string
+    stagingChatId: string
+    commitId: string
+}): Promise<{ commitId: string }> {
+    const value = record(await post(input, '/api/risubard/memory/reboot/seed', {
+        characterId: bounded(input.characterId, 'Character ID'),
+        sourceChatId: bounded(input.sourceChatId, 'Source chat ID'),
+        stagingChatId: bounded(input.stagingChatId, 'Staging chat ID'),
+        commitId: bounded(input.commitId, 'Commit ID'),
+    }))
+    return { commitId: bounded(value.commitId as string, 'Seeded commit ID') }
+}
+
 export async function prepareWikiRebootReplacement(input: TransportBase & {
     stagingChatId: string
     chatId: string

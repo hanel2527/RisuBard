@@ -6,6 +6,7 @@ import {
     type WikiCheckoutPreview,
     type WikiCommitKind,
     type WikiHistoryEntry,
+    type WikiOperationReceipt,
     type WikiPrefixCheckpoint,
     type WikiPublishChangesRequest,
     type WikiPublishChangesResult,
@@ -49,7 +50,10 @@ export interface WikiVersioningPort {
         chatAnchor?: WikiChatAnchor
         expectedHead?: string | null
     }): Promise<{ commitId: string | null; changedPaths: string[] }>
-    publishChanges(input: WikiPublishChangesRequest): Promise<WikiPublishChangesResult>
+    publishChanges(input: WikiPublishChangesRequest, signal?: AbortSignal): Promise<WikiPublishChangesResult>
+    readOperationReceipt(input: {
+        characterId: string; chatId: string; operationId: string
+    }): Promise<WikiOperationReceipt | undefined>
     captureExternalChanges(input: {
         characterId: string
         chatId: string
@@ -79,6 +83,10 @@ export interface WikiVersioningPort {
         commitId: string
         reason?: WikiRecoveryReason
         chatAnchor?: WikiChatAnchor
+        operationId?: string
+        previousChatStateRef?: string
+        chatStateRef?: string
+        memoryForkToken?: string
     }): Promise<{
         branchId: string
         commitId: string
@@ -115,6 +123,10 @@ export interface WikiVersioningService extends WikiVersioningPort {
         commitId: string
         reason?: WikiRecoveryReason
         chatAnchor?: WikiChatAnchor
+        operationId?: string
+        previousChatStateRef?: string
+        chatStateRef?: string
+        memoryForkToken?: string
     }): Promise<{
         branchId: string
         commitId: string
@@ -158,6 +170,9 @@ export interface WikiVersioningService extends WikiVersioningPort {
         chatId: string
         limit?: number
     }): Promise<WikiHistoryEntry[]>
+    readCommitAncestors(input: {
+        characterId: string; chatId: string; commitId: string
+    }): Promise<{ commitIds: string[]; nextCommitId: string | null }>
     listRefs(input: {
         characterId: string
         chatId: string
@@ -227,7 +242,9 @@ export function createWikiVersioning(
         const current = await loadChatAnchor(
             characterId, expected.sourceChatId
         )
-        if (!current) return
+        if (!current) {
+            throw new Error('Wiki chat conflict: the persisted source chat is missing')
+        }
         const valid = options.validateChatAnchor
             ? options.validateChatAnchor(expected, current, characterId)
             : expected.sourceChatId === current.sourceChatId
@@ -284,17 +301,23 @@ export function createWikiVersioning(
 
     return {
         afterWrite,
-        async publishChanges(input) {
+        readOperationReceipt: input => repository.readOperationReceipt(input),
+        async publishChanges(input, signal) {
+            // Completed decisions are immutable even if the source chat moved on.
+            if (await repository.readOperationReceipt(input)) {
+                return repository.publishChanges(input, signal)
+            }
             const anchor = await resolveAnchor(
                 input.characterId, input.chatId, input.chatAnchor
             )
             await assertCurrentAnchor(
                 input.characterId, input.chatId, input.chatAnchor
             )
+            signal?.throwIfAborted()
             return repository.publishChanges({
                 ...input,
                 chatAnchor: anchor,
-            })
+            }, signal)
         },
         async validatePublication(input) {
             await assertCurrentAnchor(
@@ -366,6 +389,10 @@ export function createWikiVersioning(
                 commitId: input.commitId,
                 ...(input.reason ? { reason: input.reason } : {}),
                 chatAnchor: anchor,
+                operationId: input.operationId,
+                previousChatStateRef: input.previousChatStateRef,
+                chatStateRef: input.chatStateRef,
+                memoryForkToken: input.memoryForkToken,
             })
             return {
                 ...result,
@@ -417,6 +444,9 @@ export function createWikiVersioning(
 
         async listHistory(input) {
             return repository.listHistory(input)
+        },
+        async readCommitAncestors(input) {
+            return repository.readCommitAncestors(input)
         },
 
         async listRefs(input) {

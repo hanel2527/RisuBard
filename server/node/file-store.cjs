@@ -143,6 +143,28 @@ function atomicWriteJson(root, relativePath, value, options = {}) {
     });
 }
 
+async function writeFileAtomically(fileSystem, file, contents) {
+    const created = await fileSystem.mkdir(path.dirname(file), { recursive: true });
+    const temporary = `${file}.${crypto.randomUUID()}.tmp`;
+    try {
+        await fileSystem.writeFile(temporary, contents, {
+            encoding: 'utf8', flag: 'wx', mode: 0o600, flush: true,
+        });
+        await fileSystem.rename(temporary, file);
+        if (process.platform !== 'win32') {
+            const stop = created ? path.dirname(created) : path.dirname(file);
+            for (let directory = path.dirname(file);; directory = path.dirname(directory)) {
+                const handle = await fileSystem.open(directory, 'r');
+                try { await handle.sync(); } finally { await handle.close(); }
+                if (directory === stop) break;
+            }
+        }
+    } catch (error) {
+        await fileSystem.rm(temporary, { force: true });
+        throw error;
+    }
+}
+
 function readVerifiedJson(root, relativePath, options = {}) {
     const target = resolveInside(root, relativePath);
     const bytes = fs.readFileSync(target);
@@ -464,9 +486,11 @@ module.exports = {
     atomicWriteJson,
     checksum,
     commitTransaction,
+    fsyncDirectory,
     moveToTrash,
     readVerifiedJson,
     refreshChecksum,
     recoverTransactions,
     resolveInside,
+    writeFileAtomically,
 };

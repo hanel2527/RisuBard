@@ -1,7 +1,12 @@
 require('sucrase/register/ts')
 const { randomUUID } = require('node:crypto')
 const fs = require('node:fs/promises')
-const { join, relative } = require('node:path')
+const { watch, realpathSync } = require('node:fs')
+const { dirname, join, relative } = require('node:path')
+const { Packr, Unpackr } = require('msgpackr')
+const { createUserDataRepository } = require('./user-data-repository.cjs')
+const chatPacker = new Packr({ useRecords: false })
+const chatUnpacker = new Unpackr({ useRecords: false, int64AsType: 'number' })
 const { resolveMemoryWorkspace } = require('./risubard-memory-workspace.ts')
 
 
@@ -21,7 +26,7 @@ const {
     createWikiVersioning,
     newWikiOperationId,
 } = require('./risubard-wiki-versioning.ts')
-const { chatBoundaryAnchor } = require('../../src/ts/risubard/wikiVcsContract.ts')
+const { chatBoundaryAnchor, isWikiVcsTrackedPath } = require('../../src/ts/risubard/wikiVcsContract.ts')
 const {
     completeMemoryWorkspaceFork,
     forkMemoryWorkspace,
@@ -55,13 +60,13 @@ const { inheritWikiWorkspace, importWikiWorkspace } = require('./risubard-wiki-t
  * Reads the canonical chat so a wiki write can be anchored to the real
  * message boundary instead of the wall-clock moment the request arrived.
  */
-function loadCanonicalChatMessages(characterId, chatId) {
+function loadCanonicalChatMessages(repository, characterId, chatId) {
     try {
-        const { repository } = require('./db.cjs')
         const chat = repository.loadChat(characterId, chatId)
         return Array.isArray(chat?.message) ? chat.message : undefined
     }
-    catch {
+    catch (error) {
+        if (error.code !== 'ENOENT') throw error
         return undefined
     }
 }
@@ -84,6 +89,27 @@ function chatMessagesToAnchorMessages(messages) {
 }
 
 function createRuntimeMemoryService(userDataDirectory, options = {}) {
+    let canonicalRepository
+    const canonical = () => canonicalRepository ||= options.canonicalRepository
+        || createUserDataRepository({ dataRoot: userDataDirectory })
+    const runChatTransition = options.runChatTransition || (operation => operation())
+    const pendingChatTransitions = new Map()
+    const withChatTransition = (characterId, chatId, operation) => runChatTransition(async () => {
+        const key = JSON.stringify([characterId, chatId])
+        pendingChatTransitions.set(key, { characterId, chatId })
+        const result = await operation()
+        pendingChatTransitions.delete(key)
+        return result
+    })
+    const applyChatState = async ({ characterId, chatId, previous, next }) => {
+        const chat = chatUnpacker.unpack(Buffer.from(next, 'base64'))
+        canonical().recoverPendingTransactions()
+        canonical().replaceChat(
+            characterId, chatId,
+            chatUnpacker.unpack(Buffer.from(previous, 'base64')), chat
+        )
+        await options.onChatChanged?.({ characterId, chatId, chat })
+    }
     const memory = createNarrativeMemoryService(userDataDirectory)
     const sources = createSourceSnapshotAdapter(userDataDirectory)
     const graph = createNarrativeGraphService(userDataDirectory, {
@@ -94,24 +120,33 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
     const versioning = options.versioning || createWikiVersioning(
         userDataDirectory,
         {
+            applyChatState,
+            applyMemoryFork: async ({ characterId, chatId, forkToken }) => {
+                await completeForkWorkspace({
+                    userDataDirectory, characterId, destinationChatId: chatId,
+                    forkToken, action: 'finalize',
+                })
+                await fs.rm(join(resolveMemoryWorkspace(
+                    userDataDirectory, characterId, chatId
+                ).directory, '.risubard-vcs-fork.json'), { force: true })
+            },
             loadChatAnchor: options.loadChatAnchor
                 || (async (characterId, chatId) => {
-                    const canonical = loadCanonicalChatMessages(characterId, chatId)
-                    if (!canonical) return undefined
-                    const messages = chatMessagesToAnchorMessages(canonical)
+                    const messages = loadCanonicalChatMessages(canonical(), characterId, chatId)
+                    if (!messages) return undefined
                     return chatBoundaryAnchor(
                         chatId,
-                        messages.at(-1)?.messageId ?? null,
-                        messages
+                        messages.at(-1)?.chatId ?? null,
+                        chatMessagesToAnchorMessages(messages)
                     )
                 }),
             validateChatAnchor: options.validateChatAnchor || (options.loadChatAnchor
                 ? undefined : (expected, _current, characterId) => {
-                const canonical = loadCanonicalChatMessages(
-                    characterId, expected.sourceChatId
+                const persisted = loadCanonicalChatMessages(
+                    canonical(), characterId, expected.sourceChatId
                 )
-                if (!canonical) return false
-                const messages = chatMessagesToAnchorMessages(canonical)
+                if (!persisted) return false
+                const messages = chatMessagesToAnchorMessages(persisted)
                 const boundaryIndex = expected.boundaryMessageId === null
                     ? -1
                     : messages.findIndex((message) =>
@@ -166,6 +201,12 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
             await file.sync()
         }
         finally { await file.close() }
+        if (process.platform !== 'win32') {
+            for (const parent of [directory, dirname(directory)]) {
+                const handle = await fs.open(parent, 'r')
+                try { await handle.sync() } finally { await handle.close() }
+            }
+        }
         pendingSaveLoads.set(fork.forkToken, descriptor)
     }
     const pendingWikiFork = async (input) => {
@@ -208,6 +249,7 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
 
     const queues = new Map()
     const wikiRecoveryReady = new Set()
+    let snapshotBarrier
     const serializedMany = (pairs, operation) => {
         // Wiki objects, refs, save manifests, and chat workspaces are shared
         // per character. Every client therefore contends on the same
@@ -221,6 +263,7 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
         const keys = [...new Set(expanded.map((pair) => JSON.stringify(pair)))]
             .sort()
         const previous = keys.map((key) => queues.get(key) || Promise.resolve())
+        if (snapshotBarrier) previous.push(snapshotBarrier)
         const current = Promise.all(previous.map((pending) =>
             pending.catch(() => undefined)
         )).then(operation)
@@ -308,8 +351,154 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
         return operation()
     }
 
+    const decodeChatSnapshot = (chatBase64, chatId) => {
+        if (typeof chatBase64 !== 'string') throw new Error('Wiki checkout requires a chat snapshot')
+        const chat = chatUnpacker.unpack(Buffer.from(chatBase64, 'base64'))
+        if (!chat || chat.id !== chatId || !Array.isArray(chat.message)) {
+            throw new Error('Invalid wiki checkout chat snapshot')
+        }
+        return chat
+    }
+    const checkoutChat = async (input, preparedChat) => {
+        await ensureWikiRecovered(input.characterId, input.chatId)
+        await options.beforeChatTransition?.()
+        const chat = preparedChat ?? decodeChatSnapshot(input.chatBase64, input.chatId)
+        const chatStateRef = await repository.storeChatState({
+            characterId: input.characterId, chatId: input.chatId,
+            contents: input.chatBase64,
+        })
+        const completed = input.operationId
+            ? await repository.readOperationReceipt(input) : undefined
+        let previous
+        try { previous = canonical().loadChat(input.characterId, input.chatId) }
+        catch (error) {
+            if (!['fork', 'save-load', 'purge-restore'].includes(input.reason)
+                || error.code !== 'ENOENT') throw error
+            previous = null
+        }
+        if (!completed && input.expectedChatAnchor) {
+            const messages = chatMessagesToAnchorMessages(previous?.message ?? [])
+            const current = chatBoundaryAnchor(input.chatId, messages.at(-1)?.messageId ?? null, messages)
+            const expected = input.expectedChatAnchor
+            if (expected.sourceChatId !== current.sourceChatId
+                || expected.boundaryMessageId !== current.boundaryMessageId
+                || expected.prefixDigest !== current.prefixDigest) {
+                throw new Error('Wiki chat conflict: the persisted chat changed before checkout')
+            }
+        }
+        const previousChatStateRef = await repository.storeChatState({
+            characterId: input.characterId, chatId: input.chatId,
+            contents: chatPacker.pack(previous).toString('base64'),
+        })
+        const result = await versioning.checkout({
+            ...input, previousChatStateRef, chatStateRef,
+        })
+        await wiki.rebuildDerivedFiles(input.characterId, input.chatId)
+        return result
+    }
+
+    const atWikiIdle = async (operation) => {
+        const pending = [...new Set(queues.values())]
+        const previousBarrier = snapshotBarrier
+        let release
+        const barrier = new Promise(resolve => { release = resolve })
+        snapshotBarrier = barrier
+        try {
+            await previousBarrier
+            await Promise.all(pending.map(operation => operation.catch(() => undefined)))
+            return await operation()
+        }
+        finally {
+            release()
+            if (snapshotBarrier === barrier) snapshotBarrier = undefined
+        }
+    }
+    const recoverAllWikiOperations = async () => {
+        const charactersDirectory = join(userDataDirectory, 'risubard', 'characters')
+        const list = async directory => {
+            try { return await fs.readdir(directory, { withFileTypes: true }) }
+            catch (error) { if (error.code === 'ENOENT') return []; throw error }
+        }
+        const owners = new Map()
+        for (const character of await list(charactersDirectory)) {
+            if (!character.isDirectory() || character.isSymbolicLink()) continue
+            const operationsDirectory = join(
+                charactersDirectory, character.name, 'chats', 'wiki-vcs', 'operations'
+            )
+            for (const operation of await list(operationsDirectory)) {
+                if (!operation.isDirectory() || operation.isSymbolicLink()) continue
+                let journal
+                try {
+                    journal = JSON.parse(await fs.readFile(
+                        join(operationsDirectory, operation.name, 'journal.json'), 'utf8'
+                    ))
+                }
+                catch (error) { if (error.code === 'ENOENT') continue; throw error }
+                if (!journal.published && typeof journal.characterId === 'string'
+                    && typeof journal.chatId === 'string') {
+                    owners.set(JSON.stringify([journal.characterId, journal.chatId]), journal)
+                }
+            }
+        }
+        for (const [key, { characterId, chatId }] of owners) {
+            wikiRecoveryReady.delete(key)
+            await ensureWikiRecovered(characterId, chatId)
+            pendingChatTransitions.delete(key)
+        }
+    }
+    const wikiPollMonitors = new Map()
+    const pollMonitorFor = (characterId, chatId) => {
+        const key = JSON.stringify([characterId, chatId])
+        let monitor = wikiPollMonitors.get(key)
+        if (monitor) return monitor
+        monitor = { epoch: 0, observedEpoch: -1, lastScan: 0, watcher: null }
+        if (process.platform !== 'android' && !String(process.env.PREFIX || '').includes('com.termux')) {
+            try {
+                const directory = join(resolveMemoryWorkspace(userDataDirectory, characterId, chatId).directory, 'wiki')
+                monitor.watcher = watch(realpathSync.native(directory), { recursive: true }, (event, filename) => {
+                    const name = String(filename || '').replaceAll('\\', '/')
+                    if (!name || isWikiVcsTrackedPath(name)
+                        || (event === 'rename' && name !== 'index.md' && !name.endsWith('.tmp'))) monitor.epoch++
+                })
+                monitor.watcher.on('error', error => {
+                    monitor.watcher.close()
+                    monitor.watcher = null
+                    monitor.epoch++
+                    console.warn('[Wiki] History monitor failed; using full scans:', error.message)
+                })
+                monitor.watcher.unref()
+            } catch (error) {
+                if (error.code !== 'ENOENT') console.warn('[Wiki] History monitor unavailable; using full scans:', error.message)
+            }
+        }
+        wikiPollMonitors.set(key, monitor)
+        if (wikiPollMonitors.size > 16) {
+            const oldest = wikiPollMonitors.keys().next().value
+            wikiPollMonitors.get(oldest).watcher?.close()
+            wikiPollMonitors.delete(oldest)
+        }
+        return monitor
+    }
     return {
         ...memory,
+        recoverPendingChatTransitionsWithinQueue: async () => {
+            for (const [key, owner] of pendingChatTransitions) {
+                await serialized(owner.characterId, owner.chatId, () =>
+                    ensureWikiRecovered(owner.characterId, owner.chatId))
+                pendingChatTransitions.delete(key)
+            }
+        },
+        wikiOperationResult: (input) => runChatTransition(() => serialized(
+            input.characterId, input.chatId, async () => {
+                await ensureWikiRecovered(input.characterId, input.chatId)
+                return { receipt: await repository.readOperationReceipt(input) ?? null }
+            }
+        )),
+        recoverWikiOperations: () => runChatTransition(() => atWikiIdle(recoverAllWikiOperations)),
+        withConsistentSnapshot: operation => atWikiIdle(async () => {
+            await recoverAllWikiOperations()
+            return operation()
+        }),
         inheritWiki: (input) => serializedMany([
             [input.characterId, input.sourceChatId],
             [input.characterId, input.destinationChatId],
@@ -433,11 +622,30 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
                 return removed
             }
         ),
-        completeMemoryFork: (input) => serialized(
+        completeMemoryFork: (input) => (input.chatBase64
+            ? operation => withChatTransition(input.characterId, input.destinationChatId, operation)
+            : operation => operation())(() => serialized(
             input.characterId,
             input.destinationChatId,
             async () => {
                 const pending = await pendingWikiFork(input)
+                if (input.action === 'finalize' && (pending?.mode === 'save-load' || input.chatBase64)) {
+                    const operationId = `save-load:${input.forkToken}`
+                    if (!pending?.commitId) {
+                        const receipt = await repository.readOperationReceipt({
+                            characterId: input.characterId, chatId: input.destinationChatId, operationId,
+                        })
+                        if (!receipt) throw new Error('Memory save load metadata is missing')
+                        return { action: 'finalize', completed: true }
+                    }
+                    await checkoutChat({
+                        characterId: input.characterId, chatId: input.destinationChatId,
+                        commitId: pending.commitId, operationId, reason: 'save-load',
+                        chatBase64: input.chatBase64, memoryForkToken: input.forkToken,
+                    })
+                    pendingSaveLoads.delete(input.forkToken)
+                    return { action: 'finalize', completed: true }
+                }
                 const completed = await completeForkWorkspace({
                     userDataDirectory,
                     ...input,
@@ -487,7 +695,7 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
                 }
                 return completed
             }
-        ),
+        )),
         createMemorySave: (input) => serializedMany([
             [input.characterId, input.sourceChatId],
             [input.characterId, memorySaveWorkspaceId(input.saveId)],
@@ -701,42 +909,63 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
             [input.characterId, input.destinationChatId],
         ], async () => {
             const sidecar = await readSaveSidecar({
-                userDataDirectory,
-                characterId: input.characterId,
-                saveId: input.saveId,
-            }).catch(() => null)
-            const prepared = await prepareSaveLoad({
-                userDataDirectory,
-                ...input,
+                userDataDirectory, characterId: input.characterId, saveId: input.saveId,
             })
-            if (sidecar?.commitId) {
-                const commit = await repository.readCommit(
-                    input.characterId,
-                    sidecar.sourceChatId,
-                    sidecar.commitId
-                )
-                if (!commit) {
-                    await completeForkWorkspace({
-                        userDataDirectory,
-                        characterId: input.characterId,
-                        destinationChatId: input.destinationChatId,
-                        forkToken: prepared.fork.forkToken,
-                        action: 'discard',
-                    }).catch(() => undefined)
-                    throw new Error('Memory save wiki commit is missing')
+            const prepared = await prepareSaveLoad({ userDataDirectory, ...input })
+            try {
+                let commitId = sidecar?.commitId
+                if (commitId && !await repository.matchesWorkingTree({
+                    characterId: input.characterId, chatId: memorySaveWorkspaceId(input.saveId), commitId,
+                })) commitId = undefined
+                if (!commitId) {
+                    const chat = chatUnpacker.unpack(prepared.chatBytes)
+                    if (!chat || !Array.isArray(chat.message)) throw new Error('Invalid memory save chat snapshot')
+                    const importChatId = `reboot-save-${prepared.fork.forkToken}`
+                    const imported = resolveMemoryWorkspace(userDataDirectory, input.characterId, importChatId)
+                    const staging = resolveMemoryReplacementStaging(
+                        userDataDirectory, input.characterId, input.destinationChatId, prepared.fork.forkToken
+                    )
+                    try {
+                        await fs.mkdir(imported.directory, { recursive: true })
+                        let wikiExists = false
+                        try { await fs.lstat(join(staging, 'wiki')); wikiExists = true }
+                        catch (error) { if (error.code !== 'ENOENT') throw error }
+                        if (wikiExists) await fs.cp(join(staging, 'wiki'), join(imported.directory, 'wiki'), {
+                            recursive: true, mode: fs.constants.COPYFILE_FICLONE,
+                        })
+                        const messages = chatMessagesToAnchorMessages(chat.message)
+                        const baseline = await repository.ensureBaseline({
+                            characterId: input.characterId, chatId: importChatId,
+                            chatAnchor: chatBoundaryAnchor(prepared.save.sourceChatId, messages.at(-1)?.messageId ?? null, messages),
+                        })
+                        commitId = baseline.commitId
+                        await versioning.createRef({
+                            characterId: input.characterId, chatId: prepared.save.sourceChatId,
+                            commitId, kind: 'save', id: `save-slot:${input.saveId}`, label: input.saveId,
+                        })
+                        for (const message of chat.message) {
+                            if (message.risubardCanonicalReceipt) {
+                                delete message.risubardCanonicalReceipt
+                                message.risubardMemoryConfirmed = false
+                            }
+                        }
+                        prepared.chatBytes = chatPacker.pack(chat)
+                    } finally {
+                        await repository.discardChatBranch(input.characterId, importChatId)
+                        await fs.rm(imported.directory, { recursive: true, force: true })
+                    }
                 }
-                const destinationLink = await repository.readLink(
-                    input.characterId, input.destinationChatId
-                )
                 await rememberWikiFork(input, prepared.fork, {
-                    ...sidecar,
-                    replace: destinationLink?.chatId === input.destinationChatId,
+                    mode: 'save-load', commitId, sourceChatId: prepared.save.sourceChatId,
                 }, true)
-            }
-            return {
-                ...prepared,
-                ...(sidecar?.commitId
-                    ? { wikiCommitId: sidecar.commitId } : {}),
+                return { ...prepared, wikiCommitId: commitId }
+            } catch (error) {
+                await completeForkWorkspace({
+                    userDataDirectory, characterId: input.characterId,
+                    destinationChatId: input.destinationChatId,
+                    forkToken: prepared.fork.forkToken, action: 'discard',
+                })
+                throw error
             }
         }),
         readMemorySaveSidecar: (input) => serialized(
@@ -834,9 +1063,6 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
                     'Memory reference save chat state is missing'
                 )
             }
-            let wikiForked = false
-            let wikiCheckedOut = false
-            let previousWikiHead = null
             if (record.wikiCommitId) {
                 const exists = await repository.readCommit(
                     input.characterId,
@@ -848,40 +1074,10 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
                         'Memory reference save wiki commit is missing'
                     )
                 }
-                const destinationLink = await repository.readLink(
-                    input.characterId, input.destinationChatId
-                )
-                if (record.sourceChatId === input.destinationChatId
-                    || destinationLink?.chatId === input.destinationChatId) {
-                    const checkedOut = await versioning.checkout({
-                        characterId: input.characterId,
-                        chatId: input.destinationChatId,
-                        commitId: record.wikiCommitId,
-                        reason: 'save-load',
-                    })
-                    previousWikiHead = checkedOut.previousHead
-                    wikiCheckedOut = true
-                }
-                else {
-                    await versioning.fork({
-                        characterId: input.characterId,
-                        sourceChatId: record.sourceChatId,
-                        destinationChatId: input.destinationChatId,
-                        commitId: record.wikiCommitId,
-                    })
-                    wikiForked = true
-                }
-                await wiki.rebuildDerivedFiles(
-                    input.characterId, input.destinationChatId
-                )
             }
             return {
                 reference: record,
                 chatBytes: Buffer.from(stored, 'base64'),
-                wikiForked,
-                wikiCheckedOut,
-                ...(previousWikiHead
-                    ? { previousWikiHead } : {}),
             }
         }),
         collectReferenceGarbage: (input) => serialized(
@@ -1055,11 +1251,12 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
                 return wiki.beginWriteBatch(input)
             }
         ),
-        publishWikiWriteBatch: (input) => serialized(
-            input.characterId,
-            input.chatId,
-            () => wiki.publishWriteBatch(input)
-        ),
+        publishWikiWriteBatch: (input, signal) => runChatTransition(() => serialized(
+            input.characterId, input.chatId, async () => {
+                await options.beforeChatTransition?.()
+                return wiki.publishWriteBatch(input, signal)
+            }
+        )),
         abandonWikiWriteBatch: (input) => serialized(
             input.characterId,
             input.chatId,
@@ -1211,11 +1408,22 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
             input.characterId,
             input.chatId,
             async () => {
+                await ensureWikiRecovered(input.characterId, input.chatId)
+                const monitor = input.poll ? pollMonitorFor(input.characterId, input.chatId) : null
+                if (monitor?.watcher && monitor.observedEpoch === monitor.epoch
+                    && Date.now() - monitor.lastScan < 60_000) {
+                    return { commitId: null, changedPaths: [] }
+                }
+                const epoch = monitor?.epoch
                 const result = await versioning.captureExternalChanges(input)
                 if (result.commitId) {
                     await wiki.rebuildDerivedFiles(
                         input.characterId, input.chatId
                     )
+                }
+                if (monitor) {
+                    monitor.observedEpoch = epoch
+                    monitor.lastScan = Date.now()
                 }
                 return result
             }
@@ -1225,34 +1433,60 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
             input.chatId,
             () => versioning.previewCheckout(input)
         ),
+        wikiAncestors: (input) => serialized(
+            input.characterId, input.chatId,
+            () => versioning.readCommitAncestors(input)
+        ),
         wikiHistory: (input) => serialized(
             input.characterId,
             input.chatId,
             () => versioning.listHistory(input)
         ),
-        wikiCheckout: (input) => serialized(
-            input.characterId,
-            input.chatId,
-            async () => {
-                await ensureWikiRecovered(input.characterId, input.chatId)
-                const result = await versioning.checkout(input)
-                await wiki.rebuildDerivedFiles(
-                    input.characterId, input.chatId
-                )
-                return result
+        wikiCheckout: (input) => withChatTransition(input.characterId, input.chatId, () => serialized(
+            input.characterId, input.chatId, () => checkoutChat(input)
+        )),
+        seedWikiReboot: (input) => serializedMany([
+            [input.characterId, input.sourceChatId],
+            [input.characterId, input.stagingChatId],
+        ], async () => {
+            if (!input.stagingChatId.startsWith('reboot-') || input.stagingChatId === input.sourceChatId) {
+                throw new Error('Invalid Wiki reboot staging destination')
             }
-        ),
-        wikiFork: (input) => serializedMany([
+            await ensureWikiRecovered(input.characterId, input.sourceChatId)
+            return versioning.fork({
+                characterId: input.characterId, sourceChatId: input.sourceChatId,
+                destinationChatId: input.stagingChatId, commitId: input.commitId,
+            })
+        }),
+        wikiFork: (input) => withChatTransition(input.characterId, input.destinationChatId, () => serializedMany([
             [input.characterId, input.sourceChatId],
             [input.characterId, input.destinationChatId],
         ], async () => {
+            const next = decodeChatSnapshot(input.chatBase64, input.destinationChatId)
             await ensureWikiRecovered(input.characterId, input.sourceChatId)
-            const result = await versioning.fork(input)
-            await wiki.rebuildDerivedFiles(
-                input.characterId, input.destinationChatId
-            )
-            return result
-        }),
+            await options.beforeChatTransition?.()
+            const link = await repository.readLink(input.characterId, input.destinationChatId)
+            if (link?.chatId === input.destinationChatId) {
+                const completed = await repository.readOperationReceipt({
+                    ...input, chatId: input.destinationChatId,
+                })
+                let chatExists = false
+                try { canonical().loadChat(input.characterId, input.destinationChatId); chatExists = true }
+                catch (error) { if (error.code !== 'ENOENT') throw error }
+                if (!completed && (chatExists || link.originChatId !== input.sourceChatId)) {
+                    throw new Error('Wiki fork destination already exists')
+                }
+            }
+            else await versioning.fork(input)
+            return checkoutChat({
+                characterId: input.characterId,
+                chatId: input.destinationChatId,
+                commitId: input.commitId,
+                operationId: input.operationId,
+                chatBase64: input.chatBase64,
+                reason: 'fork',
+            }, next)
+        })),
         deletedWikiRecovery: (input) => serialized(
             input.characterId,
             '@recovery',

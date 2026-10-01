@@ -481,6 +481,10 @@ describe('stored response memory analysis', () => {
                         },
                     }))
                 }
+                if (url.includes('/wiki/version/batch/')) {
+                    return new Response(JSON.stringify(url.endsWith('/publish')
+                        ? { commitId: 'a'.repeat(64), changedPaths: [] } : {}))
+                }
                 throw new Error(`Unexpected request: ${url}`)
             }),
             createAuth: async () => 'test-jwt',
@@ -591,6 +595,10 @@ describe('stored response memory analysis', () => {
                     return new Response(JSON.stringify({
                         document: null, revision: null,
                     }))
+                }
+                if (url.includes('/wiki/version/batch/')) {
+                    return new Response(JSON.stringify(url.endsWith('/publish')
+                        ? { commitId: 'a'.repeat(64), changedPaths: [] } : {}))
                 }
                 throw new Error(`Unexpected request: ${url}`)
             }) as unknown as typeof fetch,
@@ -920,6 +928,10 @@ describe('stored response memory analysis', () => {
                 return new Response(JSON.stringify(
                     JSON.parse(String(init?.body)).receipt
                 ))
+            }
+            if (url.includes('/wiki/version/batch/')) {
+                return new Response(JSON.stringify(url.endsWith('/publish')
+                    ? { commitId: 'a'.repeat(64), changedPaths: [] } : {}))
             }
             throw new Error(`Unexpected request: ${url}`)
         }) as unknown as typeof fetch
@@ -2294,5 +2306,47 @@ describe('stored response memory analysis', () => {
 
         expect(modes).toEqual(['memory', 'model'])
         expect(result.baseline).toBe('A concise initial state.')
+    })
+    test('reports a durable confirmation after cancellation loses its publication response', async () => {
+        let publicationStarted!: () => void
+        const started = new Promise<void>(resolve => { publicationStarted = resolve })
+        let operationId = ''
+        const analysis = createStoredResponseMemoryAnalysis({
+            nativeV2Analysis: true, createAuth: async () => 'test-jwt', onError: vi.fn(),
+            requestModel: async () => ({ type: 'success', result: JSON.stringify({
+                schemaVersion: 1, title: 'Quiet', establishedEvents: [], stateChanges: [],
+                characterKnowledge: [], persistentFacts: [], openContinuity: [], canonicalUpdateCandidates: [],
+            }) }),
+            fetchImpl: async (input, init) => {
+                const url = String(input)
+                if (url.endsWith('/view')) return new Response(JSON.stringify({
+                    mode: 'markdown', wikiPath: 'wiki', documents: [], health: { danglingLinks: [], unlinkedDocumentIds: [] },
+                }))
+                if (url.endsWith('/inquiry')) return new Response(JSON.stringify({
+                    mode: 'v2-current', graphRevision: 0, indexRevision: 0, cacheStatus: 'current', sources: [],
+                    metrics: { candidateCount: 0, inspectedNodeCount: 0, inspectedEdgeCount: 0, selectedNodeCount: 0, selectedTokens: 0, hopCount: 0, auxiliaryModelCalls: 0 },
+                }))
+                if (url.endsWith('/batch/begin')) return new Response('{}')
+                if (url.endsWith('/batch/publish')) {
+                    operationId = JSON.parse(String(init?.body)).operationId
+                    publicationStarted()
+                    return new Promise<Response>(() => {})
+                }
+                if (url.endsWith('/version/operation')) return new Response(JSON.stringify({ receipt: {
+                    schemaVersion: 1, status: 'completed', characterId: 'character', chatId: 'chat',
+                    operationId, branchId: 'branch', commitId: 'd'.repeat(64), previousHead: 'b'.repeat(64),
+                    changedPaths: [], checkpointCreated: false, createdAt: '2026-10-01T00:00:00.000Z',
+                } }))
+                throw new Error(`Unexpected request: ${url}`)
+            },
+        })
+        const controller = new AbortController()
+        const confirmation = analysis.confirm({
+            characterId: 'character', chatId: 'chat',
+            messages: [{ messageId: 'm1', role: 'assistant', content: 'Nothing changed.' }],
+        }, controller.signal)
+        await started
+        controller.abort()
+        expect((await confirmation)?.vcsCommitIds).toEqual(['d'.repeat(64)])
     })
 })

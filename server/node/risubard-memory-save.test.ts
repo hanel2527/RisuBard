@@ -10,6 +10,7 @@ import {
     listMemorySaveSlots,
     readMemorySaveChat,
     readMemorySaveReference,
+    renameMemorySaveReference,
     renameMemorySaveSlot,
     prepareMemorySaveLoad,
     writeMemorySaveReference,
@@ -377,6 +378,7 @@ describe('memory save slots', () => {
             copyFile: fs.copyFile,
             rename: fs.rename,
             realpath: fs.realpath,
+            open: fs.open,
         }
 
         await expect(listMemorySaveSlots({
@@ -414,5 +416,44 @@ describe('memory save slots', () => {
             userDataDirectory: root, characterId: 'character',
             sourceChatId: 'chat-source',
         })).resolves.toEqual([])
+    })
+
+    test.each(['partial-write', 'rename'] as const)('preserves the previous autosave after a failed %s', async (failure) => {
+        const root = await createRoot()
+        const input = {
+            userDataDirectory: root, characterId: 'character', sourceChatId: 'chat',
+            saveId: 'autosave', sourceChatName: 'Before', turnCount: 1,
+            chatStateRef: 'old-state', wikiCommitId: 'old-head',
+        }
+        const original = await writeMemorySaveReference(input)
+        const fileSystem = {
+            ...fs,
+            writeFile: async (...args: Parameters<typeof fs.writeFile>) => {
+                if (failure === 'partial-write' && String(args[0]).endsWith('.tmp')) {
+                    await fs.writeFile(args[0], '{"schemaVersion":1')
+                    throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' })
+                }
+                return fs.writeFile(...args)
+            },
+            rename: async (...args: Parameters<typeof fs.rename>) => {
+                if (failure === 'rename') throw Object.assign(new Error('EIO'), { code: 'EIO' })
+                return fs.rename(...args)
+            },
+        }
+        if (failure === 'partial-write') {
+            await expect(writeMemorySaveReference({
+                ...input, turnCount: 2, chatStateRef: 'new-state', wikiCommitId: 'new-head',
+            }, { fileSystem })).rejects.toMatchObject({ code: 'ENOSPC' })
+        } else {
+            await expect(renameMemorySaveReference({ ...input, name: 'After' }, { fileSystem }))
+                .rejects.toMatchObject({ code: 'EIO' })
+        }
+        expect(await readMemorySaveReference(input)).toEqual(original)
+        await writeMemorySaveReference({
+            ...input, turnCount: 2, chatStateRef: 'new-state', wikiCommitId: 'new-head',
+        })
+        expect(await readMemorySaveReference(input)).toMatchObject({
+            turnCount: 2, chatStateRef: 'new-state', wikiCommitId: 'new-head',
+        })
     })
 })

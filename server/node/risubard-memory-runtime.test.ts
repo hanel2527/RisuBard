@@ -3,6 +3,8 @@ import { access, mkdtemp, readFile, writeFile, rm, rename } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test, vi } from 'vitest'
+import { Packr } from 'msgpackr'
+import { chatBoundaryAnchor } from '../../src/ts/risubard/wikiVcsContract'
 import { resolveMemoryWorkspace } from './risubard-memory-workspace'
 import { resolveNarrativeGraphWorkspace } from './risubard-graph-workspace'
 import { resolveMarkdownWikiWorkspace } from './risubard-markdown-wiki'
@@ -14,7 +16,15 @@ describe('RisuBard memory CommonJS runtime', () => {
         const { createRuntimeMemoryService } = require('./risubard-memory-runtime.cjs')
         const root = await mkdtemp(join(tmpdir(), 'risubard-runtime-save-restore-'))
         try {
-            let service = createRuntimeMemoryService(root)
+            const { createUserDataRepository } = require('./user-data-repository.cjs')
+            const canonical = createUserDataRepository({ dataRoot: root })
+            const savedChat = {
+                id: 'chat-1', name: 'Story', scriptstate: { score: 100 },
+                message: [{ chatId: 'm1', role: 'char', data: 'Before the gate.' }],
+            }
+            canonical.importLegacyDatabase({ characters: [{ chaId: 'character', name: 'One', chats: [savedChat] }] })
+            const packer = new Packr({ useRecords: false })
+            let service = createRuntimeMemoryService(root, { canonicalRepository: canonical })
             const savedDocument = await service.saveManualWikiDocument({
                 characterId: 'character', chatId: 'chat-1', type: 'concept',
                 title: 'Clock', markdown: '# Clock\n\n## State\n\n- Before the gate.',
@@ -25,8 +35,12 @@ describe('RisuBard memory CommonJS runtime', () => {
             await service.createMemorySave({
                 characterId: 'character', sourceChatId: 'chat-1',
                 saveId: 'save-1', sourceChatName: 'Story', turnCount: 1,
-                chatBytes: Buffer.from([1, 2]),
+                chatBytes: packer.pack(savedChat),
             })
+            const futureChat = { ...savedChat, scriptstate: { score: 300 }, message: [
+                ...savedChat.message, { chatId: 'm2', role: 'char', data: 'After the gate.' },
+            ] }
+            canonical.replaceChat('character', 'chat-1', savedChat, futureChat)
             await service.saveManualWikiDocument({
                 characterId: 'character', chatId: 'chat-1', type: 'concept',
                 documentId: savedDocument.id, title: 'Clock',
@@ -37,16 +51,18 @@ describe('RisuBard memory CommonJS runtime', () => {
             })
             expect((await service.loadView('character', 'chat-1')).documents[0].content)
                 .toContain('After the gate.')
-            service = createRuntimeMemoryService(root)
+            service = createRuntimeMemoryService(root, { canonicalRepository: canonical })
             await service.completeMemoryFork({
                 characterId: 'character', destinationChatId: 'chat-1',
                 forkToken: prepared.fork.forkToken, action: 'finalize',
+                chatBase64: packer.pack(savedChat).toString('base64'),
             })
             expect((await service.wikiHistory({
                 characterId: 'character', chatId: 'chat-1',
             }))[0].commitId).toBe(savedHead)
             expect((await service.loadView('character', 'chat-1')).documents[0].content)
                 .toContain('Before the gate.')
+            expect(canonical.loadChat('character', 'chat-1')).toEqual(savedChat)
             await service.deleteMemorySave({ characterId: 'character', saveId: 'save-1' })
             expect(await service.listMemorySaves({
                 characterId: 'character', sourceChatId: 'chat-1',
@@ -160,14 +176,19 @@ describe('RisuBard memory CommonJS runtime', () => {
         )
         const root = await mkdtemp(join(tmpdir(), 'risubard-runtime-ref-overwrite-'))
         try {
-            const service = createRuntimeMemoryService(root)
+            const { createUserDataRepository } = require('./user-data-repository.cjs')
+            const canonical = createUserDataRepository({ dataRoot: root })
+            const chat = { id: 'chat-1', name: 'Story', message: [] }
+            canonical.importLegacyDatabase({ characters: [{ chaId: 'character', name: 'One', chats: [chat] }] })
+            const bytes = new Packr({ useRecords: false }).pack(chat)
+            const service = createRuntimeMemoryService(root, { canonicalRepository: canonical })
             await service.writeReferenceAutosave({
                 characterId: 'character',
                 sourceChatId: 'chat-1',
                 saveId: 'save-1',
                 sourceChatName: 'Story',
                 turnCount: 1,
-                chatBytes: Buffer.from('reference chat'),
+                chatBytes: bytes,
             })
             expect(await service.wikiRefs({
                 characterId: 'character', chatId: 'chat-1', kind: 'autosave',
@@ -180,7 +201,7 @@ describe('RisuBard memory CommonJS runtime', () => {
                 overwrite: true,
                 sourceChatName: 'Story',
                 turnCount: 2,
-                chatBytes: Buffer.from('new v1 chat'),
+                chatBytes: bytes,
             })
             expect(await service.listAllMemorySaves({
                 characterId: 'character', sourceChatId: 'chat-1',
@@ -189,7 +210,7 @@ describe('RisuBard memory CommonJS runtime', () => {
             }))
             expect(await service.previewMemorySave({
                 characterId: 'character', saveId: 'save-1',
-            })).toEqual(Buffer.from('new v1 chat'))
+            })).toEqual(bytes)
             expect(await service.wikiRefs({
                 characterId: 'character', chatId: 'chat-1', kind: 'autosave',
             })).not.toContainEqual(expect.objectContaining({
@@ -200,13 +221,15 @@ describe('RisuBard memory CommonJS runtime', () => {
                 saveId: 'save-1',
                 destinationChatId: 'loaded',
             })
-            expect(prepared.chatBytes).toEqual(Buffer.from('new v1 chat'))
+            expect(prepared.chatBytes).toEqual(bytes)
             await service.completeMemoryFork({
                 characterId: 'character',
                 destinationChatId: 'loaded',
                 forkToken: prepared.fork.forkToken,
                 action: 'finalize',
+                chatBase64: new Packr({ useRecords: false }).pack({ ...chat, id: 'loaded' }).toString('base64'),
             })
+            expect(canonical.loadChat('character', 'loaded')).toEqual({ ...chat, id: 'loaded' })
         }
         finally {
             await rm(root, { recursive: true, force: true })
@@ -347,31 +370,6 @@ describe('RisuBard memory CommonJS runtime', () => {
         expect(destinationSaveFinished).toBe(true)
     })
 
-    test('serializes fork completion on the destination workspace', async () => {
-        const { createRuntimeMemoryService } = require(
-            './risubard-memory-runtime.cjs'
-        )
-        const userDataDirectory = await mkdtemp(
-            join(tmpdir(), 'risubard-runtime-fork-complete-')
-        )
-        const completeForkWorkspace = vi.fn(async (input) => ({
-            action: input.action,
-            completed: true,
-        }))
-        const service = createRuntimeMemoryService(userDataDirectory, {
-            completeForkWorkspace,
-        })
-
-        await expect(service.completeMemoryFork({
-            characterId: 'character', destinationChatId: 'copy',
-            forkToken: 'fork-token', action: 'finalize',
-        })).resolves.toEqual({ action: 'finalize', completed: true })
-        expect(completeForkWorkspace).toHaveBeenCalledWith({
-            userDataDirectory,
-            characterId: 'character', destinationChatId: 'copy',
-            forkToken: 'fork-token', action: 'finalize',
-        })
-    })
 
     test('serializes a bounded Markdown wiki reboot checkpoint', async () => {
         const { createRuntimeMemoryService } = require(
@@ -859,5 +857,93 @@ describe('interrupted legacy Wiki directory swaps', () => {
             expect(await readFile(file, 'utf8')).toBe(externalBytes)
         }
         finally { await rm(root, { recursive: true, force: true }) }
+    })
+})
+
+describe('joint canonical chat and Wiki checkout recovery', () => {
+    test('replays the chat snapshot after checkout fails between Wiki and canonical publication', async () => {
+        const { createRuntimeMemoryService } = require('./risubard-memory-runtime.cjs')
+        const { createUserDataRepository } = require('./user-data-repository.cjs')
+        const root = await mkdtemp(join(tmpdir(), 'risubard-joint-checkout-'))
+        try {
+            const input = { characterId: 'character', chatId: 'chat' }
+            const messages = ['one', 'two', 'three'].map((data, index) => ({
+                chatId: `m${index + 1}`, role: 'char', data,
+            }))
+            const chat = { id: input.chatId, name: 'Story', message: messages, scriptstate: { '$score': 300 } }
+            const canonical = createUserDataRepository({ dataRoot: root })
+            canonical.importLegacyDatabase({ characters: [{ chaId: input.characterId, name: 'Character', chatPage: 0, chats: [chat] }] }, { mode: 'replace' })
+            const anchor = (count: number) => chatBoundaryAnchor(input.chatId, `m${count}`, messages.slice(0, count).map(message => ({
+                messageId: message.chatId, role: 'assistant', data: message.data,
+            })))
+            let service = createRuntimeMemoryService(root, { canonicalRepository: canonical })
+            const first = await service.saveManualWikiDocument({
+                ...input, type: 'concept', title: 'Clock',
+                markdown: '## Clock\n\n### State\n\n- One.', chatAnchor: anchor(1),
+            })
+            await service.saveManualWikiDocument({
+                ...input, type: 'concept', title: 'Clock', documentId: first.id,
+                markdown: '## Clock\n\n### State\n\n- Three.', chatAnchor: anchor(3),
+            })
+            const head = (await service.wikiHistory(input))[0].commitId
+            let fail = true
+            service = createRuntimeMemoryService(root, {
+                canonicalRepository: {
+                    ...canonical,
+                    replaceChat(...args: unknown[]) {
+                        if (fail) { fail = false; throw new Error('injected ENOSPC') }
+                        return canonical.replaceChat(...args)
+                    },
+                },
+            })
+            const target = { ...chat, message: messages.slice(0, 1), scriptstate: { '$score': 100 } }
+            await expect(service.wikiCheckout({
+                ...input, commitId: first.vcsCommitId, operationId: 'checkout-at-one',
+                reason: 'truncate', expectedChatAnchor: anchor(3),
+                chatBase64: new Packr({ useRecords: false }).pack(target).toString('base64'),
+            })).rejects.toThrow('injected ENOSPC')
+            expect(canonical.loadChat(input.characterId, input.chatId).message).toEqual(messages)
+            service = createRuntimeMemoryService(root, { canonicalRepository: canonical })
+            await service.recoverWikiOperations()
+            expect(canonical.loadChat(input.characterId, input.chatId)).toEqual(target)
+            expect((await service.wikiHistory(input))[0].commitId).toBe(first.vcsCommitId)
+            expect((await service.loadView(input.characterId, input.chatId)).documents.find((document: { id: string }) => document.id === first.id)?.content)
+                .toContain('- One.')
+            const refs = await service.wikiRefs({ ...input, kind: 'recovery' })
+            expect(refs.some((ref: { commitId: string; chatStateRef?: string }) => ref.commitId === head && ref.chatStateRef)).toBe(true)
+        }
+        finally { await rm(root, { recursive: true, force: true }) }
+    })
+})
+
+describe('Wiki reboot version seeds', () => {
+    test('seeds a historical Wiki tree without adding a canonical chat', async () => {
+        const { createRuntimeMemoryService } = require('./risubard-memory-runtime.cjs')
+        const { createUserDataRepository } = require('./user-data-repository.cjs')
+        const root = await mkdtemp(join(tmpdir(), 'risubard-reboot-seed-'))
+        try {
+            const canonical = createUserDataRepository({ dataRoot: root })
+            const chat = { id: 'source', name: 'Story', message: [] }
+            canonical.importLegacyDatabase({ characters: [{ chaId: 'character', name: 'One', chats: [chat] }] })
+            const before = canonical.exportLegacyDatabase()
+            const service = createRuntimeMemoryService(root, { canonicalRepository: canonical })
+            const first = await service.saveManualWikiDocument({
+                characterId: 'character', chatId: 'source', type: 'concept',
+                title: 'Clock', markdown: '## Clock\n\nBefore the gate.',
+            })
+            await service.saveManualWikiDocument({
+                characterId: 'character', chatId: 'source', type: 'concept', documentId: first.id,
+                title: 'Clock', markdown: '## Clock\n\nAfter the gate.',
+            })
+            await service.seedWikiReboot({
+                characterId: 'character', sourceChatId: 'source',
+                stagingChatId: 'reboot-seed', commitId: first.vcsCommitId,
+            })
+            expect((await service.loadView('character', 'reboot-seed')).documents[0].content).toContain('Before the gate.')
+            expect((await service.loadView('character', 'source')).documents[0].content).toContain('After the gate.')
+            expect(canonical.exportLegacyDatabase()).toEqual(before)
+            await service.removeRebootMemory({ characterId: 'character', chatId: 'reboot-seed' })
+            expect((await service.loadView('character', 'reboot-seed')).documents).toEqual([])
+        } finally { await rm(root, { recursive: true, force: true }) }
     })
 })

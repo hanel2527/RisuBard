@@ -5,17 +5,19 @@
     import { alertConfirm, notifyError, notifySuccess } from 'src/ts/alert'
     import {
         checkoutWikiVersion,
+        captureWikiVersion,
         deleteWikiRef,
         listWikiHistory,
         listWikiRefs,
         previewWikiCheckout,
     } from 'src/ts/risubard/wikiVersionClient'
-    import { readWikiRecovery, listDeletedWikiRecovery, forkWikiVersion, discardWikiFork } from 'src/ts/risubard/wikiVersionClient'
+    import { readWikiRecovery, listDeletedWikiRecovery, forkWikiVersion } from 'src/ts/risubard/wikiVersionClient'
     import { preserveWikiChat, anchorMessagesFromChat } from 'src/ts/risubard/wikiChatCoordinator'
     import { decodeMemorySaveChat } from 'src/ts/risubard/memorySaveSlots'
     import { rebindPainterChatScope } from 'src/ts/bardPainter/chatScope'
     import { DBState } from 'src/ts/stores.svelte'
     import type { Chat } from 'src/ts/storage/database.svelte'
+    import { restoreScriptstateForPrefix } from 'src/ts/chatScriptstateCheckpoint'
     import { Buffer } from 'buffer'
     import { v4 } from 'uuid'
     import type {
@@ -53,6 +55,7 @@
         if (!background) loading = true
         error = ''
         try {
+            await captureWikiVersion({ ...context(), poll: background })
             const [nextHistory, nextRefs, deletedRefs] = await Promise.all([
                 listWikiHistory(context()),
                 listWikiRefs(context()),
@@ -106,22 +109,15 @@
                 throw new Error('이 시점의 대화가 변경되어 함께 되돌릴 수 없습니다. 복구 이력에서 열어 주세요.')
             }
             const original = $state.snapshot(chat)
-            const previousHead = await preserveWikiChat(context(), original, 'truncate')
-            chat.message = chat.message.slice(0, boundary + 1)
-            try {
-                await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
-                await checkoutWikiVersion({
-                    ...context(), commitId: entry.commitId, reason: 'truncate',
-                })
-            }
-            catch (cause) {
-                chat.message = original.message
-                await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
-                await checkoutWikiVersion({
-                    ...context(), commitId: previousHead, reason: 'truncate',
-                })
-                throw cause
-            }
+            await preserveWikiChat(context(), original, 'truncate')
+            const targetChat = $state.snapshot(chat)
+            targetChat.message = targetChat.message.slice(0, boundary + 1)
+            restoreScriptstateForPrefix(targetChat, targetChat.message, original.message)
+            await checkoutWikiVersion({
+                ...context(), commitId: entry.commitId, reason: 'truncate',
+                chat: targetChat,
+            })
+            Object.assign(chat, targetChat)
             notifySuccess('대화와 위키를 이 시점으로 되돌렸습니다.')
             onChanged?.()
             await refresh()
@@ -147,8 +143,6 @@
         const original = originalIndex >= 0
             ? $state.snapshot(character.chats[originalIndex]) : undefined
         const destinationChatId = asNew ? v4() : ref.chatId
-        let previousHead: string | undefined
-        let inserted = false
         let wikiChanged = false
         try {
             const saved = await readWikiRecovery({ ...owner, id: ref.id })
@@ -167,44 +161,35 @@
             delete restored.risuBardWikiReboot
             rebindPainterChatScope(restored, characterId)
             if (!asNew && original) {
-                previousHead = await preserveWikiChat(owner, original, 'purge-restore')
-                character.chats[originalIndex] = restored
+                await preserveWikiChat(owner, original, 'purge-restore')
             }
-            else {
-                character.chats.unshift(restored)
-                inserted = true
-            }
-            await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
             if (asNew) {
                 await forkWikiVersion({
                     ...context(), sourceChatId: ref.chatId,
                     destinationChatId, commitId: ref.commitId,
+                    chat: restored,
                 })
             }
             else {
                 await checkoutWikiVersion({
                     ...owner, commitId: ref.commitId, reason: 'purge-restore',
+                    chat: restored,
                 })
             }
             wikiChanged = true
+            if (!asNew && original) character.chats[originalIndex] = restored
+            else {
+                character.chats.unshift(restored)
+            }
+            await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
             changeChatTo(character.chats.findIndex((chat) => chat.id === destinationChatId))
             notifySuccess('대화와 위키를 복원했습니다.')
             onChanged?.()
             await refresh()
         }
         catch (cause) {
-            if (inserted) {
-                character.chats = character.chats.filter((chat) => chat.id !== destinationChatId)
-            }
-            else if (original) character.chats[originalIndex] = original
-            await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
-            if (asNew) await discardWikiFork({
-                ...context(), chatId: destinationChatId,
-            })
-            else if (wikiChanged && previousHead) await checkoutWikiVersion({
-                ...owner, commitId: previousHead, reason: 'purge-restore',
-            })
             error = cause instanceof Error ? cause.message : String(cause)
+            if (wikiChanged) onChanged?.()
         }
         finally { busy = '' }
     }

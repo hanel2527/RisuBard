@@ -817,6 +817,9 @@ import { isMobile } from 'src/ts/platform'
                     fetchImpl: fetch,
                     createAuth: () => forageStorage.createAuth(),
                 }, safeStructuredClone(chat), 'reroll')
+                const rollbackChat = safeStructuredClone(chat)
+                rollbackChat.message = cha
+                restoreScriptstateBeforeReroll(rollbackChat, lastMsg)
                 const rollback = await applyWikiRollback(
                     {
                         characterId: character.chaId,
@@ -824,10 +827,12 @@ import { isMobile } from 'src/ts/platform'
                         fetchImpl: fetch,
                         createAuth: () => forageStorage.createAuth(),
                     },
-                    cha,
+                    rollbackChat,
                     'reroll',
+                    originalChat,
                 )
                 wikiRolledBack = rollback.applied
+                if (rollback.applied) Object.assign(chat, rollbackChat)
                 if(!rollback.applied){
                     chat.message = cha
                     await rebuildNarrativeAfterChatEdit({
@@ -853,6 +858,7 @@ import { isMobile } from 'src/ts/platform'
                             chatId: chat.id,
                             commitId: previousWikiHead,
                             reason: 'reroll',
+                            chat: originalChat,
                             fetchImpl: fetch,
                             createAuth: () => forageStorage.createAuth(),
                         })
@@ -953,6 +959,7 @@ import { isMobile } from 'src/ts/platform'
                         chatId: chat.id,
                         commitId: previousWikiHead,
                         reason: 'reroll',
+                        chat: originalChat,
                         fetchImpl: fetch,
                         createAuth: () => forageStorage.createAuth(),
                     })

@@ -181,6 +181,7 @@
             try {
                 await checkoutWikiVersion({
                     ...context, commitId: previousHead, reason: 'truncate',
+                    chat: original,
                 })
             }
             catch (recoveryError) {
@@ -313,28 +314,38 @@
             createAuth: () => forageStorage.createAuth(),
         }
         let previousHead: string | undefined
+        let chatMutated = false
+        let jointPublished = false
         try {
             previousHead = await preserveWikiChat(context, original, 'truncate')
             const truncated = sel === 1
-            currentChat.message = truncated
-                ? currentChat.message.slice(0, idx)
-                : currentChat.message.filter((_, index) => index !== idx)
+            const targetChat = $state.snapshot(currentChat)
+            targetChat.message = truncated
+                ? targetChat.message.slice(0, idx)
+                : targetChat.message.filter((_, index) => index !== idx)
             const rollback = truncated
-                ? await applyWikiRollback(context, currentChat.message, 'truncate')
+                ? await applyWikiRollback(context, targetChat, 'truncate', original)
                 : { applied: false }
+            jointPublished = rollback.applied
+            Object.assign(currentChat, targetChat)
+            chatMutated = true
             if (!rollback.applied) {
                 await rebuildNarrativeAfterChatEdit({
                     characterId: currentCharacter.chaId,
                     chatId: currentChat.id,
                     fromIndex: idx,
                 })
+                await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
             }
-            await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
             notifySuccess(truncated
                 ? language.messagesRemoved.replace('{}', cascadeCount.toString())
                 : language.messageRemoved)
         }
         catch (error) {
+            if (!chatMutated || jointPublished) {
+                notifyError(error instanceof Error ? error.message : String(error))
+                return
+            }
             await recoverChatMutation(currentChat, original, context, previousHead, error)
         }
     }
@@ -1458,7 +1469,8 @@
                 characterId: currentCharacter.chaId,
                 sourceChatId: currentChat.id,
                 destinationChatId: newChat.id,
-                forkMessages: newChat.message,
+                forkChat: newChat,
+                sourceMessages: currentChat.message,
                 fetchImpl: fetch,
                 createAuth: () => forageStorage.createAuth(),
             })
@@ -1549,6 +1561,11 @@
             }
         }
         catch(error){
+            if (versionForked) {
+                changeChatTo(0)
+                notifyError(`분기는 서버에 저장됐습니다. 추가 화면 설정 저장에 실패했습니다: ${error instanceof Error ? error.message : String(error)}`)
+                return
+            }
             currentCharacter.chats.splice(
                 currentCharacter.chats.indexOf(newChat),
                 1
@@ -1580,7 +1597,7 @@
                     characterId: currentCharacter.chaId, stagingChatId,
                     fetchImpl: fetch, createAuth: () => forageStorage.createAuth(),
                 })
-                if (versionForked || requiresRebuild) await discardWikiFork({
+                if (requiresRebuild) await discardWikiFork({
                     characterId: currentCharacter.chaId, chatId: newChat.id,
                     fetchImpl: fetch, createAuth: () => forageStorage.createAuth(),
                 })

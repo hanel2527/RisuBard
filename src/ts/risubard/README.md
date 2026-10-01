@@ -6,8 +6,8 @@ The narrative-context path is enabled by default. Assistant responses remain
 unconfirmed until the next user message completes a generation or the user
 chooses the message-menu confirmation action. Confirmation analysis returns a
 schema-bound semantic draft that the application serializes to Markdown. The
-application owns safe file names and YAML frontmatter, then atomically writes
-an Obsidian-compatible `wiki/events/*.md` evidence document.
+application owns safe file names and YAML frontmatter, stages changed evidence
+and canonical pages, and publishes them in one journal-backed Wiki commit.
 
 Automatic confirmation searches the wiki using the configured recent raw
 message window through the confirmed message. It proposes canonical rewrites
@@ -27,6 +27,50 @@ Manual saves keep program-owned IDs and frontmatter, archive prior revisions,
 move renamed/type-changed files safely, and update editable wikilinks. Delete
 moves canonical bytes under `.risubard-trash/`; confirmed `events/` evidence
 is visible in its own folder but remains read-only.
+
+## Durable publication and historical chat transitions
+
+Confirmation waits for the owning chat's canonical disk flush before sending
+its evidence anchor. A changed or deleted persisted source rejects publication.
+A valid confirmation with no document changes still records an anchored commit
+and a receipt, so historical prefix lookup includes quiet confirmed turns.
+
+Native writes stage only their changed paths. Manual rename and backlink updates
+publish together; staging failure leaves both live files and head unchanged.
+Publication checks those paths against the committed hashes. A conflicting disk
+edit is captured and the stale write rejected. Unrelated external edits remain
+on disk until explicit capture or history monitoring. Checkout, fork and saves
+perform a full capture before replacing or pinning a working tree.
+
+The durable journal decision ends cancellation. Before that decision, stopping
+analysis abandons staging. After it, disconnects or cancellation recover the
+operation receipt rather than report a false rollback. Retrying the same
+operation ID returns its immutable result; interrupted decisions replay at
+startup and before subsequent storage transitions.
+
+Public checkout and fork publish the Wiki head and full canonical chat snapshot
+through that decision. Historical prefixes restore scriptstate from response
+checkpoints and remove receipts outside the target commit ancestry or retained
+messages. Missing historical scriptstate checkpoints fail explicitly. UI save
+failure after publication does not compensate by restoring the old chat.
+Reboot seeding is a separate temporary Wiki-only operation, not a visible chat.
+
+Internal writes do not traverse every document's stat metadata. Background
+history captures use bounded native directory watchers, with a full scan at
+least every 60 seconds; unsupported watchers fall back to full scans. Explicit
+refresh and destructive historical transitions always perform full capture.
+
+Reference-save manifests use flushed temporary files, atomic rename and directory
+sync. Portable v1 saves use their embedded full workspace when optional source
+history is absent, incomplete or does not match the saved Wiki; inaccessible
+foreign receipts are cleared. Their workspace replacement and canonical chat
+publication share the recoverable journal decision.
+
+Backup export freezes inventory bytes and the compatibility database under the
+storage/Wiki barriers, then streams the frozen files without holding the write
+locks. Later application edits cannot change that archive. Owned temporary
+snapshots are removed after success, failure, cancellation and startup recovery.
+
 
 The Markdown files are the only current narrative-wiki source. Memory Wiki and
 bounded inquiry read those same files directly; graph state, edge operations,
@@ -79,9 +123,10 @@ manual saves, trash operations, and AI-draft phases use the same redacted UI
 event channel. Prompt bodies, message bodies, API keys, and hidden reasoning
 are never part of this trace.
 
-Invalid or empty analysis output leaves the wiki unchanged. The application
-does not save the full assistant response as a fallback note and does not log
-the response body, API key or complete prompt.
+Invalid analysis output does not publish. Valid no-change analysis leaves
+Markdown unchanged but records its confirmed boundary. The application does
+not save the full assistant response as a fallback note or log response bodies,
+API keys or complete prompts.
 The v1 baseline preparation deadlines remain only for an explicit legacy
 rollback.
 Legacy chats without a chat UUID receive one before generation. The captured

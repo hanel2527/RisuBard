@@ -2,6 +2,7 @@ import * as nodeFs from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { resolveMemoryWorkspace } from './risubard-memory-workspace'
+import { writeFileAtomically } from './file-store.cjs'
 
 export type MemoryForkMode = 'copy' | 'branch'
 
@@ -40,9 +41,14 @@ export interface CompleteMemoryForkReceipt {
 type ForkFileSystem = Pick<
     typeof nodeFs,
     'lstat' | 'mkdir' | 'readdir' | 'readFile' | 'writeFile'
-    | 'copyFile' | 'rename' | 'rm' | 'realpath'
+    | 'copyFile' | 'rename' | 'rm' | 'realpath' | 'open'
 >
 
+async function syncDirectory(fileSystem: ForkFileSystem, directory: string): Promise<void> {
+    if (process.platform === 'win32') return
+    const handle = await fileSystem.open(directory, 'r')
+    try { await handle.sync() } finally { await handle.close() }
+}
 const FORK_MARKER = '.risubard-fork.json'
 
 function replacementBackupPath(directory: string, forkToken: string): string {
@@ -151,8 +157,11 @@ async function copyDirectoryContents(
         if (!status.isFile()) {
             throw new Error('Memory fork source contains a non-regular file')
         }
-        await fileSystem.copyFile(sourcePath, destinationPath)
+        await fileSystem.copyFile(sourcePath, destinationPath, nodeFs.constants.COPYFILE_FICLONE)
+        const handle = await fileSystem.open(destinationPath, 'r')
+        try { await handle.sync() } finally { await handle.close() }
     }
+    await syncDirectory(fileSystem, destination)
 }
 
 export async function forkMemoryWorkspace(
@@ -238,11 +247,12 @@ export async function forkMemoryWorkspace(
         }
         await fileSystem.rm(join(staging, FORK_MARKER), { force: true })
         const warnings: string[] = []
-        await fileSystem.writeFile(join(staging, FORK_MARKER), JSON.stringify({
+        await writeFileAtomically(fileSystem, join(staging, FORK_MARKER), JSON.stringify({
             destinationChatId: input.destinationChatId,
             forkToken,
-        }), 'utf8')
+        }))
         await fileSystem.rename(staging, destination.directory)
+        await syncDirectory(fileSystem, dirname(destination.directory))
         return {
             mode: input.mode,
             sourceExists,
@@ -311,16 +321,16 @@ export async function replaceMemoryWorkspace(
             }
             hadDestination = true
         }
-        await fileSystem.writeFile(
-            join(staging, FORK_MARKER),
+        await writeFileAtomically(
+            fileSystem, join(staging, FORK_MARKER),
             JSON.stringify({
                 destinationChatId: input.destinationChatId,
                 forkToken,
                 replacement: true,
                 hadDestination,
-            }),
-            'utf8'
+            })
         )
+        await syncDirectory(fileSystem, dirname(staging))
         return {
             mode: 'copy',
             sourceExists,
@@ -432,10 +442,10 @@ export async function completeMemoryWorkspaceFork(
         : destinationMarker
     if (!await exists(fileSystem, markerPath)) {
         if (receipt) {
-            await fileSystem.writeFile(receiptPath, JSON.stringify({
+            await writeFileAtomically(fileSystem, receiptPath, JSON.stringify({
                 ...receipt,
                 completed: true,
-            }), 'utf8')
+            }))
             return { action: input.action, completed: true }
         }
         throw new Error('Memory fork marker is missing')
@@ -469,28 +479,31 @@ export async function completeMemoryWorkspaceFork(
             destination.directory,
             input.forkToken
         )
-        await fileSystem.writeFile(receiptPath, JSON.stringify({
+        await writeFileAtomically(fileSystem, receiptPath, JSON.stringify({
             destinationChatId: input.destinationChatId,
             forkToken: input.forkToken,
             action: input.action,
             completed: false,
-        }), 'utf8')
+        }))
         if (input.action === 'finalize') {
             if (markerPath === stagingMarker) {
                 try {
-                    if (marker.hadDestination
-                        && !await exists(fileSystem, backup)) {
+                    // VCS preflight may create a previously absent destination.
+                    // Preserve that actual directory until the replacement commits.
+                    if (!await exists(fileSystem, backup)
+                        && await exists(fileSystem, destination.directory)) {
                         await fileSystem.rename(destination.directory, backup)
                     }
                     await fileSystem.rename(staging, destination.directory)
+                    await syncDirectory(fileSystem, dirname(destination.directory))
                 }
                 catch (error) {
                     // A failed publish must leave the old workspace available
                     // and allow the caller to discard the staged replacement.
-                    if (marker.hadDestination
-                        && !await exists(fileSystem, destination.directory)
+                    if (!await exists(fileSystem, destination.directory)
                         && await exists(fileSystem, backup)) {
                         await fileSystem.rename(backup, destination.directory)
+                        await syncDirectory(fileSystem, dirname(destination.directory))
                     }
                     await fileSystem.rm(receiptPath, { force: true })
                     throw error
@@ -498,13 +511,14 @@ export async function completeMemoryWorkspaceFork(
                 markerPath = destinationMarker
             }
             await fileSystem.rm(markerPath, { force: false })
-            await fileSystem.writeFile(receiptPath, JSON.stringify({
+            await syncDirectory(fileSystem, destination.directory)
+            await writeFileAtomically(fileSystem, receiptPath, JSON.stringify({
                 destinationChatId: input.destinationChatId,
                 forkToken: input.forkToken,
                 action: input.action,
                 completed: true,
-            }), 'utf8')
-            if (marker.hadDestination) {
+            }))
+            if (await exists(fileSystem, backup)) {
                 await fileSystem.rm(backup, { recursive: true, force: false })
                     .catch(() => undefined)
             }
@@ -513,7 +527,7 @@ export async function completeMemoryWorkspaceFork(
             if (markerPath === stagingMarker) {
                 await fileSystem.rm(staging, { recursive: true, force: false })
             }
-            else if (marker.hadDestination) {
+            else if (await exists(fileSystem, backup)) {
                 const displaced = `${destination.directory}.discard-${randomUUID()}`
                 await fileSystem.rename(destination.directory, displaced)
                 try {
@@ -532,21 +546,21 @@ export async function completeMemoryWorkspaceFork(
                     force: false,
                 })
             }
-            await fileSystem.writeFile(receiptPath, JSON.stringify({
+            await writeFileAtomically(fileSystem, receiptPath, JSON.stringify({
                 destinationChatId: input.destinationChatId,
                 forkToken: input.forkToken,
                 action: input.action,
                 completed: true,
-            }), 'utf8')
+            }))
         }
         return { action: input.action, completed: true }
     }
-    await fileSystem.writeFile(receiptPath, JSON.stringify({
+    await writeFileAtomically(fileSystem, receiptPath, JSON.stringify({
         destinationChatId: input.destinationChatId,
         forkToken: input.forkToken,
         action: input.action,
         completed: false,
-    }), 'utf8')
+    }))
     if (input.action === 'discard') {
         await fileSystem.rm(destination.directory, {
             recursive: true,
@@ -555,12 +569,13 @@ export async function completeMemoryWorkspaceFork(
     }
     else {
         await fileSystem.rm(markerPath, { force: false })
+        await syncDirectory(fileSystem, destination.directory)
     }
-    await fileSystem.writeFile(receiptPath, JSON.stringify({
+    await writeFileAtomically(fileSystem, receiptPath, JSON.stringify({
         destinationChatId: input.destinationChatId,
         forkToken: input.forkToken,
         action: input.action,
         completed: true,
-    }), 'utf8')
+    }))
     return { action: input.action, completed: true }
 }

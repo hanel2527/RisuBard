@@ -862,12 +862,14 @@ export function createMarkdownNarrativeWiki(
                 }
             }
             if (property === 'writeFile') {
-                return (path: string, ...args: unknown[]) => {
+                return async (path: string, ...args: unknown[]) => {
                     const mapped = overlayPath(path)
-                    if (mapped) markOverlayWrite(
-                        mapped.overlay,
-                        mapped.relativePath
-                    )
+                    if (mapped) {
+                        await invokeFileSystem(target.mkdir, [
+                            resolve(mapped.stagedPath, '..'), { recursive: true },
+                        ])
+                        markOverlayWrite(mapped.overlay, mapped.relativePath)
+                    }
                     return invokeFileSystem(
                         target.writeFile,
                         [mapped?.stagedPath ?? path, ...args]
@@ -1235,28 +1237,6 @@ export function createMarkdownNarrativeWiki(
         await writeAtomically(fileSystem, workspace.indexFile, index)
     }
 
-    /**
-     * Records a completed working-tree change as one commit. `index.md` is
-     * derived output, so it is regenerated after the commit rather than being
-     * versioned itself; the commit therefore sees only tracked documents.
-     */
-    const commitWrite = async (input: {
-        characterId: string
-        chatId: string
-        kind: WikiCommitKind
-        operationId?: string
-        chatAnchor?: WikiChatAnchor
-    }): Promise<string | null> => {
-        if (!versioning) return null
-        // Inside an open batch the individual writes stay uncommitted: the
-        // batch owner publishes one commit covering the whole operation.
-        if (openBatchFor(input.characterId, input.chatId)) {
-            return null
-        }
-        const result = await versioning.afterWrite(input)
-        return result.commitId
-    }
-
     const batchKey = (characterId: string, chatId: string) =>
         `${characterId}\u0000${chatId}`
     type WriteBatch = {
@@ -1287,7 +1267,7 @@ export function createMarkdownNarrativeWiki(
             chatAnchor?: WikiChatAnchor
             expectedHead: string | null
             changes: Array<{ path: string; contents: string | null }>
-        }): Promise<{ commitId: string | null; changedPaths: string[] }>
+        }, signal?: AbortSignal): Promise<{ commitId: string | null; changedPaths: string[] }>
     }
     const requireTransactionalVersioning = (): TransactionalWikiVersioningPort => {
         const port = versioning as Partial<TransactionalWikiVersioningPort>
@@ -1354,9 +1334,43 @@ export function createMarkdownNarrativeWiki(
             overlay: batch,
         }, operation)
     }
+    const writeTransaction = async <T>(
+        input: {
+            characterId: string; chatId: string; operationId?: string
+            chatAnchor?: WikiChatAnchor
+        },
+        kind: WikiCommitKind,
+        operation: () => Promise<T>
+    ): Promise<T> => {
+        if (!versioning) return operation()
+        if (openBatchFor(input.characterId, input.chatId)) {
+            return inBatchWorkspace(input, operation)
+        }
+        if (input.operationId) throw new Error('Wiki write batch was not started')
+        const owned = { ...input, operationId: `${kind}:${randomUUID()}` }
+        await service.beginWriteBatch({ ...owned, kind })
+        try {
+            const result = await inBatchWorkspace(owned, operation)
+            const batch = openBatchFor(input.characterId, input.chatId)!
+            if (batch.touchedPaths.size === 0 && batch.deletedPaths.size === 0) {
+                await service.abandonWriteBatch(owned)
+                return result
+            }
+            const published = await service.publishWriteBatch(owned)
+            if (published.commitId && result && typeof result === 'object'
+                && 'relativePath' in result) {
+                return { ...result, vcsCommitId: published.commitId }
+            }
+            return result
+        }
+        catch (error) {
+            await service.abandonWriteBatch(owned)
+            throw error
+        }
+    }
 
 
-    return {
+    const service = {
         invalidateCache(characterId: string, chatId: string): void {
             documentCache.delete(workspaceFor(characterId, chatId).directory)
         },
@@ -1406,11 +1420,6 @@ export function createMarkdownNarrativeWiki(
                 recursive: true,
                 force: true,
             })
-            await port.captureExternalChanges({
-                characterId: input.characterId,
-                chatId: input.chatId,
-                ...(input.chatAnchor ? { chatAnchor: input.chatAnchor } : {}),
-            })
             const baseline = await port.ensureBaseline({
                 characterId: input.characterId,
                 chatId: input.chatId,
@@ -1438,13 +1447,17 @@ export function createMarkdownNarrativeWiki(
             chatId: string
             operationId: string
             chatAnchor?: WikiChatAnchor
-        }): Promise<{ commitId: string | null; changedPaths: string[] }> {
+        }, signal?: AbortSignal): Promise<{ commitId: string | null; changedPaths: string[] }> {
             const key = batchKey(input.characterId, input.chatId)
+            const port = requireTransactionalVersioning()
             const batch = writeBatches.get(key)
             if (!batch || batch.operationId !== input.operationId) {
+                const completed = await port.readOperationReceipt(input)
+                if (completed) return { commitId: completed.commitId, changedPaths: completed.changedPaths }
                 throw new Error('Wiki write batch was not started')
             }
-            const port = requireTransactionalVersioning()
+            try {
+                signal?.throwIfAborted()
             const anchor = input.chatAnchor ?? batch.chatAnchor
             const paths = new Set([
                 ...batch.touchedPaths,
@@ -1477,7 +1490,6 @@ export function createMarkdownNarrativeWiki(
                     throw error
                 }
             }
-            try {
                 const result = await port.publishChanges({
                     characterId: input.characterId,
                     chatId: input.chatId,
@@ -1486,7 +1498,7 @@ export function createMarkdownNarrativeWiki(
                     expectedHead: batch.expectedHead,
                     changes,
                     ...(anchor ? { chatAnchor: anchor } : {}),
-                })
+                }, signal)
                 await persistBatchAuxiliaryFiles(batch)
                 return result
             }
@@ -1625,6 +1637,7 @@ export function createMarkdownNarrativeWiki(
                 || snapshot.chatId !== chatId) {
                 throw new Error('No BARDCHAT undo snapshot is available')
             }
+            return writeTransaction(input, 'rebuild', async () => {
             const workspace = workspaceFor(characterId, chatId)
             if (snapshotSignature(current) !== snapshot.signature) {
                 throw new Error('Wiki changed after the BARDCHAT command')
@@ -1648,14 +1661,11 @@ export function createMarkdownNarrativeWiki(
                 ), { force: true })
             }
             await rebuildIndex(characterId, chatId)
-            await commitWrite({
-                characterId,
-                chatId,
-                kind: 'rebuild',
-            })
+            
             bardChatUndoSnapshot = null
             pendingBardChatUndo = null
             return { restored: true }
+            })
         },
         async recoverRebootBatch(input: {
             characterId: string
@@ -1663,6 +1673,7 @@ export function createMarkdownNarrativeWiki(
             sourceMessageIds: string[]
             eventSourceGroups: string[][]
         }): Promise<CanonicalTurnReceipt | null> {
+            return writeTransaction(input, 'rebuild', async () => {
             const sourceMessageIds = input.sourceMessageIds.map((id) =>
                 required(id, 'Source message ID')
             )
@@ -1771,12 +1782,9 @@ export function createMarkdownNarrativeWiki(
                 recursive: true,
                 force: true,
             })
-            await commitWrite({
-                characterId: input.characterId,
-                chatId: input.chatId,
-                kind: 'rebuild',
-            })
+            
             return null
+            })
         },
         async beginRebootBatch(input: {
             characterId: string
@@ -1996,7 +2004,7 @@ export function createMarkdownNarrativeWiki(
             chatAnchor?: WikiChatAnchor
             operationId?: string
         }): Promise<MarkdownWikiDocument> {
-            return inBatchWorkspace(input, async () => {
+            return writeTransaction(input, 'analysis', async () => {
             const sourceMessageIds = input.sourceMessageIds.map((id) =>
                 required(id, 'sourceMessageId')
             )
@@ -2066,16 +2074,8 @@ export function createMarkdownNarrativeWiki(
                 prepared.contents
             )
             await rebuildIndex(input.characterId, input.chatId, writingLanguage)
-            const vcsCommitId = await commitWrite({
-                characterId: input.characterId,
-                chatId: input.chatId,
-                kind: 'analysis',
-                ...(input.operationId ? { operationId: input.operationId } : {}),
-                ...(input.chatAnchor ? { chatAnchor: input.chatAnchor } : {}),
-            })
-            return vcsCommitId
-                ? { ...prepared.document, vcsCommitId }
-                : prepared.document
+            
+            return prepared.document
             })
         },
 
@@ -2096,7 +2096,7 @@ export function createMarkdownNarrativeWiki(
             chatAnchor?: WikiChatAnchor
             operationId?: string
         }): Promise<MarkdownWikiDocument> {
-            return inBatchWorkspace(input, async () => {
+            return writeTransaction(input, input.reviewStatus === 'unreviewed' ? 'review' : 'analysis', async () => {
             const title = required(input.title, 'Title').trim().slice(0, 160)
             const incomingSources = input.sourceMessageIds.map((id) =>
                 required(id, 'sourceMessageId')
@@ -2214,16 +2214,8 @@ export function createMarkdownNarrativeWiki(
             })
             await writeAtomically(fileSystem, file, prepared.contents)
             await rebuildIndex(input.characterId, input.chatId, writingLanguage)
-            const vcsCommitId = await commitWrite({
-                characterId: input.characterId,
-                chatId: input.chatId,
-                kind: input.reviewStatus === 'unreviewed' ? 'review' : 'analysis',
-                ...(input.operationId ? { operationId: input.operationId } : {}),
-                chatAnchor: input.chatAnchor,
-            })
-            return vcsCommitId
-                ? { ...prepared.document, vcsCommitId }
-                : prepared.document
+            
+            return prepared.document
             })
         },
 
@@ -2238,6 +2230,7 @@ export function createMarkdownNarrativeWiki(
             reverted: true
             deleted: true
         }> {
+            return writeTransaction(input, 'review', async () => {
             const workspace = workspaceFor(input.characterId, input.chatId)
             const document = (await loadDocuments(
                 input.characterId,
@@ -2280,11 +2273,7 @@ export function createMarkdownNarrativeWiki(
                     await fileSystem.rm(file)
                     await fileSystem.rm(reviewFile, { force: true })
                     await rebuildIndex(input.characterId, input.chatId)
-                    await commitWrite({
-                        characterId: input.characterId,
-                        chatId: input.chatId,
-                        kind: 'review',
-                    })
+                    
                     return {
                         id: document.id,
                         reverted: true as const,
@@ -2305,11 +2294,7 @@ export function createMarkdownNarrativeWiki(
             }
             await fileSystem.rm(reviewFile, { force: true })
             await rebuildIndex(input.characterId, input.chatId)
-            await commitWrite({
-                characterId: input.characterId,
-                chatId: input.chatId,
-                kind: 'review',
-            })
+            
             const reviewed = (await loadDocuments(
                 input.characterId,
                 input.chatId
@@ -2318,6 +2303,7 @@ export function createMarkdownNarrativeWiki(
             return reviewed.reviewStatus
                 ? reviewed
                 : { ...reviewed, reviewStatus: 'reviewed' }
+            })
         },
 
         async saveManualDocument(input: {
@@ -2332,6 +2318,7 @@ export function createMarkdownNarrativeWiki(
             retrievalMetadata?: MemoryRetrievalMetadata
             chatAnchor?: WikiChatAnchor
         }): Promise<MarkdownWikiDocument> {
+            return writeTransaction(input, 'manual', async () => {
             const title = required(input.title, 'Title').trim().slice(0, 160)
             const allowed: MarkdownWikiDocumentType[] = [
                 'character', 'location', 'scene', 'faction', 'creature',
@@ -2456,15 +2443,9 @@ export function createMarkdownNarrativeWiki(
                 }
             }
             await rebuildIndex(input.characterId, input.chatId)
-            const vcsCommitId = await commitWrite({
-                characterId: input.characterId,
-                chatId: input.chatId,
-                kind: 'manual',
-                ...(input.chatAnchor ? { chatAnchor: input.chatAnchor } : {}),
+            
+            return prepared.document
             })
-            return vcsCommitId
-                ? { ...prepared.document, vcsCommitId }
-                : prepared.document
         },
 
         async setDocumentContextMode(input: {
@@ -2474,6 +2455,7 @@ export function createMarkdownNarrativeWiki(
             contextMode: MarkdownWikiContextMode
             expectedContentHash?: string
         }): Promise<MarkdownWikiDocument> {
+            return writeTransaction(input, 'policy', async () => {
             const workspace = workspaceFor(input.characterId, input.chatId)
             const document = (await loadDocuments(
                 input.characterId,
@@ -2510,12 +2492,9 @@ export function createMarkdownNarrativeWiki(
             })
             await writeAtomically(fileSystem, file, prepared.contents)
             await rebuildIndex(input.characterId, input.chatId)
-            await commitWrite({
-                characterId: input.characterId,
-                chatId: input.chatId,
-                kind: 'policy',
-            })
+            
             return prepared.document
+            })
         },
 
         async trashDocument(input: {
@@ -2523,6 +2502,7 @@ export function createMarkdownNarrativeWiki(
             chatId: string
             documentId: string
         }): Promise<{ id: string; trashed: true }> {
+            return writeTransaction(input, 'manual', async () => {
             const workspace = workspaceFor(input.characterId, input.chatId)
             const document = (await loadDocuments(input.characterId, input.chatId))
                 .find((item) => item.id === required(input.documentId, 'Document ID'))
@@ -2541,12 +2521,9 @@ export function createMarkdownNarrativeWiki(
             )
             await fileSystem.rm(file)
             await rebuildIndex(input.characterId, input.chatId)
-            await commitWrite({
-                characterId: input.characterId,
-                chatId: input.chatId,
-                kind: 'manual',
-            })
+            
             return { id: document.id, trashed: true as const }
+            })
         },
 
         async retractEvent(input: {
@@ -2555,6 +2532,7 @@ export function createMarkdownNarrativeWiki(
             documentId: string
             expectedContentHash: string
         }): Promise<MarkdownWikiDocument> {
+            return writeTransaction(input, 'manual', async () => {
             const workspace = workspaceFor(input.characterId, input.chatId)
             const document = (await loadDocuments(
                 input.characterId,
@@ -2591,12 +2569,9 @@ export function createMarkdownNarrativeWiki(
             } catch {
                 documentCache.delete(workspace.directory)
             }
-            await commitWrite({
-                characterId: input.characterId,
-                chatId: input.chatId,
-                kind: 'manual',
-            })
+            
             return prepared.document
+            })
         },
 
         async retractEventsBySourceMessages(input: {
@@ -2604,6 +2579,7 @@ export function createMarkdownNarrativeWiki(
             chatId: string
             sourceMessageIds: string[]
         }): Promise<{ retractedIds: string[] }> {
+            return writeTransaction(input, 'manual', async () => {
             const sources = new Set(input.sourceMessageIds.map((id) =>
                 required(id, 'Source message ID')
             ))
@@ -2630,16 +2606,14 @@ export function createMarkdownNarrativeWiki(
             }
             if (matches.length > 0) {
                 await rebuildIndex(input.characterId, input.chatId)
-                await commitWrite({
-                    characterId: input.characterId,
-                    chatId: input.chatId,
-                    kind: 'manual',
-                })
+                
             }
             return { retractedIds: matches.map((document) => document.id) }
+            })
         },
 
         async detachInheritedSources(characterId: string, chatId: string, sourceChatId: string): Promise<void> {
+            return writeTransaction({ characterId, chatId }, 'import', async () => {
             const workspace = workspaceFor(characterId, chatId)
             const documents = await loadDocuments(characterId, chatId)
             const origin = stableId([sourceChatId])
@@ -2653,10 +2627,7 @@ export function createMarkdownNarrativeWiki(
                 await writeAtomically(fileSystem, join(workspace.directory, ...document.relativePath.split('/')), prepared.contents)
             }
             await rebuildIndex(characterId, chatId)
-            await commitWrite({
-                characterId,
-                chatId,
-                kind: 'import',
+            
             })
         },
 
@@ -2706,6 +2677,7 @@ export function createMarkdownNarrativeWiki(
             find: string
             replacement: string
         }): Promise<{ matches: number; documents: number }> {
+            return writeTransaction(input, 'manual', async () => {
             if (typeof input.find !== 'string'
                 || input.find.length === 0
                 || input.find.length > 256) {
@@ -2776,11 +2748,7 @@ export function createMarkdownNarrativeWiki(
                 throw error
             }
             await rebuildIndex(input.characterId, input.chatId)
-            await commitWrite({
-                characterId: input.characterId,
-                chatId: input.chatId,
-                kind: 'manual',
-            })
+            
             return {
                 matches: staged.reduce(
                     (total, item) => total + item.matches,
@@ -2788,6 +2756,7 @@ export function createMarkdownNarrativeWiki(
                 ),
                 documents: staged.length,
             }
+            })
         },
 
         async embeddingCatalog(input: {
@@ -2874,4 +2843,5 @@ export function createMarkdownNarrativeWiki(
             })
         },
     }
+    return service
 }

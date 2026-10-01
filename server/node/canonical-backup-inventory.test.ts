@@ -173,3 +173,35 @@ it('rejects mapping path escape before inventory traversal', async () => {
     atomicWriteJson(dataRoot, 'index/character-directories.json', { schemaVersion: 1, characters: [{ id: 'char-1', directory: '../outside', chats: [] }] })
     await expect(list(dataRoot)).rejects.toThrow(/Unsafe/)
 })
+
+it('freezes canonical and KV bytes across later mutations and directory mapping changes', async () => {
+    const { dataRoot, repo } = fixture()
+    const original = repo.exportLegacyDatabase()
+    const value = Buffer.from('original asset')
+    const { createBackupSnapshot } = require('./canonical-backup-inventory.cjs')
+    const snapshot = await createBackupSnapshot([
+        ...await list(dataRoot),
+        { kind: 'kv', key: 'assets/one', backupName: 'one.png' },
+    ], () => value, { dataRoot })
+    repo.publishCharacterDirectoryMapping('char-1')
+    const changed = repo.exportLegacyDatabase()
+    changed.characters[0].chats[0].message.push({ role: 'char', data: 'Later turn' })
+    repo.importLegacyDatabase(changed, { mode: 'sync' })
+    value.fill(0)
+    const restored = root()
+    commitTransaction(restored, snapshot.entries.filter((entry: any) => entry.backupName !== 'one.png')
+        .map((entry: any) => ({ path: decodeCanonicalBackupName(entry.backupName), data: fs.readFileSync(entry.sourcePath) })))
+    expect(createUserDataRepository({ dataRoot: restored }).exportLegacyDatabase()).toEqual(original)
+    expect(fs.readFileSync(snapshot.entries.find((entry: any) => entry.backupName === 'one.png').sourcePath))
+        .toEqual(Buffer.from('original asset'))
+})
+
+it('removes an incomplete byte snapshot when an inventoried entry disappears', async () => {
+    const dataRoot = root()
+    const { createBackupSnapshot } = require('./canonical-backup-inventory.cjs')
+    await expect(createBackupSnapshot([
+        { kind: 'buffer', buffer: Buffer.from('copied'), backupName: 'first' },
+        { kind: 'kv', key: 'missing', backupName: 'second' },
+    ], () => undefined, { dataRoot })).rejects.toThrow('entry disappeared')
+    expect(fs.readdirSync(dataRoot)).toEqual([])
+})

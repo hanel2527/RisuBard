@@ -1,5 +1,8 @@
 import { invokeBrowserFetch } from './browserFetch'
 import { announceRisuBardMemoryUpdated } from './memoryEvents'
+import { Buffer } from 'buffer'
+import type { Chat } from '../storage/database.svelte'
+import { encodeMemorySaveChat } from './memorySaveSlots'
 
 export type MemoryWikiForkMode = 'copy' | 'branch'
 
@@ -145,9 +148,11 @@ export async function completeMemoryWikiFork(input: {
     destinationChatId: string
     forkToken: string
     action: MemoryWikiForkCompletionAction
+    chat?: Chat
     fetchImpl: typeof fetch
     createAuth(): Promise<string>
 }): Promise<MemoryWikiForkCompletionReceipt> {
+    const bytes = input.chat ? encodeMemorySaveChat(input.chat) : undefined
     const body = {
         characterId: boundedId(input.characterId, 'Character ID'),
         destinationChatId: boundedId(
@@ -156,6 +161,7 @@ export async function completeMemoryWikiFork(input: {
         ),
         forkToken: boundedId(input.forkToken, 'Fork token'),
         action: input.action,
+        ...(bytes ? { chatBase64: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64') } : {}),
     }
     if (body.action !== 'finalize' && body.action !== 'discard') {
         throw new Error('Invalid memory fork completion action')

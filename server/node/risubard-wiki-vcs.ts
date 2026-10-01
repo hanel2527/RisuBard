@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { dirname, join, relative, resolve } from 'node:path'
 import { Packr, Unpackr } from 'msgpackr'
 import { resolveMemoryWorkspace } from './risubard-memory-workspace'
+import { writeFileAtomically } from './file-store.cjs'
 import {
     computeWikiPrefixDigests,
     computeWikiPrefixDigest,
@@ -82,6 +83,11 @@ interface WikiOperationJournal {
     targetPaths?: Record<string, string | null>
     recoveryRefId?: string | null
     reason?: WikiRecoveryReason
+    /** Immutable chat snapshots applied under this same publication decision. */
+    previousChatStateRef?: string
+    chatStateRef?: string
+    /** Staged legacy workspace finalized under this publication decision. */
+    memoryForkToken?: string
     checkpointCreated: boolean
     prepared: boolean
     /** Written once the branch head points at the commit. */
@@ -153,6 +159,14 @@ function parseJournal(value: unknown): WikiOperationJournal | undefined {
     }
     if ((record.beforePaths !== undefined && !beforePaths)
         || (record.targetPaths !== undefined && !targetPaths)) return undefined
+    if ((record.chatStateRef !== undefined || record.previousChatStateRef !== undefined)
+        && (!HASH_PATTERN.test(String(record.chatStateRef))
+            || !HASH_PATTERN.test(String(record.previousChatStateRef)))) return undefined
+    if (record.memoryForkToken !== undefined
+        && (record.mode !== 'checkout' || !record.chatStateRef
+            || typeof record.memoryForkToken !== 'string'
+            || record.memoryForkToken.length === 0
+            || record.memoryForkToken.length > 1_024)) return undefined
     return {
         schemaVersion: 1,
         operationId: record.operationId,
@@ -172,6 +186,11 @@ function parseJournal(value: unknown): WikiOperationJournal | undefined {
             ? { recoveryRefId: record.recoveryRefId } : {}),
         ...(typeof record.reason === 'string'
             ? { reason: record.reason as WikiRecoveryReason } : {}),
+        ...(record.chatStateRef ? {
+            chatStateRef: record.chatStateRef,
+            previousChatStateRef: record.previousChatStateRef,
+        } : {}),
+        ...(record.memoryForkToken ? { memoryForkToken: record.memoryForkToken } : {}),
         checkpointCreated: record.checkpointCreated === true,
         prepared: record.prepared,
         published: record.published,
@@ -205,6 +224,17 @@ export interface WikiVcsRepository {
 export interface WikiVcsServiceOptions {
     fileSystem?: RepositoryFileSystem
     now?: () => Date
+    applyChatState?: (input: {
+        characterId: string
+        chatId: string
+        previous: string
+        next: string
+    }) => Promise<void>
+    applyMemoryFork?: (input: {
+        characterId: string
+        chatId: string
+        forkToken: string
+    }) => Promise<void>
 }
 
 /**
@@ -300,28 +330,6 @@ async function syncDirectory(fileSystem: RepositoryFileSystem, directory: string
     finally { await handle.close() }
 }
 
-async function writeFileAtomically(
-    fileSystem: RepositoryFileSystem,
-    file: string,
-    contents: string
-): Promise<void> {
-    await fileSystem.mkdir(dirname(file), { recursive: true })
-    const temporary = `${file}.${randomUUID()}.tmp`
-    try {
-        await fileSystem.writeFile(temporary, contents, {
-            encoding: 'utf8',
-            flag: 'wx',
-            mode: 0o600,
-            flush: true,
-        })
-        await fileSystem.rename(temporary, file)
-        await syncDirectory(fileSystem, dirname(file))
-    }
-    catch (error) {
-        await fileSystem.rm(temporary, { force: true }).catch(() => undefined)
-        throw error
-    }
-}
 
 async function removeFileDurably(
     fileSystem: RepositoryFileSystem,
@@ -1243,6 +1251,15 @@ export function createWikiVcsRepository(
                 throw new Error(`Wiki materialization target is inconsistent: ${path}`)
             }
         }
+        if (journal.memoryForkToken) {
+            if (!options.applyMemoryFork) {
+                throw new Error('Wiki operation pending: memory workspace writer is unavailable')
+            }
+            await options.applyMemoryFork({
+                characterId: journal.characterId, chatId: journal.chatId,
+                forkToken: journal.memoryForkToken,
+            })
+        }
         for (const path of journal.changedPaths) {
             const currentHash = await readWorkingTreePathHash(repository, path)
             const expectedHash = beforePaths[path]
@@ -1280,7 +1297,7 @@ export function createWikiVcsRepository(
                 invalidateWorkingTreePath(repository, path)
             }
         }
-        const materializedPaths = await readWorkingTree(repository)
+        const materializedPaths = commitPaths
         for (const path of journal.changedPaths) {
             const desiredHash = targetPaths[path]
             const currentHash = await readWorkingTreePathHash(repository, path)
@@ -1290,8 +1307,6 @@ export function createWikiVcsRepository(
                     beforePaths[path], desiredHash
                 )
             }
-            if (currentHash === null) materializedPaths.delete(path)
-            else materializedPaths.set(path, currentHash)
         }
         if (journal.recoveryRefId && journal.previousHead
             && journal.previousHead !== journal.commitId) {
@@ -1313,6 +1328,8 @@ export function createWikiVcsRepository(
                     chatId: journal.chatId,
                     reason: journal.reason ?? 'truncate',
                     id: journal.recoveryRefId,
+                    ...(journal.previousChatStateRef
+                        ? { chatStateRef: journal.previousChatStateRef } : {}),
                 })
             }
         }
@@ -1320,7 +1337,23 @@ export function createWikiVcsRepository(
         await writeLinkFor(
             repository, branch, journal.commitId, materializedPaths
         )
-        if (journal.mode === 'publish') {
+        if (journal.chatStateRef && journal.previousChatStateRef) {
+            if (!options.applyChatState) {
+                throw new Error('Wiki operation pending: canonical chat writer is unavailable')
+            }
+            const input = { characterId: journal.characterId, chatId: journal.chatId }
+            const previous = await service.readChatState({
+                ...input, hash: journal.previousChatStateRef,
+            })
+            const next = await service.readChatState({
+                ...input, hash: journal.chatStateRef,
+            })
+            if (previous === null || next === null) {
+                throw new Error('Wiki operation pending: checkout chat snapshot is missing')
+            }
+            await options.applyChatState({ ...input, previous, next })
+        }
+        if (journal.mode === 'publish' || journal.mode === 'checkout') {
             const receipt: WikiOperationReceipt = {
                 schemaVersion: 1,
                 operationId: journal.operationId,
@@ -1333,6 +1366,7 @@ export function createWikiVcsRepository(
                 changedPaths: journal.changedPaths,
                 checkpointCreated: journal.checkpointCreated,
                 createdAt: journal.createdAt,
+                ...(journal.recoveryRefId ? { recoveryRefId: journal.recoveryRefId } : {}),
             }
             await writeFileAtomically(
                 fileSystem,
@@ -1379,6 +1413,27 @@ export function createWikiVcsRepository(
         ): Promise<Record<string, string>> {
             const { repository } = await ensureRepositoryForChat(characterId, chatId)
             return Object.fromEntries([...(await pathMapFor(repository, commitId))])
+        },
+
+        /** A v1 snapshot remains usable when its optional history is unavailable. */
+        async matchesWorkingTree(input: {
+            characterId: string; chatId: string; commitId: string
+        }): Promise<boolean> {
+            const repository = repositoryFor(input.characterId, input.chatId)
+            try {
+                const target = await pathMapFor(repository, input.commitId)
+                const actual = await readWorkingTree(repository)
+                if (changedPathsBetweenMaps(actual, target).length > 0) return false
+                for (const hash of new Set(target.values())) await readBlob(repository, hash)
+                return true
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code === 'ENOENT'
+                    || error instanceof SyntaxError
+                    || (error instanceof Error && /^(?:Wiki commit is missing or corrupt:|Wiki blob checksum verification failed:|Invalid wiki checkpoint|Wiki commit history contains a cycle)/.test(error.message))) {
+                    return false
+                }
+                throw error
+            }
         },
 
         async discardChatBranch(
@@ -1583,12 +1638,12 @@ export function createWikiVcsRepository(
         },
         /** Publishes sparse staged changes and materializes them atomically. */
         async publishChanges(
-            input: WikiPublishChangesRequest
+            input: WikiPublishChangesRequest, signal?: AbortSignal
         ): Promise<WikiPublishChangesResult> {
             const characterId = requiredString(input.characterId, 'Character ID')
             const chatId = requiredString(input.chatId, 'Chat ID')
             const operationId = operationIdentifier(input.operationId)
-            let { repository, branch } = await ensureRepositoryForChat(
+            const { repository, branch } = await ensureRepositoryForChat(
                 characterId, chatId
             )
             const operationDirectory = join(
@@ -1611,38 +1666,12 @@ export function createWikiVcsRepository(
                     changedPaths: [...previousReceipt.changedPaths],
                 }
             }
+            signal?.throwIfAborted()
 
-            let actual = await readWorkingTree(repository)
-            let base = branch.head
+            const actual = new Map<string, string>()
+            const base = branch.head
                 ? await pathMapFor(repository, branch.head)
                 : new Map<string, string>()
-            if (changedPathsBetweenMaps(base, actual).length > 0) {
-                const externalAnchor = input.chatAnchor
-                    ?? (branch.head
-                        ? (await requireCommit(repository, branch.head)).chatAnchor
-                        : {
-                            sourceChatId: chatId,
-                            boundaryMessageId: null,
-                            prefixDigest: '',
-                            evidenceDigest: '',
-                        })
-                await service.captureExternalChanges({
-                    characterId,
-                    chatId,
-                    chatAnchor: externalAnchor,
-                    operationId: `external:${randomUUID()}`,
-                    kind: 'external',
-                })
-                const refreshed = await ensureRepositoryForChat(
-                    characterId, chatId
-                )
-                repository = refreshed.repository
-                branch = refreshed.branch
-                actual = await readWorkingTree(repository)
-                base = branch.head
-                    ? await pathMapFor(repository, branch.head)
-                    : new Map<string, string>()
-            }
             if (input.expectedHead !== branch.head) {
                 throw new Error('Wiki commit conflict: the branch head changed')
             }
@@ -1658,12 +1687,24 @@ export function createWikiVcsRepository(
                 }
                 seen.add(path)
                 const before = base.get(path) ?? null
+                const current = await readWorkingTreePathHash(repository, path)
+                if (current !== before) {
+                    await service.captureExternalChanges({
+                        characterId, chatId,
+                        chatAnchor: input.chatAnchor
+                            ?? (branch.head ? (await requireCommit(repository, branch.head)).chatAnchor : {
+                                sourceChatId: chatId, boundaryMessageId: null, prefixDigest: '', evidenceDigest: '',
+                            }),
+                    })
+                    throw new Error('Wiki commit conflict: the working path changed')
+                }
+                if (current !== null) actual.set(path, current)
                 const after = change.contents === null
                     ? null
                     : await writeBlob(repository, change.contents)
                 if (before !== after) resolved.push({ path, before, after })
             }
-            if (resolved.length === 0) {
+            if (resolved.length === 0 && input.kind !== 'analysis' && input.kind !== 'rebuild') {
                 return { commitId: null, changedPaths: [] }
             }
             resolved.sort((left, right) => left.path.localeCompare(right.path))
@@ -1709,6 +1750,8 @@ export function createWikiVcsRepository(
                 published: false,
                 createdAt: now().toISOString(),
             }
+            // The durable journal is the decision point; cancellation cannot undo it.
+            signal?.throwIfAborted()
             await writeJournal(repository, journal)
             await writeFileAtomically(
                 fileSystem,
@@ -1996,6 +2039,23 @@ export function createWikiVcsRepository(
             return entries
         },
 
+        async readCommitAncestors(input: {
+            characterId: string; chatId: string; commitId: string
+        }): Promise<{ commitIds: string[]; nextCommitId: string | null }> {
+            const { repository } = await ensureRepositoryForChat(input.characterId, input.chatId)
+            const commitIds: string[] = []
+            const visited = new Set<string>()
+            let cursor: string | null = input.commitId
+            while (cursor && commitIds.length < 200) {
+                if (visited.has(cursor)) throw new Error('Wiki commit history contains a cycle')
+                visited.add(cursor)
+                const commit = await requireCommit(repository, cursor)
+                commitIds.push(commit.id)
+                cursor = commit.parent
+            }
+            return { commitIds, nextCommitId: cursor }
+        },
+
         async previewCheckout(input: {
             characterId: string
             chatId: string
@@ -2043,6 +2103,10 @@ export function createWikiVcsRepository(
             commitId: string
             reason?: WikiRecoveryReason
             chatAnchor?: WikiChatAnchor
+            operationId?: string
+            previousChatStateRef?: string
+            chatStateRef?: string
+            memoryForkToken?: string
         }): Promise<{
             branchId: string
             commitId: string
@@ -2055,6 +2119,29 @@ export function createWikiVcsRepository(
             const { repository, branch } = await ensureRepositoryForChat(
                 characterId, chatId
             )
+            if (input.chatStateRef || input.previousChatStateRef) {
+                if (!options.applyChatState
+                    || !HASH_PATTERN.test(String(input.chatStateRef))
+                    || !HASH_PATTERN.test(String(input.previousChatStateRef))) {
+                    throw new Error('Invalid wiki checkout chat transition')
+                }
+            }
+            if (input.memoryForkToken && (!input.chatStateRef || !options.applyMemoryFork)) {
+                throw new Error('Invalid wiki checkout workspace transition')
+            }
+            const operationId = operationIdentifier(input.operationId ?? `checkout:${randomUUID()}`)
+            const receipt = await service.readOperationReceipt({ characterId, chatId, operationId })
+            if (receipt) {
+                const journal = parseJournal(await readJson<unknown>(
+                    fileSystem, join(repository.operationsDirectory, operationId, JOURNAL_FILE)
+                ))
+                if (journal?.mode !== 'checkout' || receipt.commitId !== input.commitId
+                    || journal.chatStateRef !== input.chatStateRef
+                    || journal.memoryForkToken !== input.memoryForkToken) {
+                    throw new Error('Wiki operation ID was used by another operation')
+                }
+                return { ...receipt, recoveryRefId: journal.recoveryRefId ?? null }
+            }
             const actual = await readWorkingTree(repository)
             const target = await requireCommit(repository, input.commitId)
             const next = await pathMapFor(repository, target.id)
@@ -2064,7 +2151,6 @@ export function createWikiVcsRepository(
                 const hash = next.get(path)
                 if (hash) await readBlob(repository, hash)
             }
-            const operationId = `checkout:${randomUUID()}`
             const previousHead = branch.head
             const recoveryRefId = previousHead && previousHead !== target.id
                 ? `recovery:${hashBytes(operationId)}`
@@ -2087,6 +2173,11 @@ export function createWikiVcsRepository(
                 ])),
                 ...(recoveryRefId ? { recoveryRefId } : {}),
                 ...(input.reason ? { reason: input.reason } : {}),
+                ...(input.chatStateRef ? {
+                    chatStateRef: input.chatStateRef,
+                    previousChatStateRef: input.previousChatStateRef,
+                } : {}),
+                ...(input.memoryForkToken ? { memoryForkToken: input.memoryForkToken } : {}),
                 checkpointCreated: false,
                 prepared: true,
                 published: false,
@@ -2329,7 +2420,7 @@ export function createWikiVcsRepository(
             hash: string
         }): Promise<string | null> {
             const { repository } = await ensureRepositoryForChat(
-                input.characterId, input.chatId
+                input.characterId, input.chatId, true
             )
             if (!HASH_PATTERN.test(input.hash)) {
                 throw new Error('Invalid chat state hash')
@@ -2387,6 +2478,14 @@ export function createWikiVcsRepository(
                     if (ref?.chatStateRef) referenced.add(ref.chatStateRef)
                 }
             }
+            for (const name of await readDirectory(fileSystem, repository.operationsDirectory)) {
+                const journal = parseJournal(await readJson<unknown>(
+                    fileSystem, join(repository.operationsDirectory, name, JOURNAL_FILE)
+                ))
+                if (journal?.published) continue
+                if (journal?.chatStateRef) referenced.add(journal.chatStateRef)
+                if (journal?.previousChatStateRef) referenced.add(journal.previousChatStateRef)
+            }
             for (const hash of referenced) {
                 if (!HASH_PATTERN.test(hash)) throw new Error('Invalid chat state root')
                 const contents = await fileSystem.readFile(
@@ -2413,6 +2512,20 @@ export function createWikiVcsRepository(
                 deletedObjects += 1
             }
             return { deletedObjects, deletedBytes }
+        },
+
+        async readOperationReceipt(input) {
+            const { repository } = await ensureRepositoryForChat(
+                input.characterId, input.chatId, true
+            )
+            const receipt = await readJson<WikiOperationReceipt>(
+                fileSystem, join(repository.operationsDirectory, operationIdentifier(input.operationId), 'receipt.json')
+            )
+            if (receipt?.status !== 'completed') return undefined
+            if (receipt.characterId !== input.characterId || receipt.chatId !== input.chatId) {
+                throw new Error('Wiki operation belongs to another chat')
+            }
+            return receipt
         },
 
         /**
@@ -2651,8 +2764,11 @@ export interface WikiVcsService {
         chatId: string,
         commitId: string
     ): Promise<Record<string, string>>
+    matchesWorkingTree(input: {
+        characterId: string; chatId: string; commitId: string
+    }): Promise<boolean>
     commit(input: WikiCommitRequest): Promise<WikiOperationReceipt>
-    publishChanges(input: WikiPublishChangesRequest): Promise<WikiPublishChangesResult>
+    publishChanges(input: WikiPublishChangesRequest, signal?: AbortSignal): Promise<WikiPublishChangesResult>
     captureExternalChanges(input: {
         characterId: string
         chatId: string
@@ -2674,6 +2790,9 @@ export interface WikiVcsService {
         chatId: string
         limit?: number
     }): Promise<WikiHistoryEntry[]>
+    readCommitAncestors(input: {
+        characterId: string; chatId: string; commitId: string
+    }): Promise<{ commitIds: string[]; nextCommitId: string | null }>
     previewCheckout(input: {
         characterId: string
         chatId: string
@@ -2687,6 +2806,10 @@ export interface WikiVcsService {
         commitId: string
         reason?: WikiRecoveryReason
         chatAnchor?: WikiChatAnchor
+        operationId?: string
+        previousChatStateRef?: string
+        chatStateRef?: string
+        memoryForkToken?: string
     }): Promise<{
         branchId: string
         commitId: string
@@ -2694,6 +2817,11 @@ export interface WikiVcsService {
         changedPaths: string[]
         recoveryRefId: string | null
     }>
+    readOperationReceipt(input: {
+        characterId: string
+        chatId: string
+        operationId: string
+    }): Promise<WikiOperationReceipt | undefined>
     createRef(input: {
         characterId: string
         chatId?: string

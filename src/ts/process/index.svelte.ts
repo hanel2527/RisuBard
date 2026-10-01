@@ -32,7 +32,7 @@ import { dispatchCommittedChatOutput } from "../plugins/pluginChatOutput";
 import { getModelInfo, LLMFlags } from "../model/modellist";
 import { resolveChatModelBinding, resolvePresetMaxOutputTokens } from "./request/modelPresetBinding";
 import { getModuleAssets, getModuleLorebooksWithSources, getModuleToggles } from "./modules";
-import { forageStorage, readImage, refreshLiveFiles } from "../globalApi.svelte";
+import { forageStorage, readImage, refreshLiveFiles, requestImmediateSave } from "../globalApi.svelte";
 import { chatGenKey, chatProcessStage, endGeneration, isChatGenerating, setGenerationStage, startGeneration } from "./generationState";
 import { waitForSendSync } from './sendPreparation';
 import { clearPendingSend, registerPendingSend } from "./request/pendingSends";
@@ -77,7 +77,7 @@ import {
 import { announceRisuBardMemoryUpdated } from '../risubard/memoryEvents';
 import { anchorMessagesFromChat } from '../risubard/wikiChatCoordinator';
 import { chatBoundaryAnchor } from '../risubard/wikiVcsContract';
-import { findWikiCommitForPrefix, previewWikiCheckout, forkWikiVersion, ensureWikiVersion } from '../risubard/wikiVersionClient';
+import { findWikiCommitForPrefix, previewWikiCheckout, ensureWikiVersion } from '../risubard/wikiVersionClient';
 import {
     executeDirectWikiCommand,
     type DirectWikiContextSelection,
@@ -124,6 +124,7 @@ import {
     completeWikiRebootBatch,
     prepareWikiRebootReplacement,
     recoverWikiRebootBatch,
+    seedWikiReboot,
 } from '../risubard/wikiRebootTransport';
 import { completeMemoryWikiFork } from '../risubard/memoryWikiFork';
 import {
@@ -262,12 +263,9 @@ async function confirmProjectedNarrativeTurn(input: {
             // The server validates this exact persisted prefix immediately
             // before publishing, so another client cannot make this analysis
             // land on a stale chat revision.
-            await saveChatToServer(
-                character.chaId,
-                chatIndex,
-                input.chatId,
-                chat
-            )
+            await requestImmediateSave({
+                flushServer: 'canonical', rejectOnFailure: true,
+            })
         }
         const wikiPromptPreset = resolveWikiPromptPreset(
             DBState.db.risuBardWikiPromptPresets,
@@ -859,8 +857,8 @@ export async function rebuildWikiForChat(
                     : chat.message.findIndex((message) => message.chatId === boundary)
                 if (preview.exact && (boundary === null || boundaryIndex >= 0)
                     && boundaryIndex < fromIndex) {
-                    await forkWikiVersion({
-                        characterId, sourceChatId: chatId, destinationChatId: stagingChatId,
+                    await seedWikiReboot({
+                        characterId, sourceChatId: chatId, stagingChatId,
                         commitId, fetchImpl: fetch,
                         createAuth: () => forageStorage.createAuth(),
                     })

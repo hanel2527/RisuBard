@@ -2454,33 +2454,6 @@ describe('memory analysis runner', () => {
         expect(saveCanonicalDocument).not.toHaveBeenCalled()
     })
 
-    test('does not protect an ordinary turn with no durable change', async () => {
-        const recordRebootBatchReceipt = vi.fn(async (input) => input.receipt)
-        const runner = createMemoryAnalysisRunner({
-            memoryService: { loadState: vi.fn(), applyDelta: vi.fn() },
-            nativeV2Analysis: true,
-            markdownWikiService: {
-                inquire: vi.fn(async () => ({ graphRevision: 0, sources: [] })),
-                beginRebootBatch: vi.fn(async () => ({ canonicalCount: 0 })),
-                loadDocuments: vi.fn(async () => []),
-                saveConfirmedTurn: vi.fn(),
-                recordRebootBatchReceipt,
-            },
-            onError: vi.fn(),
-            analyze: async () => JSON.stringify({
-                schemaVersion: 1, title: '변화 없음', establishedEvents: [],
-                stateChanges: [], characterKnowledge: [], persistentFacts: [],
-                openContinuity: [], canonicalUpdateCandidates: [],
-            }),
-        })
-        const result = await runner.run({
-            characterId: 'character', chatId: 'chat',
-            messages: [{ messageId: 'assistant-1', role: 'assistant',
-                content: '아무 변화도 없었다.' }],
-        })
-        expect(result.canonicalReceipt).toBeUndefined()
-        expect(recordRebootBatchReceipt).not.toHaveBeenCalled()
-    })
 
     test('keeps an empty receipt as a reboot batch completion marker', async () => {
         const beginRebootBatch = vi.fn(async () => ({ canonicalCount: 0 }))

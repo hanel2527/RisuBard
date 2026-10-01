@@ -106,7 +106,7 @@ export interface WikiChatLink {
     branchId: string
     /** Commit the working tree was last materialized from. */
     materializedCommitId: string | null
-    /** Working tree revision observed at the last materialization. */
+    /** Revision of the committed path map last materialized by the app. */
     materializedRevision: string
     originChatId?: string
     updatedAt: string
@@ -148,6 +148,7 @@ export interface WikiOperationReceipt {
     changedPaths: string[]
     checkpointCreated: boolean
     createdAt: string
+    recoveryRefId?: string
 }
 
 export interface WikiCommitRequest {
@@ -181,7 +182,10 @@ export interface WikiCheckoutRequest {
     characterId: string
     chatId: string
     commitId: string
-    /** Chat-side payload applied by the caller after the wiki moves. */
+    operationId: string
+    /** Canonical chat snapshot published under the wiki journal's decision. */
+    chatBase64: string
+    expectedChatAnchor?: WikiChatAnchor
     reason?: WikiRecoveryReason
 }
 
