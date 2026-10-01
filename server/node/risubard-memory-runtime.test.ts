@@ -2,13 +2,15 @@ import { createRequire } from 'node:module'
 import { access, mkdtemp, readFile, writeFile, rm, rename } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { describe, expect, test, vi } from 'vitest'
 import { Packr, Unpackr } from 'msgpackr'
 import type { Chat } from '../../src/ts/storage/database.svelte'
 import { createWikiVcsRepository, resolveWikiVcsRepository } from './risubard-wiki-vcs'
 import { createMemoryAnalysisRunner } from './risubard-memory-analysis'
 import { createNarrativeMemoryService } from './risubard-memory-service'
-import { forkWikiVersion } from '../../src/ts/risubard/wikiVersionClient'
+import { checkoutWikiVersion, createWikiRecovery, forkWikiVersion, readWikiRecovery } from '../../src/ts/risubard/wikiVersionClient'
 import { chatBoundaryAnchor } from '../../src/ts/risubard/wikiVcsContract'
 import { prepareMemorySaveChatSnapshot } from '../../src/ts/risubard/memorySavePolicy'
 import { resolveMemoryWorkspace } from './risubard-memory-workspace'
@@ -28,6 +30,108 @@ function seedCanonicalChat(root: string, chat: Chat = {
 }
 
 describe('RisuBard memory CommonJS runtime', () => {
+    test('persists large chat snapshots through fork, checkout and legacy completion', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'risubard-large-chat-fork-'))
+        let server: Server | undefined
+        try {
+            const { canonical } = seedCanonicalChat(root, {
+                id: 'chat-1', name: 'Large story', note: '', localLore: [], fmIndex: -1,
+                scriptstate: { score: 100 },
+                message: [{ chatId: 'm1', role: 'char',
+                    data: `Opening.\n${'Established dialogue. '.repeat(30_000)}\nEnd of the checkpoint.` }],
+            })
+            const source = canonical.loadChat('character', 'chat-1') as Chat
+            const service = require('./risubard-memory-runtime.cjs').createRuntimeMemoryService(root,
+                { canonicalRepository: canonical })
+            const document = await service.saveManualWikiDocument({
+                characterId: 'character', chatId: 'chat-1', type: 'concept',
+                title: 'Clock', markdown: '# Clock\n\nBefore the gate.',
+            })
+            const express = require('express')
+            const { createRisuBardMemoryJsonParser, registerRisuBardMemoryRoutes } =
+                require('./risubard-memory-routes.cjs')
+            const app = express()
+            app.use('/api/risubard/memory', createRisuBardMemoryJsonParser(express))
+            app.use(express.json({ limit: '100mb' }))
+            registerRisuBardMemoryRoutes(app, { service, auth: async () => true })
+            server = app.listen(0, '127.0.0.1')
+            await new Promise<void>(resolve => server!.once('listening', resolve))
+            const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+            const transport = {
+                fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => fetch(base + String(input), init),
+                createAuth: async () => 'auth',
+            }
+            const packer = new Packr({ useRecords: false })
+            const snapshot = packer.pack(source).toString('base64')
+            expect(Buffer.byteLength(JSON.stringify({ chatBase64: snapshot }))).toBeGreaterThan(512 * 1_024)
+
+            const forkChat: Chat = { ...source, id: 'large-fork' }
+            const forked = await forkWikiVersion({
+                characterId: 'character', sourceChatId: 'chat-1', destinationChatId: 'large-fork',
+                commitId: document.vcsCommitId, chat: forkChat, ...transport,
+            })
+            expect(forked.commitId).toBe(document.vcsCommitId)
+            expect(canonical.loadChat('character', 'large-fork').message).toEqual(source.message)
+            expect(canonical.loadChat('character', 'large-fork').scriptstate).toEqual({ score: 100 })
+            expect((await service.loadView('character', 'large-fork')).documents
+                .find((item: { id: string }) => item.id === document.id)?.content).toBe(document.content)
+            expect(canonical.loadChat('character', 'chat-1').message).toEqual(source.message)
+
+            await service.saveManualWikiDocument({
+                characterId: 'character', chatId: 'large-fork', documentId: document.id,
+                type: 'concept', title: 'Clock', markdown: '# Clock\n\nAfter the gate.',
+                expectedContentHash: document.contentHash,
+            })
+            const before = canonical.loadChat('character', 'large-fork')
+            canonical.replaceChat('character', 'large-fork', before,
+                { ...before, scriptstate: { score: 200 } })
+            await checkoutWikiVersion({
+                characterId: 'character', chatId: 'large-fork', commitId: document.vcsCommitId,
+                chat: forkChat, ...transport,
+            })
+            expect(canonical.loadChat('character', 'large-fork').message).toEqual(source.message)
+            expect(canonical.loadChat('character', 'large-fork').scriptstate).toEqual({ score: 100 })
+            expect((await service.loadView('character', 'large-fork')).documents
+                .find((item: { id: string }) => item.id === document.id)?.content).toBe(document.content)
+
+            const refId = await createWikiRecovery({
+                characterId: 'character', chatId: 'chat-1', commitId: document.vcsCommitId,
+                reason: 'fork', chatBase64: snapshot, ...transport,
+            })
+            const recovery = await readWikiRecovery({
+                characterId: 'character', chatId: 'chat-1', id: refId, ...transport,
+            })
+            const recovered = new Unpackr({ useRecords: false, int64AsType: 'number' })
+                .unpack(Buffer.from(recovery.chatBase64, 'base64'))
+            expect(recovered.message).toEqual(source.message)
+            expect(recovered.scriptstate).toEqual({ score: 100 })
+
+            await service.createMemorySave({
+                characterId: 'character', sourceChatId: 'chat-1', saveId: 'large-v1',
+                sourceChatName: source.name, turnCount: 1, chatBytes: packer.pack(source),
+            })
+            const prepared = await service.prepareMemorySaveLoad({
+                characterId: 'character', saveId: 'large-v1', destinationChatId: 'large-v1-load',
+            })
+            const completed = await fetch(`${base}/api/risubard/memory/fork/complete`, {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    characterId: 'character', destinationChatId: 'large-v1-load',
+                    forkToken: prepared.fork.forkToken, action: 'finalize',
+                    chatBase64: packer.pack({ ...source, id: 'large-v1-load' }).toString('base64'),
+                }),
+            })
+            expect(completed.status).toBe(200)
+            expect(canonical.loadChat('character', 'large-v1-load').message).toEqual(source.message)
+            expect(canonical.loadChat('character', 'large-v1-load').scriptstate).toEqual({ score: 100 })
+            expect((await service.loadView('character', 'large-v1-load')).documents
+                .find((item: { id: string }) => item.id === document.id)?.content).toBe(document.content)
+        } finally {
+            if (server) await new Promise<void>(resolve => server!.close(() => resolve()))
+            await rm(root, { recursive: true, force: true })
+        }
+    })
+
     test('restores a v1 save at its pinned Wiki head after a runtime restart', async () => {
         const { createRuntimeMemoryService } = require('./risubard-memory-runtime.cjs')
         const root = await mkdtemp(join(tmpdir(), 'risubard-runtime-save-restore-'))

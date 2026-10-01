@@ -335,6 +335,19 @@ v1 manifest는 알 수 없는 필드를 거부하는 기존 계약을 유지합�
 
 완료 receipt는 `schemaVersion: 1`, `status: 'completed'`, 작업·소유자 ID, `commitId`, `previousHead`, `changedPaths`, `checkpointCreated`, `createdAt`, 선택적 `recoveryRefId`를 가집니다. 모든 mode가 완료 receipt 파일을 만드는 것은 아닙니다. 현재 `publish`·`checkout` 경로는 이 완료 결과를 사용해 응답 유실 후 같은 작업의 결과를 조회합니다.
 
+### 2.10. JSON 요청 본문 한도
+
+분기·시점 복원·세이브 완료는 위키 커밋 ID뿐 아니라 대화 스냅샷도 전송합니다. 서버의 메모리 API 파서는 다음 한도를 사용합니다. 아래 경로는 `/api/risubard/memory` 뒤의 부분입니다.
+
+| 경로 | JSON 본문 한도 |
+| --- | --- |
+| `/wiki/version/fork`, `/wiki/version/checkout`, `/fork/complete` | 66MiB |
+| `/wiki/version/ref`, `/wiki/version/recovery/*` | 66MiB |
+| `/wiki/version/prefix`, `/wiki/version/preview` | 8MiB |
+| 나머지 메모리 API 경로 | 512KiB |
+
+스냅샷 필드 `chatBase64`의 길이 한도는 **Base64 인코딩 후 `64 * 1024 * 1024`자**입니다. 66MiB 본문 한도는 JSON과 소유자·작업 ID를 포함할 여유이며, 필드 한도를 없애거나 대화를 잘라 보내는 방식이 아닙니다. `/wiki/version/fork/discard`처럼 스냅샷을 받지 않는 경로까지 한도를 늘리지 않습니다.
+
 ## 3. 변경된 UI와 사용 흐름
 
 ### 위키의 이력 화면
@@ -469,6 +482,8 @@ VCS 파일·ref·link를 수동 편집해 복구하는 것은 정상적인 데�
 구현 검증에서는 새 회귀 테스트 13개와 Svelte·TypeScript 검사(`pnpm check`, 오류·경고 0건)를 확인했습니다. 실제 서버·브라우저 시나리오에서도 head 충돌, 중단 후 receipt/확정 복구, 오래된 세이브 거부, 과거 분기, 조회 중 source-change 중단, 참조형 세이브 불러오기와 수동 세이브를 확인했습니다. 브라우저의 모델 응답은 고정 fixture였으며 실제 외부 모델 제공자의 응답 품질 검증은 아닙니다.
 
 이번 문서 작성에서는 별도 임시 저장소에서 **실제 VCS·세이브 구현**을 실행해 커밋/blob 해시, 디렉터리 배치, 분기의 객체 공유와 작업 트리 생성, 체크포인트, 대화 상태 round-trip, 참조형 manifest, v1 `chat.bin`을 확인했습니다. 기존 테스트는 다시 실행하지 않았습니다.
+
+후속 본문 한도 수정에서는 새 HTTP 회귀 테스트 1개와 별도 실제 서버 실행으로 큰 대화의 분기·시점 복원·복구 ref·v1 세이브 완료를 확인했습니다. 분기 요청 본문은 **2,347,129바이트**였으며, 과거 접두부·변수·위키의 복원과 원본 대화 유지, 새 저장소 인스턴스에서의 영속 상태 조회를 확인했습니다. 일반 요청과 분기 폐기 요청은 512KiB 초과 시 계속 거부했고, 기존 테스트는 재실행하지 않았습니다.
 
 ### 구현을 찾아볼 때
 

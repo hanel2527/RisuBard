@@ -195,6 +195,8 @@ function createRisuBardMemoryJsonParser(express) {
         const parser = /(?:^|\/)wiki\/version\/(?:prefix|preview)\/?$/u.test(path)
             ? prefixes
             : /(?:^|\/)wiki\/version\/(?:ref|recovery)(?:\/|$)/u.test(path)
+                || /(?:^|\/)wiki\/version\/(?:checkout|fork)\/?$/u.test(path)
+                || /(?:^|\/)fork\/complete\/?$/u.test(path)
                 ? recoveryPayload
                 : ordinary
         return parser(req, res, next)
