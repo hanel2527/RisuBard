@@ -61,6 +61,10 @@ async function fixture(enabled = true) {
     expect((await client.fetch('/api/read', { headers:{...headers,'file-path':Buffer.from(key).toString('hex')} })).ok).toBe(true)
     const manifest = async () => JSON.parse(await readFile(path.join(server.cwd,'save/kv/manifest.json'),'utf8'))
     const rows = async () => (await readFile(path.join(server.cwd,'save/logs/storage-observation.jsonl'),'utf8')).trim().split(/\r?\n/).map(line=>JSON.parse(line))
+    // Deferred writes require a verified canonical baseline. Verification now
+    // runs after an idle period, so wait for that prerequisite explicitly.
+    await expect.poll(async () => (await rows()).some(row =>
+        row.kind === 'projection-shadow' && row.semanticMatch === true), { timeout: 10_000 }).toBe(true)
     const saveChat = async (data: string, count: number) => {
         expect((await client.fetch('/api/chat-content/test-char-0/0', { method:'POST', headers:{...headers,'content-type':'application/json','x-chat-id':'chat-0-0'}, body:JSON.stringify({id:'chat-0-0',name:'Chat 0',message:[{role:'user',data}],localLore:[]}) })).ok).toBe(true)
         const until=Date.now()+10000
