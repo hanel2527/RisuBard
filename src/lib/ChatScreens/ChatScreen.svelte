@@ -56,7 +56,7 @@
         const messageCount = chat?.message.length
         if (chat && !chat._placeholder && resolved.risuBardHistoricalSourceMatchLimit > 0) {
             activateHistoricalSourceEmbeddings(characterId, chatId, settings)
-            if (!chat.isStreaming && messageCount) untrack(() => refreshHistoricalSourceEmbeddings(characterId, chatId, settings, chat.message, resolved.risuBardIgnoreOocTurns))
+            if (!chat.isStreaming && messageCount) untrack(() => refreshHistoricalSourceEmbeddings(characterId, chatId, settings, chat.message))
         } else stopHistoricalSourceEmbeddings()
         const refresh = (event: Event) => {
             const detail = (event as CustomEvent<RisuBardMemoryUpdatedDetail>).detail

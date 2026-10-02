@@ -633,6 +633,7 @@ export function selectNarrativeWorkingMessages<T>(
     limit = 12,
     includeHistoricalUserMessages = true,
     ignoreOocTurns = false,
+    includeTrailingOocTurns = false,
 ): T[] {
     if (!Number.isSafeInteger(limit) || limit < 1) {
         throw new Error('Narrative working-message limit must be positive')
@@ -673,33 +674,57 @@ export function selectNarrativeWorkingMessages<T>(
             isComment: record.isComment,
         }
     }), ignoreOocTurns)
-    const eligible = messages.filter((_, index) =>
-        !excludedOocIndices.has(index) || index === latestPendingUserIndex
-    )
-    const assistantIndices = eligible.flatMap((message, index) =>
-        isAssistant(message) ? [index] : []
-    )
-    if (assistantIndices.length === 0) return eligible.slice(-limit)
-    const firstAssistantIndex = assistantIndices[
-        Math.max(0, assistantIndices.length - limit)
-    ]
-    let startIndex = firstAssistantIndex
-    for (let index = firstAssistantIndex - 1; index >= 0; index -= 1) {
-        if (isAssistant(eligible[index])) break
-        startIndex = index
-    }
-    const selected = eligible.slice(startIndex)
-    if (includeHistoricalUserMessages) return selected
-    let selectedLatestUserIndex = -1
-    for (let index = selected.length - 1; index >= 0; index -= 1) {
-        if (roleOf(selected[index]) === 'user') {
-            selectedLatestUserIndex = index
-            break
+    // The OOC turns after the last story reply stay outside the recent-turn limit.
+    const trailingOocIndices = new Set<number>()
+    if (includeTrailingOocTurns && excludedOocIndices.size > 0) {
+        let lastStoryAssistantIndex = -1
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+            const record = messages[index] as { disabled?: unknown, isComment?: unknown }
+            if (isAssistant(messages[index]) && !record?.disabled && !record?.isComment
+                && !excludedOocIndices.has(index)) {
+                lastStoryAssistantIndex = index
+                break
+            }
+        }
+        for (const index of excludedOocIndices) {
+            if (index > lastStoryAssistantIndex && index !== latestPendingUserIndex) trailingOocIndices.add(index)
         }
     }
-    return selected.filter((message, index) =>
-        roleOf(message) !== 'user' || index === selectedLatestUserIndex
+    const eligible = messages.flatMap((_, index) =>
+        (!excludedOocIndices.has(index) || index === latestPendingUserIndex) && !trailingOocIndices.has(index)
+            ? [index] : []
     )
+    const assistantIndices = eligible.flatMap((messageIndex, index) =>
+        isAssistant(messages[messageIndex]) ? [index] : []
+    )
+    let selected: number[]
+    if (assistantIndices.length === 0) selected = eligible.slice(-limit)
+    else {
+        const firstAssistantIndex = assistantIndices[
+            Math.max(0, assistantIndices.length - limit)
+        ]
+        let startIndex = firstAssistantIndex
+        for (let index = firstAssistantIndex - 1; index >= 0; index -= 1) {
+            if (isAssistant(messages[eligible[index]])) break
+            startIndex = index
+        }
+        selected = eligible.slice(startIndex)
+        if (!includeHistoricalUserMessages) {
+            let selectedLatestUserIndex = -1
+            for (let index = selected.length - 1; index >= 0; index -= 1) {
+                if (roleOf(messages[selected[index]]) === 'user') {
+                    selectedLatestUserIndex = index
+                    break
+                }
+            }
+            selected = selected.filter((messageIndex, index) =>
+                roleOf(messages[messageIndex]) !== 'user' || index === selectedLatestUserIndex
+            )
+        }
+    }
+    return [...selected, ...trailingOocIndices]
+        .sort((left, right) => left - right)
+        .map((index) => messages[index])
 }
 
 export function countNarrativeTurns<T>(messages: readonly T[]): number {

@@ -43,7 +43,7 @@
             && Object.keys(chat.risuBardSettings).length > 0)
     })
     let profile = $derived(measureRisuBardChat(chat?.message ?? []))
-    let dynamicCharacters = $derived(settings.risuBardDynamicMemoryMode === 'off' ? 0 : measureActiveMemoryCharacters(chat?.message ?? [], settings.risuBardIgnoreOocTurns))
+    let dynamicCharacters = $derived(settings.risuBardDynamicMemoryMode === 'off' ? 0 : measureActiveMemoryCharacters(chat?.message ?? [], true))
     let dynamicBudget = $derived(resolveDynamicMemoryBudget(settings, dynamicCharacters))
     type DynamicKey = 'risuBardInquiryTargetTokenBudget' | 'risuBardInquiryEventTokenBudget' | 'risuBardInquiryMaximumTokenBudget' | 'risuBardAnalysisTokenLimit'
     let editingKey = $state<DynamicKey | null>(null)
@@ -342,14 +342,6 @@
                     <input id="bardwiki-response-exclude-user" type="checkbox" checked={settings.risuBardResponseExcludeUserMessages}
                         onchange={(event) => setValue('risuBardResponseExcludeUserMessages', (event.currentTarget as HTMLInputElement).checked)} />
                     <span>{settings.risuBardResponseExcludeUserMessages ? '제외' : '포함'}</span>
-                </label>
-            </div>
-            <div class="setting-field" data-chat-setting-field="risuBardIgnoreOocTurns">
-                {@render settingTitle('risuBardIgnoreOocTurns', '<!-- OOC_turn --> 무시하기', 'bardwiki-ignore-ooc')}
-                <label class="toggle-control" for="bardwiki-ignore-ooc">
-                    <input id="bardwiki-ignore-ooc" type="checkbox" checked={settings.risuBardIgnoreOocTurns}
-                        onchange={(event) => setValue('risuBardIgnoreOocTurns', (event.currentTarget as HTMLInputElement).checked)} />
-                    <span>{settings.risuBardIgnoreOocTurns ? '켜짐' : '꺼짐'}</span>
                 </label>
             </div>
             <div class="setting-field" data-chat-setting-field="risuBardAnalysisExcludeUserMessages">

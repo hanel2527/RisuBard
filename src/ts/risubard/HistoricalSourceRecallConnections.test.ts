@@ -23,7 +23,7 @@ describe('historical source recall connections', () => {
         expect(recallCall).toContain('mergeHistoricalSourceMatches(')
         expect(source).toContain('sourceMatches: historicalMatches,')
         expect(recallCall).toContain('messages: currentChat.message')
-        expect(recallCall).toContain('ignoreOocTurns: inquirySettings.risuBardIgnoreOocTurns')
+        expect(recallCall).toContain('ignoreOocTurns: true')
         expect(recallCall).toContain(
             'inquirySettings.risuBardResponseMessageCount'
         )
@@ -32,7 +32,7 @@ describe('historical source recall connections', () => {
         )
         expect(exactRecallCall).toContain('messages: currentChat.message')
         expect(exactRecallCall).toContain('messageIds')
-        expect(exactRecallCall).toContain('ignoreOocTurns: inquirySettings.risuBardIgnoreOocTurns')
+        expect(exactRecallCall).toContain('ignoreOocTurns: true')
         expect(source).toContain('entityHints: lorepmt.bardWikiEntityHints')
         expect(source).toContain(
             'timeoutMs: inquirySettings.risuBardInquiryTimeoutMs'

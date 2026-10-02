@@ -1,6 +1,5 @@
 <script lang="ts">
     import { isOocAssistantTurn } from 'src/ts/risubard/oocTurns'
-    import { resolveRisuBardChatSettings } from 'src/ts/risubard/risuBardSettings'
     import { ArrowLeft, ArrowLeftRightIcon, ArrowRight, BookmarkIcon, BotIcon, BookOpenCheck, CopyIcon, PowerOff, GitBranch, HamburgerIcon, LanguagesIcon, MenuIcon, PencilIcon, RefreshCcwIcon, SearchIcon, SplitIcon, TrashIcon, UserIcon, Volume2Icon, Scissors, EyeOff } from "@lucide/svelte"
     import ClipboardCopyIcon from '@lucide/svelte/icons/clipboard-copy'
     import { buildArcaClipboardHtml, exportArcaHtml, resolveArcaImageSource } from 'src/ts/arcaExport'
@@ -1167,10 +1166,7 @@
                     ?.chats[DBState.db.characters[selIdState.selId].chatPage]
                     ?.message[idx]
                 if (!current?.chatId || memoryConfirmed) return
-                if (isOocAssistantTurn(current) && resolveRisuBardChatSettings(DBState.db,
-                    DBState.db.characters[selIdState.selId]?.chats[DBState.db.characters[selIdState.selId].chatPage]?.risuBardSettings,
-                    DBState.db.characters[selIdState.selId]?.risuBardPinnedSettings,
-                ).risuBardIgnoreOocTurns) {
+                if (isOocAssistantTurn(current)) {
                     statusMessage = 'OOC 턴은 위키 분석에서 제외됩니다.'
                     return
                 }
@@ -1213,10 +1209,7 @@
                     ?.chats[DBState.db.characters[selIdState.selId].chatPage]
                     ?.message[idx]
                 if (!current?.chatId || memoryConfirming) return
-                if (isOocAssistantTurn(current) && resolveRisuBardChatSettings(DBState.db,
-                    DBState.db.characters[selIdState.selId]?.chats[DBState.db.characters[selIdState.selId].chatPage]?.risuBardSettings,
-                    DBState.db.characters[selIdState.selId]?.risuBardPinnedSettings,
-                ).risuBardIgnoreOocTurns) {
+                if (isOocAssistantTurn(current)) {
                     statusMessage = 'OOC 턴은 위키 분석에서 제외됩니다.'
                     return
                 }

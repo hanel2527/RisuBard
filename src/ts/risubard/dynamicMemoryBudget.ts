@@ -71,7 +71,7 @@ export function resolveDynamicMemorySettings(
     messages: Parameters<typeof measureActiveMemoryCharacters>[0],
 ): ResolvedRisuBardChatSettings {
     if (settings.risuBardDynamicMemoryMode === 'off') return settings
-    const budget = resolveDynamicMemoryBudget(settings, measureActiveMemoryCharacters(messages, settings.risuBardIgnoreOocTurns))
+    const budget = resolveDynamicMemoryBudget(settings, measureActiveMemoryCharacters(messages, true))
     return {
         ...settings,
         risuBardInquiryTargetTokenBudget: budget.target,

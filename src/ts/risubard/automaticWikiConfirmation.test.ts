@@ -61,7 +61,7 @@ describe('automatic BardWiki confirmation', () => {
         )
 
         expect(processSource).toMatch(
-            /const narrativeTurnToConfirm = projectConfirmedMemoryTurn\(\s*currentChat\.message,\s*undefined,\s*\{\s*ignoreOocTurns: resolvedRisuBardSettings\(currentChat\)\.risuBardIgnoreOocTurns\s*\}\s*\)/
+            /const narrativeTurnToConfirm = projectConfirmedMemoryTurn\(\s*currentChat\.message,\s*undefined,\s*\{\s*ignoreOocTurns: true\s*\}\s*\)/
         )
         for (const source of [
             processSource,

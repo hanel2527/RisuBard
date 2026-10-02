@@ -956,7 +956,6 @@ export function setDatabase(data:Database){
         typeof data.risuBardResponseExcludeUserMessages === 'boolean'
             ? data.risuBardResponseExcludeUserMessages
             : data.risuBardResponseIncludeUserMessages === false
-    data.risuBardIgnoreOocTurns = data.risuBardIgnoreOocTurns !== false
     data.risuBardHideOocTurns = data.risuBardHideOocTurns === true
     data.risuBardOocMarkdown = data.risuBardOocMarkdown !== false
     data.risuBardOocFontSize = typeof data.risuBardOocFontSize === 'number' && Number.isFinite(data.risuBardOocFontSize)
@@ -1824,7 +1823,6 @@ export interface Database{
     risuBardResponseMessageCount?: number
     risuBardResponseIncludeUserMessages?: boolean
     risuBardResponseExcludeUserMessages?: boolean
-    risuBardIgnoreOocTurns?: boolean
     risuBardHideOocTurns?: boolean
     risuBardOocMarkdown?: boolean
     risuBardOocFontSize?: number

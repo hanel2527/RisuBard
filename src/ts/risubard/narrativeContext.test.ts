@@ -781,6 +781,41 @@ describe('selectNarrativeWorkingMessages', () => {
             .map((message) => message.id)).not.toContain('assistant-ooc')
     })
 
+    it('keeps only the trailing OOC exchanges outside the response window', () => {
+        const ids = (messages: { id: string }[]) => messages.map((message) => message.id)
+        const messages = [
+            { id: 'u1', role: 'user', data: 'Story one.' },
+            { id: 'a1', role: 'char', data: 'Story reply one.' },
+            { id: 'u-old', role: 'user', data: 'Old question.' },
+            { id: 'a-old', role: 'char', data: '<!-- OOC_turn -->\nOld answer.' },
+            { id: 'u2', role: 'user', data: 'Story two.' },
+            { id: 'a2', role: 'char', data: 'Story reply two.' },
+            { id: 'u-ooc1', role: 'user', data: 'Question one.' },
+            { id: 'a-ooc1', role: 'char', data: '<!-- OOC_turn -->\nAnswer one.' },
+            { id: 'u-ooc2', role: 'user', data: 'Question two.' },
+            { id: 'a-ooc2', role: 'char', data: '<!-- OOC_turn -->\nAnswer two.' },
+            { id: 'u-now', role: 'user', data: 'Question three.' },
+        ]
+
+        expect(ids(selectNarrativeWorkingMessages(messages, 1, true, true, true))).toEqual([
+            'u2', 'a2', 'u-ooc1', 'a-ooc1', 'u-ooc2', 'a-ooc2', 'u-now',
+        ])
+        expect(ids(selectNarrativeWorkingMessages(messages, 2, true, true, true))).toEqual([
+            'u1', 'a1', 'u2', 'a2', 'u-ooc1', 'a-ooc1', 'u-ooc2', 'a-ooc2', 'u-now',
+        ])
+        expect(ids(selectNarrativeWorkingMessages(messages, 1, true, true, false))).toEqual([
+            'u2', 'a2', 'u-now',
+        ])
+
+        const resumedStory = [...messages.slice(0, 10),
+            { id: 'u3', role: 'user', data: 'Story three.' },
+            { id: 'a3', role: 'char', data: 'Story reply three.' },
+        ]
+        expect(ids(selectNarrativeWorkingMessages(resumedStory, 2, true, true, true))).toEqual([
+            'u2', 'a2', 'u3', 'a3',
+        ])
+    })
+
     it('keeps the first greeting inside the message budget', () => {
         expect(shouldIncludeNarrativeFirstMessage(11, 12)).toBe(true)
         expect(shouldIncludeNarrativeFirstMessage(12, 12)).toBe(false)

@@ -1,5 +1,5 @@
 import { captureGenerationTarget, createGenerationScope, type GenerationTarget } from "./generationTarget";
-import { isOocAssistantTurn } from '../risubard/oocTurns'
+import { isOocAssistantTurn, isOocToggleActive } from '../risubard/oocTurns'
 import { createRequiredWikiMessage, reserveRequiredWikiBudget } from '../risubard/requiredWikiContext'
 import { createWikiInquiryDiagnostic, formatWikiInquiryDiagnostic, wikiInquiryFailure, type WikiInquiryFailure } from '../risubard/wikiInquiryDiagnostics'
 import { get } from "svelte/store";
@@ -254,7 +254,7 @@ async function confirmProjectedNarrativeTurn(input: {
         const previousCanonicalReceipt = chat?.message.find(
             (item) => item.chatId === input.targetMessageId
         )?.risubardCanonicalReceipt
-        if (settings.risuBardIgnoreOocTurns && input.messages.some((message) =>
+        if (input.messages.some((message) =>
             message.role === 'assistant' && isOocAssistantTurn({ role: 'char', data: message.content })
         )) return false
         const wikiPromptPreset = resolveWikiPromptPreset(
@@ -293,7 +293,7 @@ async function confirmProjectedNarrativeTurn(input: {
                 input.targetMessageId,
                 firstMessageEvidence,
                 !settings.risuBardAnalysisExcludeUserMessages,
-                settings.risuBardIgnoreOocTurns
+                true
             )
             : confirmedMessages
         const receipt = await storedResponseMemoryAnalysis.confirm({
@@ -398,7 +398,7 @@ export async function confirmCurrentNarrativeMessage(
     if (!character || !chat) return false
     const chatId = ensureNarrativeSessionChatId(chat, v4)
     const projected = projectConfirmedMemoryTurn(chat.message, messageId, {
-        ignoreOocTurns: resolvedRisuBardSettings(chat).risuBardIgnoreOocTurns,
+        ignoreOocTurns: true,
     })
     if (!projected) return false
     return confirmProjectedNarrativeTurn({
@@ -432,7 +432,7 @@ export async function reanalyzeNarrativeMessage(
     const projected = projectConfirmedMemoryTurn(
         chat.message,
         messageId,
-        { includeConfirmed: true, ignoreOocTurns: resolvedRisuBardSettings(chat).risuBardIgnoreOocTurns }
+        { includeConfirmed: true, ignoreOocTurns: true }
     )
     if (!projected) return false
     return confirmProjectedNarrativeTurn({
@@ -458,7 +458,7 @@ export async function forceCurrentNarrativeWikiUpdate(): Promise<boolean> {
     const projected = projectConfirmedMemoryTurn(
         chat.message,
         target.chatId,
-        { includeConfirmed: true, ignoreOocTurns: resolvedRisuBardSettings(chat).risuBardIgnoreOocTurns }
+        { includeConfirmed: true, ignoreOocTurns: true }
     )
     if (!projected) return false
     return confirmProjectedNarrativeTurn({
@@ -808,14 +808,14 @@ export async function startCurrentWikiReboot(
         || startChatIndex >= current.chat.message.length) return false
     const chatId = ensureNarrativeSessionChatId(current.chat, v4)
     const turns = projectWikiRebootTurns(current.chat.message, startChatIndex, true,
-        resolvedRisuBardSettings(current.chat).risuBardIgnoreOocTurns)
+        true)
     if (turns.length === 0) return false
     const jobId = v4()
     current.chat.risuBardWikiReboot = createWikiRebootJob({
         jobId,
         stagingChatId: `reboot-${jobId}`,
         writingLanguage: resolvedRisuBardSettings(current.chat).risuBardWikiWritingLanguage,
-        ignoreOocTurns: resolvedRisuBardSettings(current.chat).risuBardIgnoreOocTurns,
+        ignoreOocTurns: true,
         batchSize,
         targetAssistantMessageIds: turns.map((turn) =>
             turn.assistantMessageId
@@ -924,7 +924,7 @@ export async function executeCurrentNarrativeWikiCommand(
                 chatId
             ),
             !settings.risuBardAnalysisExcludeUserMessages,
-            settings.risuBardIgnoreOocTurns,
+            true,
         )
         if (currentMessages.length === 0) {
             throw new Error('현재 메시지를 위키 명령 자료로 준비할 수 없습니다.')
@@ -1407,7 +1407,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     generationScope.chat = currentChat
     const narrativeTurnToConfirm = projectConfirmedMemoryTurn(
         currentChat.message, undefined,
-        { ignoreOocTurns: resolvedRisuBardSettings(currentChat).risuBardIgnoreOocTurns }
+        { ignoreOocTurns: true }
     )
     let maxContextTokens = requestSettings.maxContext
     // Output-token reservation for the context budget. Defaults to the legacy
@@ -1714,20 +1714,20 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                     const inquirySettings = resolvedRisuBardSettings(currentChat, true)
                     activateWikiEmbeddings(currentChar.chaId, narrativeSessionChatId, DBState.db)
                     if (inquirySettings.risuBardHistoricalSourceMatchLimit > 0) refreshHistoricalSourceEmbeddings(currentChar.chaId, narrativeSessionChatId, DBState.db,
-                        currentChat.message, inquirySettings.risuBardIgnoreOocTurns)
+                        currentChat.message, true)
                     else stopHistoricalSourceEmbeddings()
                     const retrievalRecentContext = buildBoundedNarrativeInquiryFallback(projectRecentMemoryMessages(
                             currentChat.message.slice(currentChat.message.findLastIndex(
                                 message => message.disabled === 'allBefore',
                             ) + 1), 4, undefined, undefined,
                             !inquirySettings.risuBardResponseExcludeUserMessages,
-                            inquirySettings.risuBardIgnoreOocTurns,
+                            true,
                         ))
                     const embedded = await wikiEmbeddingRuntime.search(currentInput, retrievalRecentContext)
                     // Refresh does not delay this response; inquiry verifies old ranges against live hashes.
                     wikiEmbeddingRuntime.refresh()
                     const historicalOptions = {
-                        ignoreOocTurns: inquirySettings.risuBardIgnoreOocTurns,
+                        ignoreOocTurns: true,
                         excludeRecentMessages: normalizeNarrativeWorkingMessageLimit(inquirySettings.risuBardResponseMessageCount),
                         maximumMatches: inquirySettings.risuBardHistoricalSourceMatchLimit,
                     }
@@ -1746,7 +1746,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                                 currentChat.message,
                                 normalizeNarrativeWorkingMessageLimit(
                                     inquirySettings.risuBardResponseMessageCount
-                                ), undefined, undefined, true, inquirySettings.risuBardIgnoreOocTurns
+                                ), undefined, undefined, true, true
                             )
                         ),
                         entityHints: lorepmt.bardWikiEntityHints,
@@ -1756,7 +1756,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                             inquirySettings.risuBardHistoricalSourceMatchLimit,
                         resolveSourceMatches: (messageIds, evidenceRequests) =>
                             resolveHistoricalSourceMatchesById({
-                                ignoreOocTurns: inquirySettings.risuBardIgnoreOocTurns,
+                                ignoreOocTurns: true,
                                 messageIds,
                                 messages: currentChat.message,
                                 currentInput,
@@ -2329,7 +2329,11 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         ms,
         narrativeWorkingMessageLimit,
         !resolvedRisuBardSettings(currentChat).risuBardResponseExcludeUserMessages,
-        resolvedRisuBardSettings(currentChat).risuBardIgnoreOocTurns,
+        true,
+        isOocToggleActive([
+            ...Object.keys(currentChat.GLGlobalVariables ?? {}),
+            ...Object.keys(DBState.db.globalChatVariables ?? {}),
+        ], (key) => getGlobalChatVar(key, currentChat)) !== false,
     )
     narrativeContextObservation.selectedHistoryMessages = ms.length
 

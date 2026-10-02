@@ -55,6 +55,16 @@ export function isOocAssistantTurn(message: MessageLike): boolean {
         && message.data.includes(OOC_TURN_MARKER)
 }
 
+/** Reads a prompt toggle named `ooc` in any case; undefined when the prompt has no such toggle. */
+export function isOocToggleActive(keys: Iterable<string>, read: (key: string) => string): boolean | undefined {
+    for (const key of keys) {
+        if (key.toLowerCase() !== 'toggle_ooc') continue
+        const value = read(key).trim().toLowerCase()
+        return value !== '' && value !== '0' && value !== 'null' && value !== 'false'
+    }
+    return undefined
+}
+
 /** Indices refer to the original transcript; no message or saved status is mutated. */
 export function oocTurnIndices(messages: readonly MessageLike[], ignore = true, includeInactive = false): Set<number> {
     const excluded = new Set<number>()

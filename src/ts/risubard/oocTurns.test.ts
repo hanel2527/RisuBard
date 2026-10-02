@@ -1,8 +1,7 @@
 import { describe, expect, test } from 'vitest'
-import { oocTurnIndices, preserveOocTurnMarker } from './oocTurns'
+import { isOocToggleActive, oocTurnIndices, preserveOocTurnMarker } from './oocTurns'
 import { projectConfirmedMemoryTurn, projectRecentMemoryMessages } from './memoryAnalysisClient'
 import { createWikiRebootJob, normalizeWikiRebootJob, projectWikiRebootTurns } from './wikiReboot'
-import { resolveRisuBardChatSettings } from './risuBardSettings'
 import { findHistoricalSourceMatches, resolveHistoricalSourceMatchesById } from './historicalSourceRecall'
 
 const transcript = [
@@ -73,9 +72,12 @@ describe('OOC wiki exclusion', () => {
         expect(oocTurnIndices([{ role: 'char', data: 'prefix <!-- OOC_turn --> suffix' }]).has(0)).toBe(true)
         expect(oocTurnIndices([{ role: 'user', data: '<!-- OOC_turn -->' }]).size).toBe(0)
     })
-    test('defaults on and respects global and chat opt-out', () => {
-        expect(resolveRisuBardChatSettings({}).risuBardIgnoreOocTurns).toBe(true)
-        expect(resolveRisuBardChatSettings({ risuBardIgnoreOocTurns: false }).risuBardIgnoreOocTurns).toBe(false)
-        expect(resolveRisuBardChatSettings({ risuBardIgnoreOocTurns: true }, { risuBardIgnoreOocTurns: false }).risuBardIgnoreOocTurns).toBe(false)
+    test('reads the ooc prompt toggle in any case', () => {
+        const read = (values: Record<string, string>) => isOocToggleActive(Object.keys(values), (key) => values[key])
+        expect(read({ toggle_OOC: '1' })).toBe(true)
+        expect(read({ toggle_ooc: '0' })).toBe(false)
+        expect(read({ toggle_Ooc: 'null' })).toBe(false)
+        expect(read({ toggle_oocTone: '1' })).toBeUndefined()
+        expect(read({})).toBeUndefined()
     })
 })

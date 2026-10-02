@@ -76,14 +76,6 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
         keywords: ['analysis turns', 'wiki', '분석할 턴', '위키'],
     },
     {
-        id: 'risubard.chat.ignoreOocTurns',
-        type: 'check',
-        labelKey: 'risuBardIgnoreOocTurns',
-        helpKey: 'risuBardIgnoreOocTurns',
-        bindKey: 'risuBardIgnoreOocTurns',
-        keywords: ['OOC', '위키', '집필'],
-    },
-    {
         id: 'risubard.chat.analysisExcludeUserMessages',
         type: 'check',
         labelKey: 'risuBardAnalysisExcludeUsers',
