@@ -23,6 +23,7 @@ export interface StoryArcWriterDocument {
     id: string
     type: 'event' | 'other' | string
     title: string
+    aliases?: readonly string[]
     content: string
     sourceMessageIds: string[]
     created?: string
@@ -68,29 +69,66 @@ export function stampStoryArcCheckpoint(
     return `${body}\n\n<!-- risubard-story-arc-checkpoint: ${eventId} -->`
 }
 
+const identityKey = (value: string) => value.normalize('NFKC').toLocaleLowerCase().trim()
+
+/** A title containing a link delimiter cannot be written as [[title]]. */
+function linkableEventTitle(title: string): boolean {
+    return title.length > 0 && title.length <= 240 && !/[\]\r\n]/u.test(title)
+}
+
 function hasStoryArcEventLink(
     markdown: string,
     events: readonly StoryArcWriterDocument[]
 ): boolean {
-    const eventTitles = new Set(events.map((event) =>
-        event.title.normalize('NFKC').toLocaleLowerCase().trim()
+    const identities = new Set(events.flatMap((event) =>
+        [event.title, ...(event.aliases ?? [])].map(identityKey)
     ))
-    return [...markdown.matchAll(wikiLinkPattern)].some((match) =>
-        eventTitles.has(
-            match[1].split('|')[0]?.split('#')[0]
-                ?.normalize('NFKC').toLocaleLowerCase().trim() ?? ''
-        ))
+    // Titles may themselves contain "|" or "#": accept the whole target too.
+    return [...markdown.matchAll(wikiLinkPattern)].some((match) => [
+        match[1],
+        match[1].split('|')[0] ?? '',
+        match[1].split('|')[0]?.split('#')[0] ?? '',
+    ].some((target) => identities.has(identityKey(target))))
 }
 
 export function validateStoryArcCheckpointEventLink(
     markdown: string,
     events: readonly StoryArcWriterDocument[]
 ): void {
-    if (!hasStoryArcEventLink(markdown, events)) {
+    if (!hasStoryArcEventLink(ensureStoryArcEventLink(markdown, events), events)
+        && events.some((event) => linkableEventTitle(event.title))) {
         throw new Error(
             'Story arc plot must link at least one event from the current checkpoint'
         )
     }
+}
+
+/**
+ * The checkpoint must route to at least one of its events. When the model
+ * omits that link, the program adds the latest event under turning points
+ * instead of rejecting an otherwise valid rewrite.
+ */
+export function ensureStoryArcEventLink(
+    markdown: string,
+    events: readonly StoryArcWriterDocument[]
+): string {
+    if (hasStoryArcEventLink(markdown, events)) return markdown
+    const event = [...events].reverse().find((candidate) => linkableEventTitle(candidate.title))
+    if (!event) return markdown
+    const bullet = `- [[${event.title}]]`
+    const turningPoints = new Set(Object.values(wikiWritingLocales)
+        .map((locale) => identityKey(locale.storyArc.turningPoints)))
+    const lines = markdown.split('\n')
+    const start = lines.findIndex((line) => {
+        const heading = line.match(/^#{3,6}[\t ]+(.+?)[\t ]*$/u)
+        return heading !== null && turningPoints.has(identityKey(heading[1]))
+    })
+    if (start < 0) return `${markdown.trimEnd()}\n\n${bullet}\n`
+    let end = start + 1
+    while (end < lines.length && !/^#{1,6}[\t ]/u.test(lines[end])) end += 1
+    while (end > start + 1 && lines[end - 1].trim() === '') end -= 1
+    lines.splice(end, 0, bullet)
+    return lines.join('\n')
 }
 
 export function buildStoryArcUpdatePlan(input: {

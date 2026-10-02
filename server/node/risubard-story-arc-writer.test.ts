@@ -2,11 +2,14 @@ import { describe, expect, test } from 'vitest'
 import {
     STORY_ARC_CHECKPOINT_SIZE,
     buildStoryArcUpdatePlan,
+    ensureStoryArcEventLink,
     isStoryArcTitle,
     readStoryArcCheckpoint,
     stampStoryArcCheckpoint,
     storyArcRewriteInstruction,
+    validateStoryArcCheckpointEventLink,
 } from './risubard-story-arc-writer'
+import { wikiWritingLocales } from '../../src/ts/risubard/wikiWritingLanguage'
 
 const event = (index: number) => ({
     id: `event.${index}`,
@@ -18,6 +21,36 @@ const event = (index: number) => ({
 })
 
 describe('story arc writer', () => {
+    test('accepts checkpoint links to titles containing link delimiters or aliases', () => {
+        const delimited = { ...event(1), title: '#3 결투 | 북문' }
+        expect(() => validateStoryArcCheckpointEventLink('- [[#3 결투 | 북문]]', [delimited])).not.toThrow()
+        const aliased = { ...event(2), aliases: ['북문 결투'] }
+        expect(ensureStoryArcEventLink('- [[북문 결투]]', [aliased])).toBe('- [[북문 결투]]')
+    })
+
+    test('adds a missing checkpoint link under turning points instead of rejecting the rewrite', () => {
+        const arc = wikiWritingLocales.ko.storyArc
+        const markdown = `## ${arc.title}
+
+### ${arc.overview}
+- 개요
+
+### ${arc.turningPoints}
+- 기존 전환점
+
+### ${arc.openThreads}
+- 미해결`
+        const linked = ensureStoryArcEventLink(markdown, [event(4), event(5)])
+        expect(linked).toContain(`### ${arc.turningPoints}
+- 기존 전환점
+- [[사건 5]]
+
+### ${arc.openThreads}`)
+        expect(() => validateStoryArcCheckpointEventLink(markdown, [event(5)])).not.toThrow()
+        // Titles that cannot be written as a link are not enforced.
+        expect(() => validateStoryArcCheckpointEventLink('본문', [{ ...event(6), title: '괄호] 사건' }])).not.toThrow()
+    })
+
     test('continues a forked arc after its inherited checkpoint without guessing deleted checkpoints', () => {
         const inherited = { ...event(1), sourceMessageIds: ['inherited:parent:a1'] }
         const arc = { id: 'other.arc', type: 'other', title: 'Story Arc Map', sourceMessageIds: [],

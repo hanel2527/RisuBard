@@ -95,6 +95,7 @@ import {
     stampStoryArcCheckpoint,
     storyArcRewriteInstruction,
     validateStoryArcCheckpointEventLink,
+    ensureStoryArcEventLink,
     type StoryArcUpdatePlan,
 } from './risubard-story-arc-writer'
 
@@ -1801,12 +1802,15 @@ export function createMemoryAnalysisRunner(
                                                     snapshot.wikiWritingLanguage,
                                                 )
                                             }
-                                            const rewritten = applyCanonicalSectionPatches({
+                                            const patched = applyCanonicalSectionPatches({
                                                 markdown: target.preparedMarkdown,
                                                 title: target.target?.title
                                                     ?? target.candidate.title,
                                                 patches: document.sections,
                                             })
+                                            const rewritten = target.storyArcPlan
+                                                ? ensureStoryArcEventLink(patched, target.storyArcPlan.events)
+                                                : patched
                                             if (target.storyArcPlan) {
                                                 validateStoryArcCheckpointEventLink(rewritten, target.storyArcPlan.events)
                                                 if (stampStoryArcCheckpoint(rewritten, target.storyArcPlan.checkpointEventId).length
@@ -1925,7 +1929,7 @@ export function createMemoryAnalysisRunner(
                                 })
                                 if (entry.storyArcPlan) {
                                     rewritten = stampStoryArcCheckpoint(
-                                        rewritten,
+                                        ensureStoryArcEventLink(rewritten, entry.storyArcPlan.events),
                                         entry.storyArcPlan.checkpointEventId
                                     )
                                     if (rewritten.length

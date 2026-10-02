@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+
+// The first test loads the request module graph (about 2s alone); under a full
+// parallel run that alone can pass the default 5s limit.
+vi.setConfig({ testTimeout: 30_000 })
 import { get } from 'svelte/store'
 
 // --- module mocks -----------------------------------------------------------

@@ -58,6 +58,7 @@ dist.zip
 !/scripts/check-brand-boundary.test.ts
 !/scripts/check-release-inputs.cjs
 !/scripts/check-release-inputs.node-test.cjs
+!/scripts/release.mjs
 !/scripts/dev-launcher.mjs
 !/scripts/dev-launcher.test.ts
 !/scripts/launch-risubard-dev.cmd
@@ -71,3 +72,6 @@ dist.zip
 # Due to Cargo.lock makes the project build fail, we ignore it
 Cargo.lock
 test/fixtures/
+
+# Local scratch output (backups, browser runs, reports); never released
+tmp/

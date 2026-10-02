@@ -17,6 +17,6 @@ export default defineConfig({
     // compat/server suites have their own node-environment configs
     // (vitest.config.compat.ts / vitest.config.server.ts); exclude here so
     // `pnpm test` doesn't pick them up under the wrong environment.
-    exclude: ['node_modules/**', 'test/compat/**', 'server/node/**'],
+    exclude: ['node_modules/**', 'test/compat/**', 'server/node/**', 'tmp/**'],
   },
 })

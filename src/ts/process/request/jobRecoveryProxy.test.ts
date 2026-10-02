@@ -1,4 +1,8 @@
 import { describe, expect, test, vi, afterEach } from 'vitest'
+
+// The first test loads the request module graph (about 2s alone); under a full
+// parallel run that alone can pass the default 5s limit.
+vi.setConfig({ testTimeout: 30_000 })
 import { flushSync } from 'svelte'
 import { makeStateProxy, observeReactive } from './proxyFixture.svelte'
 

@@ -3406,8 +3406,9 @@ describe('memory analysis runner', () => {
             }],
         })
 
-        expect(analyze).toHaveBeenCalledTimes(3)
-        expect(canonicalInputs).toHaveLength(2)
+        // A rewrite without a checkpoint link is completed by the program, not retried.
+        expect(analyze).toHaveBeenCalledTimes(2)
+        expect(canonicalInputs).toHaveLength(1)
         expect(canonicalInputs[0]).toMatchObject({
             targets: [{
                 candidate: {
@@ -3433,7 +3434,7 @@ describe('memory analysis runner', () => {
             ),
         }))
         expect(saveCanonicalDocument.mock.calls[0][0].markdown).toContain(
-            '[[사건 8]]'
+            '### 주요 전환점\n\n- 관문이 열렸다.\n- [[사건 8]]'
         )
     })
 })
