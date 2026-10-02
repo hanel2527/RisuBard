@@ -54,6 +54,7 @@ import {
     rebootBatchDraftSchema,
 } from '../../../server/node/risubard-memory-writer'
 import { createStructuredOutputFallbackMessage } from '../process/request/structuredOutputFallback'
+import { requestWithProviderOutputLimit } from './providerOutputTokenLimit'
 
 interface StoredMessage {
     role?: unknown
@@ -97,10 +98,38 @@ interface MemoryAnalysisClientOptions {
     onError(error: unknown): void | Promise<void>
     getModelMode?(chatId?: string): 'memory' | 'model'
     getInquiryTimeoutMs?(chatId?: string): number
+    /** User baseline output cap; dynamic memory growth must never exceed it. */
+    getAnalysisOutputTokenLimit?(chatId?: string): number
     nativeV2Analysis?: boolean
 }
 
 const MEMORY_ANALYSIS_TIMEOUT_MS = 10 * 60_000
+// Background analysis does not block a chat response, so it may wait longer
+// than the prompt-time inquiry setting before continuing without references.
+const MEMORY_ANALYSIS_INQUIRY_TIMEOUT_MS = 120_000
+
+function emptyNarrativeInquiry(): Awaited<ReturnType<typeof loadNarrativeInquiry>> {
+    return {
+        mode: 'bounded-v1-fallback',
+        graphRevision: 0,
+        indexRevision: 0,
+        cacheStatus: 'missing-or-stale',
+        sources: [],
+        evidenceRequests: [],
+        rerankCandidates: [],
+        entityCandidates: [],
+        metrics: {
+            candidateCount: 0,
+            inspectedNodeCount: 0,
+            inspectedEdgeCount: 0,
+            selectedNodeCount: 0,
+            selectedTokens: 0,
+            selectedEventTokens: 0,
+            hopCount: 0,
+            auxiliaryModelCalls: 0,
+        },
+    }
+}
 
 let analysisTokenizer: Tiktoken | undefined
 
@@ -714,9 +743,15 @@ export function createStoredResponseMemoryAnalysis(
         signal?: AbortSignal
     ): Promise<MemoryAnalysisModelResponse> {
         signal?.throwIfAborted()
-        const requestWithModel = (model: 'memory' | 'model') => signal
-            ? options.requestModel(structuredClone(request), model, signal)
-            : options.requestModel(structuredClone(request), model)
+        const outputLimit = options.getAnalysisOutputTokenLimit?.(request.realChatId)
+        if (outputLimit !== undefined && Number.isSafeInteger(outputLimit)
+            && outputLimit > 0 && request.maxTokens > outputLimit) {
+            request = { ...request, maxTokens: outputLimit }
+        }
+        const requestWithModel = (model: 'memory' | 'model') =>
+            requestWithProviderOutputLimit(request, (attempt) => signal
+                ? options.requestModel(structuredClone(attempt), model, signal)
+                : options.requestModel(structuredClone(attempt), model))
         if (options.getModelMode?.(request.realChatId) === 'model') {
             return requestWithModel('model')
         }
@@ -783,14 +818,26 @@ export function createStoredResponseMemoryAnalysis(
                 maximum: number
             }
         }, signal?: AbortSignal) {
-            return loadNarrativeInquiry({
-                ...input,
-                timeoutMs: options.getInquiryTimeoutMs?.(input.chatId)
-                    ?? RISUBARD_INQUIRY_TIMEOUT_MS_DEFAULT,
-                fetchImpl: options.fetchImpl,
-                createAuth: options.createAuth,
-                signal,
-            })
+            try {
+                return await loadNarrativeInquiry({
+                    ...input,
+                    timeoutMs: Math.max(
+                        options.getInquiryTimeoutMs?.(input.chatId)
+                            ?? RISUBARD_INQUIRY_TIMEOUT_MS_DEFAULT,
+                        MEMORY_ANALYSIS_INQUIRY_TIMEOUT_MS
+                    ),
+                    fetchImpl: options.fetchImpl,
+                    createAuth: options.createAuth,
+                    signal,
+                })
+            }
+            catch (error) {
+                // A slow reference lookup must not abort analysis or reboot.
+                if (signal?.aborted || !(error instanceof Error
+                    && error.name === 'AbortError')) throw error
+                console.warn(`[RisuBard memory analysis] ${error.message}; continuing without wiki references`)
+                return emptyNarrativeInquiry()
+            }
         },
         async applyDelta(input: {
             characterId: string

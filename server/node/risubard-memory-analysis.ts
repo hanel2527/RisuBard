@@ -964,6 +964,23 @@ function resolveInquiryDocuments(
     return resolved
 }
 
+function documentsNamedIn(
+    query: string,
+    documents: readonly LoadedCanonicalDocument[],
+    excluded: ReadonlySet<string>
+): LoadedCanonicalDocument[] {
+    const normalize = (value: string) => value.normalize('NFKC').toLocaleLowerCase()
+    const text = normalize(query)
+    return documents.flatMap((document) => {
+        if (excluded.has(document.id) || document.type === 'event') return []
+        const length = Math.max(0, ...[document.title, ...(document.aliases ?? [])]
+            .map(normalize).filter((identity) => identity.length >= 2 && text.includes(identity))
+            .map((identity) => identity.length))
+        return length ? [{ document, length }] : []
+    }).sort((left, right) => right.length - left.length)
+        .slice(0, 12).map(({ document }) => document)
+}
+
 function analysisNotes(
     documents: readonly LoadedCanonicalDocument[],
     tokenLimit: number,
@@ -1171,6 +1188,10 @@ export function createMemoryAnalysisRunner(
                 documents,
                 excludedDocumentIds
             )
+            if (inquiry.sources.length === 0) {
+                // Lookup unavailable or empty: keep documents named in the turn.
+                candidateDocuments = documentsNamedIn(analysisQuery, documents, excludedDocumentIds)
+            }
             const completeCanonicalDocuments = () => {
                 let remaining = Math.floor((snapshot.analysisTokenLimit ?? 12_000) / 4)
                 const selected: Array<{ id: string; type: string; title: string; completeText: string }> = []

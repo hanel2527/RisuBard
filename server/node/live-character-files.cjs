@@ -103,7 +103,7 @@ function createLiveCharacterFiles(options) {
         reconcile: options => active?.reconcile(options) ?? null,
         invalidate: () => active?.invalidate(),
         reset: () => active?.reset(),
-        accept: database => active?.accept(database),
+        accept: (database, revision) => active?.accept(database, revision),
         close: () => setEnabled(false),
     };
 }
@@ -118,6 +118,10 @@ function createActiveLiveCharacterFiles({ repository, writeAsset, writeAssets, r
     catch { baseline = { characters: [], loreBook: [] }; needsInitialReconcile = true; }
     let dirty = true;
     let assetsDirty = true;
+    // Asset directories touched since the last scan. Our own atomic metadata
+    // writes also report their parent directory; rescanning every character
+    // for each save read all assets and metadata.
+    const dirtyAssetDirectories = new Set();
     let changedAt = 0;
     let watcher;
     let fallback = false;
@@ -136,17 +140,86 @@ function createActiveLiveCharacterFiles({ repository, writeAsset, writeAssets, r
         safe(relative);
         return fs.existsSync(resolveInside(root, relative)) ? readVerifiedJson(root, relative, { allowBackup: false }) : initial;
     }
-    function invalidate(includeAssets = true) { dirty = true; assetsDirty ||= includeAssets; changedAt = Date.now(); }
+    function invalidate(includeAssets = true, directory = '') {
+        dirty = true;
+        if (includeAssets && directory) dirtyAssetDirectories.add(directory);
+        else assetsDirty ||= includeAssets;
+        changedAt = Date.now();
+    }
+    // Asset listings (filename -> stamp) from the last successful scan, keyed by
+    // the character's assets directory. A background sweep compares against them.
+    const scannedListings = new Map();
+    function rememberListings(plan) {
+        for (const [relative, listing] of plan.listings || []) scannedListings.set(relative, listing);
+    }
+    let sweepTimer = null;
+    let sweeping = false;
+    let sweepAgain = false;
+    function requestSweep() {
+        if (sweeping) { sweepAgain = true; return; }
+        if (sweepTimer) return;
+        sweepTimer = setTimeout(() => { sweepTimer = null; void sweepAssets(); }, settleMs);
+        sweepTimer.unref?.();
+    }
+    // A watcher overflow (an event without a filename) means events were lost,
+    // not that every asset changed. Stat the asset files off the event loop and
+    // mark only the directories that differ, instead of a blocking full rescan
+    // of every asset file inside a save request.
+    async function sweepAssets() {
+        sweeping = true;
+        try {
+            directories.refresh();
+            const changedDirectories = [];
+            for (const id of directories.characterIds()) {
+                const relative = directories.characterDirectory(id).replaceAll('\\', '/');
+                const listing = scannedListings.get(`${relative}/assets`);
+                if (!listing) { changedDirectories.push(path.posix.basename(relative)); continue; }
+                let entries;
+                try { entries = await fs.promises.readdir(resolveInside(root, `${relative}/assets`), { withFileTypes: true }); }
+                catch (error) { if (error?.code !== 'ENOENT') throw error; entries = []; }
+                const names = entries.map(entry => entry.name).filter(name => !name.startsWith('.') && !IGNORED_FILES.test(name));
+                let changed = names.length !== listing.size;
+                for (let index = 0; !changed && index < names.length; index += 64) {
+                    const batch = names.slice(index, index + 64);
+                    const stats = await Promise.all(batch.map(name => fs.promises
+                        .lstat(resolveInside(root, `${relative}/assets/${name}`), { bigint: true }).catch(() => null)));
+                    changed = stats.some((stat, position) => !stat || listing.get(batch[position]) !== fileStamp(stat));
+                }
+                if (changed) changedDirectories.push(path.posix.basename(relative));
+            }
+            for (const directory of changedDirectories) invalidate(true, directory);
+            if (changedDirectories.length) onChange();
+        } catch {
+            invalidate();
+            onChange();
+        } finally {
+            sweeping = false;
+            if (sweepAgain) { sweepAgain = false; requestSweep(); }
+        }
+    }
     if (watch) {
         try {
             // libuv can abort on Windows 8.3 aliases; use its native long path.
-            watcher = fs.watch(fs.realpathSync.native(root), { recursive: true }, (_event, filename) => {
+            watcher = fs.watch(fs.realpathSync.native(root), { recursive: true }, (event, filename) => {
                 const name = String(filename || '').replaceAll('\\', '/');
-                if (!name || /^characters\/[^/]+(?:\/metadata\.json|\/assets(?:\/[^/]+)?)?$/.test(name)
+                if (!name) {
+                    // Overflow: metadata is rechecked through the projection
+                    // revision; assets are compared in the background.
+                    invalidate(false);
+                    requestSweep();
+                    onChange();
+                    return;
+                }
+                if (/^characters\/[^/]+(?:\/metadata\.json|\/assets(?:\/[^/]+)?)?$/.test(name)
                     || /^characters\/[^/]+\/chats\/[^/]+\/metadata\.json$/.test(name)
                     || /^lorebooks(?:\/[^/]+\.json)?$/.test(name)
                     || /^index\/(?:character-directories|character-asset-replicas)\.json$/.test(name)) {
-                    invalidate(!name || name.includes('/assets') || name.startsWith('index/') || /^characters\/[^/]+$/.test(name));
+                    // A character directory reports `change` whenever a file in it
+                    // is replaced (every metadata save); only creating, removing or
+                    // renaming the directory itself affects its assets.
+                    const includeAssets = name.includes('/assets') || name.startsWith('index/')
+                        || (event === 'rename' && /^characters\/[^/]+$/.test(name));
+                    invalidate(includeAssets, /^characters\/([^/]+)/.exec(name)?.[1] || '');
                     onChange();
                 }
             });
@@ -154,7 +227,7 @@ function createActiveLiveCharacterFiles({ repository, writeAsset, writeAssets, r
             watcher.unref();
         } catch { fallback = true; }
     }
-    function planAssets() {
+    function planAssets(onlyDirectories = null) {
         directories.refresh();
         const previous = readIndex(INDEX, { schemaVersion: 1, characters: {} });
         if (previous.schemaVersion !== 1 || !previous.characters || Array.isArray(previous.characters)) throw new Error('Invalid live asset index');
@@ -166,6 +239,7 @@ function createActiveLiveCharacterFiles({ repository, writeAsset, writeAssets, r
         const pending = [];
         let contentChanged = false;
         const scannedDirectories = [];
+        const listings = new Map();
         function assetStat(target) {
             const stat = fs.lstatSync(target, { bigint: true });
             if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Asset must be a regular file: ${path.basename(target)}`);
@@ -173,6 +247,7 @@ function createActiveLiveCharacterFiles({ repository, writeAsset, writeAssets, r
         }
         for (const id of directories.characterIds()) {
             const relative = directories.characterDirectory(id).replaceAll('\\', '/');
+            if (onlyDirectories && !onlyDirectories.has(path.posix.basename(relative))) continue;
             const assetRoot = safe(`${relative}/assets`);
             const directoryStat = fs.existsSync(assetRoot) ? fs.lstatSync(assetRoot, { bigint: true }) : null;
             if (directoryStat && (!directoryStat.isDirectory() || directoryStat.isSymbolicLink())) throw new Error(`Asset directory must be a regular directory: ${relative}`);
@@ -186,6 +261,8 @@ function createActiveLiveCharacterFiles({ repository, writeAsset, writeAssets, r
                     }),
             ) };
             const entries = directoryStat ? fs.readdirSync(assetRoot, { withFileTypes: true }) : [];
+            const listing = new Map();
+            listings.set(`${relative}/assets`, listing);
             if (!entries.length && !Object.keys(old).length) continue;
             const filenameSet = new Set();
             const values = Object.create(null);
@@ -224,6 +301,7 @@ function createActiveLiveCharacterFiles({ repository, writeAsset, writeAssets, r
                 if (stat.size > 64n * 1024n * 1024n) throw new Error(`Asset exceeds 64 MiB: ${entry.name}`);
                 if (!stat.size) throw new Error(`Asset is still empty: ${entry.name}`);
                 const stamp = fileStamp(stat);
+                listing.set(entry.name, stamp);
                 const prior = old[entry.name];
                 const cached = fingerprints.get(target) || prior;
                 let bytes;
@@ -274,7 +352,7 @@ function createActiveLiveCharacterFiles({ repository, writeAsset, writeAssets, r
         }
         const operations = JSON.stringify(previous) === JSON.stringify(next) ? [] : [{ path: INDEX, data: json(next) }];
         if (replicasChanged) operations.push({ path: 'index/character-asset-replicas.json', data: json(replicas) });
-        return { metadata, originals, pending, operations, replicasChanged, cacheOnly: !contentChanged && !replicasChanged, assetIndex: next };
+        return { metadata, originals, pending, operations, replicasChanged, cacheOnly: !contentChanged && !replicasChanged, assetIndex: next, listings };
     }
     function reconcile({ verifyMetadata = false } = {}) {
         if (fallback && Date.now() - lastScan >= 1000) { dirty = true; assetsDirty = true; }
@@ -282,13 +360,23 @@ function createActiveLiveCharacterFiles({ repository, writeAsset, writeAssets, r
         // polls still check canonical metadata without rescanning asset bodies.
         if (!dirty && verifyMetadata && repository.getProjectionRevision() !== accepted) dirty = true;
         if (!dirty) return null;
+        // Our own canonical saves also raise metadata events. When no asset is
+        // pending and the projection still matches what we accepted, nothing is
+        // being edited externally, so there is nothing to wait for or adopt.
+        if (!needsInitialReconcile && !assetsDirty && !dirtyAssetDirectories.size && !fallback
+            && repository.getProjectionRevision() === accepted) {
+            dirty = false;
+            return null;
+        }
         if (Date.now() - changedAt < settleMs) {
             const error = new Error('External files are being saved; retry in a moment');
             error.code = 'LIVE_FILES_SETTLING';
             throw error;
         }
         lastScan = Date.now();
-        const plan = assetsDirty ? planAssets() : { metadata: new Map(), pending: [], operations: [] };
+        const plan = assetsDirty ? planAssets()
+            : dirtyAssetDirectories.size ? planAssets(new Set(dirtyAssetDirectories))
+                : { metadata: new Map(), pending: [], operations: [] };
         const revision = repository.getProjectionRevision();
         if (!needsInitialReconcile && revision === accepted && !plan.metadata.size && (!plan.operations.length || plan.cacheOnly)) {
             // Fingerprint maintenance is not a database edit. Avoid rebuilding the
@@ -297,7 +385,8 @@ function createActiveLiveCharacterFiles({ repository, writeAsset, writeAssets, r
                 try { commitTransaction(root, plan.operations); }
                 catch (error) { recoverTransactions(root); throw error; }
             }
-            dirty = false; assetsDirty = false; return null;
+            rememberListings(plan);
+            dirty = false; assetsDirty = false; dirtyAssetDirectories.clear(); return null;
         }
         // Immutable keys can be staged first: interruption leaves only an unused
         // KV object. Metadata and filename ownership are published in one journal.
@@ -311,8 +400,10 @@ function createActiveLiveCharacterFiles({ repository, writeAsset, writeAssets, r
         accepted = result.revision;
         baseline = metadataSnapshot(result.database);
         needsInitialReconcile = false;
+        rememberListings(plan);
         dirty = false;
         assetsDirty = false;
+        dirtyAssetDirectories.clear();
         return result;
     }
     return {
@@ -325,11 +416,11 @@ function createActiveLiveCharacterFiles({ repository, writeAsset, writeAssets, r
             needsInitialReconcile = false;
             invalidate();
         },
-        accept: database => {
-            accepted = repository.getProjectionRevision();
+        accept: (database, revision) => {
+            accepted = revision || repository.getProjectionRevision();
             baseline = metadataSnapshot(database || repository.exportLegacyDatabase({ metadataOnly: true }));
         },
-        close: () => watcher?.close(),
+        close: () => { if (sweepTimer) clearTimeout(sweepTimer); watcher?.close(); },
     };
 }
 

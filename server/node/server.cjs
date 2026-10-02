@@ -74,7 +74,9 @@ const {
     registerRisuBardMemoryRoutes,
 } = require('./risubard-memory-routes.cjs');
 const { applyPatch } = require('fast-json-patch');
-const { decodeRisuSave, encodeRisuSaveLegacyBuffer, calculateHash, normalizeJSON, normalizeForwardHeaders, hasRemoteBlocks } = require('./utils.cjs');
+const { decodeRisuSave, encodeRisuSaveLegacyBuffer, createCachedHash, copyPatchPaths, normalizeJSON, normalizeForwardHeaders, hasRemoteBlocks } = require('./utils.cjs');
+// Patch-sync hashes reuse cached subtree hashes; patched containers are copies.
+const calculateHash = createCachedHash();
 const { spawn, execSync } = require('child_process');
 const os = require('os');
 const { Readable, Transform } = require('stream');
@@ -1006,9 +1008,11 @@ const projectionShadow = createProjectionShadow({
     repository: userDataRepository,
     observation: saveObservation,
     onComparison: match => compatibilityCache.setVerified(match),
-    minIntervalMs: 30000,
+    minIntervalMs: 5 * 60 * 1000,
+    idleMs: 3000,
     canSkip: () => compatibilityCache.canDefer(),
-    isPersisting: () => activeCompatibilityPersists > 0,
+    // A queued persist reschedules the shadow with its newer database.
+    isPersisting: () => activeCompatibilityPersists > 0 || Boolean(saveTimers[DB_HEX_KEY]),
 })
 const CANONICAL_PROJECTION_REVISION_KEY = 'database/canonical-projection-revision'
 const canonicalProjectionSync = createCanonicalProjectionSync({
@@ -1102,9 +1106,9 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
         phaseStartedAt = performance.now()
         errorStage = 'revision-accept'
         reportImportProgress('verify-save');
-        canonicalProjectionSync.accept()
+        const acceptedRevision = canonicalProjectionSync.accept()
         if (!observationContext.adoptingLiveFiles) {
-            liveCharacterFiles.accept(databaseObject)
+            liveCharacterFiles.accept(databaseObject, acceptedRevision)
             liveFilesPendingWrites = false
         }
         phaseMetrics.revisionAcceptMs = elapsedMs(phaseStartedAt)
@@ -4434,7 +4438,12 @@ app.get('/api/import-progress/:id', async (req, res) => {
     importProgress.stream(req.params.id, req, res);
 });
 
-app.post('/api/db/flush', sessionAuthMiddleware, async (req, res, next) => {
+app.post('/api/db/flush', async (req, res, next) => {
+    // Interactive clients use renewable JWT auth; retain cookie-only flushes
+    // for older clients' page-hide requests. Neither path claims the writer lock.
+    if (!req.headers['risu-auth']) return sessionAuthMiddleware(req, res, next);
+    if (await checkAuth(req, res)) next();
+}, async (req, res, next) => {
     try {
         await queueStorageOperation(async () => {
             if (externalEditSession.isActive()) {
@@ -4567,7 +4576,7 @@ app.post('/api/patch', async (req, res, next) => {
             }
 
             // Apply patch to in-memory database (clone first to prevent partial mutation on failure)
-            const snapshot = JSON.parse(JSON.stringify(dbCache[filePath]));
+            const snapshot = copyPatchPaths(dbCache[filePath], patch);
             let result;
             try {
                 result = applyPatch(snapshot, patch, true);
@@ -4615,9 +4624,10 @@ app.post('/api/patch', async (req, res, next) => {
                 }
             });
 
-            // Update ETag after successful patch (based on stripped version)
+            // ETags are compared only with dbEtag, so a fresh token marks the new
+            // version without re-encoding the whole stripped database.
             if (decodedKey === 'database/database.bin') {
-                dbEtag = computeBufferEtag(encodeRisuSaveLegacyBuffer(dbCache[filePath]));
+                dbEtag = nodeCrypto.randomBytes(16).toString('hex');
             }
 
             const responsePayload = {

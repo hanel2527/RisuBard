@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest'
 import type { NarrativeMemoryWikiMarkdown } from './memoryWiki'
-import { directWikiTokens } from './directWikiBlocks'
+import { directWikiBlockSchema, directWikiTokens } from './directWikiBlocks'
 import {
     executeDirectWikiCommand,
     directWikiCommandSchema,
@@ -62,16 +62,87 @@ describe('direct wiki command', () => {
         expect(JSON.parse(request.formated[1].content).documents[0].markdown).toBe(longMarkdown)
     })
 
-    test('refuses oversized ambiguous multiple document input before any mutation', async () => {
-        const input = longDocumentCommand({ maxTokens: 3_072, instruction: '모든 문서를 줄여.', documents: [
+    function blockAwareModel(operations: unknown[], edit: (markdown: string) => string | null = () => null,
+        combinePlan: unknown = null) {
+        return vi.fn(async (request: DirectWikiModelCall) => {
+            if (request.schema === directWikiBlockSchema || request.formated[0].content.includes('replacement protocol')) {
+                const payload = JSON.parse(request.formated[1].content)
+                return { type: 'success' as const, result: JSON.stringify({ schemaVersion: 2,
+                    documentId: payload.document.id, contentHash: payload.document.contentHash,
+                    replacements: payload.blocks.map((block: { blockId: string; contentHash: string; markdown: string }) => ({
+                        blockId: block.blockId, contentHash: block.contentHash, markdown: edit(block.markdown),
+                    })) }) }
+            }
+            if (request.formated[0].content.includes('COMBINE plan')) {
+                return { type: 'success' as const, result: JSON.stringify(combinePlan) }
+            }
+            return { type: 'success' as const, result: JSON.stringify({ schemaVersion: 1, operations }) }
+        })
+    }
+
+    test('edits oversized catalog-only targets from their complete text', async () => {
+        const input = longDocumentCommand({ maxTokens: 4_096, instruction: '모든 문서를 줄여.', documents: [
             { ...documents[0], content: longMarkdown }, { ...documents[1], content: longMarkdown },
-        ] })
-        await expect(executeDirectWikiCommand(input)).rejects.toThrow(/문서 전문/)
-        expect(input.requestModel).not.toHaveBeenCalled()
-        expect(input.beforeApply).not.toHaveBeenCalled()
+        ], requestModel: blockAwareModel([{
+            action: 'upsert', targetDocumentId: documents[0].id, type: 'character',
+            title: '기존 인물', aliases: null, markdown: '## 기존 인물', reason: '축약',
+        }], (markdown) => markdown.replaceAll('확인된 사실과 아직 공유하지 않은 비밀. ', '비밀. ')) })
+        const result = await executeDirectWikiCommand(input)
+        expect(result.failed).toEqual([])
+        const payload = JSON.parse(vi.mocked(input.requestModel).mock.calls[0][0].formated[1].content)
+        expect(payload.documents).toEqual([])
+        expect(payload.documentCatalog.map((document: { id: string }) => document.id))
+            .toEqual([documents[0].id, documents[1].id])
+        expect(JSON.stringify(payload.documentCatalog)).not.toContain('아직 공유하지 않은 비밀')
+        const saved = vi.mocked(input.saveDocument).mock.calls[0][0]
+        expect(saved).toMatchObject({ documentId: documents[0].id, expectedContentHash: documents[0].contentHash })
+        expect(saved.markdown).toContain('[[북문 재회]]')
+        expect(saved.markdown.length).toBeLessThan(longMarkdown.length / 2)
+        expect(input.beforeApply).toHaveBeenCalledOnce()
+    })
+
+    test('edits several named documents that exceed the budget one by one', async () => {
+        const input = longDocumentCommand({ maxTokens: 4_096, instruction: '기존 인물과 크롤러 문서를 줄여.', documents: [
+            { ...documents[0], content: longMarkdown }, { ...documents[1], content: longMarkdown },
+        ], requestModel: blockAwareModel([], (markdown) => markdown.replaceAll('확인된 사실과 아직 공유하지 않은 비밀. ', '비밀. ')) })
+        const result = await executeDirectWikiCommand(input)
+        expect(result.failed).toEqual([])
+        expect(vi.mocked(input.saveDocument).mock.calls.map(([call]) => call.documentId))
+            .toEqual([documents[0].id, documents[1].id])
+        expect(input.beforeApply).toHaveBeenCalledOnce()
+    })
+
+    test('combines documents that exceed the budget without losing either body', async () => {
+        const otherMarkdown = '## 옛 크롤러\n\n### 행적\n' + '북문 아래에서 목격된 기록. '.repeat(700) + '\n유일한 단서는 [[검은 열쇠]]다.'
+        const input = longDocumentCommand({ maxTokens: 4_096,
+            instruction: '작업: COMBINE\n대상: 기존 인물, 크롤러\n존속 문서: 기존 인물', documents: [
+                { ...documents[0], content: longMarkdown }, { ...documents[1], content: otherMarkdown },
+            ], requestModel: blockAwareModel([], () => null,
+                { schemaVersion: 1, sameEntity: true, survivorDocumentId: documents[0].id, reason: '같은 인물' }) })
+        const result = await executeDirectWikiCommand(input)
+        expect(result.failed).toEqual([])
+        const saved = vi.mocked(input.saveDocument).mock.calls[0][0]
+        expect(saved).toMatchObject({ documentId: documents[0].id, title: '기존 인물' })
+        expect(saved.aliases).toEqual(['옛 이름', '크롤러'])
+        expect(saved.markdown).toContain('[[북문 재회]]')
+        expect(saved.markdown).toContain('[[검은 열쇠]]')
+        expect(saved.markdown).toContain('### 크롤러에서 통합한 내용')
+        expect(saved.markdown).toContain('#### 행적')
+        expect(saved.markdown).not.toContain('## 옛 크롤러')
+        expect(input.trashDocument).toHaveBeenCalledWith(documents[1].id)
+        expect(input.beforeApply).toHaveBeenCalledOnce()
+    })
+
+    test('keeps oversized combine targets unchanged when they are different entities', async () => {
+        const input = longDocumentCommand({ maxTokens: 4_096,
+            instruction: '작업: COMBINE\n대상: 기존 인물, 크롤러\n존속 문서: 선택', documents: [
+                { ...documents[0], content: longMarkdown }, { ...documents[1], content: longMarkdown },
+            ], requestModel: blockAwareModel([], () => null,
+                { schemaVersion: 1, sameEntity: false, survivorDocumentId: null, reason: '서로 다른 실체' }) })
+        const result = await executeDirectWikiCommand(input)
+        expect(result.failed[0].reason).toMatch(/같은 실체가 아니라고/)
         expect(input.saveDocument).not.toHaveBeenCalled()
         expect(input.trashDocument).not.toHaveBeenCalled()
-        expect(input.retractEvent).not.toHaveBeenCalled()
     })
 
     test('edits every bounded block before one save while retaining headings, links and unchanged bytes', async () => {
@@ -268,9 +339,12 @@ describe('direct wiki command', () => {
                 trashDocument: vi.fn(), retractEvent: vi.fn(),
             })
             if (maxTokens === 32_768) {
-                await expect(command).rejects.toThrow('AI 분석 토큰 상한')
-                expect(requestModel).not.toHaveBeenCalled()
-                expect(saveDocument).not.toHaveBeenCalled()
+                await command
+                const payload = JSON.parse(requestModel.mock.calls[0][0].formated[1].content)
+                expect(payload.documents).toEqual([])
+                expect(payload.documentCatalog.length).toBeGreaterThan(0)
+                // The catalog-only target is then edited from its complete text.
+                expect(JSON.parse(requestModel.mock.calls[1][0].formated[1].content).document.id).toBe(largeWiki[0].id)
                 return
             }
             await expect(command).resolves.toMatchObject({ failed: [] })
@@ -281,6 +355,30 @@ describe('direct wiki command', () => {
             expect(saveDocument).toHaveBeenCalledOnce()
         }
     )
+
+    test('creates a new document when the whole wiki exceeds the analysis limit', async () => {
+        const largeWiki = Array.from({ length: 600 }, (_, index) => ({
+            ...documents[0],
+            id: `character.${index}`, title: `인물 ${index}`, aliases: [],
+            content: '## 인물\n\n' + '저장된 정보. '.repeat(8),
+        }))
+        const requestModel = vi.fn(async (_request: DirectWikiModelCall) => ({
+            type: 'success' as const,
+            result: JSON.stringify({ schemaVersion: 1, operations: [{
+                action: 'upsert', targetDocumentId: null, type: 'concept',
+                title: '새 개념', aliases: null, markdown: '## 새 개념\n\n### 개요\n새 개념.', reason: '생성',
+            }] }),
+        }))
+        const saveDocument = vi.fn(async () => ({ id: 'concept.new', title: '새 개념', relativePath: 'concepts/new.md' }))
+        const result = await executeDirectWikiCommand({
+            instruction: '새 개념 이라는 제목의 문서를 새로 만들어줘', documents: largeWiki,
+            currentMessages: [], maxTokens: 8_192, requestModel, saveDocument,
+            trashDocument: vi.fn(), retractEvent: vi.fn(),
+        })
+        expect(result).toMatchObject({ failed: [], applied: [{ title: '새 개념' }] })
+        expect(saveDocument).toHaveBeenCalledWith(expect.objectContaining({ title: '새 개념' }))
+        expect(JSON.parse(requestModel.mock.calls[0][0].formated[1].content).documents).toEqual([])
+    })
 
     test('captures undo after plan validation and before the first write', async () => {
         const order: string[] = []

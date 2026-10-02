@@ -1845,7 +1845,12 @@ describe('stored response memory analysis', () => {
         { analysisTokenLimit: 12_000, longEvidence: false },
         { analysisTokenLimit: 12_000, longEvidence: true },
         { analysisTokenLimit: 65_536, longEvidence: true },
-    ])('fits evidence with $analysisTokenLimit tokens (long: $longEvidence)', async ({ analysisTokenLimit, longEvidence }) => {
+        // Dynamic growth past the model output cap, with a timed-out inquiry.
+        { analysisTokenLimit: 65_536, longEvidence: true, outputLimit: 16_384, slowInquiry: true },
+    ])('fits evidence with $analysisTokenLimit tokens (long: $longEvidence)', async ({ analysisTokenLimit, longEvidence, outputLimit, slowInquiry }: {
+        analysisTokenLimit: number, longEvidence: boolean, outputLimit?: number, slowInquiry?: boolean
+    }) => {
+        const outputTokens = Math.min(analysisTokenLimit, outputLimit ?? Infinity)
         const modelCalls: MemoryAnalysisModelCall[] = []
         const savedTitles: string[] = []
         const requestModel = vi.fn(async (request: MemoryAnalysisModelCall) => {
@@ -1896,6 +1901,9 @@ describe('stored response memory analysis', () => {
                     }))
                 }
                 if (url.endsWith('/inquiry')) {
+                    if (slowInquiry) {
+                        throw new DOMException('RisuBard narrative inquiry timed out after 120000 ms', 'AbortError')
+                    }
                     return new Response(JSON.stringify({
                         mode: 'v2-current', graphRevision: 0, indexRevision: 0,
                         cacheStatus: 'current', sources: [], metrics: {
@@ -1923,6 +1931,7 @@ describe('stored response memory analysis', () => {
                 return new Response(JSON.stringify({ id: 'event-1' }))
             }) as unknown as typeof fetch,
             createAuth: async () => 'test-jwt',
+            ...(outputLimit ? { getAnalysisOutputTokenLimit: () => outputLimit } : {}),
             onError: vi.fn(), nativeV2Analysis: true,
         })
 
@@ -1956,15 +1965,15 @@ describe('stored response memory analysis', () => {
         }
         expect(modelCalls[0].logPurpose).toBe('bardwiki-analysis')
         expect(modelCalls[1].logPurpose).toBe('bardwiki-canonical-update')
-        expect(modelCalls[0].maxTokens).toBe(analysisTokenLimit)
-        expect(modelCalls[1].maxTokens).toBe(analysisTokenLimit)
+        expect(modelCalls[0].maxTokens).toBe(outputTokens)
+        expect(modelCalls[1].maxTokens).toBe(outputTokens)
         const tokenizer = get_encoding('cl100k_base')
         try {
             for (const call of modelCalls) {
                 expect(tokenizer.encode(call.formated.map((message) => message.content).join('\n')).length)
                     .toBeLessThanOrEqual(analysisTokenLimit)
                 if (call.logPurpose === 'bardwiki-canonical-update') {
-                    expect(call.maxTokens).toBe(analysisTokenLimit)
+                    expect(call.maxTokens).toBe(outputTokens)
                 }
             }
         }

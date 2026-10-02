@@ -266,7 +266,7 @@ export let requiresFullEncoderReload = $state({
 
 let requestImmediateSaveImpl: ((options?: {
     forceFullWrite?: boolean
-    flushServer?: boolean | 'canonical'
+    flushServer?: boolean | 'canonical' | 'canonical-background'
     rejectOnFailure?: boolean
 }) => Promise<void> | void) = () => {}
 let patchSyncBaseline: Database | null = null
@@ -374,7 +374,7 @@ export function previewPersistFailureToast() {
 
 export function requestImmediateSave(options?: {
     forceFullWrite?: boolean
-    flushServer?: boolean | 'canonical'
+    flushServer?: boolean | 'canonical' | 'canonical-background'
     rejectOnFailure?: boolean
 }) {
     return requestImmediateSaveImpl(options)
@@ -557,6 +557,10 @@ export async function saveDb() {
     // After an unsuccessful attempt, rebuild a full snapshot instead of
     // treating an empty retry diff as proof that the server has the changes.
     let forceFullWriteOnRetry = false
+    // Immediate saves diff only tracked characters; the next background save
+    // runs the full untracked-character sweep so missed edits still persist.
+    let untrackedSweepPending = false
+    let lastImmediateSaveAt = 0
     if (supportsPatchSync) {
         await patcher.init(patchSyncBaseline ?? getDatabase())
         patchSyncBaseline = null
@@ -584,6 +588,8 @@ export async function saveDb() {
             if (result.recovery?.conflicts) {
                 notifyInfo(`외부 파일 변경을 반영했습니다. 겹친 앱 편집 ${result.recovery.conflicts}건은 서버 데이터 폴더의 ${result.recovery.path}에 보관했습니다.`)
             }
+            // The acknowledged copy shares objects with the patcher until here.
+            acknowledgedDb = JSON.parse(JSON.stringify(acknowledgedDb))
             const recovery = applyLiveFileSnapshot(getDatabase(), acknowledgedDb, result.snapshot, liveChatMetadataBaseline)
             if (recovery.conflicts.length) {
                 const entry = { time: new Date().toISOString(), conflicts: recovery.conflicts }
@@ -677,8 +683,8 @@ export async function saveDb() {
 
     function takeTrackedChanges() {
         const toSave = safeStructuredClone(changeTracker)
-        changeTracker.character = changeTracker.character.length === 0 ? [] : [changeTracker.character[0]]
-        changeTracker.chat = changeTracker.chat.length === 0 ? [] : [changeTracker.chat[0]]
+        changeTracker.character = []
+        changeTracker.chat = []
         changeTracker.root = false
         changeTracker.botPreset = false
         changeTracker.modules = false
@@ -688,15 +694,7 @@ export async function saveDb() {
     }
 
     async function flushServerDbNow(keepalive = false, canonicalOnly = false) {
-        const response = await fetch(canonicalOnly ? '/api/db/flush?mode=canonical' : '/api/db/flush', {
-            method: 'POST',
-            keepalive,
-            headers: forageStorage.importProgressId ? { 'x-import-id': forageStorage.importProgressId } : undefined,
-            credentials: 'same-origin'
-        })
-        if (!response.ok) {
-            throw new Error(`Server database flush failed (${response.status})`)
-        }
+        await forageStorage.flushDatabase(keepalive, canonicalOnly)
     }
 
     async function flushServerDbKeepalive() {
@@ -1083,6 +1081,7 @@ export async function saveDb() {
         options?: {
             forceFullWrite?: boolean
             skipBroadcast?: boolean
+            trackedCharactersOnly?: boolean
         }
     ): Promise<'saved' | 'retry' | 'noop'> {
         // Never bypass an unresolved conflict via the full-write retry lane.
@@ -1137,7 +1136,8 @@ export async function saveDb() {
         let newEtag: string | undefined
 
         if (supportsPatchSync && !options?.forceFullWrite) {
-            const patchData = await patcher.set(db, safeStructuredClone(toSave))
+            if (!options?.trackedCharactersOnly) untrackedSweepPending = false
+            const patchData = await patcher.set(db, safeStructuredClone(toSave), { trackedCharactersOnly: options?.trackedCharactersOnly })
             if (patchData.patch.length === 0) {
                 updateKnownChatsAfterSuccessfulSave(db, toSave)
                 return 'saved'
@@ -1387,7 +1387,7 @@ export async function saveDb() {
         }
 
         updateKnownChatsAfterSuccessfulSave(db, toSave)
-        if (supportsPatchSync) acknowledgedDb = patcher.snapshot()
+        if (supportsPatchSync) acknowledgedDb = patcher.structuralSnapshot()
 
         if (newEtag) {
             forageStorage.setDbEtag(newEtag)
@@ -1414,7 +1414,14 @@ export async function saveDb() {
             return
         }
 
-        if (!hasTrackedChanges(changeTracker) && !options?.forceFullWrite && !forceFullWriteOnRetry && !options?.refresh) {
+        if (!hasTrackedChanges(changeTracker) && !options?.forceFullWrite && !forceFullWriteOnRetry && !options?.refresh && !untrackedSweepPending) {
+            return
+        }
+        // Run the sweep-only save once immediate saves pause, so it never
+        // makes a follow-up user save wait behind the full diff.
+        if (!options?.refresh && untrackedSweepPending && !hasTrackedChanges(changeTracker)
+            && !options?.forceFullWrite && !forceFullWriteOnRetry && Date.now() - lastImmediateSaveAt < 2000) {
+            changed = true
             return
         }
 
@@ -1423,12 +1430,18 @@ export async function saveDb() {
             let toSave: toSaveType | null = null
             try {
                 await syncLiveFilesNow()
-                if (!hasTrackedChanges(changeTracker) && !options?.forceFullWrite && !forceFullWriteOnRetry) return
+                if (!hasTrackedChanges(changeTracker) && !options?.forceFullWrite && !forceFullWriteOnRetry && !(untrackedSweepPending && !options?.refresh)) return
                 toSave = takeTrackedChanges()
                 const result = await persistTrackedChanges(toSave, {
                     ...options,
                     forceFullWrite: options?.forceFullWrite || forceFullWriteOnRetry,
+                    trackedCharactersOnly: options?.refresh === true,
                 })
+                if (result === 'saved' && options?.refresh && supportsPatchSync) {
+                    untrackedSweepPending = true
+                    lastImmediateSaveAt = Date.now()
+                    changed = true
+                }
                 if (result === 'saved') {
                     forceFullWriteOnRetry = false
                     savetrys = 0
@@ -1501,7 +1514,11 @@ export async function saveDb() {
             rejectOnFailure: options?.rejectOnFailure,
             refresh: true,
         })
-        if (options?.flushServer && supportsPatchSync) {
+        if (options?.flushServer === 'canonical-background' && supportsPatchSync) {
+            // The server already holds the patch; durable files follow without
+            // blocking the caller. Failures surface as server persist warnings.
+            void flushServerDbNow(false, true).catch(error => console.warn('[Save] Background flush failed:', error))
+        } else if (options?.flushServer && supportsPatchSync) {
             await flushServerDbNow(false, options.flushServer === 'canonical')
         }
     }

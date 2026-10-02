@@ -1688,6 +1688,13 @@
   .character-list-sidebar {
     --character-card-gap: 1rem;
   }
+  @media (min-width: 641px) {
+    /* Keep native scrollbars beside, rather than underneath, the resize grip. */
+    [data-character-sidebar-scroll], .character-list {
+      width: calc(100% - .5rem);
+      align-self: flex-start;
+    }
+  }
   .character-sidebar-primary-actions {
     display: grid;
     flex: 0 0 auto;

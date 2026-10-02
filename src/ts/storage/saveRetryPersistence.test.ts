@@ -19,7 +19,7 @@ const controller = ts.transpile(source.slice(start, end), { target: ts.ScriptTar
 
 test.each(['preflight', 'chat-write'] as const)('retains edits and stops retrying after a %s handoff', async (failure) => {
     const create = new Function(`
-        let saveInFlight = null, savetrys = 0, changed = false, forceFullWriteOnRetry = false, gotChannel = false;
+        let saveInFlight = null, savetrys = 0, changed = false, forceFullWriteOnRetry = false, gotChannel = false, untrackedSweepPending = false, lastImmediateSaveAt = 0;
         const supportsPatchSync = true, saving = {}, lastLiveError = '';
         const saveRuntime = { isActive: () => true }, language = { sessionSavePausedTitle: 'Saving paused' };
         const changeTracker = { chat: [['character', 'chat']] };
@@ -79,7 +79,7 @@ test.each([
         return 'saved'
     }
     const create = new Function('persistTrackedChanges', `
-        let saveInFlight = null, savetrys = 0, changed = false, forceFullWriteOnRetry = false, gotChannel = false;
+        let saveInFlight = null, savetrys = 0, changed = false, forceFullWriteOnRetry = false, gotChannel = false, untrackedSweepPending = false, lastImmediateSaveAt = 0;
         const supportsPatchSync = true;
         const saveRuntime = { isActive: () => true }, externalEditMode = { active: false }, saving = {};
         const flags = { character: [], chat: [], root: true, botPreset: true, modules: false, plugins: false, pluginCustomStorage: false };

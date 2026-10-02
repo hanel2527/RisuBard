@@ -44,7 +44,15 @@ test('canonical painter flush persists edits before acknowledgement without rebu
         const { token } = await login.json()
         const session = await fetch(`${base}/api/session`, { method: 'POST', headers: { 'risu-auth': token } })
         const cookie = session.headers.get('set-cookie')!.split(';')[0]
-        const headers = { 'content-type': 'application/json', 'risu-auth': token, 'x-session-id': 'painter-test', cookie, 'file-path': Buffer.from('database/database.bin').toString('hex') }
+        // Interactive saves must work even when the separate asset cookie is missing/expired.
+        const headers = { 'content-type': 'application/json', 'risu-auth': token, 'x-session-id': 'painter-test', 'file-path': Buffer.from('database/database.bin').toString('hex') }
+        const unauthenticated = await fetch(`${base}/api/db/flush?mode=canonical`, { method: 'POST' })
+        expect(unauthenticated.status).toBe(401)
+        const invalidAuth = await fetch(`${base}/api/db/flush?mode=canonical`, { method: 'POST', headers: { 'risu-auth': 'invalid' } })
+        expect(invalidAuth.ok).toBe(false)
+        // Older clients still send cookie-only keepalive requests on tab hide.
+        const cookieFlush = await fetch(`${base}/api/db/flush?mode=canonical`, { method: 'POST', headers: { cookie } })
+        expect(cookieFlush.ok).toBe(true)
         const read = await fetch(`${base}/api/read`, { headers })
         expect(read.ok, logs).toBe(true)
         const current = await decodeRisuSave(Buffer.from(await read.arrayBuffer()))
@@ -66,7 +74,8 @@ test('canonical painter flush persists edits before acknowledgement without rebu
         await patch(fragments)
         const fullMs = await flush(false)
         const logPath = path.join(root, 'logs/storage-observation.jsonl')
-        await expect.poll(() => fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : '').toContain('"semanticMatch":true')
+        // Shadow verification runs after saves stay idle for a few seconds.
+        await expect.poll(() => fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : '', { timeout: 10_000 }).toContain('"semanticMatch":true')
         const updated = [{ ...fragments[0], prompt: 'soft glow' }]
         await patch(updated)
         const canonicalMs = await flush(true)

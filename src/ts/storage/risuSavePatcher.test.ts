@@ -1116,3 +1116,23 @@ describe('fast-path — per-module granularity', () => {
         expect(liveHash).toBe(freshHash)
     })
 })
+
+describe('RisuSavePatcher.set — tracked characters only', () => {
+    const toSave = (character: string[] = []) => ({ character, chat: [], botPreset: false, modules: false } as any)
+
+    test('defers untracked character edits to the next full set and keeps the protocol hash consistent', async () => {
+        const patcher = new RisuSavePatcher()
+        await patcher.init({ characters: [{ chaId: 'a', name: 'A', chats: [] }, { chaId: 'b', name: 'B', chats: [] }], botPresets: [], modules: [] })
+        const data = { characters: [{ chaId: 'a', name: 'A2', chats: [] }, { chaId: 'b', name: 'B2', chats: [] }], botPresets: [], modules: [] }
+
+        const tracked = await patcher.set(data, toSave(['a']), { trackedCharactersOnly: true })
+        expect(tracked.patch.map(op => op.path)).toEqual(['/characters/0/name'])
+
+        const sweep = await patcher.set(data, toSave())
+        expect(sweep.patch.map(op => op.path)).toEqual(['/characters/1/name'])
+
+        const fresh = new RisuSavePatcher()
+        await fresh.init(data)
+        expect(patcher.hash()).toBe(fresh.hash())
+    })
+})

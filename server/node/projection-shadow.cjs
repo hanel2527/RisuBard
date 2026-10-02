@@ -16,6 +16,7 @@ function createProjectionShadow(options = {}) {
     const now = options.now || (() => performance.now());
     let pending = null;
     let scheduled = false;
+    let idleTimer = null;
     let lastMatchAt = -Infinity;
 
     function record(row) {
@@ -86,7 +87,13 @@ function createProjectionShadow(options = {}) {
                     ? candidate.plannedFiles
                     : 0,
             };
-            if (!scheduled) {
+            if (options.idleMs > 0) {
+                // The comparison blocks the event loop; run it only once saves
+                // have been quiet for idleMs so it never delays a user action.
+                if (idleTimer) clearTimeout(idleTimer);
+                idleTimer = setTimeout(() => { idleTimer = null; void run(); }, options.idleMs);
+                idleTimer.unref?.();
+            } else if (!scheduled) {
                 scheduled = true;
                 scheduleTask(run);
             }

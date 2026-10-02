@@ -194,6 +194,17 @@ export class NodeStorage{
         }
     }
 
+    async flushDatabase(keepalive = false, canonicalOnly = false): Promise<void> {
+        const path = canonicalOnly ? '/api/db/flush?mode=canonical' : '/api/db/flush'
+        const init: RequestInit = { method: 'POST', keepalive, credentials: 'same-origin' }
+        // Use the same renewable auth as writes. The asset cookie can expire
+        // independently in a long-lived tab. Page-hide remains best effort.
+        const response = keepalive
+            ? await this.authFetch(path, init)
+            : await this.saveRequest(path, init)
+        if (!response.ok) throw new Error(`Server database flush failed (${response.status})`)
+    }
+
     async createAuth(){
         const now = Date.now()
         if (this.cachedJwt && this.cachedJwt.expiresAt - now > 30_000) {

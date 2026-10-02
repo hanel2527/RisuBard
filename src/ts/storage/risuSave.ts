@@ -843,6 +843,17 @@ export class RisuSavePatcher {
     snapshot() {
         return JSON.parse(JSON.stringify(this.lastSyncedDb));
     }
+
+    // set() replaces entries and the root instead of mutating them, so copying
+    // the in-place arrays freezes this version. Deep-clone before mutating it.
+    structuralSnapshot() {
+        const db = this.lastSyncedDb
+        return {
+            ...db,
+            characters: [...db.characters],
+            ...(Array.isArray(db.modules) ? { modules: [...db.modules] } : {}),
+        }
+    }
     private hashBlocks: { [key: string]: number } = {};
     // Cheap change pre-check baselines. calculateHash over normalizeJSON'd data
     // is the client↔server patch protocol (the server recomputes the same hash,
@@ -928,7 +939,10 @@ export class RisuSavePatcher {
         }
     }
 
-    async set(data: any, toSave: toSaveType): Promise<{ patch: any[]; expectedHash: string }> {
+    // trackedCharactersOnly skips the untracked-character safety sweep. The
+    // skipped characters keep their acknowledged baseline, so a later full
+    // set() still finds and sends any change the tracker missed.
+    async set(data: any, toSave: toSaveType, options?: { trackedCharactersOnly?: boolean }): Promise<{ patch: any[]; expectedHash: string }> {
         const { compare } = await import('fast-json-patch')
         const expectedHash: string = this.hash();
         const patch: any[] = []
@@ -1124,6 +1138,7 @@ export class RisuSavePatcher {
                 const curChar = curCharacters[i]
                 const curCharId = curChar?.chaId
                 const trackedBySave = toSave.character.includes(curCharId ?? '')
+                if (options?.trackedCharactersOnly && !trackedBySave && curCharId) continue
 
                 // Cheap pre-check: identical JSON ⇒ identical data ⇒ stored
                 // hash, baseline and (empty) diff are all still valid — skip

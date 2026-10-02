@@ -51,6 +51,11 @@ export class AutoStorage{
         return this.realStorage.createAuth()
     }
 
+    async flushDatabase(keepalive = false, canonicalOnly = false): Promise<void> {
+        await this.Init()
+        await this.realStorage.flushDatabase(keepalive, canonicalOnly)
+    }
+
     async exportBackup(opts?: ExportBackupOptions) {
         await this.Init()
         return this.realStorage.exportBackup(opts)

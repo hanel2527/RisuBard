@@ -147,7 +147,7 @@ export async function loadNarrativeInquiry(input: {
 }): Promise<NarrativeInquiryResponse> {
     const timeoutMs = input.timeoutMs ?? RISUBARD_INQUIRY_TIMEOUT_MS_DEFAULT
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1
-        || timeoutMs > 10_000) {
+        || timeoutMs > 600_000) {
         throw new Error('Invalid RisuBard narrative inquiry timeout')
     }
     const controller = new AbortController()

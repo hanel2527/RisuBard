@@ -26,7 +26,7 @@ import { copyPainterIdentity, copyPainterOutfit, getPainterLoreIdentity, outfits
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value))
 const errorText = (cause: unknown) => cause instanceof Error ? cause.message : String(cause)
-const persist = () => requestImmediateSave({ flushServer: 'canonical', rejectOnFailure: true })
+const persist = () => requestImmediateSave({ flushServer: 'canonical-background', rejectOnFailure: true })
 type PresetWrite = <T, K extends keyof T>(owner: T, key: K, value: T[K]) => void
 let presetMutationInProgress = false
 const normalizedName = (name: string) => name.trim().toLocaleLowerCase()

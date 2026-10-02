@@ -94,6 +94,7 @@ import {
 } from '../risubard/wikiPromptPreset';
 import { resolveRisuBardChatSettings } from '../risubard/risuBardSettings';
 import { resolveDynamicMemorySettings } from '../risubard/dynamicMemoryBudget';
+import { requestWithProviderOutputLimit } from '../risubard/providerOutputTokenLimit';
 import {
     findHistoricalSourceMatches,
     resolveHistoricalSourceMatchesById,
@@ -210,6 +211,9 @@ const storedResponseMemoryAnalysis = createStoredResponseMemoryAnalysis({
     getInquiryTimeoutMs: (chatId) =>
         resolvedRisuBardSettings(findRisuBardChat(chatId))
             .risuBardInquiryTimeoutMs,
+    getAnalysisOutputTokenLimit: (chatId) =>
+        resolvedRisuBardSettings(findRisuBardChat(chatId))
+            .risuBardAnalysisTokenLimit,
     onError(error) {
         const reason = boundedMemoryAnalysisError(error) || '알 수 없는 오류'
         console.warn(`[RisuBard memory analysis] ${reason}`)
@@ -966,14 +970,16 @@ export async function executeCurrentNarrativeWikiCommand(
             contextSelection,
             contextSources,
             maxTokens: settings.risuBardAnalysisTokenLimit,
-            requestModel: (request) => requestChatData(
+            requestModel: (request) => requestWithProviderOutputLimit(
                 {
                     ...request,
+                    // Dynamic growth widens the input budget only.
+                    maxTokens: Math.min(request.maxTokens,
+                        resolvedRisuBardSettings(chat).risuBardAnalysisTokenLimit),
                     realChatId: chatId,
-                    logSource: 'wiki-admin',
+                    logSource: 'wiki-admin' as const,
                 },
-                settings.risuBardModelMode,
-                generationSignal
+                (attempt) => requestChatData(attempt, settings.risuBardModelMode, generationSignal)
             ),
             beforeApply: async () => {
                 await beginBardChatUndo({

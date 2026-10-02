@@ -527,6 +527,64 @@ function calculateHash(node) {
 }
 
 /**
+ * calculateHash with per-object memoization. Patches copy only the containers
+ * on their paths, so unchanged subtrees keep their identity and cached hash.
+ * Callers must not mutate a hashed object in place.
+ */
+function createCachedHash() {
+    const cache = new WeakMap();
+    function hash(node) {
+        if (node === null || typeof node !== 'object') return calculateHash(node);
+        const cached = cache.get(node);
+        if (cached !== undefined) return cached;
+        let result;
+        if (Array.isArray(node)) {
+            result = SEED_ARRAY;
+            for (const item of node)
+                result = (Math.imul(result, PRIME_MULTIPLIER) + hash(item)) >>> 0;
+        } else {
+            let objectHash = SEED_OBJECT;
+            for (const key in node)
+                objectHash += (Math.imul(calculateHash(key), PRIME_MULTIPLIER) + hash(node[key]));
+            result = objectHash >>> 0;
+        }
+        cache.set(node, result);
+        return result;
+    }
+    return hash;
+}
+
+/**
+ * Shallow-copies the root and every container a JSON patch can mutate (its
+ * path and from parents), sharing all other subtrees with the original. A
+ * failed patch then leaves the original untouched without a deep clone.
+ */
+function copyPatchPaths(root, patch) {
+    const copy = value => Array.isArray(value) ? value.slice() : { ...value };
+    const result = copy(root);
+    const copies = new Set([result]);
+    for (const operation of patch) {
+        for (const pointer of [operation?.path, operation?.from]) {
+            if (typeof pointer !== 'string' || !pointer) continue;
+            const tokens = pointer.split('/').slice(1).map(token => token.replace(/~1/g, '/').replace(/~0/g, '~'));
+            let node = result;
+            for (let index = 0; index < tokens.length - 1; index++) {
+                if (!Object.hasOwn(node, tokens[index])) break;
+                let child = node[tokens[index]];
+                if (child === null || typeof child !== 'object') break;
+                if (!copies.has(child)) {
+                    child = copy(child);
+                    copies.add(child);
+                    node[tokens[index]] = child;
+                }
+                node = child;
+            }
+        }
+    }
+    return result;
+}
+
+/**
  * Normalize JSON data for consistent hashing
  * @param {*} value - The value to normalize
  * @returns {*} - The normalized value
@@ -601,6 +659,8 @@ module.exports = {
     encodeRisuSaveLegacy,
     encodeRisuSaveLegacyBuffer,
     calculateHash,
+    createCachedHash,
+    copyPatchPaths,
     normalizeJSON,
     normalizeForwardHeaders,
     checkHeader,
