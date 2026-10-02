@@ -23,7 +23,7 @@ function draft(action: 'create' | 'update' = 'update') {
     }
 }
 
-async function run(options: { supplied?: boolean; create?: boolean; malformed?: boolean; priorUnknown?: boolean; ungrounded?: boolean; partial?: boolean; reboot?: boolean; guide?: boolean } = {}) {
+async function run(options: { supplied?: boolean; unnamed?: boolean; create?: boolean; malformed?: boolean; priorUnknown?: boolean; ungrounded?: boolean; partial?: boolean; reboot?: boolean; guide?: boolean } = {}) {
     const saveCanonicalDocument = vi.fn(async (input) => ({
         ...existing, ...input, contentHash: 'new-hash',
     }))
@@ -89,7 +89,8 @@ async function run(options: { supplied?: boolean; create?: boolean; malformed?: 
             { assistantMessageId: 'new', sourceMessageIds: ['new'] },
         ] } : {}),
         messages: [...(options.reboot ? [{ messageId: 'first', role: 'assistant' as const, content: 'The story began.' }] : []),
-            { messageId: 'new', role: 'assistant', content: options.ungrounded
+            { messageId: 'new', role: 'assistant', content: options.unnamed
+            ? 'Seven days later the narrator danced with a knight.' : options.ungrounded
             ? 'The narrator danced with Gilbert.' : 'Seven days later the narrator danced with Gilbert.' }],
     })
     return { analyze, saveCanonicalDocument, saveConfirmedTurn }
@@ -141,7 +142,19 @@ describe('combined semantic and canonical writing', () => {
         expect(result.saveCanonicalDocument).toHaveBeenCalledTimes(1)
         expect(result.saveConfirmedTurn.mock.calls[0][0].retrievalMetadata.storyTime.day).toBe(0)
     })
-    test.each([{ supplied: false }, { malformed: true }])('falls back for missing full document or malformed patches: %o', async (options) => {
+    test('uses a document named in the turn when inquiry returns no sources', async () => {
+        const result = await run({ supplied: false })
+        expect(result.analyze).toHaveBeenCalledTimes(1)
+        const input = JSON.parse(result.analyze.mock.calls[0][0].input)
+        expect(input.completeCanonicalDocuments).toEqual([
+            { id: existing.id, type: existing.type, title: existing.title, completeText: existing.content },
+        ])
+        expect(result.saveCanonicalDocument).toHaveBeenCalledWith(expect.objectContaining({
+            expectedContentHash: 'old-hash',
+            markdown: expect.stringContaining('A silver ring.'),
+        }))
+    })
+    test.each([{ supplied: false, unnamed: true }, { malformed: true }])('falls back for missing full document or malformed patches: %o', async (options) => {
         const result = await run(options)
         expect(result.analyze).toHaveBeenCalledTimes(2)
         expect(result.saveCanonicalDocument).toHaveBeenCalledTimes(1)
