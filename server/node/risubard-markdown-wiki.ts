@@ -645,6 +645,14 @@ export function createMarkdownNarrativeWiki(
     const workspaceFor = (characterId: string, chatId: string) =>
         resolveMarkdownWikiWorkspace(userDataDirectory, characterId, chatId)
     const documentCache = new Map<string, MarkdownWikiDocument[]>()
+    // Concurrent readers share one full reread; a write discards it.
+    const documentLoads = new Map<string, Promise<MarkdownWikiDocument[]>>()
+    const documentGenerations = new Map<string, number>()
+    const invalidateDocuments = (key: string) => {
+        documentCache.delete(key)
+        documentLoads.delete(key)
+        documentGenerations.set(key, (documentGenerations.get(key) ?? 0) + 1)
+    }
     const embeddingCatalogCache = new WeakMap<MarkdownWikiDocument[], Omit<WikiEmbeddingCatalog, 'nextOffset'>>()
     type BardChatUndoFile = { relativePath: string; contents: string }
     type BardChatUndoSnapshot = {
@@ -819,9 +827,11 @@ export function createMarkdownNarrativeWiki(
         characterId: string,
         chatId: string
     ): Promise<MarkdownWikiDocument[]> => {
+        const key = workspaceFor(characterId, chatId).directory
+        const generation = documentGenerations.get(key) ?? 0
         await cleanupLegacySnapshots(characterId, chatId)
         const documents = await readDocuments(characterId, chatId)
-        documentCache.set(workspaceFor(characterId, chatId).directory, documents)
+        if ((documentGenerations.get(key) ?? 0) === generation) documentCache.set(key, documents)
         return documents
     }
 
@@ -832,8 +842,13 @@ export function createMarkdownNarrativeWiki(
         const workspace = workspaceFor(characterId, chatId)
         await cleanupLegacySnapshots(characterId, chatId)
         const key = workspace.directory
-        return documentCache.get(key)
-            ?? refreshDocuments(characterId, chatId)
+        const cached = documentCache.get(key) ?? documentLoads.get(key)
+        if (cached) return cached
+        const load = refreshDocuments(characterId, chatId).finally(() => {
+            if (documentLoads.get(key) === load) documentLoads.delete(key)
+        })
+        documentLoads.set(key, load)
+        return load
     }
 
     const snapshotSignature = (
@@ -894,7 +909,7 @@ export function createMarkdownNarrativeWiki(
 
     return {
         invalidateCache(characterId: string, chatId: string): void {
-            documentCache.delete(workspaceFor(characterId, chatId).directory)
+            invalidateDocuments(workspaceFor(characterId, chatId).directory)
         },
         async beginBardChatUndo(input: {
             characterId: string
@@ -1899,7 +1914,7 @@ export function createMarkdownNarrativeWiki(
             try {
                 await rebuildIndex(input.characterId, input.chatId)
             } catch {
-                documentCache.delete(workspace.directory)
+                invalidateDocuments(workspace.directory)
             }
             return prepared.document
         },

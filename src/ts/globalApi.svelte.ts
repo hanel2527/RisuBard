@@ -418,6 +418,9 @@ export async function toggleExternalEditMode() {
 export async function saveDb() {
     let changed = false
     let gotChannel = false
+    // Paused tabs cannot save or refresh, so they release their live-file stream.
+    // Browsers allow six HTTP/1.1 connections per server across all tabs.
+    let closeLiveEvents: (() => void) | undefined
     const canonicalSaveConflict = createCanonicalSaveConflict()
     const sessionID = v4()
     let saveInFlight: Promise<void> | null = null
@@ -474,6 +477,7 @@ export async function saveDb() {
     const handleSessionDeactivated = () => {
         if (!saveRuntime.isActive()) return
         gotChannel = true
+        closeLiveEvents?.()
         void sessionHandoff.deactivate()
     }
     if (channel) {
@@ -654,7 +658,12 @@ export async function saveDb() {
     let stopLiveEvents: (() => void) | undefined
     let liveEventsClosed = false
     const catchUpLiveFiles = () => { if (!document.hidden) liveSignals.signal() }
-    if (supportsPatchSync) {
+    closeLiveEvents = () => {
+        liveEventsClosed = true
+        stopLiveEvents?.()
+        stopLiveEvents = undefined
+    }
+    if (supportsPatchSync && !gotChannel) {
         document.addEventListener('visibilitychange', catchUpLiveFiles)
         void forageStorage.subscribeLiveFileChanges(liveSignals.signal).then(stop => {
             if (liveEventsClosed) stop()

@@ -2,6 +2,7 @@
     import { onDestroy, untrack } from 'svelte'
     import { v4 as createUuid } from 'uuid'
     import { language } from 'src/lang'
+    import { requestWithProviderOutputLimit } from 'src/ts/risubard/providerOutputTokenLimit'
     import { diagnoseBardLoreAnalysisFailure, type BardLoreFailureContext } from 'src/ts/lorebook/bardLoreAnalysisDiagnostics'
     import { DBState } from 'src/ts/stores.svelte'
     import { alertNormal, notifySuccess } from 'src/ts/alert'
@@ -617,7 +618,7 @@
                             inputTokenLimit: next.settingsSnapshot.analysisInputTokens,
                             outputTokenLimit: next.settingsSnapshot.analysisOutputTokens,
                         }
-                        const response = await requestChatData({
+                        const response = await requestWithProviderOutputLimit<Parameters<typeof requestChatData>[0], Awaited<ReturnType<typeof requestChatData>>>({
                             formated: [{ role: 'user', content: prompt }],
                             bias: {},
                             useStreaming: false,
@@ -629,8 +630,8 @@
                             schema,
                             extractJson: '',
                             logSource: 'other',
-                            logPurpose: 'bard-lore-analysis',
-                        }, 'model', nextController.signal)
+                            logPurpose: 'bard-lore-analysis' as const,
+                        }, (request) => requestChatData(request, 'model', nextController.signal))
                         diagnosticContext.responseType = response.type
                         if (response.type === 'success' || response.type === 'fail') {
                             diagnosticContext.finishReason = response.finishReason

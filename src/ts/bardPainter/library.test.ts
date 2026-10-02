@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { copyPainterIdentity, copyPainterOutfit, filterPainterLoreLinks, getPainterLoreIdentity, outfitsForIdentity, withPainterLoreIdentity } from './library'
+import { botOutfitCatalog, copyPainterIdentity, copyPainterOutfit, filterPainterLoreLinks, getPainterLoreIdentity, outfitsForIdentity, withPainterLoreIdentity } from './library'
 import { exportPainterBotData, normalizePainterBotData } from './painterCardData'
 
 const identity = { id: 'aria', name: 'Aria', aliases: ['Captain'], appearance: 'black hair', outfitIds: ['shared', 'missing', 'other-owned'], defaultOutfitId: 'shared', attachToCard: true }
@@ -88,5 +88,26 @@ describe('painter card preset projection', () => {
         expect(projected.identities[0].outfitIds).toEqual([])
         expect(projected.identities[0].defaultOutfitId).toBeUndefined()
         expect(normalizePainterBotData({ outfits: [outfit] })?.outfits).toHaveLength(1)
+    })
+})
+
+describe('global outfit references', () => {
+    const global = { identities: [], outfits: [
+        { id: 'dress', subjectId: '', name: 'Dress', clothing: 'white dress', state: '' },
+        { id: 'robe', subjectId: '', name: 'Robe', clothing: 'black robe', state: '' },
+    ] }
+    const bot = { identities: [{ id: 'aria', name: 'Aria', aliases: [], appearance: 'black hair', outfitIds: ['dress', 'robe'], attachToCard: true }],
+        outfits: [], globalOutfits: [{ id: 'dress', attachToCard: true }] }
+
+    it('resolves only selected global outfits for the bot', () => {
+        expect(botOutfitCatalog(bot, global).outfits.map(item => item.id)).toEqual(['dress'])
+        expect(outfitsForIdentity(botOutfitCatalog(bot, global), 'aria').map(item => item.id)).toEqual(['dress'])
+    })
+
+    it('snapshots attached global outfits into exported cards without references', () => {
+        const exported = exportPainterBotData(bot, global)!
+        expect(exported.outfits).toEqual([{ id: 'dress', subjectId: '', name: 'Dress', clothing: 'white dress', state: '' }])
+        expect(exported.identities[0].outfitIds).toEqual(['dress'])
+        expect(exported).not.toHaveProperty('globalOutfits')
     })
 })

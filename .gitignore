@@ -61,6 +61,8 @@ dist.zip
 !/scripts/dev-launcher.mjs
 !/scripts/dev-launcher.test.ts
 !/scripts/launch-risubard-dev.cmd
+!/scripts/start-menu-launcher.mjs
+!/scripts/start-menu-launcher.node-test.mjs
 .env
 /server/node/ssl/certificate
 /bin/

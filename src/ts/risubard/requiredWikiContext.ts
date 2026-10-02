@@ -6,7 +6,7 @@ type WikiBudget = { target: number; events: number; perSource: number; maximum: 
 
 export function reserveRequiredWikiBudget(budget: WikiBudget, sources: readonly ContextSource[]): WikiBudget | null {
     const maximum = budget.maximum - sources.reduce((sum, source) => sum + source.tokens, 0)
-    if (maximum < 0) throw new Error('필수 위키가 전체 위키 토큰 상한을 초과했습니다.')
+    // Required documents may use the whole retrieval budget; optional lookup then stops.
     // Inquiry settings have a 256-token minimum; never round the remaining budget up.
     if (maximum < 256) return null
     return { target: Math.min(budget.target, maximum), events: Math.min(budget.events, maximum),

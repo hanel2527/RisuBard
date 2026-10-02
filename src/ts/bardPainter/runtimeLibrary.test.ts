@@ -1,4 +1,5 @@
 import { beforeEach, expect, it, vi } from 'vitest'
+import { outfitsForIdentity } from './library'
 import type { Database } from '../storage/database.svelte'
 import { createPainterChatData } from './types'
 
@@ -86,7 +87,10 @@ it('copies a character and outfits to global and back with independent IDs and a
     expect(imported.name).not.toBe('a')
     imported.appearance = 'changed'
     expect(global.identities[0].appearance).toBe('a hair')
-    expect(session.bot.outfits.find(item => item.id === imported.defaultOutfitId)?.clothing).toBe('blue coat')
+    // Global outfits are referenced by the bot, not copied.
+    expect(imported.defaultOutfitId).toBe(global.outfits[0].id)
+    expect(session.bot.globalOutfits).toEqual([{ id: global.outfits[0].id }])
+    expect(session.botCatalog.outfits.find(item => item.id === imported.defaultOutfitId)?.clothing).toBe('blue coat')
 })
 
 it('rolls back the first global creation and supports outfit-only copy/import', async () => {
@@ -152,4 +156,19 @@ it('uses only matched lore links and projects shared outfits for each linked cha
     session.data.settings.context.characterLorebook = false
     expect(await session.prepare()).toBe(true)
     expect(JSON.parse(mocks.request.mock.lastCall![0].formated[1].content).references.some((item: any) => item.name === '로어에 연결된 캐릭터 프리셋')).toBe(false)
+})
+
+it('keeps character links to global outfits hidden while they are unselected for the bot', async () => {
+    mocks.db.bardPainterLibrary = { identities: [], outfits: [{ id: 'dress', subjectId: '', name: 'Dress', clothing: 'white dress', state: '' }] }
+    expect(await session.setBotGlobalOutfits(['dress'])).toBe(true)
+    expect(await session.setIdentityOutfits('a', ['dress'], 'dress')).toBe(true)
+    expect(await session.setBotGlobalOutfits([])).toBe(true)
+    expect(session.botCatalog.outfits.some(item => item.id === 'dress')).toBe(false)
+    expect(await session.setIdentityOutfits('a', [])).toBe(true)
+    expect(session.bot.identities[0]).toMatchObject({ outfitIds: ['dress'], defaultOutfitId: 'dress' })
+    expect(await session.saveIdentity({ ...session.bot.identities[0], appearance: 'changed' })).toBe('a')
+    expect(await session.setBotGlobalOutfits(['dress'])).toBe(true)
+    expect(outfitsForIdentity(session.botCatalog, 'a').map(item => item.id)).toEqual(['dress'])
+    expect(await session.setGlobalOutfitAttachment('dress', true)).toBe(true)
+    expect(session.bot.globalOutfits).toEqual([{ id: 'dress', attachToCard: true }])
 })

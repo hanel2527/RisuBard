@@ -7,6 +7,8 @@ import { isStoryArcTitle } from '../../src/ts/risubard/wikiWritingLanguage'
 import { normalizeWikiRetrievalLimits, type WikiRetrievalLimits } from '../../src/ts/risubard/wikiRetrievalLimits'
 
 const MAX_SELECTED_DOCUMENTS = 12
+// Client validation accepts at most 44 sources per inquiry.
+const MAX_REQUIRED_DOCUMENTS = 32
 const MAX_SOURCE_CHARACTERS = 12_000
 const MAX_FALLBACK_CURRENT_INPUT_CHARACTERS = 128
 const MAX_SEMANTIC_SEEDS = 32
@@ -406,18 +408,17 @@ export function inquireMarkdownDocuments(
 ): MarkdownInquiryResult {
     // Required context is a direct read, independent of ranking and excerpts.
     if (input.contextSelection === 'required') {
+        // The operator chose these documents; the retrieval budget never
+        // rejects them. The request's own context fitting trims chat instead.
         const documents = input.documents.filter(document => isEligible(document, input)
             && (document.contextMode === 'always' || document.type === 'scene'))
-        if (documents.length > MAX_SELECTED_DOCUMENTS) throw new Error('Required wiki context exceeds 12 documents')
-        const maximum = normalizeRisuBardInquiryTokenBudget(input.tokenBudget?.target,
-            input.tokenBudget?.maximum, input.tokenBudget?.events, input.tokenBudget?.perSource).maximum
+            .slice(0, MAX_REQUIRED_DOCUMENTS)
         const sources = documents.map(document => ({
             id: `narrative-memory:wiki:${document.relativePath}`,
             kind: 'memory' as const, role: 'system' as const,
             content: document.content, tokens: countInquiryTokens(document.content), priority: 200,
         }))
         const selectedTokens = sources.reduce((sum, source) => sum + source.tokens, 0)
-        if (selectedTokens > maximum) throw new Error('Required wiki context exceeds token budget')
         return {
             mode: 'v2-current', graphRevision: input.documents.length, indexRevision: input.documents.length,
             cacheStatus: 'current', sources, evidenceRequests: [], entityCandidates: [],
@@ -449,9 +450,6 @@ export function inquireMarkdownDocuments(
     const requiredDocuments = eligibleDocuments.filter((document) =>
         document.contextMode === 'always'
             || document.type === 'scene')
-    if (requiredDocuments.length > MAX_SELECTED_DOCUMENTS) {
-        throw new Error('Required wiki context exceeds 12 documents')
-    }
 
     const base = catalogBase(input.documents)
     const byId = new Map(eligibleDocuments.map((document) =>
@@ -773,9 +771,10 @@ export function inquireMarkdownDocuments(
     let selectedEventTokens = 0
     for (const candidate of prepared.filter((item) =>
         requiredIds.has(item.document.id))) {
-        if (selectedTokens + candidate.tokens > tokenBudget.maximum) {
-            throw new Error('Required wiki context exceeds token budget')
-        }
+        // Outside the dedicated required read these are strong preferences:
+        // keep whatever fits instead of failing analysis or plugin lookups.
+        if (selected.length >= MAX_SELECTED_DOCUMENTS
+            || selectedTokens + candidate.tokens > tokenBudget.maximum) continue
         selected.push(candidate)
         selectedIds.add(candidate.document.id)
         selectedTokens += candidate.tokens

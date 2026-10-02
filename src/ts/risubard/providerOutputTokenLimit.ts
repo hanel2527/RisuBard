@@ -24,11 +24,12 @@ export function parseProviderOutputTokenLimit(message: string, requested: number
 
 /** Retries once with the provider's maximum when it rejects the output budget. */
 export async function requestWithProviderOutputLimit<
-    Request extends { maxTokens: number },
+    Request extends { maxTokens?: number },
     Response extends { type: string; result?: unknown },
 >(request: Request, send: (request: Request) => Promise<Response>): Promise<Response> {
     const response = await send(request)
-    if (response.type !== 'fail' || typeof response.result !== 'string') return response
+    if (response.type !== 'fail' || typeof response.result !== 'string'
+        || request.maxTokens === undefined) return response
     const limit = parseProviderOutputTokenLimit(response.result, request.maxTokens)
     return limit === undefined ? response : send({ ...request, maxTokens: limit })
 }

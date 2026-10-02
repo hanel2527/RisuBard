@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid'
-import type { PainterIdentity, PainterLibraryData, PainterOutfit } from './types'
+import type { PainterBotData, PainterIdentity, PainterLibraryData, PainterOutfit } from './types'
 
 const record = (value: unknown): Record<string, unknown> | undefined =>
     value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
@@ -8,6 +8,19 @@ export function outfitsForIdentity(library: PainterLibraryData, identityId: stri
     const identity = library.identities.find(item => item.id === identityId)
     if (!identity) return []
     return library.outfits.filter(item => item.subjectId === identityId || (!item.subjectId && identity.outfitIds?.includes(item.id)))
+}
+
+/** Bot outfits plus the global outfits selected for the bot. Bot outfits win id collisions. */
+export function botOutfitCatalog(bot: PainterBotData, global?: PainterLibraryData): PainterLibraryData {
+    const local = new Set(bot.outfits.map(item => item.id))
+    const refs = new Map((bot.globalOutfits ?? []).map(ref => [ref.id, ref]))
+    const selected = (global?.outfits ?? []).filter(item => !item.subjectId && refs.has(item.id) && !local.has(item.id)).map(item => {
+        const next: PainterOutfit = { ...item }
+        if (refs.get(item.id)!.attachToCard === true) next.attachToCard = true
+        else delete next.attachToCard
+        return next
+    })
+    return { identities: bot.identities, outfits: [...bot.outfits, ...selected] }
 }
 
 function copyName(name: string, items: { name: string }[]): string {
@@ -22,7 +35,8 @@ export function copyPainterOutfit(outfit: PainterOutfit, targetOutfits: PainterO
     return { id: uuidv4(), subjectId: '', name: copyName(outfit.name, targetOutfits), clothing: outfit.clothing, state: outfit.state }
 }
 
-export function copyPainterIdentity(source: PainterLibraryData, identityId: string, target: PainterLibraryData): { identity: PainterIdentity; outfits: PainterOutfit[] } {
+/** Outfits whose ids are in `linked` are referenced as-is instead of copied. */
+export function copyPainterIdentity(source: PainterLibraryData, identityId: string, target: PainterLibraryData, linked = new Set<string>()): { identity: PainterIdentity; outfits: PainterOutfit[]; linkedIds: string[] } {
     const original = source.identities.find(item => item.id === identityId)
     if (!original) throw new Error('Character preset not found')
     const identity: PainterIdentity = {
@@ -30,14 +44,16 @@ export function copyPainterIdentity(source: PainterLibraryData, identityId: stri
     }
     const remap = new Map<string, string>()
     const outfits: PainterOutfit[] = []
+    const linkedIds: string[] = []
     for (const outfit of outfitsForIdentity(source, identityId)) {
+        if (!outfit.subjectId && linked.has(outfit.id)) { remap.set(outfit.id, outfit.id); linkedIds.push(outfit.id); continue }
         const copy = copyPainterOutfit(outfit, [...target.outfits, ...outfits])
         remap.set(outfit.id, copy.id)
         outfits.push(copy)
     }
-    identity.outfitIds = outfits.map(item => item.id)
+    identity.outfitIds = [...remap.values()]
     if (original.defaultOutfitId && remap.has(original.defaultOutfitId)) identity.defaultOutfitId = remap.get(original.defaultOutfitId)
-    return { identity, outfits }
+    return { identity, outfits, linkedIds }
 }
 
 type LoreEntry = { extentions?: unknown }

@@ -11,7 +11,7 @@ import { language } from "../../lang";
 import { alertError, notifyError } from "../alert";
 import { parseChatML } from "../parser/chatML";
 import { loadLoreBookV3Prompt } from "./lorebook.svelte";
-import { findCharacterbyId, getPersonaPrompt, getUserName, isLastCharPunctuation, trimUntilPunctuation, parseToggleSyntax, prebuiltAssetCommand } from "../util";
+import { findCharacterbyId, getPersonaPrompt, getUserName, isLastCharPunctuation, trimUntilPunctuation, parseToggleSyntax, prebuiltAssetCommand, sleep } from "../util";
 import { requestChatData } from "./request/request";
 import { getPartialPresetStreamText } from './request/presetStreamPump';
 import { stableDiff } from "./stableDiff";
@@ -221,6 +221,9 @@ const storedResponseMemoryAnalysis = createStoredResponseMemoryAnalysis({
     nativeV2Analysis: true,
 })
 const narrativeConfirmations = new Set<string>()
+const REQUIRED_WIKI_RETRY_TIMEOUT_MS = 60_000
+const WIKI_REBOOT_BATCH_RETRIES = 2
+const WIKI_REBOOT_RETRY_DELAY_MS = 5_000
 
 async function confirmProjectedNarrativeTurn(input: {
     characterId: string
@@ -605,146 +608,159 @@ async function runWikiReboot(
     if (activeWikiReboots.has(operationId)) return false
     activeWikiReboots.add(operationId)
     const generationSignal = beginWikiGeneration(operationId)
+    let consecutiveRebootFailures = 0
     try {
         while (chat.risuBardWikiReboot) {
-            const job = chat.risuBardWikiReboot
-            const settings = resolvedRisuBardSettings(chat, true)
-            // Legacy jobs predate OOC exclusion; retain their original evidence for recovery.
-            const ignoreOocTurns = job.ignoreOocTurns === true
-            const turns = projectWikiRebootTurns(
-                chat.message, 0, !settings.risuBardAnalysisExcludeUserMessages,
-                ignoreOocTurns
-            )
-            if (job.status === 'stop-requested'
-                && !job.inFlightAssistantMessageIds?.length) {
-                job.status = 'paused'
-                job.updatedAt = Date.now()
-                await persistWikiReboot(character, chat, chatIndex)
-                return true
-            }
-            const inFlightIds = job.inFlightAssistantMessageIds
-            const batch = inFlightIds?.length
-                ? inFlightIds.map((id) => turns.find((turn) =>
-                    turn.assistantMessageId === id
-                )).filter((turn): turn is WikiRebootTurn => Boolean(turn))
-                : nextWikiRebootBatch(job, turns)
-            if (inFlightIds?.length && batch.length !== inFlightIds.length) {
-                throw new Error('진행 중이던 리부트 대상 메시지를 찾을 수 없습니다.')
-            }
-            if (batch.length === 0) {
-                await finalizeWikiReboot(character, chat, chatIndex)
-                return true
-            }
-            const projected = projectRebootBatch(batch)
-            if (inFlightIds?.length) {
-                const recovered = await recoverWikiRebootBatch({
-                    characterId: character.chaId,
-                    stagingChatId: job.stagingChatId,
-                    sourceMessageIds: projected.sourceMessageIds,
-                    eventSourceGroups: projected.eventSourceGroups,
-                    fetchImpl: fetch,
-                    createAuth: () => forageStorage.createAuth(),
-                })
-                if (recovered) {
-                    applyWikiRebootBatchReceipt(chat, batch, recovered)
+            try {
+                const job = chat.risuBardWikiReboot
+                const settings = resolvedRisuBardSettings(chat, true)
+                // Legacy jobs predate OOC exclusion; retain their original evidence for recovery.
+                const ignoreOocTurns = job.ignoreOocTurns === true
+                const turns = projectWikiRebootTurns(
+                    chat.message, 0, !settings.risuBardAnalysisExcludeUserMessages,
+                    ignoreOocTurns
+                )
+                if (job.status === 'stop-requested'
+                    && !job.inFlightAssistantMessageIds?.length) {
+                    job.status = 'paused'
+                    job.updatedAt = Date.now()
                     await persistWikiReboot(character, chat, chatIndex)
-                    await completeWikiRebootBatch({
+                    return true
+                }
+                const inFlightIds = job.inFlightAssistantMessageIds
+                const batch = inFlightIds?.length
+                    ? inFlightIds.map((id) => turns.find((turn) =>
+                        turn.assistantMessageId === id
+                    )).filter((turn): turn is WikiRebootTurn => Boolean(turn))
+                    : nextWikiRebootBatch(job, turns)
+                if (inFlightIds?.length && batch.length !== inFlightIds.length) {
+                    throw new Error('진행 중이던 리부트 대상 메시지를 찾을 수 없습니다.')
+                }
+                if (batch.length === 0) {
+                    await finalizeWikiReboot(character, chat, chatIndex)
+                    return true
+                }
+                const projected = projectRebootBatch(batch)
+                if (inFlightIds?.length) {
+                    const recovered = await recoverWikiRebootBatch({
                         characterId: character.chaId,
                         stagingChatId: job.stagingChatId,
                         sourceMessageIds: projected.sourceMessageIds,
+                        eventSourceGroups: projected.eventSourceGroups,
                         fetchImpl: fetch,
                         createAuth: () => forageStorage.createAuth(),
-                    }).catch((error) => {
-                        console.warn('[RisuBard wiki reboot batch cleanup]', error)
                     })
-                    continue
+                    if (recovered) {
+                        applyWikiRebootBatchReceipt(chat, batch, recovered)
+                        await persistWikiReboot(character, chat, chatIndex)
+                        await completeWikiRebootBatch({
+                            characterId: character.chaId,
+                            stagingChatId: job.stagingChatId,
+                            sourceMessageIds: projected.sourceMessageIds,
+                            fetchImpl: fetch,
+                            createAuth: () => forageStorage.createAuth(),
+                        }).catch((error) => {
+                            console.warn('[RisuBard wiki reboot batch cleanup]', error)
+                        })
+                        continue
+                    }
                 }
-            }
-            else {
-                job.inFlightAssistantMessageIds = batch.map((turn) =>
-                    turn.assistantMessageId
+                else {
+                    job.inFlightAssistantMessageIds = batch.map((turn) =>
+                        turn.assistantMessageId
+                    )
+                    job.updatedAt = Date.now()
+                    await persistWikiReboot(character, chat, chatIndex)
+                }
+                const wikiPromptPreset = resolveWikiPromptPreset(
+                    DBState.db.risuBardWikiPromptPresets,
+                    DBState.db.risuBardChatWikiPromptPresetId
                 )
-                job.updatedAt = Date.now()
-                await persistWikiReboot(character, chat, chatIndex)
-            }
-            const wikiPromptPreset = resolveWikiPromptPreset(
-                DBState.db.risuBardWikiPromptPresets,
-                DBState.db.risuBardChatWikiPromptPresetId
-            )
-            const compiledWikiPromptGuide = wikiPromptPreset
-                ? renderWikiPromptGuide(compileWikiPromptGuide(wikiPromptPreset, {
-                    characterGuide: risuChatParser(
-                        character.risuBardWikiGuide ?? '',
-                        { chara: character }
+                const compiledWikiPromptGuide = wikiPromptPreset
+                    ? renderWikiPromptGuide(compileWikiPromptGuide(wikiPromptPreset, {
+                        characterGuide: risuChatParser(
+                            character.risuBardWikiGuide ?? '',
+                            { chara: character }
+                        ),
+                        chatGuide: risuChatParser(chat.risuBardWikiGuide ?? '', {
+                            chara: character,
+                        }),
+                    }), character)
+                    : undefined
+                const firstMessageEvidence = await resolveNarrativeFirstMessageEvidence(
+                    character,
+                    chat,
+                    chatId
+                )
+                const contextMessages = projectRecentMemoryMessages(
+                    chat.message,
+                    normalizeNarrativeWorkingMessageLimit(
+                        settings.risuBardRecentMessageCount
                     ),
-                    chatGuide: risuChatParser(chat.risuBardWikiGuide ?? '', {
-                        chara: character,
-                    }),
-                }), character)
-                : undefined
-            const firstMessageEvidence = await resolveNarrativeFirstMessageEvidence(
-                character,
-                chat,
-                chatId
-            )
-            const contextMessages = projectRecentMemoryMessages(
-                chat.message,
-                normalizeNarrativeWorkingMessageLimit(
-                    settings.risuBardRecentMessageCount
-                ),
-                batch.at(-1)?.assistantMessageId,
-                firstMessageEvidence,
-                !settings.risuBardAnalysisExcludeUserMessages,
-                ignoreOocTurns
-            )
-            const receipt = await storedResponseMemoryAnalysis.confirm({
-                characterId: character.chaId,
-                chatId: job.stagingChatId,
-                modelSessionChatId: chatId,
-                messages: projectMemoryAnalysisEvidence(
-                    projected.messages,
-                    contextMessages,
-                    firstMessageEvidence
-                ),
-                rebootTurns: projected.rebootTurns,
-                analysisTokenLimit: settings.risuBardAnalysisTokenLimit,
-                additionalSearchLimit: settings.risuBardAdditionalSearchLimit,
-                canonicalTargetLimit: settings.risuBardCanonicalTargetLimit,
-                inquiryTokenBudget: {
-                    target: settings.risuBardInquiryTargetTokenBudget,
-                    events: settings.risuBardInquiryEventTokenBudget,
-                    perSource: settings.risuBardInquirySourceTokenBudget,
-                    maximum: settings.risuBardInquiryMaximumTokenBudget,
-                },
-                canonicalWritingStyle: settings.risuBardCanonicalWritingStyle,
-                canonicalCustomStyle: settings.risuBardCanonicalCustomStyle,
-                wikiWritingLanguage: job.writingLanguage ?? 'ko',
-                arcPlotterSettings: resolvedArcPlotterSettings(),
-                ...(compiledWikiPromptGuide ? {
-                    wikiPromptGuide: {
-                        analysis: compiledWikiPromptGuide.analysis,
-                        canonicalRewrite:
-                            compiledWikiPromptGuide.canonicalRewrite,
+                    batch.at(-1)?.assistantMessageId,
+                    firstMessageEvidence,
+                    !settings.risuBardAnalysisExcludeUserMessages,
+                    ignoreOocTurns
+                )
+                const receipt = await storedResponseMemoryAnalysis.confirm({
+                    characterId: character.chaId,
+                    chatId: job.stagingChatId,
+                    modelSessionChatId: chatId,
+                    messages: projectMemoryAnalysisEvidence(
+                        projected.messages,
+                        contextMessages,
+                        firstMessageEvidence
+                    ),
+                    rebootTurns: projected.rebootTurns,
+                    analysisTokenLimit: settings.risuBardAnalysisTokenLimit,
+                    additionalSearchLimit: settings.risuBardAdditionalSearchLimit,
+                    canonicalTargetLimit: settings.risuBardCanonicalTargetLimit,
+                    inquiryTokenBudget: {
+                        target: settings.risuBardInquiryTargetTokenBudget,
+                        events: settings.risuBardInquiryEventTokenBudget,
+                        perSource: settings.risuBardInquirySourceTokenBudget,
+                        maximum: settings.risuBardInquiryMaximumTokenBudget,
                     },
-                } : {}),
-                contextMessages,
-                sourceMessageOrder: chat.message.filter(message => message.chatId)
-                    .map(({ chatId, role }) => ({ chatId, role })),
-            }, generationSignal)
-            if (!receipt) {
-                throw new Error('리부트 배치 완료 영수증을 저장하지 못했습니다.')
+                    canonicalWritingStyle: settings.risuBardCanonicalWritingStyle,
+                    canonicalCustomStyle: settings.risuBardCanonicalCustomStyle,
+                    wikiWritingLanguage: job.writingLanguage ?? 'ko',
+                    arcPlotterSettings: resolvedArcPlotterSettings(),
+                    ...(compiledWikiPromptGuide ? {
+                        wikiPromptGuide: {
+                            analysis: compiledWikiPromptGuide.analysis,
+                            canonicalRewrite:
+                                compiledWikiPromptGuide.canonicalRewrite,
+                        },
+                    } : {}),
+                    contextMessages,
+                    sourceMessageOrder: chat.message.filter(message => message.chatId)
+                        .map(({ chatId, role }) => ({ chatId, role })),
+                }, generationSignal)
+                if (!receipt) {
+                    throw new Error('리부트 배치 완료 영수증을 저장하지 못했습니다.')
+                }
+                applyWikiRebootBatchReceipt(chat, batch, receipt)
+                await persistWikiReboot(character, chat, chatIndex)
+                await completeWikiRebootBatch({
+                    characterId: character.chaId,
+                    stagingChatId: job.stagingChatId,
+                    sourceMessageIds: projected.sourceMessageIds,
+                    fetchImpl: fetch,
+                    createAuth: () => forageStorage.createAuth(),
+                }).catch((error) => {
+                    console.warn('[RisuBard wiki reboot batch cleanup]', error)
+                })
+                consecutiveRebootFailures = 0
             }
-            applyWikiRebootBatchReceipt(chat, batch, receipt)
-            await persistWikiReboot(character, chat, chatIndex)
-            await completeWikiRebootBatch({
-                characterId: character.chaId,
-                stagingChatId: job.stagingChatId,
-                sourceMessageIds: projected.sourceMessageIds,
-                fetchImpl: fetch,
-                createAuth: () => forageStorage.createAuth(),
-            }).catch((error) => {
-                console.warn('[RisuBard wiki reboot batch cleanup]', error)
-            })
+            catch (error) {
+                // Transient provider, network or server failures retry the same
+                // in-flight batch; its receipt recovery prevents duplicate writes.
+                if (generationSignal.aborted
+                    || ++consecutiveRebootFailures > WIKI_REBOOT_BATCH_RETRIES) throw error
+                console.warn('[RisuBard wiki reboot batch retry]', error)
+                await sleep(WIKI_REBOOT_RETRY_DELAY_MS * consecutiveRebootFailures)
+                if (generationSignal.aborted) throw error
+            }
         }
         return true
     }
@@ -1592,11 +1608,18 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     if (isNarrativeContextOptedIn()) {
         const requiredStartedAt = performance.now()
         try {
-            const required = await loadNarrativeInquiry({
+            const loadRequired = (timeoutMs: number) => loadNarrativeInquiry({
                 characterId: currentChar.chaId, chatId: narrativeSessionChatId,
                 currentInput: '', contextSelection: 'required', tokenBudget: optionalWikiBudget,
                 fetchImpl: fetch, createAuth: () => forageStorage.createAuth(),
-                timeoutMs: wikiSettings.risuBardInquiryTimeoutMs, signal: arg.signal,
+                timeoutMs, signal: arg.signal,
+            })
+            // After a wiki write the server rereads every document once; a
+            // timed-out lookup keeps warming that cache, so wait longer instead
+            // of failing the mandatory context.
+            const required = await loadRequired(wikiSettings.risuBardInquiryTimeoutMs).catch((error: unknown) => {
+                if (arg.signal?.aborted || !(error instanceof Error && error.name === 'AbortError')) throw error
+                return loadRequired(REQUIRED_WIKI_RETRY_TIMEOUT_MS)
             })
             requiredWikiSources = required.sources
             requiredWikiDocumentCount = required.metrics.inspectedNodeCount
@@ -1761,8 +1784,14 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                         requestModel: (request, mode) =>
                             requestChatData(request, mode),
                     })
+                    // The rerank refines an inquiry that already succeeded; keep it on failure.
                     const rerankedInquiry = semanticMatches.length > 0
                         ? await loadInquiry(mergeWikiSemanticMatches(embedded.matches, semanticMatches))
+                            .catch((error: unknown) => {
+                                if (arg.signal?.aborted) throw error
+                                console.warn('RisuBard reranked inquiry skipped', error)
+                                return undefined
+                            })
                         : undefined
                     const inquiry = rerankedInquiry
                         ? {

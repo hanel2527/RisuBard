@@ -810,9 +810,11 @@ async function executeOversizedCombine(
     const markdown = await planBoundedDocumentEdit(input, instruction + note, maxTokens,
         { ...structuredClone(survivor), content: merged, contentHash: `${survivor.contentHash}:combine` }, 'multi')
         .catch(() => merged)
-    const aliases = Array.from(new Map([...survivor.aliases, ...redundant.flatMap((document) => [document.title, ...document.aliases])]
+    // The server accepts 32 aliases; redundant titles come first so links keep resolving.
+    const aliases = Array.from(new Map([...redundant.map((document) => document.title), ...survivor.aliases,
+        ...redundant.flatMap((document) => document.aliases)]
         .filter((alias) => normalizedIdentity(alias) !== normalizedIdentity(survivor.title))
-        .map((alias) => [normalizedIdentity(alias), alias])).values())
+        .map((alias) => [normalizedIdentity(alias), alias])).values()).slice(0, 32)
     await input.beforeApply?.()
     const result: DirectWikiCommandResult = { applied: [], failed: [] }
     try {

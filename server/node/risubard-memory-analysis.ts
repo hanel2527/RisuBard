@@ -1517,7 +1517,10 @@ export function createMemoryAnalysisRunner(
             }, error: unknown, inputFailure = false) => {
                 const title = entry.target?.title ?? entry.candidate.title
                 signal?.throwIfAborted()
-                if (rebootRecoveryStarted) throw error
+                // A reboot retries transient failures, but a deterministic model or
+                // document-structure failure would stall it forever: defer that one
+                // document with a warning exactly as ordinary analysis does.
+                if (rebootRecoveryStarted && !(inputFailure || error instanceof ModelOutputError)) throw error
                 const errorKey = error instanceof Error ? `${error.name}:${error.message}` : String(error)
                 if (!reportedCanonicalErrors.has(errorKey)) {
                     reportedCanonicalErrors.add(errorKey)

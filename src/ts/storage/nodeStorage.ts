@@ -149,6 +149,8 @@ export class NodeStorage{
         return stop
     }
     private static readonly BULK_WRITE_CLIENT_BATCH = 200
+    // Server tokens live five minutes; renew with two minutes left.
+    private static readonly TOKEN_RENEW_AHEAD_MS = 120_000
 
     // Cross-device single-writer lock identity. Persisted in sessionStorage so
     // a reload or an OS tab restore of the SAME tab keeps the same identity —
@@ -205,9 +207,36 @@ export class NodeStorage{
         if (!response.ok) throw new Error(`Server database flush failed (${response.status})`)
     }
 
+    private renewTimer: ReturnType<typeof setTimeout> | undefined
+    private renewOnReturnInstalled = false
+
+    private setCachedJwt(token: string) {
+        this.cachedJwt = { token, expiresAt: Date.now() + 5 * 60 * 1000 }
+        if (typeof document === 'undefined') return
+        // Keep a visible tab's token fresh; a returning tab renews at once.
+        clearTimeout(this.renewTimer)
+        this.renewTimer = setTimeout(() => {
+            if (document.visibilityState === 'visible') void this._refreshToken().catch(() => {})
+        }, 5 * 60 * 1000 - NodeStorage.TOKEN_RENEW_AHEAD_MS)
+        if (this.renewOnReturnInstalled) return
+        this.renewOnReturnInstalled = true
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState !== 'visible' || !this.cachedJwt) return
+            if (this.cachedJwt.expiresAt - Date.now() <= NodeStorage.TOKEN_RENEW_AHEAD_MS) {
+                void this._refreshToken().catch(() => {})
+            }
+        })
+    }
+
     async createAuth(){
-        const now = Date.now()
-        if (this.cachedJwt && this.cachedJwt.expiresAt - now > 30_000) {
+        const remaining = this.cachedJwt ? this.cachedJwt.expiresAt - Date.now() : 0
+        if (this.cachedJwt && remaining > NodeStorage.TOKEN_RENEW_AHEAD_MS) {
+            return this.cachedJwt.token
+        }
+        // Renew in the background while the current token is still usable, so
+        // a send never waits behind a refresh queued among long requests.
+        if (this.cachedJwt && remaining > 30_000) {
+            void this._refreshToken().catch(() => {})
             return this.cachedJwt.token
         }
         const token = await this._refreshToken()
@@ -251,13 +280,20 @@ export class NodeStorage{
     }
 
     private async _doRefreshToken(): Promise<string> {
-        const res = await this.connectionFetch('/api/token/refresh', {
-            method: 'POST',
-            headers: { 'risu-auth': this.cachedJwt?.token ?? '' }
-        })
+        let res: Response
+        try {
+            res = await this.connectionFetch('/api/token/refresh', {
+                method: 'POST',
+                headers: { 'risu-auth': this.cachedJwt?.token ?? '' }
+            })
+        } catch (error) {
+            // A slow refresh is not a failed session while the old token still works.
+            if (this.cachedJwt && this.cachedJwt.expiresAt - Date.now() > 5_000) return this.cachedJwt.token
+            throw error
+        }
         if (res.ok) {
             const data = await res.json()
-            this.cachedJwt = { token: data.token, expiresAt: Date.now() + 5 * 60 * 1000 }
+            this.setCachedJwt(data.token)
             return data.token
         }
         return this.cachedJwt?.token ?? ''
@@ -291,7 +327,7 @@ export class NodeStorage{
 
         const data = await response.json()
         if (data.token) {
-            this.cachedJwt = { token: data.token, expiresAt: Date.now() + 5 * 60 * 1000 }
+            this.setCachedJwt(data.token)
         }
         this.authChecked = true
     }
@@ -495,7 +531,7 @@ export class NodeStorage{
             }
             else{
                 if (data.token) {
-                    this.cachedJwt = { token: data.token, expiresAt: Date.now() + 5 * 60 * 1000 }
+                    this.setCachedJwt(data.token)
                 }
                 this.authChecked = true
             }

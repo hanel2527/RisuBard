@@ -153,8 +153,16 @@ export interface PainterLibraryData {
     outfits: PainterOutfit[]
 }
 
+/** A global outfit selected for one bot. The outfit itself stays in the global library. */
+export interface PainterBotOutfitRef {
+    id: string
+    /** Card opt-in for this bot; exported cards receive a snapshot of the global outfit. */
+    attachToCard?: boolean
+}
+
 export interface PainterBotData extends PainterLibraryData {
     settings?: PainterGenerationSettings
+    globalOutfits?: PainterBotOutfitRef[]
 }
 
 export interface PainterContextSource { name: string; content: string }

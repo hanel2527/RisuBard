@@ -37,8 +37,9 @@ describe('progressive Markdown inquiry', () => {
         expect(result.sources.map(source => source.content)).toEqual([content])
         expect(result.sources[0].tokens).toBeGreaterThan(256)
         expect(result.metrics.inspectedEdgeCount).toBe(0)
-        expect(() => inquireMarkdownDocuments({ documents: [pinned], currentInput: '', contextSelection: 'required',
-            tokenBudget: { target: 256, perSource: 256, maximum: 256 } })).toThrow('Required wiki context exceeds token budget')
+        // The operator's always-include choice is never rejected by the retrieval budget.
+        expect(inquireMarkdownDocuments({ documents: [pinned], currentInput: '', contextSelection: 'required',
+            tokenBudget: { target: 256, perSource: 256, maximum: 256 } }).sources.map(source => source.content)).toEqual([content])
         const optional = inquireMarkdownDocuments({ documents: [pinned, hidden], currentInput: '계획', contextSelection: 'auto' })
         expect(optional.sources).toEqual([])
     })
@@ -1067,7 +1068,7 @@ describe('progressive Markdown inquiry', () => {
         )
     })
 
-    test('counts Korean text against the token budget instead of a character heuristic', () => {
+    test('keeps only required documents that fit the Korean token budget outside the required read', () => {
         const documents = Array.from({ length: 4 }, (_, index) => document({
             id: `required-${index}`,
             type: 'concept',
@@ -1077,10 +1078,13 @@ describe('progressive Markdown inquiry', () => {
             contextMode: 'always',
         }))
 
-        expect(() => inquireMarkdownDocuments({
+        const result = inquireMarkdownDocuments({
             currentInput: '계속 진행한다.',
             documents,
-        })).toThrow('Required wiki context exceeds token budget')
+        })
+        expect(result.sources.length).toBeGreaterThan(0)
+        expect(result.sources.length).toBeLessThan(documents.length)
+        expect(result.metrics.selectedTokens).toBeLessThanOrEqual(6_000)
     })
 
     test('does not replace mandatory context with one semantically matched passage', () => {

@@ -28,6 +28,7 @@ async function change(label: string, value: string) {
 beforeEach(() => {
     dirtyChange.mockReset()
     session = painterTestState({
+        get botCatalog() { const refs = this.bot.globalOutfits ?? []; return { identities: this.bot.identities, outfits: [...this.bot.outfits, ...(this.globalLibrary?.outfits ?? []).filter((item: any) => !item.subjectId && refs.some((ref: any) => ref.id === item.id))] } },
         data: { ...createPainterChatData(), outfits: [
             { id: 'local-a', subjectId: 'person-a', name: '연습복', clothing: 'gray shirt', state: '' },
             { id: 'local-b', subjectId: 'person-b', name: '작업복', clothing: 'blue overalls', state: '' },
@@ -85,11 +86,22 @@ describe('BardPainter character and outfit manager', () => {
             const identity = session.bot.identities.find((item: any) => item.id === id)
             identity.outfitIds = ids; identity.defaultOutfitId = defaultId; return true
         })
+        session.globalLibrary = { identities: [], outfits: [{ id: 'global-dress', subjectId: '', name: '드레스', clothing: 'white dress', state: '' }] }
+        session.setBotGlobalOutfits = vi.fn(async (ids: string[]) => { session.bot.globalOutfits = ids.map(id => ({ id })); return true })
         mount(); await tick()
+        // A new shared outfit is saved to the global library and selected for this bot.
         await click('새 공용 의상')
         await change('의상 이름', '학교 교복'); await change('의상 프롬프트', 'school uniform')
         await click('저장')
-        expect(session.saveOutfitPreset).toHaveBeenCalledWith(expect.objectContaining({ subjectId: '', clothing: 'school uniform' }), true, true)
+        expect(session.saveOutfitPreset).toHaveBeenCalledWith(expect.objectContaining({ subjectId: '', clothing: 'school uniform' }), true, true, true)
+        expect(session.setBotGlobalOutfits).toHaveBeenLastCalledWith(['new-outfit'])
+        // Unselected global outfits stay out of each character's outfit list until picked.
+        await click('예시 인물 B 외형 편집')
+        expect(document.querySelector('[aria-label="드레스 사용"]')).toBeNull()
+        await click('글로벌에서 선택')
+        const pick = document.querySelector<HTMLInputElement>('[aria-label="드레스 이 봇에서 사용"]')!
+        pick.click(); await tick(); await tick()
+        expect(session.setBotGlobalOutfits).toHaveBeenLastCalledWith(['new-outfit', 'global-dress'])
         await click('예시 인물 B 외형 편집')
         const checkbox = document.querySelector<HTMLInputElement>('[aria-label="학교 교복 사용"]')!
         checkbox.click(); await tick(); await tick()
@@ -210,6 +222,7 @@ describe('BardPainter character and outfit manager', () => {
         expect(session.saveIdentity).toHaveBeenCalledWith(expect.objectContaining({ name: '다른 인물' }), true)
         expect(session.bot.identities[0].name).toBe('예시 인물 A')
         expect(session.data.outfits[0].subjectId).toBe('person-a')
+        await click('편집 범위 도움말')
         expect(document.body.textContent).toContain('의상은 원래 인물에 남습니다')
     })
     test('creates a person and an outfit directly without a generated prompt', async () => {

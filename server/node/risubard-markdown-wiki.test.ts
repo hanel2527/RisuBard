@@ -1448,9 +1448,15 @@ describe('Markdown narrative wiki', () => {
                 expectedContentHash: page.contentHash,
             })
         }
-        await expect(wiki.inquire({
+        // Too many always-included documents degrade to what fits instead of failing.
+        const inquiry = await wiki.inquire({
             characterId: 'character', chatId: 'required', currentInput: '무관',
-        })).rejects.toThrow('Required wiki context exceeds 12 documents')
+        })
+        expect(inquiry.sources.length).toBeLessThanOrEqual(12)
+        const required = await wiki.inquire({
+            characterId: 'character', chatId: 'required', currentInput: '', contextSelection: 'required',
+        })
+        expect(required.sources).toHaveLength(13)
     })
 
     test('keeps one review baseline across automatic canonical revisions', async () => {

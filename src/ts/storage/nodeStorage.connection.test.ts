@@ -67,7 +67,24 @@ it('releases a stalled shared token refresh and ignores its late body', async ()
     await vi.advanceTimersByTimeAsync(0)
     expect(await storage.createAuth()).toBe('new')
     expect(fetch).toHaveBeenCalledTimes(2)
-    expect(vi.getTimerCount()).toBe(0)
+    // Only the proactive renewal of the accepted token remains scheduled.
+    expect(vi.getTimerCount()).toBe(1)
+})
+
+it('keeps using a still-valid token when its renewal stalls', async () => {
+    const storage = new NodeStorage()
+    // Every renewal after the first stalls behind other connections.
+    const fetch = vi.fn().mockImplementation(() => new Promise(() => {}))
+        .mockResolvedValueOnce(Response.json({ token: 'current' }))
+    vi.stubGlobal('fetch', fetch)
+    expect(await storage.createAuth()).toBe('current')
+    // Inside the renewal window callers get the current token without waiting.
+    await vi.advanceTimersByTimeAsync(4 * 60 * 1000)
+    expect(await storage.createAuth()).toBe('current')
+    expect(fetch.mock.calls.length).toBeGreaterThan(1)
+    // Stalled renewals time out without breaking the still-valid session.
+    await vi.advanceTimersByTimeAsync(8_000)
+    expect(await storage.createAuth()).toBe('current')
 })
 
 it('retries session initialization after a stalled request', async () => {

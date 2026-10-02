@@ -123,7 +123,7 @@ describe('direct wiki command', () => {
         expect(result.failed).toEqual([])
         const saved = vi.mocked(input.saveDocument).mock.calls[0][0]
         expect(saved).toMatchObject({ documentId: documents[0].id, title: '기존 인물' })
-        expect(saved.aliases).toEqual(['옛 이름', '크롤러'])
+        expect(saved.aliases).toEqual(['크롤러', '옛 이름'])
         expect(saved.markdown).toContain('[[북문 재회]]')
         expect(saved.markdown).toContain('[[검은 열쇠]]')
         expect(saved.markdown).toContain('### 크롤러에서 통합한 내용')

@@ -1,4 +1,5 @@
-import type { PainterBotData } from './types'
+import type { PainterBotData, PainterLibraryData } from './types'
+import { botOutfitCatalog } from './library'
 
 const record = (value: unknown): Record<string, unknown> | undefined =>
     value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
@@ -45,10 +46,11 @@ export function normalizePainterBotData(value: unknown): PainterBotData | undefi
     return { identities, outfits }
 }
 
-/** Public card projection, separate from the complete personal save/backup. */
-export function exportPainterBotData(value: unknown): PainterBotData | undefined {
-    const source = record(value)
+/** Public card projection, separate from the complete personal save/backup. Selected global outfits are snapshotted. */
+export function exportPainterBotData(value: unknown, global?: PainterLibraryData): PainterBotData | undefined {
+    let source = record(value)
     if (!source || (!Array.isArray(source.identities) && !Array.isArray(source.outfits))) return undefined
+    if (Array.isArray(source.globalOutfits) && Array.isArray(source.outfits)) source = { ...source, outfits: botOutfitCatalog({ identities: [], outfits: source.outfits, globalOutfits: source.globalOutfits } as PainterBotData, global).outfits }
     const selected = (items: unknown[]) => items.filter(item => record(item)?.attachToCard === true)
     const data = normalizePainterBotData({
         identities: selected(Array.isArray(source.identities) ? source.identities : []),

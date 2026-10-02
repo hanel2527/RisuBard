@@ -1203,7 +1203,7 @@ export function convertCharbook(arg:{
 
 export function createBaseV2(char:character) {
     const bardLoreOwner = exportableBardLoreOwner(char)
-    const bardPainter = exportPainterBotData(char.bardPainter)
+    const bardPainter = exportPainterBotData(char.bardPainter, getDatabase().bardPainterLibrary)
     const exportGlobalLore = filterPainterLoreLinks(bardLoreOwner?.legacyEntries ?? char.globalLore, bardPainter?.identities ?? [])
     const bardLore = bardLoreOwner && { ...bardLoreOwner.state, derivedEntries: filterPainterLoreLinks(bardLoreOwner.state.derivedEntries, bardPainter?.identities ?? []) }
     let charBook:charBookEntry[] = []
@@ -1605,7 +1605,7 @@ type RisuLorebookEntry = LorebookEntry & {
 
 export function createBaseV3(char:character){
     const bardLoreOwner = exportableBardLoreOwner(char)
-    const bardPainter = exportPainterBotData(char.bardPainter)
+    const bardPainter = exportPainterBotData(char.bardPainter, getDatabase().bardPainterLibrary)
     const exportGlobalLore = filterPainterLoreLinks(bardLoreOwner?.legacyEntries ?? char.globalLore, bardPainter?.identities ?? [])
     const bardLore = bardLoreOwner && { ...bardLoreOwner.state, derivedEntries: filterPainterLoreLinks(bardLoreOwner.state.derivedEntries, bardPainter?.identities ?? []) }
     let charBook:RisuLorebookEntry[] = []

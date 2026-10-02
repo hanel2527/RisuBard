@@ -30,6 +30,7 @@ beforeEach(() => {
     const style = { id: 'default', name: '기본', artist: '', rendering: '', negative: '', steps: 28, scale: 5, cfgRescale: 0, sampler: 'k_euler_ancestral' }
     const data = createPainterChatData()
     session = painterTestState({
+        get botCatalog() { const refs = this.bot.globalOutfits ?? []; return { identities: this.bot.identities, outfits: [...this.bot.outfits, ...(this.globalLibrary?.outfits ?? []).filter((item: any) => !item.subjectId && refs.some((ref: any) => ref.id === item.id))] } },
         data, styles: [style], style,
         get settings() { return this.data.settings },
         generationSettingsPinned: false, hasGenerationOverrides: true,

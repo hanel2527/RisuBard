@@ -9,7 +9,8 @@ describe('required wiki context', () => {
         const budget = { target: 2000, events: 2000, perSource: 2000, maximum: 6000 }
         expect(reserveRequiredWikiBudget(budget, sources)).toEqual({ ...budget, maximum: 5700 })
         expect(reserveRequiredWikiBudget({ ...budget, maximum: 555 }, sources)).toBeNull()
-        expect(() => reserveRequiredWikiBudget({ ...budget, maximum: 256 }, sources)).toThrow()
+        // Required documents may exceed the retrieval budget; optional lookup is skipped.
+        expect(reserveRequiredWikiBudget({ ...budget, maximum: 256 }, sources)).toBeNull()
     })
     it('creates a complete non-removable independent prompt with request provenance', () => {
         const message = createRequiredWikiMessage(sources, 'Respect the viewpoint knowledge boundary.')!
