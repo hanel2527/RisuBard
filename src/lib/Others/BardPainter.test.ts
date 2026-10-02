@@ -45,6 +45,7 @@ beforeEach(() => {
     const style = result().style
     runtime.current = painterTestState({
         data, get settings() { return this.data.settings }, chat: { isStreaming: false }, bot: { identities: [], outfits: [] }, style, styles: [style],
+        get botCatalog() { return this.bot },
         promptPreset: { id: 'current' }, imagePreset: undefined,
         imagePresets: [{ index: 0, preset: { name: 'Image', values: { toggle_detail: '0' } } }], applyImagePreset: vi.fn().mockResolvedValue(true),
         state: { status: 'idle', error: '', notice: '', wikiDocs: [], loadingWiki: false, pendingImage: false },
