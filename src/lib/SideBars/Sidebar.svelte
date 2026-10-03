@@ -94,7 +94,7 @@
   let characterManageOpen = $state(false)
   let sidebarElement = $state<HTMLDivElement>()
   let characterListSidebarElement = $state<HTMLDivElement>()
-  const characterListSidebarMaxWidth = $derived(Math.max(80, Math.min(240,
+  const characterListSidebarMaxWidth = $derived(Math.max(80, Math.min(260,
     ($SizeStore.w || window.innerWidth) - 320)))
   const characterListSidebarWidth = $derived(
     `${normalizeCharacterListSidebarWidth(DBState.db.characterListSidebarWidth, characterListSidebarMaxWidth)}px`

@@ -59,7 +59,6 @@ describe('NodeStorage live file synchronization', () => {
         ;(storage as any).authFetch = authFetch
         expect(await storage.syncLiveFiles('old')).toEqual(result)
         expect(authFetch).toHaveBeenCalledWith('/api/live-files/sync', {
-            signal: expect.any(AbortSignal),
             method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"revision":"old"}',
         })
         expect(storage._lastDbEtag).toBe('acknowledged')

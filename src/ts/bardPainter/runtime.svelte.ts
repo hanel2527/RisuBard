@@ -6,7 +6,7 @@ import { requestChatData } from '../process/request/request'
 import { collectLoreBuilderSources, matchLoreBuilderCharacterLorebook } from '../loreBuilder'
 import { loadNarrativeMemoryWiki } from '../risubard/memoryWiki'
 import { getInlayAssetBlob, setInlayAsset } from '../process/files/inlays'
-import { buildPainterMessages, parsePainterDraft, buildPainterImageRequest } from './prompt'
+import { buildPainterMessages, buildPainterRepairMessages, parsePainterDraft, buildPainterImageRequest } from './prompt'
 import { PAINTER_STYLES } from './styles'
 import { applyPainterPresets, capturePainterOutfit, promotePainterOutfit, reconcilePainterSubjects } from './state'
 import { insertPainterReference, shiftPainterAnchor } from './selection'
@@ -17,7 +17,7 @@ import { painterSelection, painterInsertionRequest } from './selectionState'
 import { get } from 'svelte/store'
 import { ensureChatHydrated } from '../storage/chatStorage'
 import { resolvePersonaById } from '../personaScopes'
-import { createPainterSettings, painterGenerationSettings, type PainterSettings } from './types'
+import { createPainterSettings, painterGenerationSettings, painterImageSize, painterSizeMode, type PainterSettings } from './types'
 import { painterImageToggleScope, painterPromptDatabase, painterPromptPreset } from './imagePreset'
 import type { PainterFragment } from './types'
 import type { PainterLibraryData } from './types'
@@ -244,7 +244,10 @@ export class PainterSession {
     get settings(): PainterSettings {
         const local = this.data.settings
         const shared = this.bot.settings ?? (this.data.settingsScope === 'global' ? DBState.db.bardPainterSettings : undefined)
-        return { ...local, ...shared, context: { ...local.context, ...shared?.context } }
+        const merged = { ...local, ...shared, context: { ...local.context, ...shared?.context } }
+        // Legacy shared settings decide their own size mode instead of inheriting a newer local default.
+        if (shared && shared.sizeMode === undefined) merged.sizeMode = painterSizeMode(shared)
+        return merged
     }
     async updateGenerationSettings(settings: PainterSettings) {
         const shared = painterGenerationSettings(settings)
@@ -507,13 +510,23 @@ export class PainterSession {
                 identities: presets, draft, fragments: previousDraft?.fragments,
                 outfits: clone(presets.flatMap(identity => outfitsFor(identity.id))),
                 conversation: sameScene && !options.fresh ? clone((this.data.conversation ?? []).slice(-12)) : [] })
-            const response = await requestChatData({ formated, currentChar: requestCharacter, bias: {},
-                useStreaming: false, noMultiGen: true, tools: [], maxTokens: 4096, temperature: 0.3,
-                disablePromptCache: true, logSource: 'other', logPurpose: 'bard-painter' }, settings.modelSlot, controller.signal)
-            if (controller.signal.aborted) return
-            if (response.type !== 'success') throw new Error(response.type === 'fail' ? response.result : '프롬프트 응답 형식을 읽을 수 없습니다. 다시 작성해 주세요.')
             const viewerNames = new Set([userName, '{{user}}', 'user', 'you', '당신'].map(name => name.trim().toLowerCase()).filter(Boolean))
-            const next = parsePainterDraft(response.result, settings.perspective === 'first-person' ? viewerNames : undefined)
+            const plan = async (messages: ReturnType<typeof buildPainterRepairMessages>) => {
+                const response = await requestChatData({ formated: messages, currentChar: requestCharacter, bias: {},
+                    useStreaming: false, noMultiGen: true, tools: [], maxTokens: 8192, temperature: 0.3,
+                    disablePromptCache: true, logSource: 'other', logPurpose: 'bard-painter' }, settings.modelSlot, controller.signal)
+                const raw = response.type === 'success' && typeof response.result === 'string' ? response.result : ''
+                if (response.type !== 'success') return { raw, error: new Error(response.type === 'fail' ? response.result : '프롬프트 응답 형식을 읽을 수 없습니다. 다시 작성해 주세요.') }
+                try { return { raw, draft: parsePainterDraft(response.result, settings.perspective === 'first-person' ? viewerNames : undefined) } }
+                catch (error) { return { raw, error: error instanceof Error ? error : new Error(String(error)) } }
+            }
+            let attempt = await plan(formated)
+            if (controller.signal.aborted) return
+            // Truncated, malformed or declined plans get one repair turn that keeps the rejected text in context.
+            if (attempt.error) attempt = await plan(buildPainterRepairMessages(formated, attempt.raw, attempt.error.message))
+            if (controller.signal.aborted) return
+            if (!attempt.draft) throw attempt.error
+            const next = attempt.draft
             const visibleSubjects = (subjects: typeof next.subjects) => settings.perspective === 'first-person'
                 ? subjects.filter(subject => subject.kind !== 'character' || ![subject.name, ...subject.aliases].some(name => viewerNames.has(name.trim().toLowerCase())))
                 : subjects
@@ -577,7 +590,8 @@ export class PainterSession {
             if (!DBState.db.NAIApiKey?.trim()) throw new Error('설정의 이미지 생성에서 NovelAI API 키를 입력해 주세요.')
             const result: PainterResult = {
                 id: v4(), assetId: v4(), createdAt: Date.now(), anchor: clone(this.data.anchor!),
-                draft: clone(this.data.draft!), style: clone(this.style), settings: clone(this.settings),
+                // Record the canvas actually requested so saved results and retries keep the AI choice.
+                draft: clone(this.data.draft!), style: clone(this.style), settings: { ...clone(this.settings), ...painterImageSize(this.settings, this.data.draft) },
                 seed: this.settings.seed ?? crypto.getRandomValues(new Uint32Array(1))[0], compressionPending: true,
             }
             const request = buildPainterImageRequest(result.draft, result.style, result.settings, result.seed)

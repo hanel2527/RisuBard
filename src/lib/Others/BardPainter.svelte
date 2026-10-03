@@ -6,6 +6,7 @@
     import { untrack } from 'svelte'
     import { getPainterSession } from 'src/ts/bardPainter/runtime.svelte'
     import { formatPainterPromptText } from 'src/ts/bardPainter/prompt'
+    import { painterImageSize, painterImageSizeById, painterSizeMode } from 'src/ts/bardPainter/types'
     import { painterSelection, painterInsertionRequest } from 'src/ts/bardPainter/selectionState'
     import { painterGalleryRequested } from 'src/ts/bardPainter/gallery'
     import { botMakerMode, CharConfigSubMenu, risuBardGalleryOpen, MobileSideBar } from 'src/ts/stores.svelte'
@@ -22,6 +23,10 @@
     let newScene = $derived(!!selection?.anchor && !!data.draft && JSON.stringify(selection.anchor) !== JSON.stringify(data.anchor))
     let latest = $derived(data.results.reduce<typeof data.results[number] | undefined>((result, item) => !result || item.createdAt > result.createdAt ? item : result, undefined))
     let insertionTarget = $derived(selection?.issue ? undefined : selection?.anchor ?? data.anchor ?? latest?.anchor)
+    let aiSize = $derived(painterSizeMode(session.settings) === 'ai')
+    let chosenSize = $derived(aiSize ? painterImageSizeById(data.draft?.size) : undefined)
+    let canvas = $derived(painterImageSize(session.settings, data.draft))
+    let canvasShape = $derived(canvas.width > canvas.height ? '가로' : canvas.width < canvas.height ? '세로' : '정사각형')
     let busy = $derived(session.state.status !== 'idle')
     let blocked = $derived(busy || session.state.pendingImage)
     let imageChoice = $state<TogglePreset | null | undefined>(undefined)
@@ -135,7 +140,7 @@
 <section class="painter" aria-label="바드페인터" data-bard-painter>
     <header>
         <div class="title-row"><h2>바드페인터</h2><nav aria-label="바드페인터 도구"><button type="button" disabled={resetBlocked} aria-expanded={confirmReset} onclick={() => confirmReset = !confirmReset}>리셋</button><button type="button" class="primary" onclick={() => toolMode = 'style'}>화풍</button><button type="button" class="primary" onclick={() => toolMode = 'characters'}>캐릭터</button><button type="button" class="primary" onclick={() => toolMode = 'settings'}>생성 설정</button></nav></div>
-        <p class="hint">{session.style.name} / {session.settings.width} × {session.settings.height} / {session.settings.model.includes('curated') ? 'V5 Curated' : 'V5 Full'}</p>
+        <p class="hint">{session.style.name} / {aiSize && !chosenSize ? 'AI 결정' : `${aiSize ? 'AI: ' : ''}${canvas.width} × ${canvas.height}`} / {session.settings.model.includes('curated') ? 'V5 Curated' : 'V5 Full'}</p>
         {#if confirmReset}<p class="hint">그릴 장면, 초안, 프롬프트 대화, 입력한 요청, 참고 그림과 현재 그림 표시를 비울까요? 생성 설정과 프리셋, 갤러리 이미지와 본문에 삽입한 이미지는 유지됩니다.</p><div class="actions"><button type="button" disabled={resetBlocked} onclick={() => void resetWorkspace()}>리셋 확인</button><button type="button" onclick={() => confirmReset = false}>취소</button></div>{/if}
     </header>
     <BardPainterTools {session} mode={toolMode} onClose={() => toolMode = null} disabled={blocked} />
@@ -212,7 +217,7 @@
     {/if}
     <section class="output" aria-label="현재 삽화">
         <div class="section-title"><h3><span class="step">3</span>그림 만들기</h3><button type="button" onclick={openGallery}>갤러리 열기</button></div>
-        <div class="actions generation-actions"><button type="button" class="primary" disabled={blocked || !data.anchor || !data.draft?.scene.trim()} onclick={() => session.generate()}>이미지 생성</button><button type="button" class="primary" onclick={() => toolMode = 'settings'}>생성 설정</button><span class="hint" aria-label="현재 이미지 형식과 화풍">{session.settings.width > session.settings.height ? '가로' : session.settings.width < session.settings.height ? '세로' : '정사각형'} / {session.style.name}</span></div>
+        <div class="actions generation-actions"><button type="button" class="primary" disabled={blocked || !data.anchor || !data.draft?.scene.trim()} onclick={() => session.generate()}>이미지 생성</button><button type="button" class="primary" onclick={() => toolMode = 'settings'}>생성 설정</button><span class="hint" aria-label="현재 이미지 형식과 화풍">{aiSize ? (chosenSize ? `AI: ${canvasShape}` : 'AI 결정') : canvasShape} / {session.style.name}</span></div>
         <p class="hint">프롬프트를 확인한 뒤 생성하세요. NovelAI 사용량이 차감될 수 있습니다.</p>
         {#if latest}
             <article class="card result" data-painter-result={latest.id}>

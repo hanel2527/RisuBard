@@ -69,6 +69,23 @@ it('keeps editable fragment copies through refinement, fresh drafts and restorat
     expect(session.data.draft!.fragments![0].prompt).toBe('2::rim light::')
 })
 
+it('sends one repair turn with the rejected text when the plan is truncated or declined', async () => {
+    const session = new PainterSession('bot', 'chat')
+    mocks.request.mockResolvedValueOnce({ type: 'success', result: '{"rendering":"","scene":"indo' })
+    expect(await session.prepare()).toBe(true)
+    expect(mocks.request).toHaveBeenCalledTimes(2)
+    const repair = mocks.request.mock.calls[1][0].formated
+    expect(repair.at(-2)).toEqual({ role: 'assistant', content: '{"rendering":"","scene":"indo' })
+    expect(repair.at(-1).content).toContain('catalog IDs')
+    expect(session.data.draft!.scene).toBe('indoors')
+
+    mocks.request.mockReset()
+    mocks.request.mockResolvedValue({ type: 'success', result: 'I cannot help with that.' })
+    expect(await session.prepare(undefined, { fresh: true })).toBe(false)
+    expect(mocks.request).toHaveBeenCalledTimes(2)
+    expect(session.data.draft!.scene).toBe('indoors')
+})
+
 it('saves, duplicates and rolls back fragment library changes on persistence failure', async () => {
     const session = new PainterSession('bot', 'chat')
     const id = await session.saveFragment({ id: '', name: '빛', prompt: 'glow' })

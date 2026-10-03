@@ -13,7 +13,7 @@ export function normalizeCharacterSidebarWidth(value: unknown, availableWidth = 
     return size(value, 384, 280, max)
 }
 
-export function normalizeCharacterListSidebarWidth(value: unknown, availableWidth = 240): number {
-    const max = Number.isFinite(availableWidth) ? Math.max(0, Math.min(240, availableWidth)) : 240
+export function normalizeCharacterListSidebarWidth(value: unknown, availableWidth = 260): number {
+    const max = Number.isFinite(availableWidth) ? Math.max(0, Math.min(260, availableWidth)) : 260
     return size(value, 80, 80, max)
 }

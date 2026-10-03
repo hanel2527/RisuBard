@@ -7,6 +7,7 @@
     import ShDialog from 'src/lib/UI/GUI/ShDialog.svelte'
     import BardPainterPresets from './BardPainterPresets.svelte'
     import BardPainterReference from './BardPainterReference.svelte'
+    import { PAINTER_IMAGE_SIZES, painterSizeMode } from 'src/ts/bardPainter/types'
     let { session, mode, onClose, disabled = false }: {
         session: ReturnType<typeof getPainterSession>
         mode: 'style' | 'characters' | 'settings' | 'fragments' | null
@@ -103,9 +104,10 @@
                         <label>NovelAI 모델<select value={settings.model} onchange={event => { settings.model = event.currentTarget.value as typeof settings.model; save() }}><option value="nai-diffusion-5-full">NovelAI V5 Full</option><option value="nai-diffusion-5-curated">NovelAI V5 Curated</option><option value="nai-diffusion-4-5-full">NovelAI V4.5 Full</option><option value="nai-diffusion-4-5-curated">NovelAI V4.5 Curated</option></select></label>
                         {#if settings.model === 'nai-diffusion-4-5-full' || settings.model === 'nai-diffusion-4-5-curated'}<p class="hint">V4.5는 인물과 사물 블록을 최대 6개까지 지원합니다.</p>{/if}
                         <div class="grid">
-                            <label>이미지 크기<select aria-label="이미지 크기" value={`${settings.width}x${settings.height}`} onchange={event => { const [width, height] = event.currentTarget.value.split('x').map(Number); settings.width = width; settings.height = height; save() }}><option value="832x1216">세로 832 × 1216</option><option value="1216x832">가로 1216 × 832</option><option value="1024x1024">정사각 1024 × 1024</option></select></label>
+                            <label>이미지 크기<select aria-label="이미지 크기" value={painterSizeMode(settings) === 'ai' ? 'ai' : `${settings.width}x${settings.height}`} onchange={event => { const value = event.currentTarget.value; if (value === 'ai') settings.sizeMode = 'ai'; else { const [width, height] = value.split('x').map(Number); settings.sizeMode = 'fixed'; settings.width = width; settings.height = height } save() }}><option value="ai">AI 결정</option>{#each PAINTER_IMAGE_SIZES as size (size.id)}<option value={`${size.width}x${size.height}`}>{size.label}</option>{/each}</select></label>
                             <label>시드<span class="hint">비우면 무작위</span><input aria-label="이미지 시드" type="number" min="0" max="4294967295" step="1" value={settings.seed ?? ''} onchange={event => { settings.seed = event.currentTarget.value === '' ? null : event.currentTarget.valueAsNumber; save() }} /></label>
                         </div>
+                        {#if painterSizeMode(settings) === 'ai'}<p class="hint">프롬프트를 작성할 때 AI가 장면 구도에 맞춰 위의 다섯 가지 크기 중 하나를 고릅니다. 고르지 못하면 세로 832 × 1216으로 생성합니다.</p>{/if}
                         <p class="hint">앱 설정에 저장된 NovelAI API 키를 사용합니다. 생성한 이미지는 원래 해상도의 WebP로 저장합니다.</p>
                     </section>
                 </fieldset>

@@ -38,7 +38,6 @@ describe('monitoring server events', () => {
         }))
         await storage.syncLiveFiles('old')
         expect(authFetch).toHaveBeenLastCalledWith('/api/live-files/sync', {
-            signal: expect.any(AbortSignal),
             method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
         })
         unsubscribe()
@@ -68,58 +67,35 @@ describe('monitoring server events', () => {
         finishSet(response(false))
         expect(await pending).toMatchObject({ enabled: true })
         expect(await storage.getLiveFileMonitoring()).toMatchObject({ enabled: true })
-        expect(authFetch).toHaveBeenLastCalledWith('/api/live-files/monitoring', { method: 'GET', signal: expect.any(AbortSignal) })
+        expect(authFetch).toHaveBeenLastCalledWith('/api/live-files/monitoring', { method: 'GET' })
         unsubscribe()
     })
 })
 
 describe('external file monitoring transport', () => {
-    it.each(['status', 'sync', 'body'])('recovers after a stalled %s request without accepting a late response', async (stage) => {
+    it.each(['status', 'sync', 'body'])('waits for a stalled %s request without a time limit', async (stage) => {
         vi.useFakeTimers()
         const storage = new NodeStorage()
         let release!: (value: any) => void
-        let signal!: AbortSignal
         const stalled = new Promise<any>(resolve => { release = resolve })
-        const authFetch = vi.fn(async (path: string, init: RequestInit) => {
+        ;(storage as any).authFetch = vi.fn(async (path: string) => {
             if (stage === 'status' || path.endsWith('/sync')) {
-                signal = init.signal!
                 return stage === 'body' ? { ok: true, json: () => stalled } : stalled
             }
             return response(true)
         })
-        ;(storage as any).authFetch = authFetch
-        let failure: any
-        const attempt = storage.syncLiveFiles('old').catch(error => { failure = error })
-        await vi.advanceTimersByTimeAsync(12_000)
-        expect(failure?.code).toBe('LIVE_FILES_TIMEOUT')
-        expect(signal.aborted).toBe(true)
-        await attempt
-        authFetch.mockImplementation(async path => path.endsWith('/monitoring')
-            ? response(true) : new Response('{"revision":"new","etag":"new"}'))
-        expect(await storage.syncLiveFiles('old')).toMatchObject({ revision: 'new' })
-        release(stage === 'body' ? { enabled: false } : response(false))
-        await vi.advanceTimersByTimeAsync(0)
-        expect(await storage.getLiveFileMonitoring()).toMatchObject({ enabled: true })
-        expect(vi.getTimerCount()).toBe(0)
+        let settled = false
+        const attempt = storage.syncLiveFiles('old').finally(() => { settled = true })
+        await vi.advanceTimersByTimeAsync(600_000)
+        expect(settled).toBe(false)
+        release(stage === 'body' ? { revision: 'new', etag: 'new' } : stage === 'status' ? response(true)
+            : new Response('{"revision":"new","etag":"new"}'))
+        if (stage === 'status') {
+            ;(storage as any).authFetch.mockImplementation(async () => new Response('{"revision":"new","etag":"new"}'))
+        }
+        expect(await attempt).toMatchObject({ revision: 'new' })
     })
 
-    it('does not dispatch a timed-out sync after delayed authentication completes', async () => {
-        vi.useFakeTimers()
-        const storage = new NodeStorage()
-        let finishAuth!: () => void
-        ;(storage as any).checkAuth = vi.fn(() => new Promise<void>(resolve => { finishAuth = resolve }))
-        ;(storage as any).createAuth = vi.fn(async () => 'test')
-        const fetch = vi.fn()
-        vi.stubGlobal('fetch', fetch)
-        let failure: any
-        const attempt = storage.getLiveFileMonitoring().catch(error => { failure = error })
-        await vi.advanceTimersByTimeAsync(12_000)
-        expect(failure?.code).toBe('LIVE_FILES_TIMEOUT')
-        await attempt
-        finishAuth()
-        await vi.advanceTimersByTimeAsync(0)
-        expect(fetch).not.toHaveBeenCalled()
-    })
     it('skips sync requests while disabled and checks status at most every 30 seconds', async () => {
         vi.useFakeTimers()
         const storage = new NodeStorage()
@@ -129,7 +105,7 @@ describe('external file monitoring transport', () => {
         expect(await storage.syncLiveFiles('old')).toMatchObject({ enabled: false })
         await storage.syncLiveFiles('old')
         expect(authFetch).toHaveBeenCalledTimes(1)
-        expect(authFetch).toHaveBeenCalledWith('/api/live-files/monitoring', { method: 'GET', signal: expect.any(AbortSignal) })
+        expect(authFetch).toHaveBeenCalledWith('/api/live-files/monitoring', { method: 'GET' })
         vi.advanceTimersByTime(30_000)
         await storage.syncLiveFiles('old')
         expect(authFetch).toHaveBeenCalledTimes(2)
@@ -160,7 +136,6 @@ describe('external file monitoring transport', () => {
         expect(await storage.syncLiveFiles('old')).toMatchObject({ revision: 'fresh' })
         expect(authFetch).toHaveBeenLastCalledWith('/api/live-files/sync', {
             method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
-            signal: expect.any(AbortSignal),
         })
     })
 
@@ -173,7 +148,6 @@ describe('external file monitoring transport', () => {
         await storage.syncLiveFiles('old')
         expect(authFetch).toHaveBeenLastCalledWith('/api/live-files/sync', {
             method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
-            signal: expect.any(AbortSignal),
         })
         await storage.setLiveFileMonitoring(false)
         authFetch.mockClear()

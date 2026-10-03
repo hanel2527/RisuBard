@@ -4,31 +4,17 @@ import { waitForSendSync } from './sendPreparation'
 afterEach(() => vi.useRealTimers())
 
 describe('send synchronization wait', () => {
-    it('reports the current pending phase without cancelling the shared operation', async () => {
-        vi.useFakeTimers()
-        let message = 'sync', finish!: () => void
-        const pending = new Promise<void>(resolve => { finish = resolve })
-        const result = waitForSendSync(() => pending, { timeoutMs: 100, timeoutMessage: () => message }).catch(e => e.message)
-        message = 'waiting for save'
-        await vi.advanceTimersByTimeAsync(100)
-        expect(await result).toBe('waiting for save')
-        finish()
-        await pending
-        expect(vi.getTimerCount()).toBe(0)
-    })
-    it('times out without continuing generation when synchronization finishes late', async () => {
+    it('waits for a slow synchronization without a time limit', async () => {
         vi.useFakeTimers()
         let finish!: () => void
         let generated = false
         const sync = new Promise<void>(resolve => { finish = resolve })
-        const send = waitForSendSync(() => sync, { timeoutMs: 100, timeoutMessage: 'sync timed out' })
-            .then(() => { generated = true })
-        const rejected = expect(send).rejects.toThrow('sync timed out')
-        await vi.advanceTimersByTimeAsync(100)
-        await rejected
-        finish()
-        await Promise.resolve()
+        const send = waitForSendSync(() => sync).then(() => { generated = true })
+        await vi.advanceTimersByTimeAsync(600_000)
         expect(generated).toBe(false)
+        finish()
+        await send
+        expect(generated).toBe(true)
         expect(vi.getTimerCount()).toBe(0)
     })
 

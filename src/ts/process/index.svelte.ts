@@ -1181,11 +1181,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     const target = arg.target ?? captureGenerationTarget(DBState.db.characters[get(selectedCharID)])
     const generationScope = createGenerationScope(() => DBState.db.characters, target)
     try {
-        await waitForSendSync(refreshLiveFiles, {
-            signal: arg.signal,
-            timeoutMessage: () => forageStorage.realStorage?.pendingSaveRequests > 0
-                ? language.chatSendSaveTimeout : language.chatSendSyncTimeout,
-        })
+        await waitForSendSync(refreshLiveFiles, { signal: arg.signal })
     } catch (error) {
         if (arg.signal?.aborted) return false
         notifyError(`${language.chatSendPreparationFailed}: ${error instanceof Error ? error.message : String(error)}`)

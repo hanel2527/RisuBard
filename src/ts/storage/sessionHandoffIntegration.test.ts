@@ -64,6 +64,27 @@ it('send preflight rejects even when polling is disabled after a handoff', async
     await expect(run()()).rejects.toThrow('Saving paused')
 })
 
+it('send preflight does not wait behind an in-flight save', async () => {
+    const begin = source.indexOf('    const refreshThisRuntime =')
+    const assignment = '    refreshLiveFilesImpl = refreshWithSessionCheck'
+    const finish = source.indexOf(assignment, begin)
+    const refreshWiring = ts.transpile(source.slice(begin, finish + assignment.length), { target: ts.ScriptTarget.ES2022 })
+    const sync = vi.fn(async () => {})
+    const run = new Function('syncLiveFilesNow', `
+        let gotChannel = false, refreshLiveFilesImpl = null, saveInFlight = new Promise(() => {});
+        const language = {sessionSavePausedTitle: 'Saving paused'};
+        const supportsPatchSync = true, saveRuntime = {isActive: () => true};
+        const createLiveFileRefresh = hooks => async () => {
+            while (hooks.getInFlight()) await hooks.getInFlight();
+            await hooks.sync();
+        };
+        ${refreshWiring}
+        return refreshLiveFilesImpl;
+    `)
+    await expect(run(sync)()).resolves.toBeUndefined()
+    expect(sync).not.toHaveBeenCalled()
+})
+
 it('ignores a delayed sync snapshot after the session has been paused', async () => {
     const begin = source.indexOf('    async function syncLiveFilesNow()')
     const finish = source.indexOf('    const refreshThisRuntime =', begin)

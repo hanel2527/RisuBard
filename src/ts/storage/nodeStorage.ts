@@ -17,7 +17,6 @@ import {
 import { isCanonicalFilesChangedResponse } from './canonicalConflict'
 import { uploadChatContent } from './chatContentUpload'
 import { subscribeLiveFileEvents } from './liveFileEvents'
-import { boundedResponse } from './boundedResponse'
 
 const CHAT_CONTENT_TRANSFER_PAGE_SIZE = 200
 const CHAT_CONTENT_TRANSFER_CONCURRENCY = 4
@@ -182,16 +181,16 @@ export class NodeStorage{
     pendingSaveRequests = 0
 
     private connectionFetch(path: string, init: RequestInit) {
-        return boundedResponse(signal => fetch(path, { ...init, signal }), 8_000,
-            Object.assign(new Error(language.storageConnectionTimeout), { code: 'STORAGE_CONNECTION_TIMEOUT' }))
+        // No time limit: a busy server answers late, it is not broken.
+        return fetch(path, init)
     }
 
-    private async saveRequest(path: string, init: RequestInit, bounded = true) {
+    // Saves wait for the server however long it takes. Aborting transport
+    // never undoes a write, so a time limit only reported false failures.
+    private async saveRequest(path: string, init: RequestInit) {
         this.pendingSaveRequests++
         try {
-            if (!bounded) return await this.authFetch(path, init)
-            return await boundedResponse(signal => this.authFetch(path, { ...init, signal }), 120_000,
-                Object.assign(new Error(language.storageWriteTimeout), { code: 'STORAGE_WRITE_TIMEOUT' }))
+            return await this.authFetch(path, init)
         } finally {
             this.pendingSaveRequests--
         }
@@ -202,11 +201,10 @@ export class NodeStorage{
         const init: RequestInit = { method: 'POST', keepalive, credentials: 'same-origin', signal }
         // Use the same renewable auth as writes. The asset cookie can expire
         // independently in a long-lived tab. Page-hide remains best effort.
-        // A cancellable flush (import install) waits for a slow server instead
-        // of timing out; the caller aborts it when the user cancels.
+        // A cancellable flush (import install) stops when the user cancels.
         const response = keepalive
             ? await this.authFetch(path, init)
-            : await this.saveRequest(path, init, !signal)
+            : await this.saveRequest(path, init)
         if (!response.ok) throw new Error(`Server database flush failed (${response.status})`)
     }
 
@@ -591,28 +589,10 @@ export class NodeStorage{
         })
     }
 
-    // Bound metadata reconciliation reads, including auth and response-body
-    // waits. Never apply this to saves: aborting transport does not undo a write.
+    // Metadata reconciliation reads wait for a busy server without a time limit.
     private async readLiveFileJson(path: string, init: RequestInit) {
-        const controller = new AbortController()
-        let timer: ReturnType<typeof setTimeout>
-        const expired = new Promise<never>((_, reject) => {
-            timer = setTimeout(() => {
-                const error = Object.assign(new Error(language.liveFileSyncTimeout), { code: 'LIVE_FILES_TIMEOUT' })
-                reject(error)
-                controller.abort(error)
-            }, 12_000)
-        })
-        try {
-            return await Promise.race([
-                this.authFetch(path, { ...init, signal: controller.signal }).then(async response => ({
-                    response, data: await response.json(),
-                })),
-                expired,
-            ])
-        } finally {
-            clearTimeout(timer!)
-        }
+        const response = await this.authFetch(path, init)
+        return { response, data: await response.json() }
     }
 
     async getLiveFileMonitoring(force = false): Promise<LiveFileMonitoringStatus> {

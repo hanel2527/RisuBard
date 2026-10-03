@@ -7332,6 +7332,9 @@ async function startServer() {
                 }
             });
         }
+        // No time limit for receiving a request: large bot saves on a busy disk can
+        // take longer than Node's 5-minute default, and waiting is not a failure.
+        server.requestTimeout = 0;
         // Written only once bound, so a server that lost the port race keeps the owner's token intact.
         server.once('listening', () => writeFileSync(localShutdownTokenPath, localShutdownToken, { mode: 0o600 }));
     } catch (error) {

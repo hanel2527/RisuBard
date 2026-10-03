@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { buildPainterImageRequest, parsePainterDraft } from './prompt'
+import { buildPainterImageRequest, buildPainterMessages, parsePainterDraft } from './prompt'
 import { PAINTER_STYLES } from './styles'
-import { createPainterSettings } from './types'
+import { createPainterSettings, painterGenerationSettings, painterImageSize, painterSizeMode } from './types'
 
 const subject = (name: string) => ({
     id: '', name, aliases: [], kind: 'character', appearance: 'brown hair', clothing: 'blue coat, black boots', state: '', negative: '',
@@ -77,6 +77,61 @@ describe('BardPainter scene-plan compilation', () => {
         expect(draft.subjects.map(subject => subject.name)).toEqual(['Aria', 'Leon'])
         expect(draft.subjects[0].pose).toContain('Receives the cup')
         expect(draft.subjects[1].pose).toContain('Extends a cup')
+    })
+
+    it('expands catalog acts and states into routed action tags without model-written explicit prose', () => {
+        const input = plan()
+        Object.assign(input.interactions[0], { acts: ['vaginal', 'position_missionary', 'hug', 'unknown_id'], description: '', sourceAction: '', targetAction: '' })
+        Object.assign(input.subjects[0], { state: 'sweat', stateIds: ['nude', 'cum_in_pussy', 'bogus'] })
+        const draft = parsePainterDraft(JSON.stringify(input))
+        expect(draft.scene.split('\n')[0]).toBe('nsfw, 1girl, 1boy, sex, vaginal, missionary')
+        expect(draft.subjects[1].pose).toBe('standing, source#vaginal, mutual#hug')
+        expect(draft.subjects[0].pose.split('\n')[0]).toBe('standing, target#vaginal, mutual#hug')
+        expect(draft.subjects[0].state).toBe('sweat, nude, cum in pussy')
+        expect(draft.subjects[0]).not.toHaveProperty('stateIds')
+    })
+
+    it('keeps catalog tags for the visible partner when the first-person viewer is excluded', () => {
+        const input = plan()
+        input.subjects[1].name = 'Viewer'
+        Object.assign(input.interactions[0], { acts: ['fellatio'] })
+        const draft = parsePainterDraft(JSON.stringify(input), new Set(['viewer']))
+        expect(draft.scene).toContain('nsfw, 1girl, 1boy, oral, fellatio')
+        expect(draft.scene).not.toContain('passes a cup')
+        expect(draft.subjects[0].pose).toBe('standing, target#fellatio')
+    })
+
+    it('does not mark non-explicit catalog acts as nsfw and still requires a description or act', () => {
+        const input = plan()
+        Object.assign(input.interactions[0], { acts: ['headpat'], description: '' })
+        expect(parsePainterDraft(JSON.stringify(input)).scene.startsWith('1girl, 1boy')).toBe(true)
+        Object.assign(input.interactions[0], { acts: ['unknown'] })
+        expect(() => parsePainterDraft(JSON.stringify(input))).toThrow()
+        Object.assign(input.interactions[0], { acts: 'vaginal' })
+        expect(() => parsePainterDraft(JSON.stringify(input))).toThrow()
+    })
+
+    it('keeps a valid planner canvas, drops an unknown one and resolves the request size by mode', () => {
+        const chosen = parsePainterDraft(JSON.stringify({ ...plan(), size: 'wide_landscape' }))
+        expect(chosen.size).toBe('wide_landscape')
+        expect(parsePainterDraft(JSON.stringify({ ...plan(), size: '2000x100' }))).not.toHaveProperty('size')
+        const ai = createPainterSettings()
+        expect(painterImageSize(ai, chosen)).toEqual({ width: 1216, height: 832 })
+        expect(painterImageSize(ai, {})).toEqual({ width: 832, height: 1216 })
+        expect(painterImageSize({ ...ai, sizeMode: 'fixed', width: 1024, height: 1024 }, chosen)).toEqual({ width: 1024, height: 1024 })
+        // Legacy settings without a mode: only the untouched old default becomes AI choice.
+        expect(painterSizeMode({ width: 832, height: 1216 })).toBe('ai')
+        expect(painterSizeMode({ width: 1216, height: 832 })).toBe('fixed')
+        expect(painterGenerationSettings({ ...ai, sizeMode: undefined, width: 1216, height: 832 }).sizeMode).toBe('fixed')
+    })
+
+    it('asks for a canvas only in AI mode and states the fixed canvas otherwise', () => {
+        const anchor = { characterId: 'c', chatId: 'h', messageId: 'm', start: 0, end: 1, text: 'scene' }
+        const system = (settings: ReturnType<typeof createPainterSettings>) => buildPainterMessages({ anchor, settings, style: PAINTER_STYLES[0], sources: [], identities: [] })[0].content
+        expect(system(createPainterSettings())).toContain('Choose size, the canvas ID, from: tall_portrait 832x1216, wide_landscape 1216x832, portrait 896x1152, landscape 1152x896, square 1024x1024')
+        const fixed = system({ ...createPainterSettings(), sizeMode: 'fixed', width: 1152, height: 896 })
+        expect(fixed).toContain('fixed the canvas at 1152x896 (landscape)')
+        expect(fixed).not.toContain('Choose size')
     })
 
     it.each([-1, 2, 0.5, '0', null])('rejects an invalid interaction participant %s', source => {

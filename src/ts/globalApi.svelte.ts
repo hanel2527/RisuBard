@@ -640,7 +640,9 @@ export async function saveDb() {
     })
     const refreshWithSessionCheck = async () => {
         if (gotChannel) throw new Error(language.sessionSavePausedTitle)
-        await refreshThisRuntime()
+        // A save in flight syncs live files before it writes. Sending must not
+        // wait behind a chain of slow saves (it timed out at 30 seconds).
+        if (!saveInFlight) await refreshThisRuntime()
         if (gotChannel) throw new Error(language.sessionSavePausedTitle)
     }
     refreshLiveFilesImpl = refreshWithSessionCheck

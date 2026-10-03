@@ -39,6 +39,8 @@ export interface PainterDraft {
     scene: string
     negative: string
     subjects: PainterSubject[]
+    /** Planner-chosen PAINTER_IMAGE_SIZES id, used only while the size mode is 'ai'. */
+    size?: string
     /** User-owned copies; never populated from model output. */
     fragments?: PainterFragment[]
 }
@@ -78,10 +80,35 @@ export function painterSubjectLimit(model: PainterSettings['model']): number {
     return model === 'nai-diffusion-4-5-full' || model === 'nai-diffusion-4-5-curated' ? 6 : 22
 }
 
+/** NovelAI canvases of about one megapixel; ids are what the planner returns. */
+export const PAINTER_IMAGE_SIZES = [
+    { id: 'tall_portrait', width: 832, height: 1216, label: '세로 832 × 1216', short: '세로' },
+    { id: 'wide_landscape', width: 1216, height: 832, label: '가로 1216 × 832', short: '가로' },
+    { id: 'portrait', width: 896, height: 1152, label: '세로 896 × 1152', short: '세로' },
+    { id: 'landscape', width: 1152, height: 896, label: '가로 1152 × 896', short: '가로' },
+    { id: 'square', width: 1024, height: 1024, label: '정사각 1024 × 1024', short: '정사각형' },
+] as const
+
+export const painterImageSizeById = (id: unknown) => PAINTER_IMAGE_SIZES.find(size => size.id === id)
+
+/** Missing on legacy settings: only the untouched old default (832 × 1216) becomes AI choice. */
+export function painterSizeMode(settings: Pick<PainterSettings, 'sizeMode' | 'width' | 'height'>): 'ai' | 'fixed' {
+    return settings.sizeMode ?? (settings.width === 832 && settings.height === 1216 ? 'ai' : 'fixed')
+}
+
+/** The canvas an image request uses: the planner's choice in AI mode, otherwise the fixed setting. */
+export function painterImageSize(settings: PainterSettings, draft?: Pick<PainterDraft, 'size'>): { width: number; height: number } {
+    if (painterSizeMode(settings) === 'fixed') return { width: settings.width, height: settings.height }
+    const { width, height } = painterImageSizeById(draft?.size) ?? PAINTER_IMAGE_SIZES[0]
+    return { width, height }
+}
+
 export interface PainterSettings {
     styleId: string
     model: typeof PAINTER_IMAGE_MODELS[number]
     modelSlot: 'model' | 'submodel'
+    /** 'ai' lets the planner pick from PAINTER_IMAGE_SIZES; width and height keep the fixed choice. */
+    sizeMode?: 'ai' | 'fixed'
     width: number
     height: number
     seed: number | null
@@ -105,14 +132,14 @@ export interface PainterIdentity {
 }
 
 /** Reusable generation options; scene-specific instructions and references stay in the chat. */
-export type PainterGenerationSettings = Pick<PainterSettings, 'model' | 'modelSlot' | 'width' | 'height' | 'seed'> & {
+export type PainterGenerationSettings = Pick<PainterSettings, 'model' | 'modelSlot' | 'sizeMode' | 'width' | 'height' | 'seed'> & {
     context: Omit<PainterContext, 'wikiIds' | 'referenceId' | 'referenceAssetId'>
 }
 
 export function painterGenerationSettings(settings: PainterSettings): PainterGenerationSettings {
     const { model, modelSlot, width, height, seed } = settings
     const { before, after, surrounding, systemPrompt, characterDescription, persona, characterLorebook, moduleLorebook } = settings.context
-    return { model, modelSlot, width, height, seed,
+    return { model, modelSlot, sizeMode: painterSizeMode(settings), width, height, seed,
         context: { before, after, surrounding, systemPrompt, characterDescription, persona, characterLorebook, moduleLorebook } }
 }
 
@@ -175,7 +202,7 @@ export interface PainterContextSource { name: string; content: string }
 
 export function createPainterSettings(): PainterSettings {
     return {
-        styleId: 'default', model: 'nai-diffusion-5-full', modelSlot: 'model',
+        styleId: 'default', model: 'nai-diffusion-5-full', modelSlot: 'model', sizeMode: 'ai',
         width: 832, height: 1216, seed: null, instruction: '', perspective: 'third-person',
         context: {
             before: 2, after: 0, surrounding: false, systemPrompt: false,

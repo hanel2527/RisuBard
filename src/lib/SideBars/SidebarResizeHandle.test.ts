@@ -52,6 +52,7 @@ describe('sidebar layout sizes', () => {
         expect(normalizeCharacterListSidebarWidth(undefined, 240)).toBe(80)
         expect(normalizeCharacterListSidebarWidth(10, 240)).toBe(80)
         expect(normalizeCharacterListSidebarWidth(999, 240)).toBe(240)
+        expect(normalizeCharacterListSidebarWidth(999)).toBe(260)
     })
 
     test.each(['width', 'height'] as const)('persists %s keyboard resizing globally and restores the default with Home', async axis => {

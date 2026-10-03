@@ -61,16 +61,17 @@ it('refreshes an expired token once before acknowledging the flush', async () =>
     expect(requests).toEqual(['/api/db/flush?mode=canonical', '/api/test_auth', '/api/db/flush?mode=canonical'])
 })
 
-it('bounds an unresponsive flush without retrying it', async () => {
+it('waits for an unresponsive flush without a time limit or retry', async () => {
     vi.useFakeTimers()
     const { storage, flush } = fixture()
     const request = vi.fn(() => new Promise<Response>(() => {}))
     vi.stubGlobal('fetch', request)
-    const result = flush(false, true).catch(error => error.code)
-    await vi.advanceTimersByTimeAsync(120_000)
-    expect(await result).toBe('STORAGE_WRITE_TIMEOUT')
+    let settled = false
+    void flush(false, true).finally(() => { settled = true })
+    await vi.advanceTimersByTimeAsync(600_000)
+    expect(settled).toBe(false)
     expect(request).toHaveBeenCalledOnce()
-    expect(storage.pendingSaveRequests).toBe(0)
+    expect(storage.pendingSaveRequests).toBe(1)
 })
 
 it('waits past the write timeout for a cancellable flush and stops when it is aborted', async () => {

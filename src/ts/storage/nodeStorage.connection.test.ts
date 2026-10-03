@@ -23,13 +23,14 @@ it.each(['cleanup', 'prepare'])('shows the server reason for failed import rollb
     await expect(request).rejects.toThrow('Plugin storage unavailable during asset cleanup')
 })
 
-it.each(['cleanup', 'prepare'])('bounds a stalled import rollback %s response', async action => {
+it.each(['cleanup', 'prepare'])('waits for a stalled import rollback %s response without a time limit', async action => {
     const storage = new NodeStorage()
     ;(storage as any).authFetch = vi.fn(() => new Promise(() => {}))
-    const request = (action === 'cleanup' ? storage.cleanupImportAssets([], 'id') : storage.prepareImportRollback('id')).catch(e => e.code)
-    await vi.advanceTimersByTimeAsync(120_000)
-    expect(await request).toBe('STORAGE_WRITE_TIMEOUT')
-    expect(storage.pendingSaveRequests).toBe(0)
+    let settled = false
+    void (action === 'cleanup' ? storage.cleanupImportAssets([], 'id') : storage.prepareImportRollback('id')).finally(() => { settled = true })
+    await vi.advanceTimersByTimeAsync(600_000)
+    expect(settled).toBe(false)
+    expect(storage.pendingSaveRequests).toBe(1)
 })
 
 it('keeps the HTTP status when the rollback error body is not JSON', async () => {
@@ -49,26 +50,18 @@ it.each(['CANONICAL_FILES_CHANGED', 'EXTERNAL_EDIT_MODE'])('preserves %s through
     expect(vi.getTimerCount()).toBe(0)
 })
 
-it('releases a stalled shared token refresh and ignores its late body', async () => {
+it('waits for a slow shared token refresh without a time limit', async () => {
     const storage = new NodeStorage()
-    let release!: (v: any) => void
-    const fetch = vi.fn().mockResolvedValueOnce(new Response(new ReadableStream({ start(controller) {
-        release = value => { controller.enqueue(new Uint8Array(value)); controller.close() }
-    } })))
-        .mockResolvedValueOnce(Response.json({ token: 'new' }))
+    let release!: (v: Response) => void
+    const fetch = vi.fn(() => new Promise<Response>(resolve => { release = resolve }))
     vi.stubGlobal('fetch', fetch)
-    const first = storage.createAuth().catch(e => e.code)
-    const concurrent = storage.createAuth().catch(e => e.code)
-    await vi.advanceTimersByTimeAsync(8_000)
-    expect(await first).toBe('STORAGE_CONNECTION_TIMEOUT')
-    expect(await concurrent).toBe('STORAGE_CONNECTION_TIMEOUT')
-    expect(await storage.createAuth()).toBe('new')
-    release(new TextEncoder().encode('{"token":"old"}').buffer)
-    await vi.advanceTimersByTimeAsync(0)
-    expect(await storage.createAuth()).toBe('new')
-    expect(fetch).toHaveBeenCalledTimes(2)
-    // Only the proactive renewal of the accepted token remains scheduled.
-    expect(vi.getTimerCount()).toBe(1)
+    const first = storage.createAuth()
+    const concurrent = storage.createAuth()
+    await vi.advanceTimersByTimeAsync(600_000)
+    release(Response.json({ token: 'late' }))
+    expect(await first).toBe('late')
+    expect(await concurrent).toBe('late')
+    expect(fetch).toHaveBeenCalledOnce()
 })
 
 it('keeps using a still-valid token when its renewal stalls', async () => {
@@ -87,41 +80,31 @@ it('keeps using a still-valid token when its renewal stalls', async () => {
     expect(await storage.createAuth()).toBe('current')
 })
 
-it('retries session initialization after a stalled request', async () => {
+it('waits for a slow session initialization without a time limit', async () => {
     ;(NodeStorage as any).sessionInitialized = false
     const storage = new NodeStorage()
     vi.spyOn(storage, 'createAuth').mockResolvedValue('token')
     let release!: (v: Response) => void
-    const fetch = vi.fn().mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
-        .mockResolvedValueOnce(Response.json({}))
-    vi.stubGlobal('fetch', fetch)
-    const first = (storage as any).initSession()
-    await vi.advanceTimersByTimeAsync(8_000)
-    await first
-    expect((NodeStorage as any).sessionPending).toBeNull()
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(resolve => { release = resolve })))
+    const init = (storage as any).initSession()
+    await vi.advanceTimersByTimeAsync(600_000)
     expect((NodeStorage as any).sessionInitialized).toBe(false)
-    await (storage as any).initSession()
-    expect((NodeStorage as any).sessionInitialized).toBe(true)
     release(Response.json({}))
-    await vi.advanceTimersByTimeAsync(0)
-    expect(fetch).toHaveBeenCalledTimes(2)
+    await init
+    expect((NodeStorage as any).sessionInitialized).toBe(true)
 })
 
-it.each(['chat', 'patch', 'database'])('bounds a stalled %s save response without retrying or accepting a late acknowledgement', async kind => {
+it.each(['chat', 'patch', 'database'])('waits for a slow %s save response without a time limit or retry', async kind => {
     const storage = new NodeStorage()
     storage.setDbEtag('before')
-    let release!: (v: Response) => void
-    const request = vi.fn(() => new Promise<Response>(resolve => { release = resolve }))
+    const request = vi.fn(() => new Promise<Response>(() => {}))
     ;(storage as any).authFetch = request
-    const save = (kind === 'chat' ? storage.saveChatContent('c', 0, 'chat', {})
+    let settled = false
+    void (kind === 'chat' ? storage.saveChatContent('c', 0, 'chat', {})
         : kind === 'patch' ? storage.patchItem('database/database.bin', { patch: [], expectedHash: 'before' })
-        : storage.setItem('database/database.bin', new Uint8Array([1]), 'before')).catch(e => e.code)
+        : storage.setItem('database/database.bin', new Uint8Array([1]), 'before')).finally(() => { settled = true })
+    await vi.advanceTimersByTimeAsync(600_000)
+    expect(settled).toBe(false)
     expect(storage.pendingSaveRequests).toBe(1)
-    await vi.advanceTimersByTimeAsync(120_000)
-    expect(await save).toBe('STORAGE_WRITE_TIMEOUT')
-    expect(storage.pendingSaveRequests).toBe(0)
     expect(request).toHaveBeenCalledTimes(1)
-    release(Response.json({ success: true, etag: 'late' }))
-    await vi.advanceTimersByTimeAsync(0)
-    expect(storage._lastDbEtag).toBe('before')
 })
