@@ -1,5 +1,6 @@
-import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, openSync, closeSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, openSync, closeSync, readFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -38,6 +39,39 @@ export async function ensureService(url, development, start, timeoutMs = 90000) 
   throw new Error(`${url} 시작 시간이 초과되었습니다. log/start-menu 폴더의 로그를 확인하세요.`);
 }
 
+export function builtVersion(root = projectRoot) {
+  try {
+    return readFileSync(path.join(root, 'dist', 'index.html'), 'utf8').match(/data-startup-version[^>]*>v([^<]+)</)?.[1] ?? null;
+  } catch { return null; }
+}
+
+// The release workflow builds in CI only, so refresh the local dist when it lags package.json.
+function ensureCurrentBuild() {
+  const { version } = JSON.parse(readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
+  const built = builtVersion();
+  if (built === version) return;
+  console.log(`화면 빌드 갱신: ${built ? `v${built}` : '없음'} -> v${version}`);
+  const result = spawnSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build', '--sourcemap'], { cwd: projectRoot, stdio: 'inherit' });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error('빌드 실패. 위 로그를 확인하세요.');
+}
+
+// Asks the hidden server to flush pending data and exit (see /api/local-shutdown).
+async function stopServer() {
+  let token;
+  try { token = readFileSync(path.join(os.tmpdir(), 'risubard-shutdown-7777.token'), 'utf8').trim(); } catch {}
+  if (!await isReady(serverUrl, false)) return console.log('실행 중인 리스바드 서버가 없습니다.');
+  if (!token) throw new Error('종료 토큰이 없습니다. 이 기능이 없는 이전 서버이므로 한 번은 직접 종료하세요.');
+  const response = await fetch(`${serverUrl}/api/local-shutdown`, { method: 'POST', headers: { 'x-risubard-shutdown-token': token } });
+  if (!response.ok) throw new Error(`서버가 종료 요청을 거부했습니다 (${response.status}).`);
+  const deadline = Date.now() + 60000;
+  while (await isReady(serverUrl, false)) {
+    if (Date.now() > deadline) throw new Error('저장 마무리가 끝나지 않아 종료 대기 시간이 초과되었습니다.');
+    await delay(500);
+  }
+  console.log('리스바드 서버를 종료했습니다.');
+}
+
 function startBackground(label, args) {
   const logs = path.join(projectRoot, 'log', 'start-menu');
   mkdirSync(logs, { recursive: true });
@@ -57,9 +91,11 @@ function startBackground(label, args) {
 
 async function main() {
   const mode = process.argv[2];
-  if (!['normal', 'development'].includes(mode)) throw new Error('실행 모드는 normal 또는 development여야 합니다.');
+  if (mode === 'stop') return stopServer();
+  if (!['normal', 'development'].includes(mode)) throw new Error('실행 모드는 normal, development 또는 stop이어야 합니다.');
   const development = mode === 'development';
-  if (!existsSync(path.join(projectRoot, 'dist', 'index.html'))) {
+  if (!development) ensureCurrentBuild();
+  else if (!existsSync(path.join(projectRoot, 'dist', 'index.html'))) {
     throw new Error('컴파일된 화면이 없습니다. 먼저 pnpm build를 실행하세요.');
   }
   await ensureService(serverUrl, false, () => startBackground('server', ['server/node/server.cjs']));

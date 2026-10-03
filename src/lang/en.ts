@@ -1276,6 +1276,7 @@ export const languageEnglish = {
     customCSSWarning: "RisuBard's UI structure (HTML/CSS) differs from upstream RisuAI, so existing custom CSS may break the layout or behave unexpectedly. Use only when you know what you are overriding.",
     customHTMLWarning: "RisuBard's UI structure (HTML/CSS) differs from upstream RisuAI, so existing custom Chat HTML may not render correctly. Use only when you know what you are overriding.",
     sayNothing: "Input 'say nothing' when no string inputed",
+    sayNothingText: "Text sent instead of 'say nothing'",
     regexScript: "Regex Script",
     type: "Type",
     editInput: "Modify Input",

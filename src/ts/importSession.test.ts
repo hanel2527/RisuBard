@@ -43,6 +43,27 @@ beforeEach(() => {
 
 afterEach(() => vi.unstubAllGlobals())
 
+it('lets the cancel button stop waiting for a slow install flush and roll back', async () => {
+    let installSignal: AbortSignal | undefined
+    mocks.save.mockImplementationOnce((options: { flushSignal?: AbortSignal }) => new Promise((_, reject) => {
+        installSignal = options.flushSignal
+        options.flushSignal?.addEventListener('abort', () => reject(options.flushSignal!.reason))
+    }))
+    const pending = session.runImport(async transaction => {
+        mocks.database.characters.push({ chaId: 'new' })
+        transaction.register('character', 'new')
+    })
+    await vi.waitFor(() => expect(installSignal).toBeDefined())
+    session.cancelImport()
+    expect(installSignal!.aborted).toBe(true)
+    await expect(pending).resolves.toBeNull()
+    expect(mocks.database.characters).toEqual([])
+    expect(mocks.save).toHaveBeenLastCalledWith({ flushServer: 'canonical', rejectOnFailure: true })
+    expect(localStorage.getItem(key)).toBeNull()
+    expect(mocks.success).toHaveBeenCalledWith('cancelled')
+    expect(get(session.importSession).phase).toBe('idle')
+})
+
 it('resets only recorded installation owners and preserves the request when saving fails', async () => {
     const resetKey = 'risubard-reset-import-v1'
     localStorage.setItem(key, JSON.stringify({ ...record, owners: [{ type: 'character', id: 'new' }, { type: 'module', id: 'new-module' }] }))

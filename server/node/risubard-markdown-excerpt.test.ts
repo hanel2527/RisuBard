@@ -194,3 +194,15 @@ test('prioritizes modular character state over a long major-transition map', () 
     expect(excerpt).toContain('공사용 삽')
     expect(excerpt).not.toContain('### 주요 전환')
 })
+
+test('prioritizes localized character state over a Japanese major-transition map', () => {
+    const content = ['## くるみ', '### 主要な転換', '過去の戦闘 '.repeat(800),
+        '### 人物の核心', '陸上部出身', '### 関係と信頼', '翔司を信頼している',
+        '### 知識と秘密', '脱出計画を知っている', '### 装備と所持品', '工事用シャベル'].join('\n\n')
+    const excerpt = selectMarkdownExcerpt({ content, documentType: 'character', query: 'くるみ', maximumCharacters: 350, chronologyIntent: false })
+    expect(excerpt).toContain('陸上部出身')
+    expect(excerpt).toContain('翔司を信頼している')
+    expect(excerpt).toContain('脱出計画を知っている')
+    expect(excerpt).toContain('工事用シャベル')
+    expect(excerpt).not.toContain('### 主要な転換')
+})

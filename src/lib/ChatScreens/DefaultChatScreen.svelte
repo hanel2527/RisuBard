@@ -639,7 +639,7 @@ import { isMobile } from 'src/ts/platform'
                     if(DBState.db.useSayNothing){
                         cha.push({
                             role: 'user',
-                            data: '*says nothing*',
+                            data: DBState.db.sayNothingText?.trim() ? DBState.db.sayNothingText : '*says nothing*',
                             name: null
                         })
                     }

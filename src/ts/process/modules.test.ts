@@ -145,7 +145,7 @@ describe('module import durability', () => {
     it('persists an imported module before reporting success', async () => {
         await importModule()
 
-        expect(mocks.requestImmediateSave).toHaveBeenCalledWith({ flushServer: 'canonical', rejectOnFailure: true })
+        expect(mocks.requestImmediateSave).toHaveBeenCalledWith(expect.objectContaining({ flushServer: 'canonical', rejectOnFailure: true }))
         expect(mocks.events).toEqual(['saved', 'notified'])
     })
 

@@ -1,4 +1,5 @@
 import {
+    buildWikiCharacterSectionHeadingGuide,
     buildWikiWritingLanguageGuard,
     normalizeWikiWritingLanguage,
     wikiWritingHeadings,
@@ -328,6 +329,7 @@ export function buildRisuBardCanonicalWritingPolicy(
         'Do not create canon for every clue. Keep one compact investigation thread in other canon only when clues cross events or remain unresolved and affect future decisions.',
         'When new facts replace old ones, do not present both states as current. Preserve unrelated established facts.',
         'Preserve distinct still-valid operating facts, relationship direction, individual knowledge and lasting consequences when compressing. The selected wiki preset governs how confirmed completed or expired state is retired. Preserve unrelated durable state and unresolved obligations; silence alone never establishes completion or forgetting.',
+        buildWikiCharacterSectionHeadingGuide(normalizedLanguage),
         'The selected wiki preset defines section organization and compression pressure. Keep durable facts distinct from transient observations without requiring separate sections. Do not create empty sections or templates, and do not infer shared knowledge, ownership, or relationship meaning from structured state values alone.',
     ].join('\n')
 }

@@ -11,6 +11,8 @@ const JOURNAL_KEY = 'risubard-pending-import-v1'
 const RESET_KEY = 'risubard-reset-import-v1'
 export const importSession = writable<{ phase: 'idle' | 'installing' | 'rolling-back' | 'recovery', error?: string, dismissed?: boolean, resetting?: boolean }>({ phase: 'idle' })
 let active: ImportTransaction | undefined
+// Lets the cancel button stop waiting for a slow install flush.
+let installFlush: AbortController | undefined
 let reloadForReset = false
 
 async function removeOwners(owners: ImportOwner[]) {
@@ -75,6 +77,7 @@ export function dismissImportRecovery() {
 
 export function cancelImport() {
     active?.cancel()
+    installFlush?.abort(new ImportCancelled())
     importSession.set({ phase: 'rolling-back' })
     alertWait(language.importInstall.rollbackMessage)
 }
@@ -130,7 +133,10 @@ export async function runImport<T>(work: (transaction: ImportTransaction) => Pro
         // Wait for all canonical data to reach the server before forgetting recovery.
         beginImportSave()
         alertWait(language.importInstall.saving)
-        await requestImmediateSave({ flushServer: 'canonical', rejectOnFailure: true })
+        // A slow server must not roll back an accepted install. Wait without
+        // the write timeout; the cancel button aborts the wait instead.
+        installFlush = new AbortController()
+        await requestImmediateSave({ flushServer: 'canonical', rejectOnFailure: true, flushSignal: installFlush.signal })
         transaction.commit()
         active = undefined
         importSession.set({ phase: 'idle' })
@@ -158,6 +164,7 @@ export async function runImport<T>(work: (transaction: ImportTransaction) => Pro
         }
         throw error
     } finally {
+        installFlush = undefined
         stopWatching?.()
         stopImportProgress()
     }

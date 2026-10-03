@@ -51,15 +51,22 @@ describe('BardPainter prompt preparation', () => {
     it('serializes only the selected target and explicitly supplied references as separate data', () => {
         const messages = buildPainterMessages({ anchor, style, settings: createPainterSettings(),
             sources: [{ name: '이전 메시지', content: '낮에 도시에 있었다.' }],
-            identities: [{ id: 'aria', name: '아리아', aliases: ['아리'], appearance: 'black hair' }],
+            identities: [{ id: 'aria', name: '아리아', aliases: ['아리'], appearance: 'black hair', note: '루크의 누나', defaultOutfitId: 'travel' },
+                { id: 'luke', name: '루크', aliases: [], appearance: '' }],
             outfits: [{ id: 'travel', subjectId: 'aria', name: '여행복', clothing: 'white shirt', state: '' }],
         })
         expect(messages.map(item => item.role)).toEqual(['system', 'user'])
         const input = JSON.parse(messages[1].content)
         expect(input.target).toEqual({ text: '아리아가 돌아봤다.' })
         expect(input.references).toEqual([{ name: '이전 메시지', content: '낮에 도시에 있었다.' }])
-        expect(input.identities[0].id).toBe('aria')
-        expect(input.outfits[0].subjectId).toBe('aria')
+        // Lorebook-style index: saved prompt text stays in the application.
+        expect(input.identities).toEqual([
+            { id: 'aria', name: '아리아', aliases: ['아리'], note: '루크의 누나', savedAppearance: true, defaultOutfitId: 'travel', outfits: [{ id: 'travel', name: '여행복' }] },
+            { id: 'luke', name: '루크', aliases: [], savedAppearance: false, outfits: [] },
+        ])
+        expect(input).not.toHaveProperty('outfits')
+        expect(messages[1].content).not.toContain('black hair')
+        expect(messages[1].content).not.toContain('white shirt')
         expect(messages[1].content).not.toContain('messageId')
         expect(messages.map(item => item.content).join('\n')).not.toContain(style.artist)
         expect(messages.map(item => item.content).join('\n')).not.toContain(style.negative)
@@ -110,6 +117,13 @@ describe('BardPainter model output', () => {
             { ...draft.subjects[0], id: '' }, { ...draft.subjects[0], id: '', name: '루크' },
         ] })).subjects).toHaveLength(2)
         expect(parsePainterDraft(JSON.stringify({ ...draft, subjects: [] })).subjects).toEqual([])
+    })
+
+    it('lets a recognized identity leave appearance for the application and keeps the chosen outfit id', () => {
+        const parsed = parsePainterDraft(JSON.stringify({ ...draft, subjects: [{ ...draft.subjects[0], id: 'aria', appearance: '', clothing: '', outfitId: 'travel' }] }))
+        expect(parsed.subjects[0]).toMatchObject({ id: 'aria', appearance: '', outfitId: 'travel' })
+        expect(() => parsePainterDraft(JSON.stringify({ ...draft, subjects: [{ ...draft.subjects[0], id: '', appearance: '' }] }))).toThrow()
+        expect(() => composePainterPrompts({ ...draft, subjects: [{ ...draft.subjects[0], id: 'aria', appearance: '' }] }, style)).toThrow()
     })
 
     it('does not allow model-supplied locking to protect generated content from editing', () => {

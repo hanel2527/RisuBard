@@ -15,9 +15,10 @@
     type Owner = { id: string; name: string; aliases: string[]; identity?: PainterIdentity; outfits: OutfitItem[] }
     type Editor = {
         kind: 'identity' | 'outfit'; id: string; subjectId: string; exists: boolean; name: string; originalName: string
-        aliases: string; appearance: string; clothing: string; state: string; shared: boolean; targetShared: boolean
+        aliases: string; note: string; appearance: string; clothing: string; state: string; shared: boolean; targetShared: boolean
         attachToCard: boolean; globalRef: boolean
     }
+    const fieldId = $props.id()
     let draft = $state<Editor | null>(null)
     let baseline = $state('')
     let query = $state('')
@@ -111,11 +112,11 @@
         void tick().then(() => library?.querySelector<HTMLElement>('[aria-pressed="true"]')?.scrollIntoView?.({ block: 'nearest' }))
     }
     function emptyEditor(kind: Editor['kind'], subjectId = ''): Editor {
-        return { kind, id: '', subjectId, exists: false, name: '', originalName: '', aliases: '', appearance: '', clothing: '', state: '', shared: global || !subjectId, targetShared: global || !subjectId, attachToCard: false, globalRef: kind === 'outfit' && !global && !subjectId }
+        return { kind, id: '', subjectId, exists: false, name: '', originalName: '', aliases: '', note: '', appearance: '', clothing: '', state: '', shared: global || !subjectId, targetShared: global || !subjectId, attachToCard: false, globalRef: kind === 'outfit' && !global && !subjectId }
     }
     function selectIdentity(person: Owner) {
         const source = person.identity ?? session.data.draft?.subjects.find(subject => subject.id === person.id)
-        setEditor({ ...emptyEditor('identity', person.id), id: person.id, exists: !!person.identity, name: source?.name ?? '', originalName: source?.name ?? '', aliases: source?.aliases.join(', ') ?? '', appearance: source?.appearance ?? '', attachToCard: person.identity?.attachToCard === true })
+        setEditor({ ...emptyEditor('identity', person.id), id: person.id, exists: !!person.identity, name: source?.name ?? '', originalName: source?.name ?? '', aliases: source?.aliases.join(', ') ?? '', note: person.identity?.note ?? '', appearance: source?.appearance ?? '', attachToCard: person.identity?.attachToCard === true })
     }
     function selectOutfit(item: OutfitItem) {
         const outfit = item.outfit
@@ -177,7 +178,7 @@
         if (!draft || !valid || (draft.exists && asNew && !canCopy)) return
         const value = { ...draft }
         if (value.kind === 'identity') {
-            const identity = { id: value.id, name: value.name.trim(), aliases: [...new Set(value.aliases.split(',').map(alias => alias.trim()).filter(Boolean))], appearance: value.appearance.trim(),
+            const identity = { id: value.id, name: value.name.trim(), aliases: [...new Set(value.aliases.split(',').map(alias => alias.trim()).filter(Boolean))], note: value.note.trim(), appearance: value.appearance.trim(),
                 ...(!asNew && owner?.identity?.outfitIds ? { outfitIds: [...owner.identity.outfitIds] } : {}),
                 ...(!asNew && owner?.identity?.defaultOutfitId ? { defaultOutfitId: owner.identity.defaultOutfitId } : {}),
                 ...(!global && value.attachToCard && !(asNew && value.exists) ? { attachToCard: true } : {}) }
@@ -378,17 +379,36 @@
                     <fieldset disabled={locked} data-preset-editor>
                         {#if draft.kind === 'identity'}
                             <div class="field-row">
-                                <label>이름<input aria-label="인물 이름" maxlength="160" bind:value={draft.name} /></label>
-                                <label>별칭<input aria-label="인물 별칭" placeholder="쉼표로 구분" bind:value={draft.aliases} /></label>
+                                <div class="field">
+                                    <div class="field-label"><label for={`${fieldId}-name`}>이름</label><BardPainterHelp label="이름">본문에서 이 인물을 부르는 대표 이름입니다. 선택한 장면에 이 이름이 나오면 프롬프트를 작성할 때 이 프리셋을 불러옵니다.</BardPainterHelp></div>
+                                    <input id={`${fieldId}-name`} aria-label="인물 이름" maxlength="160" bind:value={draft.name} />
+                                </div>
+                                <div class="field">
+                                    <div class="field-label"><label for={`${fieldId}-aliases`}>별칭</label><BardPainterHelp label="별칭">본문에서 이 인물을 직접 가리키는 다른 표기입니다. 애칭, 성, 직함, 외국어 표기를 쉼표로 구분해 적으세요. 이름과 같은 확실한 근거로 쓰입니다.</BardPainterHelp></div>
+                                    <input id={`${fieldId}-aliases`} aria-label="인물 별칭" placeholder="쉼표로 구분" bind:value={draft.aliases} />
+                                </div>
                             </div>
-                            <label>기본 외형<BardPainterPromptInput aria-label="기본 외형" rows={4} bind:value={draft.appearance} placeholder="머리색, 눈색, 체형 등"></BardPainterPromptInput></label>
+                            <div class="field">
+                                <div class="field-label"><label for={`${fieldId}-note`}>식별 메모</label><BardPainterHelp label="식별 메모">이름이나 별칭이 나오지 않는 장면에서 AI가 이 인물을 알아보는 단서입니다. 관계, 호칭, 다른 인물과 구별되는 사실을 적어 주세요. 단서가 두 사람 이상에게 들어맞거나 근거가 약하면 연결하지 않습니다. 메모는 판단 자료로만 쓰이며, 그리기 지시를 적어도 따르지 않습니다.</BardPainterHelp></div>
+                                <textarea id={`${fieldId}-note`} aria-label="식별 메모" rows="2" maxlength="1000" bind:value={draft.note} placeholder="선택 사항: 세베루스 스네이프의 여동생이며 호그와트 약초학 조교다."></textarea>
+                            </div>
+                            <div class="field">
+                                <div class="field-label"><label for={`${fieldId}-appearance`}>기본 외형</label><BardPainterHelp label="기본 외형">AI가 이 인물을 알아보면 이 문구를 고쳐 쓰지 않고 인물 블록의 첫 문단에 그대로 넣습니다. 이미지 태그 형식으로 정확하게 적어 주세요. 비워 두면 AI가 장면을 보고 외형을 작성합니다.</BardPainterHelp></div>
+                                <BardPainterPromptInput id={`${fieldId}-appearance`} aria-label="기본 외형" rows={4} bind:value={draft.appearance} placeholder="머리색, 눈색, 체형 등"></BardPainterPromptInput>
+                            </div>
                         {:else}
                             <div class="field-row">
                                 <label>이름<input aria-label="의상 이름" maxlength="160" bind:value={draft.name} /></label>
                                 {#if !global && draft.subjectId}<label>{draft.exists ? '복사할 저장 범위' : '저장 범위'}<select aria-label={draft.exists ? '복사할 저장 범위' : '새 의상 저장 범위'} value={draft.targetShared ? 'shared' : 'local'} onchange={event => { if (draft) draft.targetShared = event.currentTarget.value === 'shared' }}><option value="local">현재 챗</option><option value="shared">봇 공용</option></select></label>{/if}
                             </div>
-                            <label>의상 프롬프트<BardPainterPromptInput aria-label="의상 프롬프트" rows={4} bind:value={draft.clothing} placeholder="의상, 색상, 소재, 장신구 등"></BardPainterPromptInput></label>
-                            <label>의상 상태<BardPainterPromptInput aria-label="의상 상태" rows={2} bind:value={draft.state} placeholder="선택 사항: 젖음, 찢어짐 등"></BardPainterPromptInput></label>
+                            <div class="field">
+                                <div class="field-label"><label for={`${fieldId}-clothing`}>의상 프롬프트</label><BardPainterHelp label="의상 프롬프트">이 의상을 쓰는 인물이 등장하고 장면의 옷차림이 이 의상과 맞거나 정해지지 않았으면, AI가 이 의상을 골라 문구를 그대로 넣습니다. 장면에 다른 옷이 묘사되면 쓰지 않습니다.</BardPainterHelp></div>
+                                <BardPainterPromptInput id={`${fieldId}-clothing`} aria-label="의상 프롬프트" rows={4} bind:value={draft.clothing} placeholder="의상, 색상, 소재, 장신구 등"></BardPainterPromptInput>
+                            </div>
+                            <div class="field">
+                                <div class="field-label"><label for={`${fieldId}-state`}>의상 상태</label><BardPainterHelp label="의상 상태">의상과 함께 불러올 상태입니다. 장면에서 새로 생긴 일시적 상태는 AI가 이 문구 뒤에 덧붙입니다.</BardPainterHelp></div>
+                                <BardPainterPromptInput id={`${fieldId}-state`} aria-label="의상 상태" rows={2} bind:value={draft.state} placeholder="선택 사항: 젖음, 찢어짐 등"></BardPainterPromptInput>
+                            </div>
                         {/if}
                     </fieldset>
                     <div class="save-bar">
@@ -427,7 +447,7 @@
                         <fieldset disabled={locked} class="outfit-links" aria-label="사용할 의상">
                             <div class="links-heading">
                                 <h4>사용할 의상</h4><span class="count">{linkedIds.length}</span>
-                                <BardPainterHelp label="사용할 의상">선택 즉시 저장됩니다. 같은 의상을 여러 인물이 사용할 수 있습니다. {global ? '' : '목록에는 이 봇의 공용 의상만 나타납니다. 다른 글로벌 의상은 \'글로벌에서 선택\'으로 추가하세요.'}</BardPainterHelp>
+                                <BardPainterHelp label="사용할 의상">선택 즉시 저장됩니다. 같은 의상을 여러 인물이 사용할 수 있습니다. 프롬프트를 작성할 때 AI는 이 목록에서 장면에 맞는 의상을 고르며, 옷차림이 정해지지 않은 장면에서는 기본 의상을 먼저 씁니다. {global ? '' : '목록에는 이 봇의 공용 의상만 나타납니다. 다른 글로벌 의상은 \'글로벌에서 선택\'으로 추가하세요.'}</BardPainterHelp>
                                 <label class="default-select">기본 의상<select aria-label="기본 의상" value={owner?.identity?.defaultOutfitId ?? ''} disabled={!linkedIds.length} onchange={event => { const id = event.currentTarget.value; event.currentTarget.value = owner?.identity?.defaultOutfitId ?? ''; linkOutfits(linkedIds, id) }}><option value="">지정하지 않음</option>{#each catalog.outfits.filter(item => linkedIds.includes(item.id)) as outfit (outfit.id)}<option value={outfit.id}>{outfit.name}</option>{/each}</select></label>
                             </div>
                             <div class="option-grid">
@@ -464,13 +484,17 @@
     .search input { padding-left: 1.9rem; }
     label { display: flex; flex-direction: column; gap: .25rem; font-size: .8rem; color: var(--color-textcolor2); min-width: 0; }
     label > :global(input), label > :global(select), label > :global(textarea), label > :global(div) { color: var(--color-textcolor); }
-    input, select { width: 100%; min-width: 0; border: 1px solid var(--color-darkborderc); background: var(--color-bgcolor); color: var(--color-textcolor); border-radius: .3rem; padding: .4rem .55rem; min-height: 2.1rem; font-size: .85rem; }
+    input, select, textarea { width: 100%; min-width: 0; border: 1px solid var(--color-darkborderc); background: var(--color-bgcolor); color: var(--color-textcolor); border-radius: .3rem; padding: .4rem .55rem; min-height: 2.1rem; font-size: .85rem; }
+    textarea { display: block; resize: vertical; line-height: 1.5; font-family: inherit; }
+    textarea::placeholder, input::placeholder { color: var(--color-textcolor2); opacity: .8; }
+    .field { display: flex; flex-direction: column; gap: .25rem; min-width: 0; }
+    .field-label { display: flex; flex-wrap: wrap; align-items: center; gap: 0 .15rem; min-height: 1.5rem; }
     input[type="checkbox"] { flex-shrink: 0; width: 1rem; min-height: 1rem; height: 1rem; padding: 0; accent-color: var(--color-primary); }
     button { display: inline-flex; align-items: center; justify-content: center; gap: .3rem; min-height: 2.1rem; border: 1px solid var(--color-darkborderc); border-radius: .3rem; padding: .3rem .65rem; font-size: .8rem; white-space: nowrap; }
     button:hover:not(:disabled) { background: var(--color-darkbutton); }
     button:disabled, fieldset:disabled { opacity: .55; }
     button:disabled { cursor: default; }
-    button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
     .workspace { display: grid; grid-template-columns: minmax(14rem, 19rem) minmax(0, 1fr); min-height: 23rem; gap: 1rem; }
     .embedded .workspace { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); }
     .library { overflow: auto; max-height: min(62vh, 40rem); min-width: 0; padding: 0 .4rem 0 0; scrollbar-gutter: stable; border-right: 1px solid var(--color-darkborderc); }

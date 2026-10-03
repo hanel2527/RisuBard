@@ -35,6 +35,16 @@ beforeEach(() => {
 afterEach(() => { component?.$destroy(); component = undefined; document.body.replaceChildren() })
 
 describe('compact subject prompt editor', () => {
+    test('shows which saved preset filled the block and flags note-based matches for review', async () => {
+        Object.assign(subject, { id: 'saved-person', outfitId: 'cape', presetMatch: 'context' })
+        await mount()
+        const link = document.querySelector('[data-preset-match="context"]')
+        expect(link?.textContent).toContain('Saved / Travel cape')
+        expect(link?.textContent).toContain('식별 메모로 판단')
+        subject.presetMatch = undefined
+        await tick()
+        expect(document.querySelector('[data-preset-match]')).toBeNull()
+    })
     test('starts with one prompt field and keeps advanced controls behind more', async () => {
         await mount()
         expect(document.querySelectorAll('textarea')).toHaveLength(1)

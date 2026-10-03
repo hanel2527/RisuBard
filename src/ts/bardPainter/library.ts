@@ -41,6 +41,7 @@ export function copyPainterIdentity(source: PainterLibraryData, identityId: stri
     if (!original) throw new Error('Character preset not found')
     const identity: PainterIdentity = {
         id: uuidv4(), name: copyName(original.name, target.identities), aliases: [...original.aliases], appearance: original.appearance,
+        ...(original.note ? { note: original.note } : {}),
     }
     const remap = new Map<string, string>()
     const outfits: PainterOutfit[] = []

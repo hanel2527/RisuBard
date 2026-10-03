@@ -1353,6 +1353,7 @@ export const languageKorean = {
   customHTMLWarning:
     "리스바드는 원본 RisuAI와 UI 구성(HTML/CSS)이 다르기 때문에, 기존에 쓰던 커스텀 Chat HTML이 정상적으로 렌더되지 않을 수 있습니다. 어떤 부분을 덮어쓰는지 정확히 아는 경우에만 사용하세요.",
   sayNothing: "어떤 문자열도 입력되지 않을 시 'say nothing' 입력",
+  sayNothingText: "'say nothing' 대신 보낼 문자열",
   regexScript: "정규식 스크립트",
   type: "타입",
   editInput: "입력문 수정",

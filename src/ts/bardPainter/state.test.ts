@@ -1,6 +1,6 @@
-import { expect, it } from 'vitest'
-import { reconcilePainterSubjects, capturePainterOutfit, promotePainterOutfit } from './state'
-import type { PainterSubject } from './types'
+import { describe, expect, it } from 'vitest'
+import { reconcilePainterSubjects, capturePainterOutfit, promotePainterOutfit, applyPainterPresets } from './state'
+import type { PainterOutfit, PainterSubject } from './types'
 const subject = (patch: Partial<PainterSubject> = {}): PainterSubject => ({ id: '', name: '아리아', aliases: [], kind: 'character', appearance: 'black hair', clothing: 'white shirt', state: 'wet clothes', pose: 'sitting', negative: '', ...patch })
 it('resolves a known alias to the same identity without overwriting its stored appearance', () => {
     const bot = { identities: [{ id: 'aria', name: '아리아', aliases: ['Aria'], appearance: 'blue eyes' }], outfits: [] }
@@ -59,4 +59,41 @@ it('promotion copies a chat outfit to a separately editable bot outfit', () => {
     expect(promoted.id).not.toBe(original.id)
     promoted.clothing = 'black dress'
     expect(original.clothing).toBe('white shirt')
+})
+
+describe('applyPainterPresets', () => {
+    const presets = [{ id: 'severa', name: '세베라', aliases: ['Severa'], appearance: 'black hair, grey eyes', note: '세베루스 스네이프의 여동생' }, { id: 'blank', name: '루크', aliases: [], appearance: '' }]
+    const outfits: Record<string, PainterOutfit[]> = { severa: [{ id: 'robe', subjectId: 'severa', name: '로브', clothing: 'black robe', state: 'dusty hem' }] }
+    const outfitsFor = (id: string) => outfits[id] ?? []
+    it('inserts saved appearance and outfit text verbatim and records how the preset was found', () => {
+        const [byName, byNote] = applyPainterPresets([
+            subject({ id: 'severa', name: 'Severa', appearance: '', clothing: '', state: 'wet', outfitId: 'robe' }),
+            subject({ id: 'severa', name: '스네이프의 여동생', appearance: 'paraphrased hair' }),
+        ], presets, outfitsFor, [])
+        expect(byName).toMatchObject({ appearance: 'black hair, grey eyes', clothing: 'black robe', state: 'dusty hem, wet', outfitId: 'robe', presetMatch: 'name' })
+        expect(byNote).toMatchObject({ appearance: 'black hair, grey eyes', clothing: 'white shirt', presetMatch: 'context' })
+        expect(byNote.outfitId).toBeUndefined()
+    })
+    it('prefers a lore link and rejects outfits that belong to another identity', () => {
+        const [result] = applyPainterPresets([subject({ id: 'severa', outfitId: 'someone-else' })], presets, outfitsFor, [], new Set(['severa']))
+        expect(result.presetMatch).toBe('lore')
+        expect(result.outfitId).toBeUndefined()
+        expect(result.clothing).toBe('white shirt')
+    })
+    it('keeps text already in the draft so manual edits survive a revision', () => {
+        const before = subject({ id: 'severa', appearance: 'edited hair', clothing: 'edited robe', state: '', outfitId: 'robe' })
+        const [result] = applyPainterPresets([subject({ id: 'severa', appearance: '', clothing: '', state: '', outfitId: 'robe' })], presets, outfitsFor, [before])
+        expect(result).toMatchObject({ appearance: 'edited hair', clothing: 'edited robe' })
+    })
+    it('leaves unmatched, preset-without-appearance and locked subjects to the model text', () => {
+        const locked = subject({ id: 'severa', appearance: 'locked hair', locked: true })
+        const [free, blank, kept] = applyPainterPresets([subject({ id: 'new' }), subject({ id: 'blank', name: '루크' }), locked], presets, outfitsFor, [])
+        expect(free).toMatchObject({ appearance: 'black hair' })
+        expect(free.presetMatch).toBeUndefined()
+        expect(blank).toMatchObject({ appearance: 'black hair', presetMatch: 'name' })
+        expect(kept).toBe(locked)
+    })
+    it('fails clearly when the model leaves appearance empty without a saved preset', () => {
+        expect(() => applyPainterPresets([subject({ id: 'blank', name: '루크', appearance: '' })], presets, outfitsFor, [])).toThrow('루크')
+    })
 })

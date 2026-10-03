@@ -142,6 +142,18 @@ it('keeps idless lore read-only until explicit linking and rejects stale selecti
     expect(session.loreEntries[0].identityId).toBeUndefined()
 })
 
+it('fills a lore-linked preset with saved appearance and outfit text after the planner picks their ids', async () => {
+    await session.setIdentityOutfits('b', ['coat'], 'coat')
+    await session.setLoreIdentity('lore-a', 'b')
+    session.data.settings.context.characterLorebook = true
+    mocks.lore.mockResolvedValue({ content: 'Aria profile', sources: [], entries: [session.character.globalLore[0]] })
+    mocks.request.mockResolvedValueOnce({ type: 'success', result: JSON.stringify({ scene: 'garden', rendering: '', negative: '', subjects: [
+        { id: 'b', name: '그의 여동생', aliases: [], kind: 'character', appearance: '', clothing: '', outfitId: 'coat', state: 'wet', pose: 'standing', negative: '' },
+    ] }) })
+    expect(await session.prepare()).toBe(true)
+    expect(session.data.draft!.subjects[0]).toMatchObject({ id: 'b', appearance: 'b hair', clothing: 'blue coat', state: 'wet', outfitId: 'coat', presetMatch: 'lore' })
+})
+
 it('uses only matched lore links and projects shared outfits for each linked character', async () => {
     await session.setIdentityOutfits('b', ['coat'], 'coat')
     await session.setLoreIdentity('lore-a', 'b')
@@ -151,7 +163,7 @@ it('uses only matched lore links and projects shared outfits for each linked cha
     const input = JSON.parse(mocks.request.mock.calls[0][0].formated[1].content)
     const link = input.references.find((item: any) => item.name === '로어에 연결된 캐릭터 프리셋')
     expect(JSON.parse(link.content)[0]).toMatchObject({ loreTitle: 'Aria profile', identityId: 'b' })
-    expect(input.outfits.filter((item: any) => item.id === 'coat').map((item: any) => item.subjectId)).toEqual(['a', 'b'])
+    expect(input.identities.filter((item: any) => item.outfits.some((outfit: any) => outfit.id === 'coat')).map((item: any) => item.id)).toEqual(['a', 'b'])
     expect(input.identities.find((item: any) => item.id === 'b').defaultOutfitId).toBe('coat')
     session.data.settings.context.characterLorebook = false
     expect(await session.prepare()).toBe(true)

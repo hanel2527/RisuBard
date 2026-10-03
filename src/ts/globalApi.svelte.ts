@@ -267,6 +267,8 @@ export let requiresFullEncoderReload = $state({
 let requestImmediateSaveImpl: ((options?: {
     forceFullWrite?: boolean
     flushServer?: boolean | 'canonical' | 'canonical-background'
+    // Waits for the flush without the write timeout; abort to stop waiting.
+    flushSignal?: AbortSignal
     rejectOnFailure?: boolean
 }) => Promise<void> | void) = () => {}
 let patchSyncBaseline: Database | null = null
@@ -375,6 +377,8 @@ export function previewPersistFailureToast() {
 export function requestImmediateSave(options?: {
     forceFullWrite?: boolean
     flushServer?: boolean | 'canonical' | 'canonical-background'
+    // Waits for the flush without the write timeout; abort to stop waiting.
+    flushSignal?: AbortSignal
     rejectOnFailure?: boolean
 }) {
     return requestImmediateSaveImpl(options)
@@ -702,13 +706,15 @@ export async function saveDb() {
         return toSave
     }
 
-    async function flushServerDbNow(keepalive = false, canonicalOnly = false) {
-        await forageStorage.flushDatabase(keepalive, canonicalOnly)
+    async function flushServerDbNow(keepalive = false, canonicalOnly = false, signal?: AbortSignal) {
+        await forageStorage.flushDatabase(keepalive, canonicalOnly, signal)
     }
 
     async function flushServerDbKeepalive() {
         try {
-            await flushServerDbNow(true)
+            // Canonical files are durable on hide. Rebuilding the legacy blob
+            // blocks the server for every client until it finishes.
+            await flushServerDbNow(true, true)
         } catch {
             // ignore best-effort flush failures
         }
@@ -1528,7 +1534,7 @@ export async function saveDb() {
             // blocking the caller. Failures surface as server persist warnings.
             void flushServerDbNow(false, true).catch(error => console.warn('[Save] Background flush failed:', error))
         } else if (options?.flushServer && supportsPatchSync) {
-            await flushServerDbNow(false, options.flushServer === 'canonical')
+            await flushServerDbNow(false, options.flushServer === 'canonical', options.flushSignal)
         }
     }
 

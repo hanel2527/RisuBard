@@ -48,6 +48,8 @@
             className="mt-2"
             bind:value={localValue}
             placeholder={item.options?.placeholder}
+            resizable={item.options?.resizable}
+            height={item.options?.textareaHeight}
         />
     </div>
 {:else}
@@ -59,5 +61,7 @@
         className="mt-2 mb-4"
         bind:value={localValue}
         placeholder={item.options?.placeholder}
+        resizable={item.options?.resizable}
+        height={item.options?.textareaHeight}
     />
 {/if}

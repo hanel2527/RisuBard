@@ -55,6 +55,7 @@ export const helpKo = {
         "topP": "Top P는 뉴클레우스 샘플링을 위한 확률 임계값입니다. 모델은 top_p 확률 질량을 가진 토큰의 결과를 고려합니다.",
         "openAIFixer": "OpenAI Fixer는 OpenAI의 일부 문제를 수정하는 플러그인입니다.",
         "sayNothing": "활성화되면 문자열이 입력되지 않을 때 '아무 말도 하지 않음'을 입력합니다.",
+        "sayNothingText": "위 옵션이 켜져 있고 입력이 비어 있을 때 '*says nothing*' 대신 이 문자열을 보냅니다. 비워 두면 '*says nothing*'을 보냅니다.",
         "showUnrecommended": "활성화되면 권장되지 않는, 사용되지 않는 설정을 표시합니다. 이러한 설정을 사용하는 것을 권장하지 않습니다.",
         "streamingDisplayOptimizationMode": "스트리밍 중 화면 갱신 방식을 조절해 버벅임을 줄입니다.",
         "moduleModelBindingEnable": "모듈이 직접 보내는 요청(스크립트·트리거)에 지정한 모델 프리셋을 사용합니다. 끄면 해당 채팅의 메인/보조 모델 설정을 그대로 씁니다.",

@@ -1616,6 +1616,7 @@ export interface Database{
     requestRetrys:number
     emotionPrompt2:string
     useSayNothing:boolean
+    sayNothingText?:string
     didFirstSetup: boolean
     showUnrecommended:boolean
     allowV2Plugin:boolean

@@ -285,7 +285,7 @@ describe('legacy character-card replace-global-note compatibility', () => {
     test('persists an imported card before reporting success', async () => {
         await importFixture(cardFixture('chara_card_v3', undefined))
 
-        expect(state.requestImmediateSave).toHaveBeenCalledWith({ flushServer: 'canonical', rejectOnFailure: true })
+        expect(state.requestImmediateSave).toHaveBeenCalledWith(expect.objectContaining({ flushServer: 'canonical', rejectOnFailure: true }))
         expect(state.events).toEqual(['saved', 'notified'])
     })
 

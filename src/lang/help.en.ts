@@ -93,6 +93,7 @@ export const helpEn = {
         topP: "Top P is a probability threshold for nucleus sampling. model considers the results of the tokens with top_p probability mass.",
         openAIFixer: "OpenAI Fixer is a plugin that fixes some of the problems of OpenAI.",
         sayNothing: "If enabled, it will input 'say nothing' when no string inputed.",
+        sayNothingText: "Sent instead of '*says nothing*' when the option above is enabled and the input is empty. Leave it blank to use '*says nothing*'.",
         showUnrecommended: "If enabled, it will show unrecommended, deprecated settings. it is NOT RECOMMENDED to use these settings.",
         streamingDisplayOptimizationMode:
             "Controls how the screen updates while streaming to reduce lag.",

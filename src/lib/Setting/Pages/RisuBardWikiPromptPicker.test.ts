@@ -37,12 +37,12 @@ test('opens all presets outside the constrained page and filters and selects a d
     const dialog = document.querySelector('[role="dialog"]')!
     expect(dialog).not.toBeNull()
     expect(dialog.closest('[data-settings-page-body]')).toBeNull()
-    expect(dialog.querySelectorAll('.preset-picker button')).toHaveLength(40)
+    expect(dialog.querySelectorAll('.preset-picker button:not(.preset-delete)')).toHaveLength(40)
     const search = dialog.querySelector('.picker-search input') as HTMLInputElement
     search.value = 'Preset 39'
     search.dispatchEvent(new Event('input', { bubbles: true }))
     await tick()
-    const choices = dialog.querySelectorAll<HTMLButtonElement>('.preset-picker button')
+    const choices = dialog.querySelectorAll<HTMLButtonElement>('.preset-picker button:not(.preset-delete)')
     expect(choices).toHaveLength(1)
     choices[0].click()
     await tick()

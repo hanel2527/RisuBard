@@ -86,17 +86,17 @@
         }
     }
 
-    async function deleteActivePreset() {
-        if (!activePreset || activePreset.builtin) return
-        const ok = await alertConfirm(`${language.presetDeleteConfirm}\n${activePreset.name}`)
+    async function deletePreset(preset: WikiPromptPreset | undefined) {
+        if (!preset || preset.builtin) return
+        const ok = await alertConfirm(`${language.presetDeleteConfirm}\n${preset.name}`)
         if (!ok) return
-        const result = deleteWikiPromptPreset(DBState.db.risuBardWikiPromptPresets ?? [], activePreset.id)
+        const result = deleteWikiPromptPreset(DBState.db.risuBardWikiPromptPresets ?? [], preset.id)
         if (!result.deleted) {
             notifyError(language.errors.onlyOnePreset)
             return
         }
         DBState.db.risuBardWikiPromptPresets = result.presets
-        if (DBState.db.risuBardChatWikiPromptPresetId === activePreset.id) {
+        if (DBState.db.risuBardChatWikiPromptPresetId === preset.id) {
             DBState.db.risuBardChatWikiPromptPresetId = result.presets[0].id
         }
         notifySuccess(language.presetDeleted)
@@ -142,7 +142,7 @@
                 <ShButton variant="default" onclick={duplicateActivePreset}><CopyIcon size={16} />{language.presetDuplicate}</ShButton>
                 <ShButton variant="default" onclick={exportActivePreset}><DownloadIcon size={16} />{language.presetExport}</ShButton>
                 <ShButton variant="default" onclick={importPreset}><UploadIcon size={16} />{language.presetImport}</ShButton>
-                <ShButton variant="destructive" onclick={deleteActivePreset} disabled={activePreset.builtin}><Trash2Icon size={16} />{language.presetDelete}</ShButton>
+                <ShButton variant="destructive" onclick={() => deletePreset(activePreset)} disabled={activePreset.builtin}><Trash2Icon size={16} />{language.presetDelete}</ShButton>
             </div>
         </div>
     {/if}
@@ -162,10 +162,15 @@
     </div>
     <div class="preset-picker">
         {#each filteredPresets as preset (preset.id)}
-            <button type="button" class:selected={preset.id === activePreset?.id} aria-pressed={preset.id === activePreset?.id} onclick={() => selectPreset(preset.id)}>
-                <span>{preset.name}</span>
-                {#if preset.id === activePreset?.id}<small>{language.risuBardWikiPrompt.current}</small>{/if}
-            </button>
+            <div class="preset-row" class:selected={preset.id === activePreset?.id}>
+                <button type="button" class="preset-select" aria-pressed={preset.id === activePreset?.id} onclick={() => selectPreset(preset.id)}>
+                    <span>{preset.name}</span>
+                    {#if preset.id === activePreset?.id}<small>{language.risuBardWikiPrompt.current}</small>{/if}
+                </button>
+                {#if !preset.builtin}
+                    <ShButton size="icon-sm" variant="ghost" className="preset-delete" onclick={() => deletePreset(preset)} title={language.presetDelete} aria-label={`${language.presetDelete}: ${preset.name}`}><Trash2Icon size={15} /></ShButton>
+                {/if}
+            </div>
         {/each}
     </div>
 </ShDialog>
@@ -175,11 +180,14 @@
     .preset-picker { max-height: 55dvh; overflow-y: auto; margin-top: .75rem; }
     .picker-tools { display: flex; flex-wrap: wrap; align-items: end; gap: .5rem; }
     .picker-search { display: grid; flex: 1 1 12rem; gap: .35rem; }
-    .preset-picker button { display: flex; width: 100%; align-items: center; justify-content: space-between; padding: .75rem 1rem; text-align: left; }
-    .preset-picker button span { overflow-wrap: anywhere; }
-    .preset-picker button small { flex-shrink: 0; margin-left: .75rem; }
-    .preset-picker button + button { border-top: 1px solid var(--settings-border, var(--risu-theme-darkborderc)); }
-    .preset-picker button.selected { color: var(--risu-theme-textcolor); background: color-mix(in srgb, var(--risu-theme-selected) 55%, transparent); }
+    .preset-row { display: flex; align-items: center; gap: .25rem; padding-right: .5rem; }
+    .preset-row + .preset-row { border-top: 1px solid var(--settings-border, var(--risu-theme-darkborderc)); }
+    .preset-row.selected { color: var(--risu-theme-textcolor); background: color-mix(in srgb, var(--risu-theme-selected) 55%, transparent); }
+    .preset-select { display: flex; flex: 1 1 auto; min-width: 0; align-items: center; justify-content: space-between; padding: .75rem 1rem; text-align: left; }
+    .preset-select span { overflow-wrap: anywhere; }
+    .preset-select small { flex-shrink: 0; margin-left: .75rem; }
+    .preset-row :global(.preset-delete) { flex-shrink: 0; color: var(--risu-theme-textcolor2); }
+    .preset-row :global(.preset-delete:hover) { color: var(--risu-theme-draculared); }
     .preset-picker small { color: var(--risu-theme-textcolor2); }
     .basic-panel { margin-top: 1rem; padding: 1rem; }
     .basic-panel label { display: grid; gap: .45rem; }

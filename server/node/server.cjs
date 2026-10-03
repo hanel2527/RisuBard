@@ -7246,6 +7246,22 @@ app.post('/api/tunnel/stop', async (req, res) => {
     res.json({ status: 'off' });
 });
 
+// Windows cannot deliver SIGTERM to a hidden server, so the start-menu stop
+// shortcut proves it runs on this machine by reading a per-process token file.
+const localShutdownToken = nodeCrypto.randomBytes(32).toString('hex');
+const localShutdownTokenPath = path.join(os.tmpdir(), `risubard-shutdown-${process.env.PORT || DEFAULT_PORT}.token`);
+app.post('/api/local-shutdown', (req, res) => {
+    const remote = req.socket.remoteAddress || '';
+    const loopback = remote === '::1' || remote.startsWith('127.') || remote.startsWith('::ffff:127.');
+    const given = Buffer.from(String(req.headers['x-risubard-shutdown-token'] || ''));
+    const expected = Buffer.from(localShutdownToken);
+    if (!loopback || given.length !== expected.length || !nodeCrypto.timingSafeEqual(given, expected)) {
+        return res.status(403).json({ error: 'forbidden' });
+    }
+    res.json({ status: 'stopping' });
+    setImmediate(() => shutdownGracefully('local shutdown request'));
+});
+
 // ─── Express error middleware — must be registered after all routes ─────────
 app.use(expressErrorMiddleware);
 app.use((err, req, res, next) => {
@@ -7316,6 +7332,8 @@ async function startServer() {
                 }
             });
         }
+        // Written only once bound, so a server that lost the port race keeps the owner's token intact.
+        server.once('listening', () => writeFileSync(localShutdownTokenPath, localShutdownToken, { mode: 0o600 }));
     } catch (error) {
         logger.error('[Server] Failed to start server :', error);
         process.exit(1);
@@ -7323,17 +7341,22 @@ async function startServer() {
 }
 
 // Graceful shutdown: flush pending patches before exit
+let shuttingDown = false;
+async function shutdownGracefully(reason) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[Server] Received ${reason}, flushing pending data...`);
+    liveFileEvents.close();
+    stopTunnel();
+    try { await chatContentUploads.close(); } catch (e) { logger.warn('[ChatContent] Upload cleanup error:', e); }
+    try { await flushPendingDb(); } catch (e) { logger.error('[Server] Flush error:', e); }
+    liveCharacterFiles.close();
+    await saveObservation.flush();
+    try { unlinkSync(localShutdownTokenPath); } catch {}
+    process.exit(0);
+}
 for (const sig of ['SIGTERM', 'SIGINT']) {
-    process.on(sig, async () => {
-        console.log(`[Server] Received ${sig}, flushing pending data...`);
-        liveFileEvents.close();
-        stopTunnel();
-        try { await chatContentUploads.close(); } catch (e) { logger.warn('[ChatContent] Upload cleanup error:', e); }
-        try { await flushPendingDb(); } catch (e) { logger.error('[Server] Flush error:', e); }
-        liveCharacterFiles.close();
-        await saveObservation.flush();
-        process.exit(0);
-    });
+    process.on(sig, () => shutdownGracefully(sig));
 }
 
 (async () => {

@@ -11,6 +11,13 @@ interface WikiWritingLocaleDefinition {
         additional: string
         currentState: string
     }
+    characterSections: {
+        identity: string
+        relationships: string
+        knowledge: string
+        transitions: string
+        equipment: string
+    }
     storyArc: {
         title: string
         overview: string
@@ -27,6 +34,7 @@ export const wikiWritingLocales = localeDefinitions satisfies Record<
 
 export type WikiWritingLanguage = keyof typeof wikiWritingLocales
 export type WikiHeadingKey = keyof WikiWritingLocaleDefinition['headings']
+export type WikiCharacterSectionKey = keyof WikiWritingLocaleDefinition['characterSections']
 
 const LEGACY_STORY_ARC_TITLES = ['스토리 아크 지도', 'Story Arc Map'] as const
 
@@ -84,6 +92,20 @@ export function wikiHeadingLabelsPattern(key: WikiHeadingKey): string {
     return localizedHeadingLabels[key]
         .map((label) => escapeRegExp(label).replace(/\\?\s+/g, '\\s*'))
         .join('|')
+}
+
+// Character section role labels, across all writing languages.
+export function wikiCharacterSectionLabelsPattern(key: WikiCharacterSectionKey): string {
+    return Object.values(wikiWritingLocales)
+        .map((locale) => escapeRegExp(locale.characterSections[key]).replace(/\\?\s+/g, '\\s*'))
+        .join('|')
+}
+
+// Exact role headings so translated section titles stay stable across updates.
+export function buildWikiCharacterSectionHeadingGuide(value: unknown): string {
+    const locale = wikiWritingLocales[normalizeWikiWritingLanguage(value)]
+    const sections = locale.characterSections
+    return `When the wiki preset uses character section roles, write their headings exactly as: Identity = ${sections.identity}; Current State = ${locale.headings.currentState}; Relationships and Trust = ${sections.relationships}; Knowledge and Secrets = ${sections.knowledge}; Major Transitions = ${sections.transitions}; Equipment and Possessions = ${sections.equipment}. Do not vary these headings between updates or create a differently worded duplicate of an existing role section.`
 }
 
 const storyArcTitles: readonly string[] = [

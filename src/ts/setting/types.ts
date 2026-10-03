@@ -101,6 +101,9 @@ export interface SettingOptions {
     // text, textarea
     placeholder?: string;
     hideText?: boolean;     // For password-like inputs
+    // textarea
+    resizable?: boolean;
+    textareaHeight?: '20'|'24'|'28'|'32'|'36';
     
     // number
     inputClassName?: string;

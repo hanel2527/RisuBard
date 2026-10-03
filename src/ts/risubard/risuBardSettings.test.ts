@@ -22,6 +22,7 @@ import {
     normalizeRisuBardHistoricalSourceMatchLimit,
     resolveRisuBardChatSettings,
 } from './risuBardSettings'
+import { wikiWritingLocales } from './wikiWritingLanguage'
 
 describe('RisuBard analysis settings', () => {
     test('defaults wiki language to Korean and resolves a chat language independently', () => {
@@ -44,6 +45,9 @@ describe('RisuBard analysis settings', () => {
             expect(canon).toContain('entire body')
             expect(canon).toContain('existing document titles')
             expect(event).toContain('When compressing')
+            const locales = wikiWritingLocales[locale]
+            expect(canon).toContain(`Major Transitions = ${locales.characterSections.transitions}`)
+            expect(canon).toContain(`Current State = ${locales.headings.currentState}`)
         }
     )
 

@@ -19,6 +19,7 @@ export function normalizePainterBotData(value: unknown): PainterBotData | undefi
         identitySources.set(item.id, item)
         identities.push({
             id: item.id, name: item.name, appearance: item.appearance,
+            ...(nonempty(item.note) ? { note: item.note } : {}),
             aliases: Array.isArray(item.aliases) ? [...new Set(item.aliases.filter(nonempty))] : [],
         })
     }

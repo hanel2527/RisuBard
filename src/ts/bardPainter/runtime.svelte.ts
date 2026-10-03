@@ -8,7 +8,7 @@ import { loadNarrativeMemoryWiki } from '../risubard/memoryWiki'
 import { getInlayAssetBlob, setInlayAsset } from '../process/files/inlays'
 import { buildPainterMessages, parsePainterDraft, buildPainterImageRequest } from './prompt'
 import { PAINTER_STYLES } from './styles'
-import { capturePainterOutfit, promotePainterOutfit, reconcilePainterSubjects } from './state'
+import { applyPainterPresets, capturePainterOutfit, promotePainterOutfit, reconcilePainterSubjects } from './state'
 import { insertPainterReference, shiftPainterAnchor } from './selection'
 import { createPainterChatData, type PainterAnchor, type PainterContextSource, type PainterIdentity, type PainterOutfit, type PainterResult, type PainterStyle } from './types'
 import { savePainterGalleryRecord } from './gallery'
@@ -55,6 +55,8 @@ export class PainterSession {
         loadingWiki: false, pendingImage: false, sources: [] as PainterContextSource[],
     })
     private controller: AbortController | null = null
+    /** Presets connected through lore entries matched for the latest prompt request. */
+    private loreIdentityIds = new Set<string>()
     private pending: {
         png: Uint8Array
         result: PainterResult
@@ -450,6 +452,7 @@ export class PainterSession {
                     ? [{ loreTitle: entry.comment || entry.key, loreKeys: entry.key, identityId }] : []
             })
             if (links.length) add('로어에 연결된 캐릭터 프리셋', JSON.stringify(links))
+            this.loreIdentityIds = new Set(links.map(link => link.identityId))
         }
         if (options.wikiIds.length) {
             await this.loadWiki()
@@ -487,6 +490,7 @@ export class PainterSession {
         this.controller = controller
         this.state.status = 'prompt'
         await this.action(async () => {
+            this.loreIdentityIds = new Set()
             const sources = await this.context(target, options.instruction ?? this.settings.instruction)
             if (controller.signal.aborted) return
             this.state.sources = sources
@@ -496,10 +500,12 @@ export class PainterSession {
             const draft = sameScene && !options.fresh ? previousDraft : undefined
             const requestCharacter = { ...this.character, chatPage: this.character.chats.indexOf(this.chat) }
             const userName = resolvePersonaById(DBState.db, this.character, this.chat.bindedPersona)?.persona.name ?? DBState.db.username ?? 'User'
+            const presets = clone(this.bot.identities)
+            const outfitsFor = (identityId: string) => [...this.data.outfits.filter(outfit => outfit.subjectId === identityId),
+                ...outfitsForIdentity(this.botCatalog, identityId).map(outfit => ({ ...outfit, subjectId: identityId }))]
             const formated = buildPainterMessages({ anchor: target, settings, style, sources, userName,
-                identities: clone(this.bot.identities), draft, fragments: previousDraft?.fragments,
-                outfits: clone([...this.data.outfits, ...this.bot.identities.flatMap(identity => outfitsForIdentity(this.botCatalog, identity.id)
-                    .map(outfit => ({ ...outfit, subjectId: identity.id })))]),
+                identities: presets, draft, fragments: previousDraft?.fragments,
+                outfits: clone(presets.flatMap(identity => outfitsFor(identity.id))),
                 conversation: sameScene && !options.fresh ? clone((this.data.conversation ?? []).slice(-12)) : [] })
             const response = await requestChatData({ formated, currentChar: requestCharacter, bias: {},
                 useStreaming: false, noMultiGen: true, tools: [], maxTokens: 4096, temperature: 0.3,
@@ -512,7 +518,9 @@ export class PainterSession {
                 ? subjects.filter(subject => subject.kind !== 'character' || ![subject.name, ...subject.aliases].some(name => viewerNames.has(name.trim().toLowerCase())))
                 : subjects
             // Reconciliation otherwise restores omitted locked blocks, including the viewer.
-            next.subjects = reconcilePainterSubjects(visibleSubjects(next.subjects), this.bot, visibleSubjects(draft?.subjects ?? []))
+            const previousSubjects = visibleSubjects(draft?.subjects ?? [])
+            next.subjects = applyPainterPresets(reconcilePainterSubjects(visibleSubjects(next.subjects), this.bot, previousSubjects),
+                presets, outfitsFor, previousSubjects, this.loreIdentityIds)
             if (previousDraft?.fragments) next.fragments = clone(previousDraft.fragments)
             this.data.draft = next
             this.data.previousDraft = sameScene ? previousDraft : undefined
@@ -790,8 +798,10 @@ export class PainterSession {
             const previous = !asNew ? library.identities.find(item => item.id === identity.id) : undefined
             const outfitIds = identity.outfitIds ?? previous?.outfitIds
             const defaultOutfitId = identity.defaultOutfitId ?? previous?.defaultOutfitId
+            const note = (identity.note ?? previous?.note ?? '').trim()
             const custom: PainterIdentity = { id: asNew || !identity.id ? v4() : identity.id, name: identity.name.trim(),
                 aliases: [...new Set(identity.aliases.map(alias => alias.trim()).filter(Boolean))], appearance: identity.appearance,
+                ...(note ? { note } : {}),
                 ...(outfitIds ? { outfitIds: [...new Set(outfitIds)] } : {}),
                 ...(defaultOutfitId ? { defaultOutfitId } : {}),
                 ...(!global && identity.attachToCard === true && !(asNew && identity.id) ? { attachToCard: true } : {}) }

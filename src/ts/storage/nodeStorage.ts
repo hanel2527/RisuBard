@@ -186,9 +186,10 @@ export class NodeStorage{
             Object.assign(new Error(language.storageConnectionTimeout), { code: 'STORAGE_CONNECTION_TIMEOUT' }))
     }
 
-    private async saveRequest(path: string, init: RequestInit) {
+    private async saveRequest(path: string, init: RequestInit, bounded = true) {
         this.pendingSaveRequests++
         try {
+            if (!bounded) return await this.authFetch(path, init)
             return await boundedResponse(signal => this.authFetch(path, { ...init, signal }), 120_000,
                 Object.assign(new Error(language.storageWriteTimeout), { code: 'STORAGE_WRITE_TIMEOUT' }))
         } finally {
@@ -196,14 +197,16 @@ export class NodeStorage{
         }
     }
 
-    async flushDatabase(keepalive = false, canonicalOnly = false): Promise<void> {
+    async flushDatabase(keepalive = false, canonicalOnly = false, signal?: AbortSignal): Promise<void> {
         const path = canonicalOnly ? '/api/db/flush?mode=canonical' : '/api/db/flush'
-        const init: RequestInit = { method: 'POST', keepalive, credentials: 'same-origin' }
+        const init: RequestInit = { method: 'POST', keepalive, credentials: 'same-origin', signal }
         // Use the same renewable auth as writes. The asset cookie can expire
         // independently in a long-lived tab. Page-hide remains best effort.
+        // A cancellable flush (import install) waits for a slow server instead
+        // of timing out; the caller aborts it when the user cancels.
         const response = keepalive
             ? await this.authFetch(path, init)
-            : await this.saveRequest(path, init)
+            : await this.saveRequest(path, init, !signal)
         if (!response.ok) throw new Error(`Server database flush failed (${response.status})`)
     }
 

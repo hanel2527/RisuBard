@@ -21,7 +21,7 @@ function fixture() {
     ;(storage as any).cachedJwt = { token: 'valid-token', expiresAt: Date.now() + 300_000 }
     const autoStorage = new AutoStorage()
     autoStorage.realStorage = storage
-    return { storage, flush: createFlush(autoStorage) as (keepalive?: boolean, canonicalOnly?: boolean) => Promise<void> }
+    return { storage, flush: createFlush(autoStorage) as (keepalive?: boolean, canonicalOnly?: boolean, signal?: AbortSignal) => Promise<void> }
 }
 
 beforeEach(() => {
@@ -70,6 +70,26 @@ it('bounds an unresponsive flush without retrying it', async () => {
     await vi.advanceTimersByTimeAsync(120_000)
     expect(await result).toBe('STORAGE_WRITE_TIMEOUT')
     expect(request).toHaveBeenCalledOnce()
+    expect(storage.pendingSaveRequests).toBe(0)
+})
+
+it('waits past the write timeout for a cancellable flush and stops when it is aborted', async () => {
+    vi.useFakeTimers()
+    const { storage, flush } = fixture()
+    let requestSignal: AbortSignal | undefined
+    vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_, reject) => {
+        requestSignal = init.signal!
+        init.signal!.addEventListener('abort', () => reject(init.signal!.reason))
+    })))
+    const controller = new AbortController()
+    let settled = false
+    const result = flush(false, true, controller.signal).catch(error => error).finally(() => { settled = true })
+    await vi.advanceTimersByTimeAsync(300_000)
+    expect(settled).toBe(false)
+    expect(storage.pendingSaveRequests).toBe(1)
+    controller.abort(new Error('cancelled by user'))
+    expect(requestSignal!.aborted).toBe(true)
+    expect((await result).message).toBe('cancelled by user')
     expect(storage.pendingSaveRequests).toBe(0)
 })
 

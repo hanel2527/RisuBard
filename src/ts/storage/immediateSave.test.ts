@@ -59,7 +59,7 @@ test('immediate saves reconcile live files once before writing and then await a 
     await f.request({ flushServer: 'canonical', rejectOnFailure: true })
     expect(f.sync).toHaveBeenCalledOnce()
     expect(f.save).toHaveBeenCalledOnce()
-    expect(f.flush).toHaveBeenCalledWith(false, true)
+    expect(f.flush).toHaveBeenCalledWith(false, true, undefined)
     expect(f.sync.mock.invocationCallOrder[0]).toBeLessThan(f.save.mock.invocationCallOrder[0])
     expect(f.save.mock.invocationCallOrder[0]).toBeLessThan(f.flush.mock.invocationCallOrder[0])
 })

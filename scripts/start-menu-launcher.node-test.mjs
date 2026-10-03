@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { ensureService } from './start-menu-launcher.mjs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { builtVersion, ensureService } from './start-menu-launcher.mjs';
 
 async function fixture(t, html) {
   const server = http.createServer((_req, res) => res.end(html));
@@ -38,4 +41,13 @@ test('starts a missing service and waits for it before returning', async t => {
     return { exitCode: null };
   });
   assert.equal(starts, 1);
+});
+
+test('reads the version stamped into the compiled startup screen', t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'risubard-launcher-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.equal(builtVersion(root), null);
+  mkdirSync(path.join(root, 'dist'));
+  writeFileSync(path.join(root, 'dist', 'index.html'), '<span data-startup-version class="x">v0.9.57</span>');
+  assert.equal(builtVersion(root), '0.9.57');
 });

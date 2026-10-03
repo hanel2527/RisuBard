@@ -115,14 +115,16 @@ describe('RisuBardWikiCommandTerminal', () => {
         expect(menu.querySelectorAll('[data-bardchat-context]')).toHaveLength(7)
         expect(getComputedStyle(menu).gridTemplateColumns).not.toContain('repeat')
 
-        // Let Bits UI finish its deferred opening and interaction-state reset.
-        await new Promise(resolve => setTimeout(resolve, 40))
         const outside = document.createElement('button')
         document.body.append(outside)
-        outside.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true, pointerType: 'mouse', clientX: 10, clientY: 10 }))
-        outside.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true, pointerType: 'mouse', clientX: 10, clientY: 10 }))
-        outside.click()
-        await vi.waitFor(() => expect(document.querySelector('[data-bardchat-context-menu]')).toBeNull())
+        // Bits UI ignores outside clicks until its deferred opening settles,
+        // which takes longer under a loaded test run, so retry the click.
+        await vi.waitFor(() => {
+            outside.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true, pointerType: 'mouse', clientX: 10, clientY: 10 }))
+            outside.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true, pointerType: 'mouse', clientX: 10, clientY: 10 }))
+            outside.click()
+            expect(document.querySelector('[data-bardchat-context-menu]')).toBeNull()
+        }, { timeout: 3000, interval: 50 })
     })
 
     test('opens outside the clipped terminal and returns focus on Escape', async () => {

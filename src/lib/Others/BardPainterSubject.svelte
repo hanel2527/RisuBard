@@ -1,6 +1,7 @@
 <script lang="ts">
     import { ClipboardPaste } from '@lucide/svelte'
     import BardPainterPromptInput from './BardPainterPromptInput.svelte'
+    import BardPainterHelp from './BardPainterHelp.svelte'
     import type { PainterSubject } from 'src/ts/bardPainter/types'
     import type { getPainterSession } from 'src/ts/bardPainter/runtime.svelte'
     import { subjectPromptText, updateSubjectPrompt } from 'src/ts/bardPainter/subjectPrompt'
@@ -25,6 +26,9 @@
     let identityText = $derived(session.bot.identities.find(item => item.id === selectedIdentity)?.appearance ?? '')
     let outfit = $derived([...localOutfits, ...sharedOutfits].find(item => item.id === selectedOutfit))
     let outfitText = $derived(outfit ? [outfit.clothing, outfit.state].filter(Boolean).join(', ') : '')
+    let linkedName = $derived(subject.presetMatch ? session.bot.identities.find(item => item.id === subject.id)?.name : undefined)
+    let linkedOutfit = $derived(subject.outfitId ? [...localOutfits, ...sharedOutfits].find(item => item.id === subject.outfitId)?.name : undefined)
+    const matchLabels = { lore: '로어 연결', name: '이름 일치', context: '식별 메모로 판단' } as const
     let promptInput: HTMLTextAreaElement | undefined = $state()
     let cursor: { start: number; end: number; text: string } | undefined
     $effect(() => { subject; session; cursor = undefined; selectedIdentity = ''; selectedOutfit = ''; notice = '' })
@@ -64,6 +68,14 @@
     </summary>
     <fieldset {disabled}>
         <label>이름<input aria-label={`대상 ${index + 1} 이름`} bind:value={subject.name} onblur={save} /></label>
+        {#if subject.kind === 'character' && subject.presetMatch && linkedName}
+            <div class="preset-link" data-preset-match={subject.presetMatch}>
+                <span class="hint">불러온 프리셋</span>
+                <span class="preset-name">{linkedName}{#if linkedOutfit}<span class="hint">{' / '}</span>{linkedOutfit}{/if}</span>
+                <span class="match" class:uncertain={subject.presetMatch === 'context'}>{matchLabels[subject.presetMatch]}</span>
+                <BardPainterHelp label="불러온 프리셋">프롬프트를 작성할 때 이 인물을 저장된 캐릭터 프리셋으로 알아보고, 기본 외형{linkedOutfit ? '과 의상' : ''}을 고쳐 쓰지 않고 그대로 넣었습니다. {subject.presetMatch === 'context' ? '이름 대신 식별 메모와 문맥으로 판단한 연결이므로 맞는 인물인지 확인하세요. ' : ''}다른 인물이라면 프롬프트에서 외형 문단을 지우고 아래에서 맞는 캐릭터를 불러오세요.</BardPainterHelp>
+            </div>
+        {/if}
         {#if subject.kind === 'character'}
             <div class="grid">
                 <div class="preset-insert">
@@ -126,6 +138,11 @@
     fieldset, .stack { display: flex; flex-direction: column; gap: .85rem; min-width: 0; }
     fieldset { border: 0; margin: 0; padding: 0 .85rem .85rem; }
     label { display: flex; flex-direction: column; gap: .3rem; font-size: .85rem; min-width: 0; }
+    .preset-link { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .5rem; padding: .45rem .6rem; border: 1px solid var(--color-darkborderc); border-radius: .4rem; background: var(--color-bgcolor); font-size: .8rem; min-width: 0; }
+    .preset-link .hint { font-size: .75rem; }
+    .preset-name { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+    .match { padding: .05rem .4rem; border: 1px solid var(--color-darkborderc); border-radius: .25rem; color: var(--color-textcolor2); font-size: .7rem; line-height: 1.5; white-space: nowrap; }
+    .match.uncertain { border-color: color-mix(in srgb, var(--color-primary) 60%, var(--color-darkborderc)); color: var(--color-textcolor); }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr)); gap: .75rem; }
     .preset-insert { display: flex; align-items: flex-end; gap: .5rem; min-width: 0; }
     .preset-insert label { flex: 1; }

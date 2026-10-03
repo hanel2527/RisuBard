@@ -20,6 +20,10 @@ export interface PainterSubject {
     pose: string
     negative: string
     locked?: boolean
+    /** Outfit preset whose saved text fills clothing and state. */
+    outfitId?: string
+    /** Why the subject was linked to a saved character preset. */
+    presetMatch?: 'lore' | 'name' | 'context'
     /** Verbatim text edited in the single character prompt block. */
     prompt?: string
 }
@@ -92,6 +96,8 @@ export interface PainterIdentity {
     name: string
     aliases: string[]
     appearance: string
+    /** Identification hints (relations, titles, epithets) the planner reads to recognize this character. */
+    note?: string
     outfitIds?: string[]
     defaultOutfitId?: string
     /** Explicit opt-in for public character cards; missing means private. */

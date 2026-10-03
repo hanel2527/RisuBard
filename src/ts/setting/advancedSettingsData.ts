@@ -107,6 +107,10 @@ const advancedSettingsCatalog: SettingItem[] = [
 
     // Toggles
     { id: 'adv.sayNothing', type: 'check', labelKey: 'sayNothing', bindKey: 'useSayNothing', helpKey: 'sayNothing', classes: 'mt-4' },
+    {
+        id: 'adv.sayNothingText', type: 'textarea', labelKey: 'sayNothingText', bindKey: 'sayNothingText',
+        helpKey: 'sayNothingText', options: { placeholder: '*says nothing*', resizable: true, textareaHeight: '20' }
+    },
     { id: 'adv.showUnrec', type: 'check', labelKey: 'showUnrecommended', bindKey: 'showUnrecommended', helpKey: 'showUnrecommended', classes: 'mt-4' },
     { id: 'adv.imgComp', type: 'check', labelKey: 'imageCompression', bindKey: 'imageCompression', helpKey: 'imageCompression', classes: 'mt-4' },
     { id: 'adv.useExp', type: 'check', labelKey: 'useExperimental', bindKey: 'useExperimental', helpKey: 'useExperimental', classes: 'mt-4' },
@@ -249,7 +253,7 @@ export const advancedRequestItems = selectAdvancedItems([
 ]);
 
 export const advancedResponseItems = selectAdvancedItems([
-    'adv.sayNothing', 'adv.autoCont', 'adv.remIncomp', 'adv.noWaitTrans',
+    'adv.sayNothing', 'adv.sayNothingText', 'adv.autoCont', 'adv.remIncomp', 'adv.noWaitTrans',
     'adv.promptInfo', 'adv.promptTextInfo', 'adv.simpleTool', 'adv.toolUsage',
 ]);
 
