@@ -160,7 +160,9 @@
         if (destination < 0 || destination >= preset.blocks.length) return
         const target = preset.blocks[destination]
         if (target.type === 'injection') return
-        ;[preset.blocks[selectedIndex], preset.blocks[destination]] = [target, selectedBlock!]
+        // 인덱스 교환 대입은 selectedIndex 파생값을 갱신하지 못해 두 번째 이동에서 같은 블록이 두 칸에 들어간다.
+        const [moved] = preset.blocks.splice(selectedIndex, 1)
+        preset.blocks.splice(destination, 0, moved)
         onTouch()
     }
 
