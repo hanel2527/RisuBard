@@ -96,6 +96,9 @@ if (nodeMajor < 24) {
 const enablePatchSync = true;
 const DEFAULT_PORT = 7777;
 
+// The start-menu launcher runs the server in its own console window.
+if (process.env.RISUBARD_CONSOLE_TITLE) process.title = process.env.RISUBARD_CONSOLE_TITLE;
+
 // In-memory database cache for patch-based sync
 // dbCache stores the STRIPPED (stubs-only) version matching what the client sees.
 // fullChatStore keeps the actual chat data keyed by chaId→chatId.
@@ -7358,7 +7361,8 @@ async function shutdownGracefully(reason) {
     try { unlinkSync(localShutdownTokenPath); } catch {}
     process.exit(0);
 }
-for (const sig of ['SIGTERM', 'SIGINT']) {
+// SIGHUP: on Windows, closing the console window (about 10 seconds before a forced exit).
+for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
     process.on(sig, () => shutdownGracefully(sig));
 }
 

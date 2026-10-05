@@ -32,7 +32,22 @@ describe('RisuBard Wiki Prompt settings', () => {
         expect(page).toContain('bind:value={presetSearch}')
         expect(page).toContain('filteredPresets as preset')
         expect(page).toMatch(/\.preset-picker\s*\{[^}]*overflow-y: auto/)
-        expect(page).toContain('aria-pressed={preset.id === activePreset?.id}')
+        expect(page).toContain('aria-pressed={isActive}')
+    })
+
+    test('mirrors the chat preset tabs and per-row preset actions', () => {
+        const page = readFileSync(pagePath, 'utf8')
+        const v1 = readFileSync(resolve(process.cwd(), 'src/lib/Setting/Pages/RisuBardWikiPromptV1Editor.svelte'), 'utf8')
+        expect(page).toMatch(/basicInfo, value: 0[\s\S]*language\.prompt, value: 1[\s\S]*promptV2\.tab, value: 2/)
+        expect(page).toContain('<RisuBardWikiPromptV1Editor')
+        expect(page).toContain('onclick={() => duplicatePreset(preset)}')
+        expect(page).toContain('onclick={() => exportPreset(preset)}')
+        expect(page).toContain('onclick={() => deletePreset(preset)}')
+        expect(page).toContain('aria-pressed={renaming}')
+        expect(page).toContain('{#if renaming && !preset.builtin}')
+        expect(v1).toContain('<RisuBardWikiPromptBlock')
+        expect(v1).toContain("addBlock('response')")
+        expect(v1).toContain('canToggle={preset.builtin && optionalBuiltinIds.has(block.id)}')
     })
 
     test('allows only optional built-in block toggles without unlocking their content', () => {
@@ -81,7 +96,7 @@ describe('RisuBard Wiki Prompt settings', () => {
 
         expect(page).toContain('<RisuBardWikiPromptV2Workspace')
         expect(page).toContain('readonly={activePreset.builtin}')
-        expect(page).toContain('fullWidth={activeTab === 0}')
+        expect(page).toContain('fullWidth={activeTab === 2}')
         expect(page).toContain('disabled={activePreset.builtin}')
         expect(block).toContain('block.readonly')
         const workspace = readFileSync(

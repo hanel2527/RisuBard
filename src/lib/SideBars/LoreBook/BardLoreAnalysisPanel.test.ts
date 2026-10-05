@@ -50,6 +50,53 @@ afterEach(async () => {
 })
 
 describe('BardLoreAnalysisPanel', () => {
+    it('defaults bulk lists out of AI selection, preserves them on select all, and permits individual opt-in', async () => {
+        const bulk = { ...structuredClone(source), id: 'bulk', comment: 'npc list', content: Array.from({ length: 40 }, (_, i) => `- Person ${i}/인물 ${i} (Female): A wizard.`).join('\n') }
+        mounted = mount(BardLoreAnalysisPanel, {
+            target: document.body.appendChild(document.createElement('div')),
+            props: { entries: [source, bulk], settings: createBardLoreSettings({ analysisOutputTokens: 60_000 }), onChange: vi.fn() },
+        })
+        await tick()
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-open]')!.click()
+        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-plan]')).not.toBeNull())
+        const checkbox = document.body.querySelector<HTMLInputElement>('[data-bard-lore-analysis-target="bulk"] input')!
+        expect(checkbox.checked).toBe(false)
+        expect(document.body.querySelector('[data-bard-lore-bulk-notice]')).not.toBeNull()
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-select-all]')!.click()
+        await tick()
+        expect(checkbox.checked).toBe(false)
+        checkbox.checked = true
+        checkbox.dispatchEvent(new Event('change', { bubbles: true }))
+        await tick()
+        expect(document.body.querySelector('[data-bard-lore-analysis-selected-count]')!.textContent).toContain('2 / 2')
+        expect(requestChatData).not.toHaveBeenCalled()
+    })
+
+    it('offers a local-only review for all-bulk selections and applies exact slices without AI', async () => {
+        const bulk = { ...structuredClone(source), comment: 'item list', content: Array.from({ length: 30 }, (_, i) => `- Sword ${i}/검 ${i}: Forged from silver.`).join('\n') }
+        const onChange = vi.fn()
+        mounted = mount(BardLoreAnalysisPanel, {
+            target: document.body.appendChild(document.createElement('div')),
+            props: { entries: [bulk], settings: createBardLoreSettings(), onChange },
+        })
+        await tick()
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-open]')!.click()
+        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-local-split-open]')).not.toBeNull())
+        expect(document.body.querySelector('[data-bard-lore-analyze]')).toBeNull()
+        expect(document.body.querySelector('.error')).toBeNull()
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-local-split-open]')!.click()
+        await tick()
+        expect(document.body.querySelectorAll('[data-bard-lore-local-atom]')).toHaveLength(30)
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-local-split-apply]')!.click()
+        await tick()
+        expect(onChange).toHaveBeenCalledOnce()
+        expect(onChange.mock.calls[0][0]).toHaveLength(31)
+        expect(onChange.mock.calls[0][0][0].content).toBe(bulk.content)
+        expect(onChange.mock.calls[0][0][0].bard.injection).toBe('index-only')
+        expect(requestChatData).not.toHaveBeenCalled()
+        expect(tokenizerMock).not.toHaveBeenCalled()
+    })
+
     it('ignores an older budget error after the input allowance has been increased', async () => {
         let finishOldMeasurement!: (tokens: number) => void
         tokenizerMock.mockImplementationOnce(() => new Promise<number>((resolve) => { finishOldMeasurement = resolve }))

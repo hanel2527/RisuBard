@@ -61,13 +61,23 @@ function patchNode(live: Node, previous: Node, next: Node) {
     }
 }
 
+// Comparison copies are parsed with the same rules as a <div>, but in a document
+// without a browsing context: a detached <div> of the live document would load
+// media, and Firefox plays its <audio autoplay> copies forever since they are
+// never removed from a document.
+let parserDocument: Document | null = null
+function createParserElement() {
+    parserDocument ??= document.implementation.createHTMLDocument('')
+    return parserDocument.createElement('div')
+}
+
 /** Svelte action for already-sanitized chat HTML. Keeps the last committed DOM while parsing. */
 export function retainedChatHtml(node: HTMLElement, initial: ChatHtmlUpdate) {
-    let previous = document.createElement('div')
+    let previous: Node = createParserElement()
     let revision = 0
 
     function commit(html: string) {
-        const next = document.createElement('div')
+        const next = createParserElement()
         next.innerHTML = html
         patchChildren(node, previous, next)
         previous = next

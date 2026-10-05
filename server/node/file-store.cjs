@@ -25,6 +25,28 @@ function checksumFile(filePath) {
     return hash.digest('hex');
 }
 
+// Case-insensitive filesystems (Windows, default macOS) report a case-only
+// rename destination as existing because it resolves to the source itself.
+function isSameEntry(source, destination) {
+    if (source === destination) return false;
+    const foldName = name => name.normalize('NFC').toLowerCase();
+    if (path.dirname(source) !== path.dirname(destination)
+        || foldName(path.basename(source)) !== foldName(path.basename(destination))) return false;
+    try {
+        return fs.realpathSync.native(source) === fs.realpathSync.native(destination);
+    } catch {
+        return false;
+    }
+}
+
+function hasExactName(target) {
+    try {
+        return fs.readdirSync(path.dirname(target)).includes(path.basename(target));
+    } catch {
+        return false;
+    }
+}
+
 function resolveInside(root, relativePath) {
     if (typeof relativePath !== 'string' || !relativePath || path.isAbsolute(relativePath)) {
         throw new Error('Canonical file path must be a non-empty relative path');
@@ -196,8 +218,15 @@ function publishTransaction(root, journal, journalPath, options = {}) {
                 skipped += 1;
                 continue;
             }
-            if (fs.existsSync(destination)) {
+            const caseOnly = fs.existsSync(destination) && isSameEntry(source, destination);
+            if (fs.existsSync(destination) && !caseOnly) {
                 throw new Error(`Transaction move destination already exists: ${entry.destination}`);
+            }
+            if (caseOnly && hasExactName(destination)) {
+                entry.completed = true;
+                writeJournal(journalPath, journal);
+                skipped += 1;
+                continue;
             }
             fs.mkdirSync(path.dirname(destination), { recursive: true });
             fs.renameSync(source, destination);
@@ -316,7 +345,7 @@ function commitTransaction(root, operations, options = {}) {
                     const cleared = resolveInside(root, previous.path);
                     return destination === cleared || destination.startsWith(`${cleared}${path.sep}`);
                 });
-            if (fs.existsSync(destination) && !destinationClearedEarlier) {
+            if (fs.existsSync(destination) && !destinationClearedEarlier && !isSameEntry(source, destination)) {
                 throw new Error(`Transaction move destination already exists: ${operation.moveTo}`);
             }
             clearedPaths.push(source);

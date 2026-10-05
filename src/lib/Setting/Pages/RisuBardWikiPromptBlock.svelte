@@ -16,13 +16,19 @@
         moveDown,
         displayName,
         onHelp,
+        canRemove = block.type === 'text' && block.id !== 'main-wiki-guide',
+        canToggle = false,
+        onToggle = () => {},
     }: {
         block: WikiPromptBlock
         onRemove: () => void
         moveUp: () => void
         moveDown: () => void
         displayName: string
-        onHelp: () => void
+        onHelp?: () => void
+        canRemove?: boolean
+        canToggle?: boolean
+        onToggle?: () => void
     } = $props()
 
     $effect(() => {
@@ -40,8 +46,8 @@
     <header>
         <div class="block-title">
             {#if block.readonly}<LockKeyholeIcon size={15} />{/if}
-            {#if block.readonly}
-                <strong>{displayName}</strong>
+            {#if block.readonly || block.type !== 'text'}
+                <strong class:critical={block.type === 'core-ref'}>{displayName}</strong>
             {:else}
                 <TextInput bind:value={block.name} fullwidth />
             {/if}
@@ -54,7 +60,7 @@
                 <ShButton variant="ghost" size="icon-sm" onclick={moveDown} aria-label={language.risuBardWikiPrompt.moveDown}>
                     <ChevronDownIcon size={16} />
                 </ShButton>
-                {#if block.id !== 'main-wiki-guide'}
+                {#if canRemove}
                     <ShButton variant="destructive" size="icon-sm" onclick={onRemove} aria-label={language.risuBardWikiPrompt.remove}>
                         <Trash2Icon size={15} />
                     </ShButton>
@@ -64,11 +70,18 @@
     </header>
 
     {#if block.readonly}
-        <p class="locked-copy">
-            {block.type === 'injection'
-                ? language.risuBardWikiPrompt.lockedInjectionDescription
-                : language.risuBardWikiPrompt.lockedCoreDescription}
-        </p>
+        {#if block.type !== 'text'}
+            <p class="locked-copy">
+                {block.type === 'injection'
+                    ? language.risuBardWikiPrompt.lockedInjectionDescription
+                    : language.risuBardWikiPrompt.lockedCoreDescription}
+            </p>
+        {/if}
+        {#if canToggle}
+            <div class="block-options">
+                <CheckInput bind:check={block.enabled} name={language.risuBardWikiPrompt.enabled} onChange={onToggle} />
+            </div>
+        {/if}
         <TextAreaInput
             bind:value={block.content}
             fullwidth
@@ -82,10 +95,12 @@
         <div class="block-options">
             <CheckInput bind:check={block.enabled} name={language.risuBardWikiPrompt.enabled} />
             <div class="target-controls">
-                <ShButton variant="outline" size="sm" onclick={onHelp}>
-                    <BookOpenIcon size={15} />
-                    {language.risuBardWikiPrompt.promptingHelp}
-                </ShButton>
+                {#if onHelp}
+                    <ShButton variant="outline" size="sm" onclick={onHelp}>
+                        <BookOpenIcon size={15} />
+                        {language.risuBardWikiPrompt.promptingHelp}
+                    </ShButton>
+                {/if}
                 <SelectInput bind:value={block.target} size="sm">
                     <OptionInput value="both">{language.risuBardWikiPrompt.stageBoth}</OptionInput>
                     <OptionInput value="analysis">{language.risuBardWikiPrompt.stageAnalysis}</OptionInput>
@@ -150,6 +165,10 @@
     .block-title strong {
         font-size: .84rem;
         font-weight: 620;
+    }
+
+    .block-title strong.critical {
+        color: var(--risu-theme-draculared);
     }
 
     .block-actions {

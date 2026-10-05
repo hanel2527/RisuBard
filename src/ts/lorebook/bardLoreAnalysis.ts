@@ -1,4 +1,5 @@
 import { safeStructuredClone } from '../polyfill'
+import { estimateBardLoreListOutput, hasBardLoreListTitle } from './bardLoreListStructure'
 import type { WikiWritingLanguage } from '../risubard/wikiWritingLanguage'
 import {
     buildBardLoreAnalysisLanguageInstruction,
@@ -86,15 +87,8 @@ export class BardLoreAnalysisBudgetError extends Error {
 }
 
 const kinds = new Set<BardLoreKind>(['system', 'character', 'location', 'faction', 'item', 'event', 'concept', 'other'])
-const compositeMarkers = [
-    'roster', 'directory', 'catalog', 'timeline', 'chronology',
-    '명부', '인명부', '등장인물 목록', '목록', '타임라인', '연표', '연대기',
-]
-
 export function isBardLoreCompositeEntry(source: BardLoreEntry): boolean {
-    if (source.content.length < 500) return false
-    const evidence = source.comment.toLocaleLowerCase()
-    return compositeMarkers.some((marker) => evidence.includes(marker))
+    return !source.bard.derivedFromId && source.content.length >= 500 && hasBardLoreListTitle(source)
 }
 
 function qualityReport(issues: BardLoreAnalysisQualityIssue[], entryIds: string[]): BardLoreAnalysisQualityReport {
@@ -405,15 +399,7 @@ export function createBardLoreAnalysisBatches(
 }
 
 export function estimateBardLoreAnalysisOutputTokens(entry: BardLoreEntry): number {
-    const title = entry.comment.toLocaleLowerCase()
-    if (!compositeMarkers.some(marker => title.includes(marker))) return 512
-    const listItems = entry.content.match(/^\s*(?:[-*+]\s+|\d+[.)]\s+|\|(?!--))/gm)?.length ?? 0
-    const sections = entry.content.match(/^#{1,6}\s+/gm)?.length ?? 0
-    // Planning heuristic, not a provider limit: each expanded atom repeats metadata,
-    // source quotes and links. Prose catalogs use paragraphs as a fallback.
-    const atoms = Math.max(1, listItems, sections,
-        listItems === 0 && sections === 0 ? entry.content.split(/\n\s*\n/).filter(part => part.trim()).length : 0)
-    return 512 + atoms * 384
+    return estimateBardLoreListOutput(entry)
 }
 
 export async function planBardLoreAnalysisBatches(

@@ -74,3 +74,29 @@ test.each(['standalone-windows', 'standalone-unix', 'server-unix'])('%s preserve
         expect(fs.readFileSync(path.join(root, 'dist/index.html'), 'utf8')).toBe(fail ? 'old UI' : 'new UI')
     }
 })
+
+// update.bat hides rmdir failures. A backup left after a finalized update must
+// be discarded, not restored over the new version on the next run.
+test.each([true, false])('leftover backup with finalized=%s', (finalized) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'risubard-user-files-'))
+    roots.push(root)
+    write(root, 'package.json', JSON.stringify({ version: '0.9.62' }))
+    write(root, '.installed-version', finalized ? 'v0.9.62' : 'v0.9.60')
+    write(root, '.update-tmp/backup/package.json', JSON.stringify({ version: '0.9.60' }))
+    write(root, '.update-tmp/latest-version', 'v0.9.62')
+    const text = fs.readFileSync('scripts/updater.cjs', 'utf8')
+    const helperStart = text.indexOf('function getCurrentVersion()')
+    const helperEnd = text.indexOf('// If the user moved')
+    const start = text.indexOf("    const interrupted = path.join(ROOT, '.update-tmp', 'backup');")
+    const end = text.indexOf('    const current = getCurrentVersion();', start)
+    expect(helperStart).toBeGreaterThan(-1)
+    expect(start).toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    vm.runInNewContext(`${text.slice(helperStart, helperEnd)}\n${text.slice(start, end)}`, {
+        fs, path, ROOT: root, JSON, Date, log: () => {}, validatePackage: () => {},
+        restoreBackupIntoRoot: (backup: string) => fs.renameSync(path.join(backup, 'package.json'), path.join(root, 'package.json')),
+    })
+    expect(JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version).toBe(finalized ? '0.9.62' : '0.9.60')
+    expect(fs.existsSync(path.join(root, '.update-tmp'))).toBe(!finalized)
+    expect(fs.readdirSync(root).some(name => name.startsWith('.update-stale-'))).toBe(false)
+})

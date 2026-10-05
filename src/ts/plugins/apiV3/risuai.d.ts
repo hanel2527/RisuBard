@@ -1445,7 +1445,31 @@ interface RisuaiPluginAPI {
      * @returns Chat object or null if not found
      */
     getChatFromIndex(characterIndex: number, chatIndex: number): Promise<any|null>;
-    
+
+    /**
+     * Parses Risu CBS macros using the currently selected character and active chat.
+     * Set processRegex to also run the editprocess script pipeline after CBS parsing.
+     * The editprocess pipeline can invoke plugin script handlers and action scripts,
+     * which may modify the active chat.
+     * @param text - Text containing CBS macros
+     * @param options - Parser context options
+     * @returns Parsed text
+     *
+     * @example
+     * ```typescript
+     * const enabled = await risuai.parseRisuChat('{{moduleenabled::MyModule}}');
+     * ```
+     */
+    parseRisuChat(text: string, options?: {
+        messageIndex?: number
+        role?: string
+        processRegex?: boolean
+        runVar?: boolean
+        rmVar?: boolean
+        tokenizeAccurate?: boolean
+        cbsConditions?: Record<string, unknown>
+    }): Promise<string>;
+
 
     /**
      * Saves a chat at a specific index

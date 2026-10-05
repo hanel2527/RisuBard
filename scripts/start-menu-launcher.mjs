@@ -72,6 +72,21 @@ async function stopServer() {
   console.log('리스바드 서버를 종료했습니다.');
 }
 
+const serverWindowTitle = '리스바드 일반서버';
+
+// The server gets its own console window so its log stays visible and closing the
+// window stops it (after flushing saves). The window stays open if it exits on an error.
+function startServerWindow() {
+  const node = `"${process.execPath}" server\\node\\server.cjs`;
+  return spawn('cmd.exe', ['/d', '/c', `start "${serverWindowTitle}" /d "${projectRoot}" cmd /d /c "${node} & if errorlevel 1 pause"`], {
+    cwd: projectRoot,
+    env: { ...process.env, PORT: '7777', OPEN_BROWSER: '0', RISU_DEV_SERVER_TARGET: serverUrl, RISUBARD_CONSOLE_TITLE: serverWindowTitle },
+    windowsVerbatimArguments: true,
+    windowsHide: true,
+    stdio: 'ignore',
+  });
+}
+
 function startBackground(label, args) {
   const logs = path.join(projectRoot, 'log', 'start-menu');
   mkdirSync(logs, { recursive: true });
@@ -98,7 +113,7 @@ async function main() {
   else if (!existsSync(path.join(projectRoot, 'dist', 'index.html'))) {
     throw new Error('컴파일된 화면이 없습니다. 먼저 pnpm build를 실행하세요.');
   }
-  await ensureService(serverUrl, false, () => startBackground('server', ['server/node/server.cjs']));
+  await ensureService(serverUrl, false, startServerWindow);
   if (development) {
     await ensureService(developmentUrl, true, () => startBackground('development', [
       'node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '5174', '--strictPort',

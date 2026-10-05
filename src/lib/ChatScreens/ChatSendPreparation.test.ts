@@ -47,7 +47,7 @@ function screen(overrides: Record<string, unknown> = {}) {
         captureGenerationTarget, resolveGenerationTarget, chatGenKey: (id: string) => id,
         blocksChatGeneration: () => false,
         persistVisibleDraft: (id: string, draft: {m: string; t: string}) => drafts.set(id, draft),
-        registerAbort: () => {}, endGeneration: () => {}, clearPendingSend: () => {},
+        registerAbort: () => {}, endGeneration: () => {},
         sendChat: async (_: number, options: unknown) => { calls.push('request'); requests.push(options); return true },
         playNotificationSound: () => {}, alertError: (error: unknown) => errors.push(error),
         console: { error: () => {} },

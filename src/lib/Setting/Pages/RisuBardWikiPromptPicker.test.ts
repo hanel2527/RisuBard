@@ -11,6 +11,7 @@ vi.mock('src/ts/util', () => ({ selectSingleFile: vi.fn() }))
 // Keep the actual settings header and portaled dialog, isolating the unrelated editors.
 vi.mock('./RisuBardWikiPromptV2Workspace.svelte', async () => ({ default: (await import('src/lib/UI/GUI/TextInput.svelte')).default }))
 vi.mock('./RisuBardWikiPromptReferenceSheet.svelte', async () => ({ default: (await import('src/lib/UI/GUI/TextInput.svelte')).default }))
+vi.mock('./RisuBardWikiPromptV1Editor.svelte', async () => ({ default: (await import('src/lib/UI/GUI/TextInput.svelte')).default }))
 
 let mounted: ReturnType<typeof mount> | undefined
 afterEach(async () => {
@@ -28,7 +29,7 @@ test('opens all presets outside the constrained page and filters and selects a d
     mounted = mount(RisuBardWikiPromptSettings, { target: document.body })
     await tick()
     const tabs = document.querySelectorAll<HTMLButtonElement>('[data-settings-section-tabs] button')
-    tabs[1].click()
+    tabs[0].click()
     await tick()
     const trigger = document.querySelector('[data-settings-preset-header]') as HTMLButtonElement
     expect(trigger).not.toBeNull()
@@ -37,12 +38,12 @@ test('opens all presets outside the constrained page and filters and selects a d
     const dialog = document.querySelector('[role="dialog"]')!
     expect(dialog).not.toBeNull()
     expect(dialog.closest('[data-settings-page-body]')).toBeNull()
-    expect(dialog.querySelectorAll('.preset-picker button:not(.preset-delete)')).toHaveLength(40)
+    expect(dialog.querySelectorAll('.preset-picker .preset-select')).toHaveLength(40)
     const search = dialog.querySelector('.picker-search input') as HTMLInputElement
     search.value = 'Preset 39'
     search.dispatchEvent(new Event('input', { bubbles: true }))
     await tick()
-    const choices = dialog.querySelectorAll<HTMLButtonElement>('.preset-picker button:not(.preset-delete)')
+    const choices = dialog.querySelectorAll<HTMLButtonElement>('.preset-picker .preset-select')
     expect(choices).toHaveLength(1)
     choices[0].click()
     await tick()

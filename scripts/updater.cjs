@@ -38,6 +38,16 @@ function getCurrentVersion() {
     } catch { return 'unknown'; }
 }
 
+// update.bat writes .installed-version only after the new package validated.
+function isFinalizedInstall() {
+    try {
+        const installed = fs.readFileSync(path.join(ROOT, '.installed-version'), 'utf8').trim();
+        if (installed !== getCurrentVersion()) return false;
+        validatePackage(ROOT);
+        return true;
+    } catch { return false; }
+}
+
 // If the user moved the server-backup directory to a custom location *inside*
 // ROOT (e.g. <ROOT>/data/backups), the server writes the absolute path here so
 // the updater can preserve the top-level segment instead of wiping it.
@@ -237,6 +247,14 @@ async function main() {
         if (state?.phase === 'complete') {
             validatePackage(ROOT);
             fs.rmSync(path.join(ROOT, '.update-tmp'), { recursive: true, force: true });
+        } else if (!state && isFinalizedInstall()) {
+            // update.bat finalized this version, but its rmdir failed silently.
+            // Restoring this backup would downgrade a working installation.
+            log('Removing leftover backup from an already completed update...');
+            const stale = path.join(ROOT, `.update-stale-${Date.now()}`);
+            fs.renameSync(path.join(ROOT, '.update-tmp'), stale);
+            try { fs.rmSync(stale, { recursive: true, force: true }); }
+            catch { log(`Warning: could not remove ${path.basename(stale)}, you can delete it manually.`); }
         } else {
         log('Recovering interrupted installation before checking its version...');
         restoreBackupIntoRoot(interrupted);

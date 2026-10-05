@@ -36,7 +36,6 @@ import { getModuleAssets, getModuleLorebooksWithSources, getModuleToggles } from
 import { forageStorage, readImage, refreshLiveFiles } from "../globalApi.svelte";
 import { chatGenKey, chatProcessStage, endGeneration, isChatGenerating, setGenerationStage, startGeneration } from "./generationState";
 import { waitForSendSync } from './sendPreparation';
-import { clearPendingSend, registerPendingSend } from "./request/pendingSends";
 import {
     buildBoundedNarrativeInquiryFallback,
     createStoredResponseMemoryAnalysis,
@@ -1309,15 +1308,6 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     }
     const generationId = v4()
     startGeneration(genKey, generationId)
-    // Resumable-send tombstone (pendingSends.ts): registered BEFORE the
-    // pipeline so a tab death anywhere in it (translate → memory → request)
-    // leaves the marker; cleared on every conclude path. Previews never
-    // register (they end without a message, which would read as resumable).
-    // No-op unless the server-side requests toggle is on.
-    if (realChatId && !arg.preview && !arg.previewPrompt) {
-        registerPendingSend(realChatId, generationId)
-    }
-
     if(chatProcessIndex === -1 && requestSettings.presetChain){
         const names = requestSettings.presetChain.split(',').map((v) => v.trim())
         const randomSelect = Math.floor(Math.random() * names.length)
@@ -1343,7 +1333,6 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     if (generationScope.chat?._placeholder) {
         alertError('Chat is still loading. Please wait a moment.')
         endGeneration(genKey)
-        if (realChatId) clearPendingSend(realChatId)
         return false
     }
     generationScope.chat.message = generationScope.chat.message.map((v) => {
@@ -1627,7 +1616,6 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             // We cannot promise mandatory context when its source cannot be read.
             if (!arg.signal?.aborted) throwError(`항상 포함할 바드위키를 확인하지 못해 응답 생성을 중단했습니다. 위키 상태와 토큰 상한을 확인해 주세요.\n${error instanceof Error ? error.message : String(error)}`)
             endGeneration(genKey)
-            if (realChatId) clearPendingSend(realChatId)
             return false
         }
     }
@@ -2311,7 +2299,6 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         currentTokens += triggerResult.tokens
         if(triggerResult.stopSending){
             endGeneration(genKey)
-            if (realChatId) clearPendingSend(realChatId)
             return false
         }
     }
@@ -2502,7 +2489,6 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             if(chats.length <= 1){
                 throwError(language.errors.toomuchtoken + "\n\nRequired Tokens: " + currentTokens)
                 endGeneration(genKey)
-                if (realChatId) clearPendingSend(realChatId)
                 return false
             }
 
@@ -2928,7 +2914,6 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             if(pointer >= formated.length){
                 throwError(language.errors.toomuchtoken + "\n\nAt token rechecking. Required Tokens: " + inputTokens)
                 endGeneration(genKey)
-                if (realChatId) clearPendingSend(realChatId)
                 return false
             }
             if(formated[pointer].removable){
@@ -3069,13 +3054,11 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     let outputMessageId: string | undefined
     
     if(abortSignal.aborted === true){
-        if (realChatId) clearPendingSend(realChatId)
         return false
     }
     if(req.type === 'fail'){
         throwError(req.result)
         endGeneration(genKey)
-        if (realChatId) clearPendingSend(realChatId)
         return false
     }
     else if(req.type === 'streaming'){
@@ -3250,7 +3233,6 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         }
 
         if(streamAborted || abortSignal.aborted){
-            if (realChatId) clearPendingSend(realChatId)
             return false
         }
 
@@ -3557,7 +3539,6 @@ export async function sendChat(chatProcessIndex = -1,arg:{
 
                 
 
-                if (realChatId) clearPendingSend(realChatId)
                 return true
             }
 
@@ -3619,7 +3600,6 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             }, 'emotion', abortSignal)
 
             if(rq.type === 'fail'){
-                if (realChatId) clearPendingSend(realChatId)
                 if(abortSignal.aborted){
                     return true
                 }
@@ -3627,7 +3607,6 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                 return true
             }
             if(rq.type === 'streaming' || rq.type === 'multiline'){
-                if (realChatId) clearPendingSend(realChatId)
                 if(abortSignal.aborted){
                     return true
                 }
@@ -3673,12 +3652,10 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                     }
                 } catch (error) {
                     throwError(language.errors.httpError + `${error}`)
-                    if (realChatId) clearPendingSend(realChatId)
                     return true
                 }
             }
             
-            if (realChatId) clearPendingSend(realChatId)
             return true
 
 
@@ -3728,7 +3705,6 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         })
     }
 
-    if (realChatId) clearPendingSend(realChatId)
     return true
 }
 

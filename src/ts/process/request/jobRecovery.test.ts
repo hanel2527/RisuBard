@@ -42,8 +42,7 @@ async function loadModules() {
     const recovery = await import('./jobRecovery')
     const genState = await import('src/ts/process/generationState')
     const status = await import('src/ts/status/requestStatus')
-    const pending = await import('./pendingSends')
-    return { recovery, genState, status, pending }
+    return { recovery, genState, status }
 }
 
 // --- fixtures ---------------------------------------------------------------
@@ -90,8 +89,6 @@ const OPENAI_SSE =
 interface ServerBehavior {
     unclaimed?: any[]
     active?: any[]
-    /** GET /api/pending-sends payload (default: none). */
-    pendingSends?: any[]
     /** journal body per job id (string, replayed as one chunk) */
     journals?: Record<string, string>
     /** override the stream endpoint's HTTP status per job id */
@@ -113,15 +110,6 @@ function setupServer(behavior: ServerBehavior) {
         }
         if (url === '/api/model-jobs?active=1') {
             return new Response(JSON.stringify({ jobs: behavior.active ?? [] }), { status: 200 })
-        }
-        if (url === '/api/pending-sends' && method === 'GET') {
-            return new Response(JSON.stringify({ pendingSends: behavior.pendingSends ?? [] }), { status: 200 })
-        }
-        if (url.startsWith('/api/pending-sends/') && method === 'DELETE') {
-            return new Response('{"success":true}', { status: 200 })
-        }
-        if (url.startsWith('/api/pending-sends/') && url.endsWith('/claim') && method === 'POST') {
-            return new Response('{"claimed":true}', { status: 200 })
         }
         const streamMatch = url.match(/^\/api\/model-jobs\/([^/]+)\/stream$/)
         if (streamMatch) {
@@ -158,9 +146,7 @@ function setupServer(behavior: ServerBehavior) {
 beforeEach(() => {
     // Keep any import-time recovery scan local to this harness. setupServer
     // replaces the stub with its precise per-test behavior.
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
-        String(input).includes('pending-sends') ? { pendingSends: [] } : { jobs: [] },
-    ), { status: 200 })))
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ jobs: [] }), { status: 200 })))
     mocks.db = { characters: [], inlayErrorResponse: true, showRequestStatus: true }
     mocks.notifyError.mockReset()
     mocks.notifyInfo.mockReset()
@@ -534,153 +520,6 @@ describe('recoverModelJobs', () => {
         const { recovery } = await loadModules()
         vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
         await expect(recovery.recoverModelJobs()).resolves.toBeUndefined()
-    })
-})
-
-// --- pending sends ----------------------------------------------------------
-
-describe('pending-send evaluation', () => {
-    // createdAt defaults past the min-age gate so scenarios evaluate.
-    const record = (over: Record<string, unknown> = {}) =>
-        ({ chatId: 'chat-1', generationId: 'gen-1', createdAt: Date.now() - 10 * 60 * 1000, ...over }) as any
-
-    test('flags a chat whose send died pre-response (last message is the user turn)', async () => {
-        const { recovery, pending } = await loadModules()
-        const chat = makeChat({ message: [{ role: 'user', data: 'hello?' }] })
-        mocks.db.characters = [makeChar(chat)]
-        const { calls } = setupServer({})
-
-        await recovery.evaluatePendingSend(record(), new Set())
-
-        expect(get(pending.resumableSends).has('chat-1')).toBe(true)
-        // The record survives until the resume path CLAIMS it — a reload must
-        // not evaporate the resume.
-        expect(calls.some((c) => c.url === '/api/pending-sends/chat-1' && c.method === 'DELETE')).toBe(false)
-    })
-
-    test('a record younger than the min age is left alone (send may still be running)', async () => {
-        const { recovery, pending } = await loadModules()
-        const chat = makeChat({ message: [{ role: 'user', data: 'hello?' }] })
-        mocks.db.characters = [makeChar(chat)]
-        const { calls } = setupServer({})
-
-        await recovery.evaluatePendingSend(record({ createdAt: Date.now() - 30_000 }), new Set())
-
-        expect(get(pending.resumableSends).size).toBe(0)
-        expect(calls.some((c) => c.method === 'DELETE')).toBe(false)
-    })
-
-    test('a LIVE generation on the chat means the record protects an in-flight send — untouched', async () => {
-        const { recovery, pending, genState } = await loadModules()
-        const chat = makeChat({ message: [{ role: 'user', data: 'hello?' }] })
-        mocks.db.characters = [makeChar(chat)]
-        const { calls } = setupServer({})
-        genState.startGeneration('chat-1', 'gen-1', 'live')
-
-        await recovery.evaluatePendingSend(record(), new Set())
-
-        expect(get(pending.resumableSends).size).toBe(0)
-        expect(calls.some((c) => c.method === 'DELETE')).toBe(false)
-        genState.endGeneration('chat-1')
-    })
-
-    test('a send whose message landed (matching generationId) is concluded — no flag', async () => {
-        const { recovery, pending } = await loadModules()
-        const chat = makeChat({ message: [
-            { role: 'user', data: 'hello?' },
-            { role: 'char', data: 'answer', generationInfo: { generationId: 'gen-1' } },
-        ] })
-        mocks.db.characters = [makeChar(chat)]
-        setupServer({})
-
-        await recovery.evaluatePendingSend(record(), new Set())
-        expect(get(pending.resumableSends).size).toBe(0)
-    })
-
-    test('concluded records are cleared server-side', async () => {
-        const { recovery } = await loadModules()
-        const chat = makeChat({ message: [
-            { role: 'user', data: 'hello?' },
-            { role: 'char', data: 'answer', generationInfo: { generationId: 'gen-1' } },
-        ] })
-        mocks.db.characters = [makeChar(chat)]
-        const { calls } = setupServer({})
-
-        await recovery.evaluatePendingSend(record(), new Set())
-        // clear goes through the per-chat op chain (async) — wait for it
-        await vi.waitFor(() => {
-            expect(calls.some((c) => c.url === '/api/pending-sends/chat-1' && c.method === 'DELETE')).toBe(true)
-        })
-    })
-
-    test('a chat with a live/unclaimed job is left to job recovery — no flag', async () => {
-        const { recovery, pending } = await loadModules()
-        const chat = makeChat({ message: [{ role: 'user', data: 'hello?' }] })
-        mocks.db.characters = [makeChar(chat)]
-        setupServer({})
-
-        await recovery.evaluatePendingSend(record(), new Set(['chat-1']))
-        expect(get(pending.resumableSends).size).toBe(0)
-    })
-
-    test('anything after the user turn (reply, error block) means concluded — no flag', async () => {
-        const { recovery, pending } = await loadModules()
-        const chat = makeChat({ message: [
-            { role: 'user', data: 'hello?' },
-            { role: 'char', data: '```risuerror\nboom\n```' }, // no generationInfo
-        ] })
-        mocks.db.characters = [makeChar(chat)]
-        setupServer({})
-
-        await recovery.evaluatePendingSend(record(), new Set())
-        expect(get(pending.resumableSends).size).toBe(0)
-    })
-
-    test('missing chat clears silently', async () => {
-        const { recovery, pending } = await loadModules()
-        mocks.db.characters = []
-        const { calls } = setupServer({})
-
-        await recovery.evaluatePendingSend(record(), new Set())
-        expect(get(pending.resumableSends).size).toBe(0)
-        await vi.waitFor(() => {
-            expect(calls.some((c) => c.url === '/api/pending-sends/chat-1' && c.method === 'DELETE')).toBe(true)
-        })
-    })
-
-    test('discovery evaluates pending sends after job passes and notifies once', async () => {
-        const { recovery, pending } = await loadModules()
-        const chat = makeChat({ message: [{ role: 'user', data: 'hello?' }] })
-        mocks.db.characters = [makeChar(chat)]
-        setupServer({ pendingSends: [record()] })
-
-        await recovery.recoverModelJobs()
-
-        expect(get(pending.resumableSends).has('chat-1')).toBe(true)
-        expect(mocks.notifyInfo).toHaveBeenCalledTimes(1)
-        expect(String(mocks.notifyInfo.mock.calls[0][0])).toContain('Rina') // names the chat
-
-        // Second discovery (tab return): flag still unconsumed, record still
-        // listed — but the user already saw the notice. No re-toast.
-        await recovery.recoverModelJobs()
-        expect(mocks.notifyInfo).toHaveBeenCalledTimes(1)
-    })
-
-    test('a pending send whose chat has an ACTIVE job attaches instead of flagging', async () => {
-        vi.useFakeTimers()
-        const { recovery, pending, genState } = await loadModules()
-        const chat = makeChat({ message: [{ role: 'user', data: 'hello?' }] })
-        mocks.db.characters = [makeChar(chat)]
-        setupServer({
-            active: [makeJob({ status: 'running' })],
-            pendingSends: [record()],
-        })
-
-        await recovery.recoverModelJobs()
-
-        expect(get(pending.resumableSends).size).toBe(0)          // job recovery owns it
-        expect(genState.isChatGenerating('chat-1')).toBe(true)    // reattached as background
-        vi.useRealTimers()
     })
 })
 

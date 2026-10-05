@@ -193,6 +193,26 @@ it('refreshes mapped character and chat directories after renames and new chat c
     expect(reopened.exportLegacyDatabase()).toEqual(updated)
 })
 
+it('renames character and chat directories when only letter case changes', () => {
+    const { dataRoot, repo } = fixture()
+    repo.publishCharacterDirectoryMapping('char-1')
+    const updated = repo.exportLegacyDatabase()
+    updated.characters[0].name = 'alice'
+    updated.characters[0].chats[0].name = 'first chat'
+    repo.importLegacyDatabase(updated, { mode: 'replace' })
+
+    const mapping = repo.refreshCharacterDirectoryMapping('char-1')
+
+    expect(mapping.directory).toBe('alice')
+    expect(mapping.chats.find((chat: any) => chat.id === 'chat-1')?.directory).toBe('first chat')
+    expect(fs.readdirSync(path.join(dataRoot, 'characters'))).toContain('alice')
+    expect(fs.readdirSync(path.join(dataRoot, 'characters'))).not.toContain('Alice')
+    expect(fs.readdirSync(path.join(dataRoot, 'characters/alice/chats'))).toContain('first chat')
+    const reopened = createUserDataRepository({ dataRoot, allowDirectoryMapping: true })
+    expect(reopened.exportLegacyDatabase()).toEqual(updated)
+    expect(reopened.refreshCharacterDirectoryMapping('char-1').directory).toBe('alice')
+})
+
 it('numbers rename collisions', () => {
     const { dataRoot, repo } = fixture()
     repo.publishCharacterDirectoryMapping('char-1')

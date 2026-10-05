@@ -68,7 +68,7 @@ it('commits a delayed start trigger to A while B is selected', async () => {
     let finish!: (value: unknown) => void
     const pending = new Promise(resolve => { finish = resolve })
     const scope = { get chat(){ return character.chats.find(c=>c.id==='A')! }, set chat(value){ character.chats[character.chats.findIndex(c=>c.id==='A')] = value } }
-    const deps = {runTrigger:()=>pending, currentChar:character, setCurrentChat:(chat:typeof a)=>{character.chats[character.chatPage]=chat}, generationScope:scope, normalizeChat:(chat:typeof a)=>chat, makeMs:()=>[], endGeneration:()=>{}, clearPendingSend:()=>{}}
+    const deps = {runTrigger:()=>pending, currentChar:character, setCurrentChat:(chat:typeof a)=>{character.chats[character.chatPage]=chat}, generationScope:scope, normalizeChat:(chat:typeof a)=>chat, makeMs:()=>[], endGeneration:()=>{}}
     const run = new Function(...Object.keys(deps), `return async function(){let currentChat = currentChar.chats[0], ms=[], currentTokens=0; ${code}}`)(...Object.values(deps))
     const task = run()
     character.chatPage = 1
@@ -118,7 +118,7 @@ it.each(['success', 'off', 'balanced', 'strong'])('keeps %s response and streami
         dispatchCommittedChatOutput:async()=>{},pluginV2:{chatOutput:[]},
         findMessageIndexByChatId:(chat:any,id:string)=>chat.message.findIndex((m:any)=>m.chatId===id),
         attachScriptstateCheckpoint:()=>{},snapshotChatScriptstate:()=>({}),scriptstateBeforeResponse:{},
-        clearPendingSend:()=>{},endGeneration:()=>{},throwError:()=>{},getPartialPresetStreamText:()=>undefined,
+        endGeneration:()=>{},throwError:()=>{},getPartialPresetStreamText:()=>undefined,
         setTimeout,clearTimeout,requestAnimationFrame:(fn:()=>void)=>setTimeout(fn,0),cancelAnimationFrame:clearTimeout,
     }
     const run = new Function(...Object.keys(dependencies), `return async function(){let currentChat=generationScope.chat,result='',emoChanged=false,resendChat=false,outputMessageId; ${code};return result}`)(...Object.values(dependencies))

@@ -252,6 +252,38 @@ describe('journal recovery and trash', () => {
         expect(fs.readdirSync(path.join(root, '.journal'))).toHaveLength(0)
     })
 
+    it('recovers a case-only directory rename interrupted before its journal flag', () => {
+        const root = tempRoot()
+        atomicWriteFile(root, 'characters/Alice/metadata.json', Buffer.from('alice'))
+
+        expect(() => commitTransaction(root, [
+            { path: 'characters/Alice', moveTo: 'characters/alice' },
+            { path: 'characters/alice/package.json', data: Buffer.from('{"directory":"alice"}') },
+        ], { failAfterPublish: 1 })).toThrow(/simulated crash/i)
+        // Crash between the rename and persisting entry.completed.
+        const journalPath = path.join(root, '.journal', fs.readdirSync(path.join(root, '.journal')).find(name => name.endsWith('.json'))!)
+        const journal = JSON.parse(fs.readFileSync(journalPath, 'utf8'))
+        delete journal.entries[0].completed
+        fs.writeFileSync(journalPath, JSON.stringify(journal))
+
+        recoverTransactions(root)
+        expect(fs.readdirSync(path.join(root, 'characters'))).toEqual(['alice'])
+        expect(fs.readFileSync(path.join(root, 'characters/alice/metadata.json'), 'utf8')).toBe('alice')
+        expect(fs.readFileSync(path.join(root, 'characters/alice/package.json'), 'utf8')).toBe('{"directory":"alice"}')
+        expect(fs.readdirSync(path.join(root, '.journal'))).toHaveLength(0)
+    })
+
+    it('still rejects a differently named destination that links back to the source', () => {
+        const root = tempRoot()
+        atomicWriteFile(root, 'characters/alice/metadata.json', Buffer.from('alice'))
+        fs.symlinkSync(path.join(root, 'characters/alice'), path.join(root, 'characters/other'), 'junction')
+
+        expect(() => commitTransaction(root, [
+            { path: 'characters/alice', moveTo: 'characters/other' },
+        ])).toThrow(/destination already exists/)
+        expect(fs.readFileSync(path.join(root, 'characters/alice/metadata.json'), 'utf8')).toBe('alice')
+    })
+
     it.each(['presets', 'presets/preset-1.json'])('restores identical bytes after moving %s aside', movedPath => {
         const root = tempRoot()
         atomicWriteFile(root, 'presets/preset-1.json', Buffer.from('same-preset'))

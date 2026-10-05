@@ -17,7 +17,7 @@ import { get } from "svelte/store";
 import { registerMCPModule, unregisterMCPModule } from "src/ts/process/mcp/pluginmcp";
 import { getInlayAsset } from "src/ts/process/files/inlays";
 import { getLLMCache, searchLLMCache } from "src/ts/translator/translator";
-import { hasher } from "src/ts/parser/parser.svelte";
+import { hasher, risuChatParser, type CbsConditions } from "src/ts/parser/parser.svelte";
 import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "src/ts/model/types";
 import { readPersistentJson, removePersistentKey, writePersistentJson } from "src/ts/storage/persistentKv";
 import { endAllGenerations } from "src/ts/process/generationState";
@@ -1103,6 +1103,47 @@ const makeRisuaiAPIV3 = (iframe:HTMLIFrameElement,plugin:RisuPlugin) => {
                 }
             }
             return null;
+        },
+        parseRisuChat: async (text:string, options?:{
+            messageIndex?: number
+            role?: string
+            processRegex?: boolean
+            runVar?: boolean
+            rmVar?: boolean
+            tokenizeAccurate?: boolean
+            cbsConditions?: CbsConditions
+        }) => {
+            const char = DBState.db.characters[get(selectedCharID)];
+            if(!char){
+                throw new Error('No character selected');
+            }
+            const chat = char.chats?.[char.chatPage];
+            if(!chat){
+                throw new Error('No active chat found');
+            }
+            const chatID = options?.messageIndex ?? -1;
+            if(!Number.isInteger(chatID) || chatID < -1 || chatID >= chat.message.length){
+                throw new Error(`Invalid messageIndex: ${chatID}`);
+            }
+            const role = options?.role;
+            const cbsConditions:CbsConditions = {
+                ...(role ? { chatRole: role } : {}),
+                ...(options?.cbsConditions ?? {}),
+            };
+            const parsed = risuChatParser(text ?? '', {
+                chara: char,
+                chatID,
+                role,
+                runVar: options?.runVar,
+                rmVar: options?.rmVar,
+                tokenizeAccurate: options?.tokenizeAccurate,
+                cbsConditions,
+            });
+            if(!options?.processRegex){
+                return parsed;
+            }
+            const { processScriptFull } = await import('src/ts/process/scripts');
+            return (await processScriptFull(char, parsed, 'editprocess', chatID, cbsConditions)).data;
         },
         setChatToIndex: (characterIndex:number, chatIndex:number, chat:any) => {
             const db = DBState.db

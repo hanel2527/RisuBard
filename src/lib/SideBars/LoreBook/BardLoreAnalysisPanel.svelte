@@ -12,6 +12,8 @@
     import ManagerResizeHandles from 'src/lib/UI/GUI/ManagerResizeHandles.svelte'
     import RisuBardGrimoirePromptWorkspace from 'src/lib/Setting/Pages/RisuBardGrimoirePromptWorkspace.svelte'
     import BardLoreAnalysisHelp from './BardLoreAnalysisHelp.svelte'
+    import BardLoreLocalSplitReview from './BardLoreLocalSplitReview.svelte'
+    import { assessBardLoreBulkRisk, hasBardLoreListTitle } from 'src/ts/lorebook/bardLoreListStructure'
     import SolarIcon from './SolarIcon.svelte'
     import disketteIcon from 'src/assets/solar-bold/diskette-bold.svg'
     import magicWandIcon from 'src/assets/solar-bold/magic-wand-bold.svg'
@@ -112,6 +114,8 @@
     let plannedTargets = $state<BardLoreEntry[]>([])
     let availableTargets = $state<BardLoreEntry[]>([])
     let selectedTargetIds = $state(new Set<string>())
+    let localSplitId = $state<string | null>(null)
+    let localAppliedCount = $state(0)
     let kindFilter = $state<'all' | BardLoreKind>('all')
     let expandedTargetIds = $state(new Set<string>())
     let expandedFolderIds = $state(new Set<string>())
@@ -143,6 +147,11 @@
         .reduce((sum, batch) => sum + batch.targetIds.length, 0) ?? 0)
     const bardKinds: BardLoreKind[] = ['system', 'character', 'location', 'faction', 'item', 'event', 'concept', 'other']
     const visibleTargetEntries = $derived(availableTargets.filter((entry) => kindFilter === 'all' || entry.bard.kind === kindFilter))
+    const bulkRisks = $derived(new Map(availableTargets.flatMap(entry => {
+        const risk = assessBardLoreBulkRisk(entry, workingSettings.analysisOutputTokens)
+        return risk ? [[entry.id, risk] as const] : []
+    })))
+    const excludedBulkCount = $derived([...bulkRisks.keys()].filter(id => !selectedTargetIds.has(id)).length)
     const visibleTargetRows = $derived.by(() => {
         const visibleIds = new Set(visibleTargetEntries.map((entry) => entry.id))
         const folderKeys = new Set(visibleTargetEntries.map((entry) => entry.folder).filter(Boolean))
@@ -230,10 +239,12 @@
             normalizedSettings.analysisLinkedDepth,
         )
         availableTargets = targets
-        selectedTargetIds = new Set(targets.map((entry) => entry.id))
+        selectedTargetIds = new Set(targets.filter(entry => !assessBardLoreBulkRisk(entry, normalizedSettings.analysisOutputTokens)).map((entry) => entry.id))
+        localSplitId = null
+        localAppliedCount = 0
         const folderKeys = new Set(targets.map((entry) => entry.folder).filter(Boolean))
         expandedFolderIds = new Set(entries.filter((entry) => entry.mode === 'folder' && folderKeys.has(entry.key)).map((entry) => entry.id))
-        await prepareTargets(targets, normalizedSettings)
+        await replanSelectedTargets(normalizedSettings)
     }
 
     function openWorkbench() {
@@ -297,10 +308,10 @@
         qualityRepair = true
         open = true
         availableTargets = targets
-        selectedTargetIds = new Set(targets.map((entry) => entry.id))
+        selectedTargetIds = new Set(targets.filter(entry => !assessBardLoreBulkRisk(entry, workingSettings.analysisOutputTokens)).map((entry) => entry.id))
         const folderKeys = new Set(targets.map((entry) => entry.folder).filter(Boolean))
         expandedFolderIds = new Set(entries.filter((entry) => entry.mode === 'folder' && folderKeys.has(entry.key)).map((entry) => entry.id))
-        void prepareTargets(targets)
+        void replanSelectedTargets()
     }
 
     type AnalysisSettingKey =
@@ -368,7 +379,8 @@
         if (currentRun || analyzing) return
         const next = new Set(selectedTargetIds)
         for (const entry of availableTargets) {
-            if (selected) next.add(entry.id)
+            if (selected && !bulkRisks.has(entry.id)) next.add(entry.id)
+            else if (selected) continue
             else next.delete(entry.id)
         }
         selectedTargetIds = next
@@ -377,6 +389,7 @@
 
     function beginSelectionPaint(id: string, event: PointerEvent) {
         if (event.button !== 0 || currentRun || analyzing) return
+        if ((event.target as HTMLElement).closest('button, input, details, [data-bard-lore-local-split-review]')) return
         paintingSelection = !selectedTargetIds.has(id)
         paintedTargetIds = new Set([id])
         setTargetSelection(id, paintingSelection)
@@ -401,6 +414,15 @@
         if (next.has(id)) next.delete(id)
         else next.add(id)
         expandedTargetIds = next
+    }
+
+    function applyLocalEntries(next: BardLoreEntry[]) {
+        localAppliedCount = next.length - entries.length
+        onChange(next)
+        localSplitId = null
+        const byId = new Map(next.map(entry => [entry.id, entry]))
+        availableTargets = availableTargets.map(entry => byId.get(entry.id) ?? entry)
+        void replanSelectedTargets()
     }
 
     function toggleTargetFolder(id: string) {
@@ -1155,6 +1177,12 @@
                     <button type="button" class="secondary" data-bard-lore-analysis-select-all disabled={Boolean(currentRun)} onclick={() => selectVisibleTargets(true)}>{language.lorebookWorkspace.bardAnalysisSelectAll}</button>
                     <button type="button" class="secondary" data-bard-lore-analysis-select-none disabled={Boolean(currentRun)} onclick={() => selectVisibleTargets(false)}>{language.lorebookWorkspace.bardAnalysisSelectNone}</button>
                 </div>
+                {#if !currentRun && excludedBulkCount > 0}
+                    <p class="bulk-notice" data-bard-lore-bulk-notice role="status">{language.lorebookWorkspace.bardBulkExcluded(excludedBulkCount)}</p>
+                {/if}
+                {#if localAppliedCount > 0}
+                    <p class="bulk-notice" role="status">{language.lorebookWorkspace.bardLocalSplitApplied(localAppliedCount)}</p>
+                {/if}
             </div>
             <div class="target-columns" aria-hidden="true">
                 <span>{language.lorebookWorkspace.bardAnalysisColumnSelect}</span>
@@ -1174,6 +1202,7 @@
                             </div>
                         {:else}
                             {@const rowStatus = entryRunStatus(entry.id)}
+                            {@const bulkRisk = bulkRisks.get(entry.id)}
                             <div class="target-row" class:child={Boolean(entry.folder)} role="group" data-bard-lore-analysis-row={entry.id}
                                 data-bard-lore-analysis-target={entry.id} onpointerdown={(event) => beginSelectionPaint(entry.id, event)}
                                 onpointerenter={() => continueSelectionPaint(entry.id)}>
@@ -1193,6 +1222,18 @@
                                     <span>{kindLabel(entry.bard.kind)}</span>
                                     <span class:complete={rowStatus === 'complete'} class:failed={rowStatus === 'failed'}>{statusLabel(rowStatus)}</span>
                                 </div>
+                                {#if !currentRun && hasBardLoreListTitle(entry) && !entry.bard.derivedFromId}
+                                    <div class="bulk-entry-actions">
+                                        {#if bulkRisk}<small>{language.lorebookWorkspace.bardBulkEntryHint(bulkRisk.itemCount, bulkRisk.estimatedOutputTokens)}</small>{/if}
+                                        <button type="button" class="secondary" data-bard-lore-local-split-open={entry.id}
+                                            onpointerdown={(event) => event.stopPropagation()} onclick={() => localSplitId = localSplitId === entry.id ? null : entry.id}>
+                                            {language.lorebookWorkspace.bardLocalSplit}
+                                        </button>
+                                    </div>
+                                    {#if localSplitId === entry.id}
+                                        <BardLoreLocalSplitReview source={entry} {entries} onApply={applyLocalEntries} onClose={() => localSplitId = null} />
+                                    {/if}
+                                {/if}
                                 <div class="target-detail" hidden={!expandedTargetIds.has(entry.id)}>
                                     <small>{language.lorebookWorkspace.bardAnalysisKeys}: {entry.key || '—'}{entry.secondkey ? ` · ${entry.secondkey}` : ''}</small>
                                     <pre>{entry.content || language.lorebookWorkspace.bardAnalysisNoContent}</pre>
@@ -1310,6 +1351,9 @@
     .help-button { display: inline-grid; width: 1.3rem; min-width: 1.3rem; height: 1.3rem; min-height: 1.3rem; place-items: center; padding: 0; border-radius: 50%; background: var(--color-darkbg); color: var(--color-textcolor2); font-size: .7rem; line-height: 1; }
     .target-preview { grid-template-rows: auto auto minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; }
     .target-toolbar { display: grid; gap: .6rem; }
+    .bulk-notice { margin: 0; color: var(--color-textcolor2); font-size: .78rem; line-height: 1.5; overflow-wrap: anywhere; }
+    .bulk-entry-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: 0 .65rem .55rem; }
+    .bulk-entry-actions small { flex: 1; min-width: 10rem; color: var(--color-textcolor2); font-size: .72rem; line-height: 1.5; }
     .target-controls { display: flex; align-items: flex-end; flex-wrap: wrap; gap: .4rem; }
     .target-controls label { display: grid; min-width: 11rem; flex: 1; gap: .25rem; color: var(--color-textcolor2); font-size: .7rem; }
     .target-controls select { width: 100%; }
@@ -1365,16 +1409,18 @@
         :global(.bard-analysis-dialog) { overflow-y: auto; }
         :global(.bard-analysis-dialog .risu-modal-header) { padding-right: 2.5rem; }
         .analysis-header-actions { position: static; order: 3; justify-content: flex-end; margin-bottom: .25rem; }
-        .analysis-workbench { grid-template-columns: minmax(0, 1fr); height: auto; min-height: 0; }
+        .analysis-workbench { grid-template-columns: minmax(0, 1fr); height: auto; min-height: 0; flex: none; overflow: visible; gap: .75rem; }
         .analysis-splitter { display: none; }
         .settings-pane { grid-template-rows: auto auto; max-height: none; gap: .75rem; overflow: visible; padding-right: 0; }
         .settings-row-splitter { display: none; }
-        .target-preview { min-height: 25rem; }
+        .target-preview { min-height: 25rem; grid-template-rows: auto auto minmax(12rem, 65dvh); }
     }
     @media (max-width: 700px) {
         .coverage-grid, .estimate-grid, .run-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .launcher-heading, .review-heading { align-items: stretch; flex-direction: column; }
-        .target-columns, .target-grid { grid-template-columns: 3.2rem minmax(8rem, 1fr) 5.5rem 5.5rem; }
+        .target-columns, .target-grid { grid-template-columns: 2rem minmax(0, 1fr) 2.8rem 2.8rem; gap: .25rem; padding-inline: .2rem; }
+        .target-row, .target-toolbar, .section-heading > div { min-width: 0; }
+        .target-controls label { min-width: min(100%, 11rem); }
         .analysis-header-actions button span { display: none; }
     }
 </style>

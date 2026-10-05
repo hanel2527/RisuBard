@@ -14,6 +14,7 @@ import { exportCharacterCard, importCharacterProcess } from "../characterCards"
 import { hasher } from "../parser/parser.svelte"
 import { importAsset, runImport } from "../importSession"
 import { ImportCancelled, type ImportTransaction } from "../storage/importTransaction"
+import { yieldImportTask } from "../importTaskYield"
 
 export interface MCPModule{
     url: string
@@ -259,7 +260,7 @@ export async function readModule(buf:Buffer, transaction?: ImportTransaction):Pr
 
         for (let offset = 0; offset < tasks.length; offset += maxAssetDecodeBatchSize) {
             transaction?.check()
-            await new Promise(resolve => setTimeout(resolve, 0))
+            await yieldImportTask()
             const decodeGroup = tasks.slice(offset, offset + maxAssetDecodeBatchSize)
             let decoded: DecodedAssetTask[]
             try {

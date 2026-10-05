@@ -6,6 +6,7 @@ import { hasher } from "../parser/parser.svelte";
 import { hubURL } from "../characterCards";
 import { AssetImportBatcher } from "../storage/assetImportBatcher";
 import type { ImportTransaction } from '../storage/importTransaction';
+import { yieldImportTask } from '../importTaskYield';
 
 // File size and chunk size constants
 const MAX_ASSET_SIZE_BYTES = 100 * 1024 * 1024; // 100 MiB
@@ -311,7 +312,7 @@ export class CharXImporter{
             this.unzip.push(data.subarray(offset, offset + parserChunkSize), false)
             await this.assetBatcher.waitForCapacity()
             // Permit cancel clicks even for in-memory or highly compressed ZIPs.
-            await new Promise(resolve => setTimeout(resolve, 0))
+            await yieldImportTask()
         }
         if (final) this.unzip.push(new Uint8Array(0), true)
         this.transaction?.check()

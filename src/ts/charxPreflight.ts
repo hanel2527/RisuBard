@@ -1,3 +1,5 @@
+import { yieldImportTask } from './importTaskYield'
+
 export function classifyCharx(name: string, bytes: number, assets: number): 'module' | 'character' | 'ask' {
     if (name.toLowerCase().endsWith('.module.charx')) return 'module'
     return bytes >= 150_000_000 || assets >= 5000 ? 'ask' : 'character'
@@ -64,7 +66,7 @@ export async function inspectCharx(source: Uint8Array | Blob, check = () => {}) 
                 }
                 if (found || scanStart === 0) break
                 scanEnd = scanStart + 55
-                await new Promise(resolve => setTimeout(resolve, 0))
+                await yieldImportTask()
             }
             if (!found) throw new Error('Invalid CHARX ZIP64 directory')
         }
@@ -99,7 +101,7 @@ export async function inspectCharx(source: Uint8Array | Blob, check = () => {}) 
         if (!name.endsWith('/') && !name.toLowerCase().endsWith('.json') && name !== 'module.risum') assets++
         position += 46 + nameLength + entry.getUint16(30, true) + entry.getUint16(32, true)
         if (position > directoryOffset + directorySize) throw new Error('Truncated CHARX ZIP directory')
-        if (i % 200 === 0) await new Promise(resolve => setTimeout(resolve, 0))
+        if (i % 200 === 0) await yieldImportTask()
     }
     return { bytes: size, assets }
 }
