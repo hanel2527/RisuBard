@@ -2,7 +2,10 @@ import type { NarrativeMemoryWikiMarkdown } from './memoryWiki'
 import { isStoryArcTitle } from './wikiWritingLanguage'
 import { createEventOrder, hasOnlyInheritedSources, type EventOrderMessage } from './eventOrder'
 
-type WikiDocument = NarrativeMemoryWikiMarkdown['documents'][number]
+// The dock passes catalog entries; the arc plot body may still be loading.
+type WikiDocument = Omit<NarrativeMemoryWikiMarkdown['documents'][number], 'content'> & {
+    content?: string
+}
 
 const checkpointPattern = /<!--\s*risubard-story-arc-checkpoint:\s*([A-Za-z0-9._:-]{1,200})\s*-->/gu
 const wikiLinkPattern = /\[\[([^\]#|]+)(?:#[^|\]]*)?(?:\|([^\]]+))?\]\]/gu
@@ -14,6 +17,8 @@ export interface StoryArcLink {
 
 export interface StoryArcView {
     document: WikiDocument | undefined
+    /** The arc plot exists but its body has not been loaded yet. */
+    bodyPending: boolean
     checkpointSize: number
     pendingEventCount: number
     remainingEventCount: number
@@ -54,7 +59,8 @@ export function buildStoryArcView(
     const checkpointSize = Math.max(1, Math.round(requestedCheckpointSize))
     const document = findStoryArcDocument(documents)
     const events = activeEvents(documents, messages)
-    const checkpoint = document ? storyArcCheckpoint(document.content) : undefined
+    const checkpoint = document?.content !== undefined
+        ? storyArcCheckpoint(document.content) : undefined
     const checkpointIndex = checkpoint
         ? events.findIndex((event) => event.id === checkpoint)
         : -1
@@ -68,6 +74,7 @@ export function buildStoryArcView(
 
     return {
         document,
+        bodyPending: document !== undefined && document.content === undefined,
         checkpointSize,
         pendingEventCount,
         remainingEventCount: Math.max(0, checkpointSize - pendingEventCount),

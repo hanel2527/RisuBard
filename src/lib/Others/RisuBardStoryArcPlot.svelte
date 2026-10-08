@@ -1,7 +1,7 @@
 <script lang="ts">
     import markdownit from 'markdown-it'
     import { ArrowRightIcon, PencilIcon, RouteIcon } from '@lucide/svelte'
-    import type { NarrativeMemoryWikiMarkdown } from 'src/ts/risubard/memoryWiki'
+    import type { WikiCatalogDocument } from 'src/ts/risubard/memoryWiki'
     import type { EventOrderMessage } from 'src/ts/risubard/eventOrder'
     import {
         buildStoryArcView,
@@ -9,10 +9,10 @@
         storyArcDisplayMarkdown,
     } from 'src/ts/risubard/storyArcView'
 
-    type WikiDocument = NarrativeMemoryWikiMarkdown['documents'][number]
+    type WikiDocument = WikiCatalogDocument
 
     interface Props {
-        documents: NarrativeMemoryWikiMarkdown['documents']
+        documents: readonly WikiCatalogDocument[]
         messages?: readonly EventOrderMessage[]
         checkpointSize: number
         enabled: boolean
@@ -27,10 +27,10 @@
         typographer: true,
     })
     let view = $derived(buildStoryArcView(documents, checkpointSize, messages))
-    let links = $derived(view.document
+    let links = $derived(view.document?.content !== undefined
         ? extractStoryArcLinks(view.document.content)
         : [])
-    let renderedMarkdown = $derived(view.document
+    let renderedMarkdown = $derived(view.document?.content !== undefined
         ? markdownRenderer.render(storyArcDisplayMarkdown(view.document.content))
         : '')
 
@@ -57,7 +57,9 @@
                 <p>긴 이야기의 줄기와 전환점, 아직 풀리지 않은 흐름을 한눈에 봅니다.</p>
             </div>
             <span class:paused={!enabled} class="arc-status">
-                {#if !enabled}
+                {#if view.bodyPending}
+                    불러오는 중
+                {:else if !enabled}
                     자동 갱신 꺼짐
                 {:else if view.remainingEventCount === 0}
                     다음 위키 갱신 대기 중

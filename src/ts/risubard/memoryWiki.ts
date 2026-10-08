@@ -63,6 +63,24 @@ export interface NarrativeMemoryWikiMarkdown {
     }>
 }
 
+export type NarrativeMemoryWikiDocument = NarrativeMemoryWikiMarkdown['documents'][number]
+
+/**
+ * Wiki dock entry: catalog metadata, with the body once it has been read.
+ * Catalog entries of non-event pages carry no source IDs until then.
+ */
+export type WikiCatalogDocument = Omit<NarrativeMemoryWikiDocument, 'content'> & {
+    content?: string
+}
+
+export interface NarrativeMemoryWikiCatalog {
+    mode: 'markdown'
+    observability?: undefined
+    wikiPath: string
+    health: NarrativeMemoryWikiMarkdown['health']
+    documents: WikiCatalogDocument[]
+}
+
 export type MarkdownWikiContextMode = 'always' | 'auto' | 'never'
 
 export type MarkdownWikiDocumentType = 'event' | 'character' | 'location'
@@ -300,6 +318,224 @@ function parseV1State(
     return { facts, events }
 }
 
+function parseMarkdownWikiDocument(document: unknown, catalog = false): WikiCatalogDocument {
+    const documentKeys = [
+            'id',
+            'type',
+            'status',
+            'title',
+            'relativePath',
+            'sourceMessageIds',
+            'updated',
+            ...(catalog ? [] : ['content']),
+            'links',
+            'contextMode',
+            'contentHash',
+        ]
+    if (!isRecord(document)
+        || !documentKeys.every((key) => key in document)
+        || Object.keys(document).some((key) => ![
+            ...documentKeys, 'created', 'authoring',
+            'supersededBy', 'reviewStatus',
+            'reviewBaseContent', 'aliases', 'retrievalMetadata',
+        ].includes(key))
+        || ![
+            'event', 'character', 'location', 'scene', 'faction',
+            'creature', 'item', 'concept', 'other',
+        ].includes(
+            String(document.type)
+        )
+        || !['active', 'superseded', 'retracted'].includes(
+            String(document.status)
+        )
+        || (document.status === 'superseded'
+            && typeof document.supersededBy !== 'string')
+        || !Array.isArray(document.sourceMessageIds)
+        || !document.sourceMessageIds.every(
+            (id) => typeof id === 'string' && id.length > 0
+        )
+        || !Array.isArray(document.links)
+        || !document.links.every(
+            (link) => typeof link === 'string'
+        )
+        || (document.aliases !== undefined
+            && (!Array.isArray(document.aliases)
+                || !document.aliases.every((alias) =>
+                    typeof alias === 'string')))
+        || (document.created !== undefined
+            && typeof document.created !== 'string')
+        || (document.authoring !== undefined
+            && !['automatic', 'ai-assisted', 'manual'].includes(
+                String(document.authoring)
+            ))
+        || (document.reviewStatus !== undefined
+            && !['unreviewed', 'reviewed'].includes(
+                String(document.reviewStatus)
+            ))
+        || (document.reviewBaseContent !== undefined
+            && typeof document.reviewBaseContent !== 'string')
+        || !['always', 'auto', 'never'].includes(
+            String(document.contextMode)
+        )
+        || typeof document.contentHash !== 'string'
+        || document.contentHash.length === 0) {
+        throw new Error('Invalid RisuBard Markdown wiki view')
+    }
+    return {
+        id: requireString(document.id),
+        type: document.type as
+            NarrativeMemoryWikiMarkdown['documents'][number]['type'],
+        status: document.status as 'active' | 'superseded' | 'retracted',
+        title: requireString(document.title),
+        aliases: document.aliases === undefined
+            ? []
+            : document.aliases as string[],
+        relativePath: requireString(document.relativePath),
+        sourceMessageIds: document.sourceMessageIds,
+        updated: requireString(document.updated),
+        ...(catalog ? {} : { content: requireString(document.content) }),
+        links: document.links,
+        contextMode: document.contextMode as MarkdownWikiContextMode,
+        contentHash: document.contentHash,
+        ...(document.retrievalMetadata === undefined ? {} : {
+            retrievalMetadata: normalizeMemoryRetrievalMetadata(document.retrievalMetadata),
+        }),
+        ...(document.supersededBy === undefined
+            ? {}
+            : { supersededBy: document.supersededBy as string }),
+        ...(document.created === undefined
+            ? {}
+            : { created: requireString(document.created) }),
+        ...(document.authoring === undefined
+            ? {}
+            : { authoring: document.authoring as
+                'automatic' | 'ai-assisted' | 'manual' }),
+        ...(document.reviewStatus === undefined ? {} : {
+            reviewStatus: document.reviewStatus as
+                'unreviewed' | 'reviewed',
+        }),
+        ...(document.reviewBaseContent === undefined ? {} : {
+            reviewBaseContent: document.reviewBaseContent as string,
+        }),
+    }
+}
+
+type WikiScopeRequest = {
+    characterId: string
+    chatId: string
+    fetchImpl: typeof fetch
+    createAuth(): Promise<string>
+    signal?: AbortSignal
+}
+
+async function postWikiScope(
+    input: WikiScopeRequest,
+    path: string,
+    extra: Record<string, unknown> = {}
+): Promise<Record<string, unknown>> {
+    const response = await invokeBrowserFetch(input.fetchImpl, path, {
+        method: 'POST',
+        credentials: 'same-origin',
+        signal: input.signal,
+        headers: {
+            'content-type': 'application/json',
+            'risu-auth': await input.createAuth(),
+        },
+        body: JSON.stringify({ characterId: input.characterId, chatId: input.chatId, ...extra }),
+    })
+    if (!response.ok) {
+        throw new Error(`RisuBard wiki request failed with status ${response.status}`)
+    }
+    const value: unknown = await response.json()
+    if (!isRecord(value)) throw new Error('Invalid RisuBard wiki response')
+    return value
+}
+
+function parseWikiHealth(value: unknown): NarrativeMemoryWikiMarkdown['health'] {
+    if (!isRecord(value)
+        || !Array.isArray(value.danglingLinks)
+        || !value.danglingLinks.every((item) => isRecord(item)
+            && typeof item.sourceId === 'string' && typeof item.target === 'string')
+        || !Array.isArray(value.unlinkedDocumentIds)
+        || !value.unlinkedDocumentIds.every((id) => typeof id === 'string')
+        || (value.duplicatePassages !== undefined
+            && (!Array.isArray(value.duplicatePassages)
+                || !value.duplicatePassages.every((item) => isRecord(item)
+                    && Array.isArray(item.documentIds) && item.documentIds.length === 2
+                    && item.documentIds.every((id) => typeof id === 'string'))))) {
+        throw new Error('Invalid RisuBard wiki health')
+    }
+    return {
+        danglingLinks: value.danglingLinks as Array<{ sourceId: string; target: string }>,
+        unlinkedDocumentIds: value.unlinkedDocumentIds as string[],
+        duplicatePassages: (value.duplicatePassages ?? []) as Array<{ documentIds: [string, string] }>,
+    }
+}
+
+/** Wiki dock table of contents: page metadata without bodies. */
+export async function loadNarrativeMemoryWikiCatalog(
+    input: WikiScopeRequest
+): Promise<NarrativeMemoryWikiCatalog> {
+    const value = await postWikiScope(input, '/api/risubard/memory/catalog')
+    if (value.mode !== 'markdown' || !Array.isArray(value.documents)) {
+        throw new Error('Invalid RisuBard wiki catalog')
+    }
+    return {
+        mode: 'markdown',
+        wikiPath: requireString(value.wikiPath),
+        health: parseWikiHealth(value.health),
+        documents: value.documents.map((document) => parseMarkdownWikiDocument(document, true)),
+    }
+}
+
+/** Full pages for the requested IDs (at most 256 per request). */
+export async function loadWikiDocumentBodies(
+    input: WikiScopeRequest & { documentIds: readonly string[] }
+): Promise<NarrativeMemoryWikiDocument[]> {
+    const documents: NarrativeMemoryWikiDocument[] = []
+    for (let offset = 0; offset < input.documentIds.length; offset += 256) {
+        const value = await postWikiScope(input, '/api/risubard/memory/wiki/documents', {
+            documentIds: input.documentIds.slice(offset, offset + 256),
+        })
+        if (!Array.isArray(value.documents)) throw new Error('Invalid RisuBard wiki documents')
+        documents.push(...value.documents.map((document) =>
+            parseMarkdownWikiDocument(document) as NarrativeMemoryWikiDocument))
+    }
+    return documents
+}
+
+/** IDs of pages whose title, aliases, path or body contain the query. */
+export async function searchWikiDocuments(
+    input: WikiScopeRequest & { query: string }
+): Promise<string[]> {
+    const value = await postWikiScope(input, '/api/risubard/memory/wiki/search', { query: input.query })
+    if (!Array.isArray(value.documentIds)
+        || !value.documentIds.every((id) => typeof id === 'string')) {
+        throw new Error('Invalid RisuBard wiki search')
+    }
+    return value.documentIds as string[]
+}
+
+/** Asks the server to parse the wiki ahead of the first dock open. */
+export async function warmWikiCatalog(input: WikiScopeRequest): Promise<void> {
+    await postWikiScope(input, '/api/risubard/memory/wiki/warm')
+}
+
+/** Story-summary bullets of active events, keyed by event ID. */
+export async function loadWikiStorySummaries(
+    input: WikiScopeRequest
+): Promise<Map<string, string[]>> {
+    const value = await postWikiScope(input, '/api/risubard/memory/wiki/story')
+    if (!Array.isArray(value.entries)) throw new Error('Invalid RisuBard wiki story')
+    return new Map(value.entries.map((entry) => {
+        if (!isRecord(entry) || typeof entry.id !== 'string' || !Array.isArray(entry.summary)
+            || !entry.summary.every((item) => typeof item === 'string')) {
+            throw new Error('Invalid RisuBard wiki story')
+        }
+        return [entry.id, entry.summary as string[]]
+    }))
+}
+
 export async function loadNarrativeMemoryWiki(input: {
     characterId: string
     chatId: string
@@ -376,107 +612,8 @@ export async function loadNarrativeMemoryWiki(input: {
                     documentIds: [string, string]
                 }>,
             },
-            documents: value.documents.map((document) => {
-                const documentKeys = [
-                        'id',
-                        'type',
-                        'status',
-                        'title',
-                        'relativePath',
-                        'sourceMessageIds',
-                        'updated',
-                        'content',
-                        'links',
-                        'contextMode',
-                        'contentHash',
-                    ]
-                if (!isRecord(document)
-                    || !documentKeys.every((key) => key in document)
-                    || Object.keys(document).some((key) => ![
-                        ...documentKeys, 'created', 'authoring',
-                        'supersededBy', 'reviewStatus',
-                        'reviewBaseContent', 'aliases', 'retrievalMetadata',
-                    ].includes(key))
-                    || ![
-                        'event', 'character', 'location', 'scene', 'faction',
-                        'creature', 'item', 'concept', 'other',
-                    ].includes(
-                        String(document.type)
-                    )
-                    || !['active', 'superseded', 'retracted'].includes(
-                        String(document.status)
-                    )
-                    || (document.status === 'superseded'
-                        && typeof document.supersededBy !== 'string')
-                    || !Array.isArray(document.sourceMessageIds)
-                    || !document.sourceMessageIds.every(
-                        (id) => typeof id === 'string' && id.length > 0
-                    )
-                    || !Array.isArray(document.links)
-                    || !document.links.every(
-                        (link) => typeof link === 'string'
-                    )
-                    || (document.aliases !== undefined
-                        && (!Array.isArray(document.aliases)
-                            || !document.aliases.every((alias) =>
-                                typeof alias === 'string')))
-                    || (document.created !== undefined
-                        && typeof document.created !== 'string')
-                    || (document.authoring !== undefined
-                        && !['automatic', 'ai-assisted', 'manual'].includes(
-                            String(document.authoring)
-                        ))
-                    || (document.reviewStatus !== undefined
-                        && !['unreviewed', 'reviewed'].includes(
-                            String(document.reviewStatus)
-                        ))
-                    || (document.reviewBaseContent !== undefined
-                        && typeof document.reviewBaseContent !== 'string')
-                    || !['always', 'auto', 'never'].includes(
-                        String(document.contextMode)
-                    )
-                    || typeof document.contentHash !== 'string'
-                    || document.contentHash.length === 0) {
-                    throw new Error('Invalid RisuBard Markdown wiki view')
-                }
-                return {
-                    id: requireString(document.id),
-                    type: document.type as
-                        NarrativeMemoryWikiMarkdown['documents'][number]['type'],
-                    status: document.status as 'active' | 'superseded' | 'retracted',
-                    title: requireString(document.title),
-                    aliases: document.aliases === undefined
-                        ? []
-                        : document.aliases as string[],
-                    relativePath: requireString(document.relativePath),
-                    sourceMessageIds: document.sourceMessageIds,
-                    updated: requireString(document.updated),
-                    content: requireString(document.content),
-                    links: document.links,
-                    contextMode: document.contextMode as MarkdownWikiContextMode,
-                    contentHash: document.contentHash,
-                    ...(document.retrievalMetadata === undefined ? {} : {
-                        retrievalMetadata: normalizeMemoryRetrievalMetadata(document.retrievalMetadata),
-                    }),
-                    ...(document.supersededBy === undefined
-                        ? {}
-                        : { supersededBy: document.supersededBy as string }),
-                    ...(document.created === undefined
-                        ? {}
-                        : { created: requireString(document.created) }),
-                    ...(document.authoring === undefined
-                        ? {}
-                        : { authoring: document.authoring as
-                            'automatic' | 'ai-assisted' | 'manual' }),
-                    ...(document.reviewStatus === undefined ? {} : {
-                        reviewStatus: document.reviewStatus as
-                            'unreviewed' | 'reviewed',
-                    }),
-                    ...(document.reviewBaseContent === undefined ? {} : {
-                        reviewBaseContent: document.reviewBaseContent as string,
-                    }),
-                }
-            }),
+            documents: value.documents.map((document) =>
+                parseMarkdownWikiDocument(document) as NarrativeMemoryWikiDocument),
         }
     }
     if (!validBaseline(value.baseline)) {

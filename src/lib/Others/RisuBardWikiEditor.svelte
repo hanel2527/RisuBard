@@ -39,15 +39,18 @@
         trashWikiDocument,
         type MarkdownWikiDocumentType,
         type NarrativeMemoryWikiMarkdown,
+        type WikiCatalogDocument,
     } from 'src/ts/risubard/memoryWiki'
-    import { buildWikiFileTree, getRecentlyUpdatedWikiDocumentIds } from 'src/ts/risubard/wikiFileTree'
+    import { matchesWikiSearch } from 'src/ts/risubard/wikiSearch'
+    import { buildWikiFileTree, getRecentlyUpdatedWikiDocumentIds, type WikiFileTreeNode } from 'src/ts/risubard/wikiFileTree'
     import { publishRisuBardMemoryActivity } from 'src/ts/risubard/memoryActivity'
     import { copyWikiDocumentToLorebook } from 'src/ts/risubard/wikiLorebookCopy'
     import { normalizeMemoryWikiTreeHeight } from 'src/ts/risubard/memoryWikiLayout'
     import type { StorySourceRef } from 'src/ts/risubard/storySoFar'
     import type { EventOrderMessage } from 'src/ts/risubard/eventOrder'
 
-    type WikiDocument = NarrativeMemoryWikiMarkdown['documents'][number]
+    // Catalog entries from the dock carry no body until it has been fetched.
+    type WikiDocument = WikiCatalogDocument
     const contextLabels = {
         always: '항상 컨텍스트에 포함',
         auto: '관련 있을 때 포함',
@@ -68,6 +71,10 @@
         onFocusModeChange?: (focused: boolean) => void
         onNavigateSource?: (source: StorySourceRef) => void
         highlightedDocumentIds?: string[] | null
+        /** Asks the dock to fetch a body missing from a catalog entry. */
+        onRequestBody?: (documentId: string) => void
+        /** Server-side full-text search; without it the loaded bodies are searched. */
+        onSearch?: (query: string) => Promise<Set<string>>
     }
 
     let {
@@ -86,6 +93,8 @@
         onFocusModeChange,
         onNavigateSource,
         highlightedDocumentIds = null,
+        onRequestBody,
+        onSearch,
     }: Props = $props()
     let creating = $state(false)
     let type = $state<MarkdownWikiDocumentType>('character')
@@ -114,6 +123,10 @@
     )
     let searchDraft = $state('')
     let searchQuery = $state('')
+    let searchMatchIds = $state<Set<string> | null>(null)
+    // Long chats put thousands of events in one folder; render them in pages.
+    const folderPageSize = 100
+    let folderLimits = $state<Record<string, number>>({})
     let markdownTextarea = $state<HTMLTextAreaElement | null>(null)
     let treeHeight = $state(normalizeMemoryWikiTreeHeight(undefined))
     let restoredTreeExpanded = false
@@ -149,18 +162,10 @@
         }
     }
 
-    function normalizeSearchText(value: string): string {
-        return value.normalize('NFKC').toLocaleLowerCase()
-    }
-
     function documentMatchesSearch(document: WikiDocument, query: string): boolean {
         if (!query) return true
-        return normalizeSearchText([
-            document.title,
-            ...(document.aliases ?? []),
-            document.relativePath,
-            document.content,
-        ].join('\n')).includes(normalizeSearchText(query))
+        if (searchMatchIds) return searchMatchIds.has(document.id)
+        return matchesWikiSearch({ ...document, content: document.content ?? '' }, query)
     }
 
     function renderHighlightedText(value: string, query: string): string {
@@ -201,6 +206,19 @@
     async function applyWikiSearch(event?: SubmitEvent) {
         event?.preventDefault()
         searchQuery = searchDraft.trim()
+        folderLimits = {}
+        searchMatchIds = null
+        if (searchQuery && onSearch) {
+            const query = searchQuery
+            try {
+                const matched = await onSearch(query)
+                if (query !== searchQuery) return
+                searchMatchIds = matched
+            }
+            catch (cause) {
+                error = cause instanceof Error ? cause.message : String(cause)
+            }
+        }
         if (searchQuery) {
             const matches = documents.filter((document) =>
                 documentMatchesSearch(document, searchQuery)
@@ -274,6 +292,14 @@
     let tree = $derived(buildWikiFileTree(filteredDocuments, messages).filter((node) =>
         !searchQuery || node.kind === 'file' || node.children.length > 0
     ))
+    function visibleFolderChildren(path: string, children: WikiFileTreeNode[]) {
+        const selectedIndex = children.findIndex((child) =>
+            child.kind === 'file' && child.documentId === selectedId)
+        return children.slice(0, Math.max(folderLimits[path] ?? folderPageSize, selectedIndex + 1))
+    }
+    function showMoreInFolder(path: string, shown: number) {
+        folderLimits = { ...folderLimits, [path]: shown + folderPageSize }
+    }
     let recentlyUpdatedIds = $derived(highlightedDocumentIds === null
         ? getRecentlyUpdatedWikiDocumentIds(documents)
         : new Set(highlightedDocumentIds))
@@ -286,7 +312,9 @@
     let selected = $derived(
         documents.find((document) => document.id === selectedId) ?? null
     )
-    let readOnly = $derived(locked)
+    // A catalog entry was selected and its body is still on the way.
+    let bodyPending = $derived(!creating && !!selected && selected.content === undefined)
+    let readOnly = $derived(locked || bodyPending)
     let contextDocument = $derived(
         documents.find((document) => document.id === contextDocumentId) ?? null
     )
@@ -298,6 +326,21 @@
             || markdown !== loadedMarkdown))
 
     function loadDocument(document: WikiDocument) {
+        if (document.content === undefined) {
+            // Show the selection at once; the body arrives through the documents prop.
+            selectedId = document.id
+            creating = false
+            type = document.type
+            title = document.title
+            aliasesText = (document.aliases ?? []).join(', ')
+            markdown = ''
+            loadedDocumentId = ''
+            error = ''
+            notice = ''
+            wikiLinkDiagnostic = null
+            onRequestBody?.(document.id)
+            return
+        }
         selectedId = document.id
         creating = false
         type = document.type
@@ -597,8 +640,8 @@
     }
 
     async function copySelectedToLorebook() {
-        if (!selected || dirty || saving) return
-        const target = selected
+        if (!selected || dirty || saving || selected.content === undefined) return
+        const target = { title: selected.title, content: selected.content }
         const character = DBState.db.characters.find((item) =>
             item.chaId === characterId
         )
@@ -626,7 +669,7 @@
         const previousLorebooks = character.globalLore
         const result = copyWikiDocumentToLorebook(
             character.globalLore,
-            { title: target.title, content: target.content },
+            target,
             policy,
             v4
         )
@@ -658,6 +701,8 @@
         const current = documents.find((document) => document.id === selectedId)
             ?? documents[0]
         if (creating || !current) return
+        if (current.content === undefined && dirty
+            && current.contentHash !== loadedContentHash) onRequestBody?.(current.id)
         const incomingType = current.type
         const matchesIncoming = title === current.title
             && aliasesText === (current.aliases ?? []).join(', ')
@@ -733,14 +778,16 @@
         {/if}
         {#each tree as node (node.path)}
             {#if node.kind === 'folder'}
+                {@const visibleChildren = visibleFolderChildren(node.path, node.children)}
                 <details open class="tree-folder">
                     <summary class:locked={node.readOnly} class="folder-row">
                         <FolderIcon size={14} />
                         <span>{node.name}</span>
+                        {#if node.children.length > 0}<span class="folder-count">{node.children.length.toLocaleString()}</span>{/if}
                         {#if node.readOnly}<FileLock2Icon size={12} />{/if}
                     </summary>
                     <div class="folder-children">
-                        {#each node.children as child (child.path)}
+                        {#each visibleChildren as child (child.path)}
                             {#if child.kind === 'file'}
                                 <div
                                     class="file-row"
@@ -770,6 +817,17 @@
                                 </div>
                             {/if}
                         {/each}
+                        {#if visibleChildren.length < node.children.length}
+                            <button
+                                type="button"
+                                class="folder-more"
+                                data-wiki-folder-more={node.path}
+                                onclick={() => showMoreInFolder(node.path, visibleChildren.length)}
+                            >
+                                {Math.min(folderPageSize, node.children.length - visibleChildren.length).toLocaleString()}개 더 보기
+                                <span>남은 {(node.children.length - visibleChildren.length).toLocaleString()}개</span>
+                            </button>
+                        {/if}
                     </div>
                 </details>
             {:else}
@@ -963,6 +1021,7 @@
         {#if selected?.status === 'retracted' || readOnly || dirty || selected?.type === 'event'}
             <div class="document-meta">
             {#if selected?.status === 'retracted'}<span class="readonly-badge">철회된 사건 기록</span>
+            {:else if bodyPending}<span class="readonly-badge" data-wiki-body-loading>본문 불러오는 중</span>
             {:else if readOnly}<span class="readonly-badge">위키 작업 잠김</span>
             {:else if dirty}<span class="dirty-badge">저장하지 않은 변경</span>
             {:else if selected?.type === 'event'}<span>사용자 편집 사건</span>{/if}
@@ -999,6 +1058,7 @@
             >{wikiLinkDiagnostic.message}</span>
             {:else if notice}<span class="success">{notice}</span>
             {:else if selected?.status === 'retracted'}<span>철회되어 활성 컨텍스트와 자동 처리에서 제외된 감사 기록입니다.</span>
+            {:else if bodyPending}<span>문서 본문을 불러오는 중입니다.</span>
             {:else if readOnly}<span>현재 위키 작업이 끝난 뒤 수정할 수 있습니다.</span>
             {:else if selected?.type === 'event'}<span>수정 내용은 지금까지의 이야기에 반영되며 연결된 채팅 출처는 유지됩니다.</span>{/if}
         </div>
@@ -1057,6 +1117,11 @@
     .folder-row { color: var(--risu-theme-textcolor2); font-weight: 700; }
     .folder-row { cursor: pointer; list-style: none; }
     .folder-row.locked { opacity: .72; }
+    .folder-count { margin-left: auto; color: var(--risu-theme-textcolor2); font: 600 .62rem/1 ui-monospace, monospace; font-variant-numeric: tabular-nums; opacity: .8; }
+    .folder-more { width: 100%; display: flex; align-items: baseline; gap: .45rem; margin: .2rem 0 .35rem; padding: .42rem .45rem; border: 1px dashed color-mix(in srgb, var(--risu-theme-primary) 34%, var(--risu-theme-darkborderc)); border-radius: .32rem; color: var(--risu-theme-textcolor); background: transparent; font-size: .72rem; font-weight: 700; text-align: left; cursor: pointer; }
+    .folder-more span { color: var(--risu-theme-textcolor2); font-size: .65rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+    .folder-more:hover { background: color-mix(in srgb, var(--risu-theme-primary) 13%, transparent); }
+    .folder-more:focus-visible { outline: 2px solid color-mix(in srgb, var(--risu-theme-primary) 70%, transparent); outline-offset: 1px; }
     .folder-children { margin-left: .7rem; padding-left: .35rem; border-left: 1px solid color-mix(in srgb, var(--risu-theme-primary) 20%, var(--risu-theme-darkborderc)); }
     .file-row { display: flex; min-width: 0; align-items: center; gap: .25rem; border-radius: .32rem; }
     .file-row .file-select { flex: 1 1 auto; }

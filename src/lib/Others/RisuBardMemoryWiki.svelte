@@ -34,9 +34,18 @@
     import {
         getBardChatUndoStatus,
         loadNarrativeMemoryWiki,
+        loadNarrativeMemoryWikiCatalog,
+        loadWikiDocumentBodies,
+        loadWikiStorySummaries,
         restoreBardChatUndo,
+        searchWikiDocuments,
+        warmWikiCatalog,
         type NarrativeMemoryWiki,
+        type NarrativeMemoryWikiCatalog,
+        type NarrativeMemoryWikiDocument,
+        type WikiCatalogDocument,
     } from 'src/ts/risubard/memoryWiki'
+    import { findStoryArcDocument } from 'src/ts/risubard/storyArcView'
     import {
         RISUBARD_MEMORY_UPDATED_EVENT,
         type RisuBardMemoryUpdatedDetail,
@@ -113,7 +122,14 @@
         onNavigateStorySource,
         onNavigateOocMessage,
     }: Props = $props()
-    let wiki = $state<NarrativeMemoryWiki | null>(null)
+    // The dock loads a table of contents; page bodies, story summaries and
+    // export data are fetched only when a view needs them.
+    let wiki = $state<NarrativeMemoryWiki | NarrativeMemoryWikiCatalog | null>(null)
+    let bodies = $state.raw(new Map<string, NarrativeMemoryWikiDocument>())
+    const pendingBodies = new Map<string, Promise<void>>()
+    let storySummaries = $state.raw<Map<string, string[]> | null>(null)
+    let storyLoading = $state(false)
+    let exportDocuments = $state.raw<NarrativeMemoryWikiDocument[] | null>(null)
     let loading = $state(false)
     let transferBusy = $state(false)
     let exportOpen = $state(false)
@@ -133,7 +149,8 @@
 
     async function exportWiki(selectedIds: string[]) {
         if (transferBlocked || exportScope !== `${characterId}\u0000${chatId}`) throw new Error('위키가 변경되었습니다. 내보내기 창을 다시 열어 주세요.')
-        await downloadFile('wiki.bardwiki.json', serializeWikiPackage(createWikiPackage(markdownDocuments, selectedIds)))
+        if (!exportDocuments) throw new Error('위키를 아직 불러오는 중입니다.')
+        await downloadFile('wiki.bardwiki.json', serializeWikiPackage(createWikiPackage(exportDocuments, selectedIds)))
         exportOpen = false
     }
 
@@ -207,8 +224,14 @@
         v1State?.facts.filter((fact) => fact.status === 'invalidated') ?? []
     )
     let recentEvents = $derived(v1State ? [...v1State.events].reverse() : [])
-    let markdownDocuments = $derived(
-        wiki?.mode === 'markdown' ? wiki.documents : []
+    let markdownDocuments = $derived<WikiCatalogDocument[]>(
+        wiki?.mode === 'markdown'
+            ? wiki.documents.map((document) => {
+                const body = bodies.get(document.id)
+                return body && body.contentHash === document.contentHash
+                    ? body : document
+            })
+            : []
     )
     let selectedMarkdownDocument = $derived(markdownDocuments.find(
         (document) => document.id === selectedMarkdownId
@@ -374,11 +397,14 @@
             selectedMarkdownId = ''
             transferStatus = ''
             exportOpen = false
+            bodies = new Map()
+            pendingBodies.clear()
         }
+        storySummaries = null
         loading = true
         error = ''
         try {
-            const loaded = await loadNarrativeMemoryWiki({
+            const loaded = await loadNarrativeMemoryWikiCatalog({
                 characterId,
                 chatId: wikiChatId,
                 fetchImpl: fetch,
@@ -409,6 +435,93 @@
                 loadAbortController = undefined
             }
             if (sequence === requestSequence) loading = false
+        }
+    }
+
+    function wikiScope() {
+        return {
+            characterId,
+            chatId: wikiChatId,
+            fetchImpl: fetch,
+            createAuth: () => forageStorage.createAuth(),
+        }
+    }
+
+    function hasCurrentBody(documentId: string): boolean {
+        const entry = wiki?.mode === 'markdown'
+            ? wiki.documents.find((document) => document.id === documentId)
+            : undefined
+        const body = bodies.get(documentId)
+        return !!entry && !!body && body.contentHash === entry.contentHash
+    }
+
+    async function requestBodies(documentIds: readonly string[]): Promise<void> {
+        const scope = loadedScope
+        const waiting: Promise<void>[] = []
+        const wanted: string[] = []
+        for (const id of new Set(documentIds)) {
+            const pending = pendingBodies.get(id)
+            if (pending) waiting.push(pending)
+            else if (!hasCurrentBody(id)) wanted.push(id)
+        }
+        if (wanted.length > 0) {
+            const load = loadWikiDocumentBodies({ ...wikiScope(), documentIds: wanted })
+                .then((loaded) => {
+                    if (scope !== loadedScope) return
+                    const next = new Map(bodies)
+                    for (const document of loaded) next.set(document.id, document)
+                    bodies = next
+                })
+                .finally(() => {
+                    for (const id of wanted) pendingBodies.delete(id)
+                })
+            for (const id of wanted) pendingBodies.set(id, load)
+            waiting.push(load)
+        }
+        await Promise.all(waiting)
+    }
+
+    async function loadDocumentBody(documentId: string): Promise<NarrativeMemoryWikiDocument> {
+        await requestBodies([documentId])
+        const body = bodies.get(documentId)
+        if (!body) throw new Error('위키 문서를 찾을 수 없습니다. 위키를 새로고침해 주세요.')
+        return body
+    }
+
+    async function searchDocumentIds(query: string): Promise<Set<string>> {
+        return new Set(await searchWikiDocuments({ ...wikiScope(), query }))
+    }
+
+    async function loadStorySummaries() {
+        const scope = loadedScope
+        storyLoading = true
+        try {
+            const loaded = await loadWikiStorySummaries(wikiScope())
+            if (scope === loadedScope) storySummaries = loaded
+        }
+        catch (cause) {
+            if (scope === loadedScope) error = cause instanceof Error ? cause.message : String(cause)
+        }
+        finally {
+            storyLoading = false
+        }
+    }
+
+    async function loadExportDocuments() {
+        const scope = loadedScope
+        transferBusy = true
+        try {
+            const loaded = await loadNarrativeMemoryWiki(wikiScope())
+            if (scope === loadedScope && exportOpen) {
+                exportDocuments = loaded.mode === 'markdown' ? loaded.documents : []
+            }
+        }
+        catch (cause) {
+            exportOpen = false
+            alertError(cause)
+        }
+        finally {
+            transferBusy = false
         }
     }
 
@@ -626,6 +739,37 @@
 
     $effect(() => {
         if (activeView !== 'workspace') editorFocus = false
+    })
+
+    // While the dock is closed, let the server parse this chat's wiki in the
+    // background so the first open does not pay the cold read.
+    $effect(() => {
+        if (open || !characterId || !wikiChatId) return
+        const scope = { characterId, chatId: wikiChatId }
+        const timer = setTimeout(() => {
+            void warmWikiCatalog({ ...scope, fetchImpl: fetch, createAuth: () => forageStorage.createAuth() })
+                .catch(() => undefined)
+        }, 1_500)
+        return () => clearTimeout(timer)
+    })
+
+    $effect(() => {
+        if (activeView === 'story' && wiki?.mode === 'markdown'
+            && storySummaries === null && !storyLoading) void loadStorySummaries()
+    })
+
+    $effect(() => {
+        if (activeView !== 'arc-plot') return
+        const arc = findStoryArcDocument(markdownDocuments)
+        if (arc && arc.content === undefined) void requestBodies([arc.id]).catch(() => undefined)
+    })
+
+    $effect(() => {
+        if (!exportOpen) {
+            exportDocuments = null
+            return
+        }
+        if (exportDocuments === null) void loadExportDocuments()
     })
 
     $effect(() => {
@@ -1020,10 +1164,12 @@
                             messages={activityMessages}
                             chatId={wikiChatId}
                             locked={Boolean(rebootJob)}
-                            documents={wiki.documents}
+                            documents={markdownDocuments}
                             health={wiki.health}
                             bind:selectedId={selectedMarkdownId}
                             onChanged={loadWiki}
+                            onRequestBody={(documentId) => void requestBodies([documentId]).catch((cause) => { error = cause instanceof Error ? cause.message : String(cause) })}
+                            onSearch={searchDocumentIds}
                             onFocusModeChange={(focused) => editorFocus = focused}
                             onNavigateSource={onNavigateStorySource}
                             highlightedDocumentIds={bardChatUpdatedIds}
@@ -1074,14 +1220,16 @@
                     {/if}
                 {:else if activeView === 'story'}
                     <RisuBardStorySoFar
-                        documents={wiki.documents}
+                        documents={markdownDocuments}
+                        summaries={storySummaries ?? undefined}
+                        loading={storyLoading || storySummaries === null}
                         messages={activityMessages}
                         onNavigate={onNavigateStorySource}
                         onEdit={editStoryEntry}
                     />
                 {:else if activeView === 'arc-plot'}
                     <RisuBardStoryArcPlot
-                        documents={wiki.documents}
+                        documents={markdownDocuments}
                         messages={activityMessages}
                         checkpointSize={arcPlotterSettings.checkpointSize}
                         enabled={arcPlotterSettings.enabled}
@@ -1182,8 +1330,8 @@
     </div>
 </aside>
 <input bind:this={importInput} type="file" accept=".bardwiki.json,application/json" hidden onchange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; void importFile(file, importScope) }} />
-{#if exportOpen}
-    <RisuBardWikiExportDialog bind:open={exportOpen} documents={markdownDocuments} onExport={exportWiki} disabled={transferBlocked} />
+{#if exportOpen && exportDocuments}
+    <RisuBardWikiExportDialog bind:open={exportOpen} documents={exportDocuments} onExport={exportWiki} disabled={transferBlocked} />
 {/if}
 
 {#if rebootChooserOpen}

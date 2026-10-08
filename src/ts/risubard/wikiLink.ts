@@ -1,7 +1,10 @@
 import type MarkdownIt from 'markdown-it'
 import type { NarrativeMemoryWikiMarkdown } from './memoryWiki'
 
-export type WikiDocument = NarrativeMemoryWikiMarkdown['documents'][number]
+// Link resolution reads titles and aliases only, so catalog entries without bodies work.
+export type WikiDocument = Omit<NarrativeMemoryWikiMarkdown['documents'][number], 'content'> & {
+    content?: string
+}
 
 export type WikiLinkResolution =
     | { status: 'resolved'; document: WikiDocument }

@@ -70,12 +70,44 @@ vi.mock('src/ts/bardPainter/gallery', async () => {
     const { writable } = await import('svelte/store')
     return { painterGalleryRequested: writable(null), savePainterGalleryRecord: vi.fn() }
 })
-vi.mock('src/ts/risubard/memoryWiki', () => ({
-    loadNarrativeMemoryWiki: mocks.loadNarrativeMemoryWiki,
-    saveManualWikiDocument: mocks.saveManualWikiDocument,
-    getBardChatUndoStatus: mocks.getBardChatUndoStatus,
-    restoreBardChatUndo: mocks.restoreBardChatUndo,
+// The dock loads a catalog and fetches bodies on demand; these mocks serve
+// both from the same fixture so the tests keep one source of truth.
+const lastView = vi.hoisted(() => ({
+    value: null as null | { documents?: Array<Record<string, unknown>> },
+    bodies: null as null | Array<Record<string, unknown>>,
+    bodyRequests: [] as string[][],
 }))
+vi.mock('src/ts/risubard/memoryWiki', async () => {
+    const { storySection } = await import('src/ts/risubard/storySoFar')
+    const documents = () => (lastView.value?.documents ?? []) as Array<{
+        id: string; type: string; status: string; content?: string; title: string
+    }>
+    return {
+        loadNarrativeMemoryWiki: mocks.loadNarrativeMemoryWiki,
+        loadNarrativeMemoryWikiCatalog: async (input: unknown) => {
+            const view = await mocks.loadNarrativeMemoryWiki(input)
+            lastView.value = view
+            return view
+        },
+        loadWikiDocumentBodies: async (input: { documentIds: string[] }) => {
+            lastView.bodyRequests.push(input.documentIds)
+            return ((lastView.bodies ?? documents()) as Array<{ id: string }>)
+                .filter((document) => input.documentIds.includes(document.id))
+        },
+        searchWikiDocuments: async (input: { query: string }) =>
+            documents().filter((document) =>
+                `${document.title}\n${document.content ?? ''}`.includes(input.query))
+                .map((document) => document.id),
+        loadWikiStorySummaries: async () => new Map(documents()
+            .filter((document) => document.type === 'event' && document.status === 'active')
+            .map((document) => [document.id, storySection(document.content ?? '')] as const)
+            .filter(([, summary]) => summary.length > 0)),
+        warmWikiCatalog: async () => undefined,
+        saveManualWikiDocument: mocks.saveManualWikiDocument,
+        getBardChatUndoStatus: mocks.getBardChatUndoStatus,
+        restoreBardChatUndo: mocks.restoreBardChatUndo,
+    }
+})
 vi.mock('src/ts/risubard/findReplace', () => ({
     previewFindReplace: (
         documents: Array<{ title: string; content: string }>,
@@ -223,6 +255,35 @@ describe('RisuBardMemoryWiki', () => {
         memo?.querySelector<HTMLButtonElement>('[data-ooc-message-index="3"] [data-ooc-source]')?.click()
         expect(mocks.db.risuBardHideOocTurns).toBe(false)
         expect(onNavigateOocMessage).toHaveBeenCalledWith(3)
+    })
+
+    test('opens with a body-less catalog and fetches only the selected page body', async () => {
+        const page = (id: string, title: string) => ({
+            id, title, type: 'character' as const, status: 'active' as const,
+            contextMode: 'auto' as const, contentHash: `hash-${id}`,
+            relativePath: `characters/${id}.md`, aliases: [], sourceMessageIds: [],
+            updated: 'now', links: [],
+        })
+        const catalog = [page('alpha', 'Alpha'), page('beta', 'Beta')]
+        lastView.bodies = catalog.map((item) => ({ ...item, content: `## ${item.title}\n\n${item.title} body.` }))
+        lastView.bodyRequests = []
+        mocks.loadNarrativeMemoryWiki.mockResolvedValue({
+            mode: 'markdown', wikiPath: 'C:\\wiki', documents: catalog,
+            health: { danglingLinks: [], unlinkedDocumentIds: [] },
+        })
+        mounted = mount(RisuBardMemoryWiki, {
+            target: document.body,
+            props: { open: true, characterId: 'character', chatId: 'catalog-chat' },
+        })
+        const content = () => document.querySelector<HTMLTextAreaElement>('[aria-label="Markdown"]')?.value
+        await vi.waitFor(() => expect(content()).toBe('## Alpha\n\nAlpha body.'))
+        expect(lastView.bodyRequests).toEqual([['alpha']])
+
+        document.querySelector<HTMLButtonElement>('[aria-label^="Beta"]')?.click()
+        await vi.waitFor(() => expect(content()).toBe('## Beta\n\nBeta body.'))
+        expect(lastView.bodyRequests).toEqual([['alpha'], ['beta']])
+        expect(mocks.saveManualWikiDocument).not.toHaveBeenCalled()
+        lastView.bodies = null
     })
 
     test('reloads the visible canonical document after a save replaces the same chat workspace', async () => {
@@ -1538,6 +1599,42 @@ describe('RisuBardMemoryWiki', () => {
         expect(document.body.textContent).toContain('확정 사건 3/8개')
         expect(document.body.textContent).toContain('5개가 더 쌓이면')
         expect(document.querySelector('[data-story-arc-empty]')).not.toBeNull()
+    })
+
+    test('fetches only the arc plot body when the catalog has none', async () => {
+        const plot = {
+            id: 'other.story-arc', type: 'other' as const, status: 'active' as const,
+            title: '스토리 아크 플롯', relativePath: 'notes/story-arc.md',
+            sourceMessageIds: [], created: '2026-08-02T00:00:00.000Z',
+            updated: '2026-08-02T00:00:00.000Z',
+            links: [], contextMode: 'auto' as const, contentHash: 'plot-hash',
+        }
+        const canonical = {
+            id: 'character.frodo', type: 'character' as const, status: 'active' as const,
+            title: '프로도', relativePath: 'characters/frodo.md', sourceMessageIds: [],
+            updated: '2026-08-02T00:00:00.000Z', links: [], contextMode: 'auto' as const,
+            contentHash: 'frodo-hash',
+        }
+        lastView.bodies = [
+            { ...plot, content: '# 스토리 아크 플롯\n\n## 반지 원정\n\n- 원정대가 길을 나섰다.' },
+            { ...canonical, content: '## 프로도\n\n반지를 맡았다.' },
+        ]
+        lastView.bodyRequests = []
+        mocks.loadNarrativeMemoryWiki.mockResolvedValue({
+            mode: 'markdown', wikiPath: 'C:\\wiki',
+            health: { danglingLinks: [], unlinkedDocumentIds: [] },
+            documents: [canonical, plot],
+        })
+        mounted = mount(RisuBardMemoryWiki, {
+            target: document.body,
+            props: { open: true, characterId: 'character', chatId: 'arc-chat' },
+        })
+        await vi.waitFor(() => expect(document.querySelector('[data-memory-view="arc-plot"]')).not.toBeNull())
+        document.querySelector<HTMLButtonElement>('[data-memory-view="arc-plot"]')?.click()
+        await vi.waitFor(() => expect(document.body.textContent).toContain('반지 원정'))
+        expect(lastView.bodyRequests.flat()).toContain('other.story-arc')
+        expect(lastView.bodyRequests.flat().filter((id) => id === 'other.story-arc')).toHaveLength(1)
+        lastView.bodies = null
     })
 
     test('renders the canonical story arc plot and opens linked documents in the workspace', async () => {

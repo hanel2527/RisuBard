@@ -78,6 +78,44 @@ afterEach(async () => {
 })
 
 describe('RisuBardWikiEditor', () => {
+    it('pages long folders and keeps the selected document visible', async () => {
+        const events = Array.from({ length: 250 }, (_, index) => ({
+            ...documents[1],
+            id: `event.turn-${index}`,
+            title: `사건 ${index}`,
+            relativePath: `events/turn-${String(index).padStart(3, '0')}.md`,
+            created: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+            contentHash: `hash-${index}`,
+        }))
+        const mountWith = async (selectedId?: string) => {
+            if (mounted) await unmount(mounted)
+            mounted = mount(RisuBardWikiEditor, {
+                target: document.body,
+                props: { characterId: 'character', chatId: 'chat', documents: [documents[0], ...events], selectedId },
+            })
+            await tick()
+        }
+        const eventRows = () => [...document.querySelectorAll<HTMLButtonElement>('.folder-children .file-select')]
+            .filter((button) => button.textContent?.includes('사건')).length
+        const more = () => document.querySelector<HTMLButtonElement>('[data-wiki-folder-more="events"]')
+
+        // Newest first; the selected oldest event stays rendered beyond the first page.
+        await mountWith('event.turn-0')
+        expect(eventRows()).toBe(250)
+        await mountWith()
+        expect(eventRows()).toBe(100)
+        expect(more()?.textContent).toContain('100개 더 보기')
+        expect(more()?.textContent).toContain('남은 150개')
+        expect([...document.querySelectorAll('.folder-count')].map((node) => node.textContent)).toContain('250')
+        more()!.click()
+        await tick()
+        expect(eventRows()).toBe(200)
+        more()!.click()
+        await tick()
+        expect(eventRows()).toBe(250)
+        expect(more()).toBeNull()
+    })
+
     it('allows editing and reopening a document longer than 18961 characters without a body limit', async () => {
         const original = '## 라비안\n\n### 지식과 비밀\n' + '보존할 기존 기록. '.repeat(1800) + '\n[[북문 재회]]'
         const changed = original + '\n마지막 비밀도 그대로 보존한다.'

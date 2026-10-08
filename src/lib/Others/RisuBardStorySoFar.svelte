@@ -1,6 +1,6 @@
 <script lang="ts">
     import { LocateFixedIcon, PencilIcon } from '@lucide/svelte'
-    import type { NarrativeMemoryWikiMarkdown } from 'src/ts/risubard/memoryWiki'
+    import type { WikiCatalogDocument } from 'src/ts/risubard/memoryWiki'
     import type { EventOrderMessage } from 'src/ts/risubard/eventOrder'
     import {
         buildStorySoFar,
@@ -8,14 +8,21 @@
     } from 'src/ts/risubard/storySoFar'
 
     interface Props {
-        documents: NarrativeMemoryWikiMarkdown['documents']
+        documents: readonly WikiCatalogDocument[]
         messages?: readonly EventOrderMessage[]
+        /** Server-extracted summaries; without them the bodies in documents are used. */
+        summaries?: ReadonlyMap<string, readonly string[]>
+        loading?: boolean
         onNavigate?: (source: StorySourceRef) => void
         onEdit?: (documentId: string) => void
     }
 
-    let { documents, messages, onNavigate, onEdit }: Props = $props()
-    let entries = $derived(buildStorySoFar(documents, messages))
+    let { documents, messages, summaries, loading = false, onNavigate, onEdit }: Props = $props()
+    let entries = $derived(buildStorySoFar(documents, messages, summaries))
+    // Long stories render in pages so thousands of cards are not built at once.
+    const pageSize = 100
+    let shownCount = $state(pageSize)
+    let shownEntries = $derived(entries.slice(0, shownCount))
 </script>
 
 <section class="story-ledger" data-story-so-far aria-label="지금까지의 이야기">
@@ -25,13 +32,17 @@
         <p>확정된 사건을 원본 대화 순서로 읽습니다. 원본을 찾을 수 없는 사건은 뒤에 표시됩니다.</p>
     </header>
 
-    {#if entries.length === 0}
+    {#if loading && entries.length === 0}
+        <div class="story-empty" data-story-loading>
+            이야기를 불러오는 중입니다.
+        </div>
+    {:else if entries.length === 0}
         <div class="story-empty" data-story-empty>
             아직 기록된 사건이 없습니다.
         </div>
     {:else}
         <ol>
-            {#each entries as entry, index (entry.id)}
+            {#each shownEntries as entry, index (entry.id)}
                 {@const localSourceIds = entry.source.messageIds.filter(id => !id.startsWith('inherited:'))}
                 <li data-story-entry={entry.id}>
                     <span class="chapter-mark">{String(index + 1).padStart(2, '0')}</span>
@@ -67,6 +78,12 @@
                 </li>
             {/each}
         </ol>
+        {#if shownEntries.length < entries.length}
+            <button type="button" class="story-more" data-story-more onclick={() => { shownCount += pageSize }}>
+                {Math.min(pageSize, entries.length - shownEntries.length).toLocaleString()}개 더 보기
+                <span>남은 {(entries.length - shownEntries.length).toLocaleString()}개</span>
+            </button>
+        {/if}
     {/if}
 </section>
 
@@ -98,5 +115,9 @@
     .entry-heading strong { color: var(--risu-theme-textcolor); font-family: Georgia, 'Noto Serif KR', serif; font-size: .95rem; }
     .story-line { display: block; font-family: Georgia, 'Noto Serif KR', serif; font-size: .9rem; line-height: 1.72; }
     .story-line + .story-line { margin-top: .3rem; }
+    .story-more { display: flex; align-items: baseline; justify-content: center; gap: .5rem; width: 100%; max-width: 43.4rem; margin: 1rem auto 2rem; padding: .7rem 1rem; border: 1px dashed var(--story-rule); border-radius: .4rem; color: var(--risu-theme-textcolor); background: transparent; font-size: .8rem; font-weight: 700; cursor: pointer; }
+    .story-more span { color: var(--risu-theme-textcolor2); font-size: .72rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+    .story-more:hover { background: color-mix(in srgb, var(--risu-theme-primary) 10%, transparent); }
+    .story-more:focus-visible { outline: 2px solid color-mix(in srgb, var(--risu-theme-primary) 70%, transparent); outline-offset: 2px; }
     .story-empty { max-width: 43.4rem; margin: 2rem auto; padding: 2rem; border: 1px dashed var(--story-rule); color: var(--risu-theme-textcolor2); text-align: center; }
 </style>
