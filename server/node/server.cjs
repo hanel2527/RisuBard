@@ -4030,6 +4030,79 @@ app.get('/api/read', async (req, res, next) => {
     }
 });
 
+// Batched cache reads: rebuildable caches (BardWiki vectors) otherwise cost
+// one authenticated request per entry and grow with chat length.
+const READ_MANY_LIMIT = 256;
+const { createBardWikiVectorStore, isBardWikiVectorKey } = require('./bardwiki-vector-store.cjs');
+const bardWikiVectors = createBardWikiVectorStore({
+    dataRoot: savePath, kvGet, kvList, kvDelManyAndCollect,
+    queueStorageOperation: (operation) => queueStorageOperation(operation),
+});
+app.post('/api/read-many', async (req, res, next) => {
+    if(!await checkAuth(req, res)){
+        return;
+    }
+    const keys = req.body?.keys;
+    if (!Array.isArray(keys) || keys.length > READ_MANY_LIMIT
+        || !keys.every((key) => typeof key === 'string' && key.startsWith('cache/'))) {
+        res.status(400).send({ error: 'Invalid cache keys' });
+        return;
+    }
+    try {
+        const values = await Promise.all(keys.map(async (key) => {
+            const value = isBardWikiVectorKey(key)
+                ? await bardWikiVectors.read(key)
+                : await readStorageItemPayload(key);
+            return value && value.length > 0 ? Buffer.from(value) : null;
+        }));
+        // Binary frames: per key a uint32 LE length (0xFFFFFFFF = missing), then bytes.
+        const frames = [];
+        for (const value of values) {
+            const header = Buffer.alloc(4);
+            header.writeUInt32LE(value ? value.length : 0xFFFFFFFF);
+            frames.push(header);
+            if (value) frames.push(value);
+        }
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.send(Buffer.concat(frames));
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Batched cache writes: one manifest save per batch instead of one per entry.
+app.post('/api/write-many', async (req, res, next) => {
+    if(!await checkAuth(req, res)){
+        return;
+    }
+    if (!checkActiveSession(req, res)) return;
+    const entries = req.body?.entries;
+    if (!Array.isArray(entries) || entries.length === 0 || entries.length > READ_MANY_LIMIT
+        || !entries.every((entry) => entry && typeof entry.key === 'string'
+            && entry.key.startsWith('cache/') && typeof entry.value === 'string'
+            && entry.value.length > 0)) {
+        res.status(400).send({ error: 'Invalid cache entries' });
+        return;
+    }
+    try {
+        const decoded = entries.map((entry) => ({
+            key: entry.key,
+            value: Buffer.from(entry.value, 'base64'),
+        }));
+        // Vectors go to their own folder and never touch the KV manifest.
+        await bardWikiVectors.writeMany(decoded.filter((entry) => isBardWikiVectorKey(entry.key)));
+        const kvEntries = decoded.filter((entry) => !isBardWikiVectorKey(entry.key));
+        if (kvEntries.length > 0) {
+            await queueStorageOperation(async () => {
+                await kvSetManyAsync(kvEntries);
+            });
+        }
+        res.send({ success: true });
+    } catch (error) {
+        next(error);
+    }
+});
+
 app.get('/api/remove', async (req, res, next) => {
     if(!await checkAuth(req, res)){
         return;
@@ -7340,6 +7413,12 @@ async function startServer() {
         server.requestTimeout = 0;
         // Written only once bound, so a server that lost the port race keeps the owner's token intact.
         server.once('listening', () => writeFileSync(localShutdownTokenPath, localShutdownToken, { mode: 0o600 }));
+        // Move BardWiki vectors out of the KV in the background once serving.
+        server.once('listening', () => setTimeout(() => {
+            bardWikiVectors.migrateFromKv()
+                .then((moved) => { if (moved > 0) console.log(`[BardWiki] Moved ${moved} vectors out of the KV`); })
+                .catch((error) => console.error('[BardWiki] Vector move failed:', error?.message ?? error));
+        }, 10_000));
     } catch (error) {
         logger.error('[Server] Failed to start server :', error);
         process.exit(1);

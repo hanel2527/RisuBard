@@ -64,8 +64,8 @@ export class HistoricalSourceEmbeddingIndex {
             })) return
             // Unchanged vectors are reused by the rebuildable cache.
             const chunks = [...snapshots.values()].flatMap(value => value.chunks)
-            await this.index.refresh(async offset => ({revision:String(generation),chunks:chunks.slice(offset, offset + 64),
-                nextOffset:offset + 64 < chunks.length ? offset + 64 : null}), active)
+            await this.index.refresh(async offset => ({revision:String(generation),chunks:chunks.slice(offset, offset + 256),
+                nextOffset:offset + 256 < chunks.length ? offset + 256 : null}), active)
             if (active()) this.snapshots = snapshots
         })
         return this.pending

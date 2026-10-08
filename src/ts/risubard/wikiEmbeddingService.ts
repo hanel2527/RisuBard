@@ -1,6 +1,7 @@
 import { writable } from 'svelte/store'
 import { forageStorage } from '../globalApi.svelte'
-import { makeHashedStorageKey, readPersistentJson, writePersistentJson } from '../storage/persistentKv'
+import { makeHashedStorageKey, readPersistentCacheBytesMany, writePersistentCacheBytesMany } from '../storage/persistentKv'
+import { decodeWikiVector, encodeWikiVector } from './wikiVectorCodec'
 import { createWikiEmbeddingProvider } from './wikiEmbeddingProvider'
 import { resolveSharedWikiEmbeddingSettings, type SharedHypaEmbeddingSettings } from './wikiEmbeddingSettings'
 import { WikiEmbeddingRuntime, type WikiEmbeddingStatus } from './wikiEmbeddingRuntime'
@@ -13,9 +14,48 @@ import type { WikiVectorProvider } from './wikiEmbeddingIndex'
 export const wikiEmbeddingStatus = writable<WikiEmbeddingStatus>('disabled')
 
 const cacheKey = (key: string) => makeHashedStorageKey('cache/bardwiki-vector/', key)
+// Entries are stored as compact Float32 (wikiVectorCodec). Older JSON entries
+// still decode, and are rewritten compactly in the background once read.
+// Rewrites go one batch at a time so they never pile up in the server storage
+// queue ahead of chat saves.
+let legacyRewrites: Promise<void> = Promise.resolve()
+function rewriteLegacyVectors(entries: { key: string; value: Uint8Array }[]): void {
+    if (!entries.length) return
+    legacyRewrites = legacyRewrites
+        .then(() => writePersistentCacheBytesMany(entries))
+        .catch(() => { /* rebuildable */ })
+}
 const vectorCache = {
-    read: async (key: string) => (await readPersistentJson<number[]>(await cacheKey(key))) ?? undefined,
-    write: async (key: string, vector: number[]) => writePersistentJson(await cacheKey(key), vector),
+    read: async (key: string) => {
+        // Vectors are served from their own server folder through the batched route.
+        const storageKey = await cacheKey(key)
+        const [data] = await readPersistentCacheBytesMany([storageKey])
+        if (!data) return undefined
+        const { vector, legacy } = decodeWikiVector(data)
+        if (vector && legacy) rewriteLegacyVectors([{ key: storageKey, value: encodeWikiVector(vector) }])
+        return vector
+    },
+    readMany: async (keys: readonly string[]) => {
+        const storageKeys = await Promise.all(keys.map(cacheKey))
+        const legacy: { key: string; value: Uint8Array }[] = []
+        const vectors = (await readPersistentCacheBytesMany(storageKeys)).map((data, index) => {
+            if (!data) return undefined
+            const decoded = decodeWikiVector(data)
+            if (decoded.vector && decoded.legacy) {
+                legacy.push({ key: storageKeys[index], value: encodeWikiVector(decoded.vector) })
+            }
+            return decoded.vector
+        })
+        rewriteLegacyVectors(legacy)
+        return vectors
+    },
+    write: async (key: string, vector: number[]) =>
+        writePersistentCacheBytesMany([{ key: await cacheKey(key), value: encodeWikiVector(vector) }]),
+    writeMany: async (entries: readonly { key: string; vector: number[] }[]) =>
+        writePersistentCacheBytesMany(await Promise.all(entries.map(async (entry) => ({
+            key: await cacheKey(entry.key),
+            value: encodeWikiVector(entry.vector),
+        })))),
 }
 let sharedProvider: { key: string; provider: WikiVectorProvider } | undefined
 function providerFor(settings: RisuBardEmbeddingSettings): WikiVectorProvider {

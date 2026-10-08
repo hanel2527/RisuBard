@@ -15,7 +15,11 @@ export interface WikiVectorProvider {
 
 export interface WikiVectorCache {
     read(key: string): Promise<number[] | undefined>
+    /** Optional batched read; results align with `keys`. */
+    readMany?(keys: readonly string[]): Promise<(number[] | undefined)[]>
     write(key: string, vector: number[]): Promise<void>
+    /** Optional batched write, used for each embedding batch. */
+    writeMany?(entries: readonly { key: string; vector: number[] }[]): Promise<void>
 }
 
 type IndexedChunk = { chunk: WikiEmbeddingChunk; vector: number[] }
@@ -68,6 +72,18 @@ export class WikiEmbeddingIndex {
         return this.refreshPromise
     }
 
+    private async readCached(keys: string[]): Promise<unknown[]> {
+        if (this.cache.readMany) {
+            try {
+                const values = await this.cache.readMany(keys)
+                if (values.length === keys.length) return values
+            } catch { /* fall back to single reads */ }
+        }
+        return Promise.all(keys.map(async key => {
+            try { return await this.cache.read(key) } catch { return undefined }
+        }))
+    }
+
     private async rebuild(
         loadPage: (offset: number, revision?: string) => Promise<WikiEmbeddingCatalog>,
         active: () => boolean,
@@ -85,20 +101,25 @@ export class WikiEmbeddingIndex {
             const page = await loadPage(offset, revision)
             if (revision !== undefined && page.revision !== revision) throw new Error('Changed catalog')
             revision = page.revision
+            const pageKeys = page.chunks.map(chunk => JSON.stringify([
+                'wiki-vector-v1', this.provider.identity, chunk.documentId, chunk.text,
+            ]))
+            const pageVectors: (number[] | undefined)[] = page.chunks.map(chunk =>
+                liveVectors.get(JSON.stringify([chunk.documentId, chunk.text])))
+            const unread = pageVectors.flatMap((vector, index) => vector ? [] : [index])
+            if (unread.length) {
+                // One batched cache read per catalog page instead of one request per chunk.
+                const cached = await this.readCached(unread.map(index => pageKeys[index]))
+                unread.forEach((index, position) => {
+                    const value = cached[position]
+                    if (validVector(value)) pageVectors[index] = value
+                })
+            }
             for (let i = 0; i < page.chunks.length; i += 16) {
                 if (!active()) return
                 const chunks = page.chunks.slice(i, i + 16)
-                const keys = chunks.map(chunk => JSON.stringify([
-                    'wiki-vector-v1', this.provider.identity, chunk.documentId, chunk.text,
-                ]))
-                const vectors = await Promise.all(keys.map(async (key, index) => {
-                    const live = liveVectors.get(JSON.stringify([chunks[index].documentId, chunks[index].text]))
-                    if (live) return live
-                    try {
-                        const value = await this.cache.read(key)
-                        return validVector(value) ? value : undefined
-                    } catch { return undefined }
-                }))
+                const keys = pageKeys.slice(i, i + 16)
+                const vectors = pageVectors.slice(i, i + 16)
                 const missing = chunks.map((_, index) => index).filter(index => !vectors[index])
                 if (missing.length) {
                     const generated = await this.provider.embed(missing.map(index => chunks[index].text), 'document', this.controller.signal)
@@ -106,11 +127,13 @@ export class WikiEmbeddingIndex {
                         throw new Error('Invalid embedding batch')
                     }
                     if (!active()) return
-                    await Promise.all(missing.map(async (index, position) => {
-                        vectors[index] = generated[position]
-                        // A disposable cache failure must not lose a usable in-memory index.
-                        try { await this.cache.write(keys[index], generated[position]) } catch { /* rebuildable */ }
-                    }))
+                    missing.forEach((index, position) => { vectors[index] = generated[position] })
+                    const written = missing.map((index, position) => ({ key: keys[index], vector: generated[position] }))
+                    // A disposable cache failure must not lose a usable in-memory index.
+                    try {
+                        if (this.cache.writeMany) await this.cache.writeMany(written)
+                        else await Promise.all(written.map((entry) => this.cache.write(entry.key, entry.vector)))
+                    } catch { /* rebuildable */ }
                 }
                 vectors.forEach((vector, index) => {
                     if (!validVector(vector)) throw new Error('Invalid embedding vector')

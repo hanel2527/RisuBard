@@ -43,6 +43,21 @@ export type VersionedPersistentJson<T> = {
     etag: string | null;
 };
 
+/** Batched raw read for rebuildable `cache/` keys; missing entries are null. */
+export async function readPersistentCacheBytesMany(storageKeys: readonly string[]): Promise<(Uint8Array | null)[]> {
+    await ensureStorageReady();
+    return forageStorage.getCacheItems(storageKeys);
+}
+
+/** Batched raw write for rebuildable `cache/` keys. */
+export async function writePersistentCacheBytesMany(
+    entries: readonly { key: string; value: Uint8Array }[]
+): Promise<void> {
+    if (entries.length === 0) return;
+    await ensureStorageReady();
+    await forageStorage.setCacheItems(entries);
+}
+
 export async function readPersistentJsonWithVersion<T>(storageKey: string): Promise<VersionedPersistentJson<T>> {
     await ensureStorageReady();
     const { value: data, etag } = await forageStorage.getItemWithEtag(storageKey);

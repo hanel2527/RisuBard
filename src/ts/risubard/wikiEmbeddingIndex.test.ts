@@ -25,6 +25,31 @@ describe('optional wiki embedding index', () => {
         const reranked = mergeWikiSemanticMatches(result.matches,[{documentId:'a',score:1}])
         expect(reranked.filter(match=>match.documentId==='a').map(match=>match.start)).toEqual([0,100])
     })
+    it('reads cached vectors with one batched call per catalog page', async () => {
+        const chunks = Array.from({ length: 40 }, (_, i) => chunk(`doc-${i}`, `passage ${i}`))
+        const stored = new Map(chunks.slice(0, 30).map(item => [
+            JSON.stringify(['wiki-vector-v1', 'batched', item.documentId, item.text]), [1, 0],
+        ]))
+        const read = vi.fn(async (key: string) => stored.get(key))
+        const readMany = vi.fn(async (keys: readonly string[]) => keys.map(key => stored.get(key)))
+        const embed = vi.fn(async (texts: string[]) => texts.map(() => [0, 1]))
+        const index = new WikiEmbeddingIndex({ identity: 'batched', embed },
+            { read, readMany, write: async () => undefined })
+        await index.refresh(page(chunks))
+        expect(readMany).toHaveBeenCalledTimes(1)
+        expect(read).not.toHaveBeenCalled()
+        const writeMany = vi.fn(async (_entries: readonly { key: string; vector: number[] }[]) => undefined)
+        const write = vi.fn(async () => undefined)
+        const writer = new WikiEmbeddingIndex({ identity: 'batched-write',
+            embed: async (texts: string[]) => texts.map(() => [0, 1]) },
+            { read: async () => undefined, write, writeMany })
+        await writer.refresh(page(chunks.slice(0, 20)))
+        expect(writeMany.mock.calls.map(([entries]) => entries.length)).toEqual([16, 4])
+        expect(write).not.toHaveBeenCalled()
+        expect(embed.mock.calls.flatMap(([texts]) => texts)).toEqual(
+            chunks.slice(30).map(item => item.text))
+        expect(index.ready).toBe(true)
+    })
     it('reuses pre-existing body embeddings after heading-only chunks are removed', async () => {
         const content = '## 기록\n\n### 약속\n\n역에 가겠다는 약속은 하지 않았다.'
         const storage = cache()

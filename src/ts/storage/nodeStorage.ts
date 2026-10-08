@@ -447,6 +447,54 @@ export class NodeStorage{
     async getItem(key:string):Promise<Buffer> {
         return (await this.getItemWithEtag(key)).value as Buffer
     }
+    /** Reads many `cache/` keys in one request per 256 keys; missing keys are null. */
+    async getCacheItems(keys: readonly string[]): Promise<(Buffer | null)[]> {
+        const values: (Buffer | null)[] = []
+        for (let offset = 0; offset < keys.length; offset += 256) {
+            const da = await this.authFetch('/api/read-many', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ keys: keys.slice(offset, offset + 256) }),
+            })
+            if (da.status < 200 || da.status >= 300) {
+                throw new Error(`readMany failed with status ${da.status}`)
+            }
+            // Binary frames: uint32 LE length per key (0xFFFFFFFF = missing), then bytes.
+            const body = Buffer.from(await da.arrayBuffer())
+            const expected = Math.min(256, keys.length - offset)
+            let cursor = 0
+            for (let index = 0; index < expected; index++) {
+                if (cursor + 4 > body.length) throw new Error('Invalid readMany response')
+                const length = body.readUInt32LE(cursor)
+                cursor += 4
+                if (length === 0xFFFFFFFF) {
+                    values.push(null)
+                    continue
+                }
+                if (cursor + length > body.length) throw new Error('Invalid readMany response')
+                values.push(body.subarray(cursor, cursor + length))
+                cursor += length
+            }
+            if (cursor !== body.length) throw new Error('Invalid readMany response')
+        }
+        return values
+    }
+    /** Writes many `cache/` entries in one request per 256 entries. */
+    async setCacheItems(entries: readonly { key: string; value: Uint8Array }[]): Promise<void> {
+        for (let offset = 0; offset < entries.length; offset += 256) {
+            const da = await this.authFetch('/api/write-many', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ entries: entries.slice(offset, offset + 256).map((entry) => ({
+                    key: entry.key,
+                    value: Buffer.from(entry.value).toString('base64'),
+                })) }),
+            })
+            if (da.status < 200 || da.status >= 300) {
+                throw new Error(`writeMany failed with status ${da.status}`)
+            }
+        }
+    }
     async keys(prefix: string = ''):Promise<string[]>{
         const headers: Record<string, string> = {
         }

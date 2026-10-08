@@ -21,6 +21,14 @@ export class AutoStorage{
     async getItem(key:string):Promise<Buffer> {
         return await this.realStorage.getItem(key)
     }
+    async getCacheItems(keys: readonly string[]): Promise<(Buffer | null)[]> {
+        await this.Init()
+        return await this.realStorage.getCacheItems(keys)
+    }
+    async setCacheItems(entries: readonly { key: string; value: Uint8Array }[]): Promise<void> {
+        await this.Init()
+        return await this.realStorage.setCacheItems(entries)
+    }
     async getItemWithEtag(key:string) {
         await this.Init()
         return await this.realStorage.getItemWithEtag(key)
