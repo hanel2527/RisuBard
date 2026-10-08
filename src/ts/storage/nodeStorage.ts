@@ -984,7 +984,7 @@ export class NodeStorage{
         return response.json()
     }
 
-    async characterPackageTransition(characterId: string, action: 'status' | 'migrate' | 'refresh' | 'rollback') {
+    async characterPackageTransition(characterId: string, action: 'status' | 'migrate' | 'refresh' | 'rollback' | 'retire-kv' | 'restore-kv') {
         const response = action === 'status'
             ? await this.authFetch(`/api/character-packages/status?characterId=${encodeURIComponent(characterId)}`)
             : await this.authFetch('/api/character-packages/transition', {

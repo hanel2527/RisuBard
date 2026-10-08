@@ -20,12 +20,18 @@ function fixture() {
     const assets = {
         status: vi.fn(() => ({ enabled: false, copied: 0, skipped: 0, failed: 0 })),
         diagnostics: vi.fn(() => ({ reads: 0, fallbacks: 0 })),
-        migrate: vi.fn(), disable: vi.fn(), reload: vi.fn(),
+        migrate: vi.fn(), disable: vi.fn(), reload: vi.fn(), read: vi.fn(),
+        retirementCandidates: vi.fn(() => ({ candidates: [{ key: 'assets/a.png', object: 'a', size: 1 }], shared: 2, unverified: 1 })),
+    }
+    const kv = {
+        retireAssets: vi.fn(() => ({ retired: 1 })),
+        restoreRetiredAssets: vi.fn(() => ({ restored: 1, failed: 0 })),
+        retiredStatus: vi.fn(() => ({ retired: 0, bytes: 0 })),
     }
     const deps = {
         auth: vi.fn(async () => true), activeSession: vi.fn(() => true),
         queue: vi.fn(async fn => fn()), prepare: vi.fn(async () => ({ characters: [{ chaId: 'one' }] })),
-        repository, assets, readSource: vi.fn(), acceptTransition: vi.fn(), recordTransition: vi.fn(),
+        repository, assets, readSource: vi.fn(), kv, acceptTransition: vi.fn(), recordTransition: vi.fn(),
     }
     registerCharacterPackageRoutes({
         get: (path, handler) => routes[`GET ${path}`] = handler,
@@ -50,6 +56,31 @@ it('flushes before rollback and disables the asset replica after restoring legac
     expect(repository.rollbackCharacterDirectoryMapping).toHaveBeenCalledWith('one')
     expect(assets.reload).toHaveBeenCalled()
     expect(assets.disable).toHaveBeenCalledWith('one')
+})
+
+it('retires verified assets only for a V3 package and reports kept counts', async () => {
+    const { deps, repository, assets, res, post } = fixture()
+    await post({ body: { characterId: 'one', action: 'retire-kv' } }, res)
+    expect(res.status).toHaveBeenCalledWith(409)
+    expect(deps.kv.retireAssets).not.toHaveBeenCalled()
+    repository.characterDirectoryStatus.mockReturnValue({ enabled: true, directory: 'One', chats: 1 })
+    await post({ body: { characterId: 'one', action: 'retire-kv' } }, res)
+    expect(assets.retirementCandidates).toHaveBeenCalledWith({ characters: [{ chaId: 'one' }] }, 'one')
+    expect(deps.kv.retireAssets).toHaveBeenCalledWith('one', [{ key: 'assets/a.png', object: 'a', size: 1 }])
+    expect(res.json).toHaveBeenLastCalledWith(expect.objectContaining({ v4: { retired: 1, shared: 2, unverified: 1 } }))
+})
+
+it('restores retired assets without canonical files and before a rollback', async () => {
+    const { deps, repository, res, post } = fixture()
+    deps.prepare.mockResolvedValue(null)
+    await post({ body: { characterId: 'one', action: 'restore-kv' } }, res)
+    expect(deps.kv.restoreRetiredAssets).toHaveBeenCalledWith('one', expect.any(Function))
+    expect(res.json).toHaveBeenLastCalledWith(expect.objectContaining({ v4: { restored: 1, failed: 0 } }))
+    deps.prepare.mockResolvedValue({ characters: [{ chaId: 'one' }] })
+    deps.kv.restoreRetiredAssets.mockReturnValue({ restored: 0, failed: 1 })
+    await post({ body: { characterId: 'one', action: 'rollback' } }, res)
+    expect(repository.rollbackCharacterDirectoryMapping).not.toHaveBeenCalled()
+    expect(res.status).toHaveBeenCalledWith(500)
 })
 
 it('requires authentication, writer ownership and valid canonical data', async () => {

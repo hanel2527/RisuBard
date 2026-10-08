@@ -13,7 +13,8 @@
     let batchMessage = $state('')
     let batchResults = $state<{ id: string; name: string; outcome: string }[]>([])
     onDestroy(() => { stopRequested = true })
-    let result = $state<{ enabled: boolean; directory: string; chats: number; assets: { enabled: boolean; copied: number; skipped: number; failed: number }; diagnostics: { reads: number; fallbacks: number } } | null>(null)
+    let result = $state<{ enabled: boolean; directory: string; chats: number; assets: { enabled: boolean; copied: number; skipped: number; failed: number }; kv?: { retired: number; bytes: number }; v4?: { retired?: number; shared?: number; unverified?: number; restored?: number; failed?: number }; diagnostics: { reads: number; fallbacks: number } } | null>(null)
+    const megabytes = (bytes: number) => (bytes / 1048576).toFixed(1)
     const characters = $derived(DBState.db.characters.filter(character => !character.trashTime))
     const nameCounts = $derived.by(() => {
         const counts = new Map<string, number>()
@@ -68,7 +69,7 @@
         }
     }
 
-    async function run(action: 'status' | 'migrate' | 'refresh' | 'rollback') {
+    async function run(action: 'status' | 'migrate' | 'refresh' | 'rollback' | 'retire-kv' | 'restore-kv') {
         const id = characterId
         if (!id || busy) return
         if (!DBState.db.characters.some(character => character.chaId === id && !character.trashTime)) {
@@ -84,7 +85,9 @@
             await forageStorage.Init()
             result = await forageStorage.realStorage.characterPackageTransition(id, action)
         } catch {
-            const failure = action === 'rollback' ? '기존 구조로 되돌리기를 완료하지 못했습니다.'
+            const failure = action === 'retire-kv' ? 'V4 전환을 완료하지 못했습니다.'
+                : action === 'restore-kv' ? 'V4 되돌리기를 완료하지 못했습니다.'
+                : action === 'rollback' ? '기존 구조로 되돌리기를 완료하지 못했습니다.'
                 : action === 'refresh' ? '폴더와 에셋 재검증을 완료하지 못했습니다.'
                 : action === 'migrate' ? 'V3 전환을 완료하지 못했습니다.'
                 : 'V3 전환 상태를 확인하지 못했습니다.'
@@ -139,12 +142,33 @@
             {/if}
             {#if message}<p>{message}</p>{/if}
         </div>
+        <h3>V4 시험: 에셋을 KV 목록에서 빼기</h3>
+        <p>V3 구조를 쓰는 캐릭터의 전용 에셋을 공용 저장소(KV) 목록에서 빼고 캐릭터 폴더의 복사본으로 읽습니다. 목록이 작아져 에셋 저장과 가져오기가 가벼워집니다. 원본 파일은 지우지 않고 보관하므로 V4 되돌리기를 누르면 바로 복구됩니다. 다른 캐릭터나 설정과 같이 쓰는 에셋과 폴더 복사본이 원본과 다른 에셋은 KV에 그대로 둡니다.</p>
+        <p>이전 버전 앱으로 돌아가기 전에는 반드시 V4 되돌리기를 눌러 주세요. 이전 버전은 목록에서 뺀 에셋을 찾지 못합니다.</p>
+        <div class="actions">
+            <ShButton variant="primary" onclick={() => run('retire-kv')} disabled={!characterId || busy || !result?.enabled}>V4로 전환</ShButton>
+            <ShButton variant="outline" onclick={() => run('restore-kv')} disabled={!characterId || busy || !result?.kv?.retired}>V4 되돌리기</ShButton>
+        </div>
+        <div role="status" aria-live="polite">
+            {#if !result}
+                <p>캐릭터를 고르고 상태 확인을 누르면, V3 구조를 쓰는 캐릭터에서 V4로 전환할 수 있습니다.</p>
+            {:else}
+                <p>{result.kv?.retired ? `V4 사용 중: KV 목록에서 뺀 에셋 ${result.kv.retired}개 (${megabytes(result.kv.bytes)}MB)` : result.enabled ? 'V4 미사용: 에셋이 모두 KV 목록에 있습니다.' : 'V3 구조로 먼저 전환해야 V4로 전환할 수 있습니다.'}</p>
+                {#if result.v4?.retired !== undefined}
+                    <p>이번 전환: {result.v4.retired}개 이동 / 공유 에셋이라 유지 {result.v4.shared ?? 0}개 / 복사본 검증 실패로 유지 {result.v4.unverified ?? 0}개</p>
+                {/if}
+                {#if result.v4?.restored !== undefined}
+                    <p>되돌리기: {result.v4.restored}개를 KV 목록에 복원{result.v4.failed ? ` / 복원 실패 ${result.v4.failed}개 (보관 목록에 그대로 둠)` : ''}</p>
+                {/if}
+            {/if}
+        </div>
     </section>
 {/if}
 
 <style>
-    .asset-pilot { display: grid; gap: .7rem; padding: 1rem; background: var(--settings-surface); border: 1px solid var(--settings-border); border-radius: var(--settings-radius); }
+    .asset-pilot { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: .7rem; padding: 1rem; background: var(--settings-surface); border: 1px solid var(--settings-border); border-radius: var(--settings-radius); }
     h2 { font-size: 1rem; color: var(--color-textcolor); }
+    h3 { margin-top: .5rem; font-size: .95rem; color: var(--color-textcolor); }
     p { color: var(--color-textcolor2); line-height: 1.5; }
     select { padding: .6rem; color: var(--color-textcolor); background: var(--color-darkbg); border: 1px solid var(--settings-border); border-radius: .4rem; max-width: 100%; }
     .actions { display: flex; flex-wrap: wrap; gap: .5rem; }

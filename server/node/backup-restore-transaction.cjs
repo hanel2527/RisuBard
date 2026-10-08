@@ -40,7 +40,7 @@ function collectFiles(dataRoot, directory, destinationRoot) {
 async function publishBackupRestore(options) {
     const {
         dataRoot, canonicalStagingDir, inlayStagingDir, canonicalDirectories,
-        manifestBytes, store, restoreId, transactionOptions = {},
+        manifestBytes, retiredBytes, store, restoreId, transactionOptions = {},
     } = options;
     if (!Buffer.isBuffer(manifestBytes)) throw new Error('Prepared KV manifest bytes are required');
     if (!store || typeof store.reloadManifest !== 'function') throw new Error('Reloadable KV store is required');
@@ -74,6 +74,7 @@ async function publishBackupRestore(options) {
     operations.push(...collectFiles(root, inlayStagingDir, 'inlays'));
     operations.push({ path: 'inlays/.migrated_to_fs', data: Buffer.from(new Date().toISOString(), 'utf8') });
     operations.push({ path: 'kv/manifest.json', data: manifestBytes });
+    if (retiredBytes) operations.push({ path: 'kv/retired-assets.json', data: retiredBytes });
 
     try {
         const result = commitTransaction(root, operations, transactionOptions);

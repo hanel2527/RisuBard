@@ -359,12 +359,60 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
             return value;
         } catch { counters.fallbacks++; return null; }
     }
+    // V4 pilot: entries of one V3 character whose folder copy is proven equal to the
+    // KV object right now and whose key nothing else references. Shared keys, keys
+    // used by other replica owners and unverifiable copies stay in the manifest.
+    function retirementCandidates(database, id) {
+        if (!validId(id)) throw new Error('Invalid character ID');
+        const matches = database.characters?.filter(character => character.chaId === id);
+        if (matches?.length !== 1 || matches[0].type === 'group') throw new Error('A unique character is required');
+        if (!directories.snapshot().characters.some(entry => entry.id === id && entry.packageVersion === 1)) {
+            throw new Error('V3 character package is required');
+        }
+        const record = state.characters[id];
+        if (record?.enabled !== true || !Array.isArray(record.entries)) throw new Error('Verified asset copies are required');
+        const otherOwners = new Set();
+        for (const [owner, other] of Object.entries(state.characters)) {
+            if (owner === id || !Array.isArray(other?.entries)) continue;
+            for (const entry of other.entries) otherOwners.add(entry?.key);
+        }
+        const otherData = JSON.stringify({ ...database, characters: database.characters.filter(value => value !== matches[0]) }).replace(/\\\\/g, '/');
+        // Same answer as otherData.includes(key) for asset keys, without one full scan per key:
+        // collect every (overlapping) "assets/..." run once and look keys up by prefix.
+        const references = [...new Set(Array.from(otherData.matchAll(/(?=(assets\/[A-Za-z0-9._-]+))/g), match => match[1]))].sort();
+        const referenced = key => {
+            let low = 0;
+            let high = references.length;
+            while (low < high) {
+                const middle = (low + high) >> 1;
+                if (references[middle] < key) low = middle + 1;
+                else high = middle;
+            }
+            return low < references.length && references[low].startsWith(key);
+        };
+        const directory = safePath(`${directories.characterDirectory(id)}/assets`);
+        const candidates = [];
+        let shared = 0;
+        let unverified = 0;
+        for (const entry of record.entries) {
+            if (otherOwners.has(entry?.key) || typeof entry?.key !== 'string' || referenced(entry.key)) { shared++; continue; }
+            try {
+                if (!(entry.filename === undefined || validFilename(entry.filename)) || !/^[a-f0-9]{64}$/.test(entry.hash)) throw new Error('Invalid entry');
+                const target = path.join(directory, entry.filename ?? entry.hash);
+                if (path.dirname(target) !== directory || fs.lstatSync(target).isSymbolicLink()) throw new Error('Invalid replica path');
+                const bytes = fs.readFileSync(target);
+                if (bytes.length !== entry.size || hash(bytes) !== entry.hash) throw new Error('Replica differs');
+                candidates.push({ key: entry.key, object: entry.hash, size: entry.size });
+            } catch { unverified++; }
+        }
+        return { candidates, shared, unverified };
+    }
     function disable(id) {
         status(id);
         if (Object.hasOwn(state.characters, id)) publish({ schemaVersion: 1, characters: { ...state.characters, [id]: { ...state.characters[id], enabled: false } } });
         return status(id);
     }
-    return { migrate, sync, read, status, disable, reload, diagnostics: () => ({ scope: 'server-session', folderReads, ...counters }) };
+    return { migrate, sync, read, status, disable, reload, retirementCandidates, diagnostics: () => ({ scope: 'server-session', folderReads, ...counters }) };
 }
 
 module.exports = { createCharacterAssets };

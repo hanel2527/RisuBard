@@ -9,6 +9,10 @@ const { atomicWriteFile, atomicWriteJson, readVerifiedJson, recoverTransactions,
 const { createCharacterAssets } = require('./character-assets.cjs');
 
 const MANIFEST_PATH = 'kv/manifest.json';
+// V4 pilot: asset entries a user moved out of the manifest. Their objects stay in
+// kv/objects and every KV API still reports the keys; reads prefer the verified
+// character folder copy. The file only exists after an explicit V4 transition.
+const RETIRED_PATH = 'kv/retired-assets.json';
 const HEX_MIGRATION_MARKER = 'migration/legacy-hex-save-folder.json';
 
 function digest(data) {
@@ -135,9 +139,9 @@ function createFileKv(options = {}) {
     fs.mkdirSync(dataRoot, { recursive: true });
     recoverTransactions(dataRoot);
     const characterAssets = createCharacterAssets({ dataRoot, sourceSize: kvSize, readOriginal: kvGetOriginal,
-        sourceVersion: key => manifest.entries[key]?.object,
+        sourceVersion: key => entryOf(key)?.object,
         sourcePath: (key, expectedDigest) => {
-            if (!/^[a-f0-9]{64}$/.test(expectedDigest) || manifest.entries[key]?.object !== expectedDigest) {
+            if (!/^[a-f0-9]{64}$/.test(expectedDigest) || entryOf(key)?.object !== expectedDigest) {
                 throw new Error(`Content object changed during asset sync for ${key}`);
             }
             return resolveInside(dataRoot, path.join('kv', 'objects', expectedDigest));
@@ -149,6 +153,8 @@ function createFileKv(options = {}) {
     if (!manifest || manifest.schemaVersion !== 1 || typeof manifest.entries !== 'object') {
         throw new Error('Unsupported or corrupt file KV manifest');
     }
+    let retired = loadRetired();
+    let retiredEntries = indexRetired(retired);
     const objectWriteConcurrency = options.objectWriteConcurrency
         ?? Math.min(8, Math.max(1, (os.availableParallelism?.() ?? os.cpus().length) - 1));
 
@@ -163,8 +169,63 @@ function createFileKv(options = {}) {
         atomicWriteFile(dataRoot, MANIFEST_PATH, Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8'));
     }
 
+    function loadRetired() {
+        if (!fs.existsSync(path.join(dataRoot, RETIRED_PATH))) return { schemaVersion: 1, characters: {} };
+        const value = readVerifiedJson(dataRoot, RETIRED_PATH);
+        if (!value || value.schemaVersion !== 1 || !value.characters
+            || typeof value.characters !== 'object' || Array.isArray(value.characters)) {
+            throw new Error('Unsupported or corrupt retired asset index');
+        }
+        return value;
+    }
+
+    function indexRetired(value) {
+        const entries = new Map();
+        for (const [owner, keys] of Object.entries(value.characters)) {
+            for (const [key, entry] of Object.entries(keys || {})) {
+                if (entries.has(key) || !/^[a-f0-9]{64}$/.test(entry?.object) || !Number.isSafeInteger(entry.size)) continue;
+                entries.set(key, { object: entry.object, size: entry.size, updatedAt: entry.updatedAt ?? 0, owner });
+            }
+        }
+        return entries;
+    }
+
+    function saveRetired(next) {
+        atomicWriteJson(dataRoot, RETIRED_PATH, next);
+        retired = next;
+        retiredEntries = indexRetired(next);
+    }
+
+    function retiredWithout(drop) {
+        const characters = {};
+        let changed = false;
+        for (const [owner, keys] of Object.entries(retired.characters)) {
+            const kept = {};
+            for (const [key, entry] of Object.entries(keys || {})) {
+                if (drop(key)) changed = true;
+                else kept[key] = entry;
+            }
+            if (Object.keys(kept).length) characters[owner] = kept;
+        }
+        return changed ? { schemaVersion: 1, characters } : null;
+    }
+
+    // Deletion and replacement apply to retired keys exactly as to manifest keys.
+    function dropRetired(drop) {
+        if (!retiredEntries.size) return;
+        const next = retiredWithout(drop);
+        if (next) saveRetired(next);
+    }
+
+    // The manifest wins when a key exists in both (an interrupted transition, or a later kvSet).
+    function entryOf(key) {
+        return manifest.entries[key] ?? retiredEntries.get(key);
+    }
+
+    const matchesPrefix = prefixes => key => prefixes.some(prefix => key === prefix || key.startsWith(prefix));
+
     function kvGet(key) {
-        const entry = manifest.entries[key];
+        const entry = entryOf(key);
         if (!entry) return null;
         const replica = characterAssets.read(key, entry);
         if (replica !== null) return replica;
@@ -173,7 +234,7 @@ function createFileKv(options = {}) {
 
     // Explicit asset validation must bypass the performance-oriented replica reader.
     function kvGetOriginal(key) {
-        const entry = manifest.entries[key];
+        const entry = entryOf(key);
         if (!entry) return null;
         const objectPath = path.join(dataRoot, 'kv', 'objects', entry.object);
         let value;
@@ -234,11 +295,13 @@ function createFileKv(options = {}) {
         for (const [key, entry] of prepareEntries(entries)) next[key] = entry;
         manifest.entries = next;
         saveManifest();
+        dropRetired(matchesPrefix(prefixes));
     }
 
     function kvReplaceAll(entries) {
         manifest.entries = Object.fromEntries(prepareEntries(entries));
         saveManifest();
+        dropRetired(() => true);
     }
 
     async function kvReplacePrefixesAsync(entries, prefixes) {
@@ -250,6 +313,7 @@ function createFileKv(options = {}) {
         for (const [key, entry] of prepared) next[key] = entry;
         manifest.entries = next;
         saveManifest();
+        dropRetired(matchesPrefix(prefixes));
     }
 
     async function kvReplacePrefixesFromFilesAsync(entries, prefixes) {
@@ -261,6 +325,7 @@ function createFileKv(options = {}) {
         for (const [key, entry] of prepared) next[key] = entry;
         manifest.entries = next;
         saveManifest();
+        dropRetired(matchesPrefix(prefixes));
     }
 
     async function preparePrefixReplacementFromFilesAsync(entries, prefixes) {
@@ -271,7 +336,12 @@ function createFileKv(options = {}) {
         }
         for (const [key, entry] of prepared) next[key] = entry;
         const candidate = { schemaVersion: 1, updatedAt: Date.now(), entries: next };
-        return { manifestBytes: Buffer.from(`${JSON.stringify(candidate, null, 2)}\n`, 'utf8') };
+        // Publish the retired index in the same transaction so replaced keys cannot reappear.
+        const retiredNext = retiredWithout(matchesPrefix(prefixes));
+        return {
+            manifestBytes: Buffer.from(`${JSON.stringify(candidate, null, 2)}\n`, 'utf8'),
+            ...(retiredNext ? { retiredBytes: Buffer.from(`${JSON.stringify(retiredNext, null, 2)}\n`, 'utf8') } : {}),
+        };
     }
 
     function reloadManifest() {
@@ -279,7 +349,10 @@ function createFileKv(options = {}) {
         if (!next || next.schemaVersion !== 1 || typeof next.entries !== 'object') {
             throw new Error('Unsupported or corrupt file KV manifest');
         }
+        const nextRetired = loadRetired();
         manifest = next;
+        retired = nextRetired;
+        retiredEntries = indexRetired(nextRetired);
         characterAssets.reload();
     }
 
@@ -287,30 +360,43 @@ function createFileKv(options = {}) {
         const prepared = await prepareEntriesAsync(entries);
         manifest.entries = Object.fromEntries(prepared);
         saveManifest();
+        dropRetired(() => true);
     }
 
     function kvDel(key) {
-        if (!(key in manifest.entries)) return;
-        delete manifest.entries[key];
-        saveManifest();
+        if (key in manifest.entries) {
+            delete manifest.entries[key];
+            saveManifest();
+        }
+        if (retiredEntries.has(key)) dropRetired(candidate => candidate === key);
     }
 
     function kvDelMany(keys) {
         let count = 0;
         let bytes = 0;
-        for (const key of new Set(keys)) {
+        let changed = false;
+        let retiredHit = false;
+        const unique = new Set(keys);
+        for (const key of unique) {
             const entry = manifest.entries[key];
-            if (!entry) continue;
-            bytes += entry.size ?? 0;
-            delete manifest.entries[key];
-            count += 1;
+            if (entry) {
+                bytes += entry.size ?? 0;
+                delete manifest.entries[key];
+                changed = true;
+                count += 1;
+            } else if (retiredEntries.has(key)) {
+                bytes += retiredEntries.get(key).size ?? 0;
+                count += 1;
+            }
+            if (retiredEntries.has(key)) retiredHit = true;
         }
-        if (count > 0) saveManifest();
+        if (changed) saveManifest();
+        if (retiredHit) dropRetired(key => unique.has(key));
         return { count, bytes };
     }
 
     function kvDelManyAndCollect(keys) {
-        const objects = new Set(keys.map(key => manifest.entries[key]?.object).filter(Boolean));
+        const objects = new Set(keys.map(key => entryOf(key)?.object).filter(Boolean));
         const previous = { ...manifest.entries };
         let deleted;
         try { deleted = kvDelMany(keys); }
@@ -330,17 +416,17 @@ function createFileKv(options = {}) {
     }
 
     function kvSize(key) {
-        return manifest.entries[key]?.size ?? 0;
+        return entryOf(key)?.size ?? 0;
     }
 
     function kvGetUpdatedAt(key) {
-        return manifest.entries[key]?.updatedAt ?? null;
+        return entryOf(key)?.updatedAt ?? null;
     }
 
     function kvCopyValue(source, destination) {
-        const entry = manifest.entries[source];
+        const entry = entryOf(source);
         if (!entry) return;
-        manifest.entries[destination] = { ...entry, updatedAt: Date.now() };
+        manifest.entries[destination] = { object: entry.object, size: entry.size, updatedAt: Date.now() };
         saveManifest();
     }
 
@@ -353,18 +439,88 @@ function createFileKv(options = {}) {
             }
         }
         if (changed) saveManifest();
+        dropRetired(key => key.startsWith(prefix));
     }
 
     function kvList(prefix = '') {
-        return Object.keys(manifest.entries).filter(key => key.startsWith(prefix)).sort();
+        const keys = Object.keys(manifest.entries).filter(key => key.startsWith(prefix));
+        for (const key of retiredEntries.keys()) {
+            if (key.startsWith(prefix) && !(key in manifest.entries)) keys.push(key);
+        }
+        return keys.sort();
     }
 
     function kvListWithSizes(prefix = '') {
-        return kvList(prefix).map(key => ({ key, size: manifest.entries[key].size }));
+        return kvList(prefix).map(key => ({ key, size: entryOf(key).size }));
     }
 
+    // Retired objects stay referenced so GC keeps them as the restore source.
     function referencedObjects() {
-        return new Set(Object.values(manifest.entries).map(entry => entry.object));
+        const objects = new Set(Object.values(manifest.entries).map(entry => entry.object));
+        for (const entry of retiredEntries.values()) objects.add(entry.object);
+        return objects;
+    }
+
+    // Moves verified, character-owned asset entries out of the manifest. The caller
+    // proves each folder copy equals the object; the object itself is kept.
+    function retireAssets(owner, candidates) {
+        if (typeof owner !== 'string' || !owner) throw new Error('Invalid retired asset owner');
+        const accepted = [];
+        for (const candidate of candidates) {
+            const entry = manifest.entries[candidate?.key];
+            if (!entry || retiredEntries.has(candidate.key) || !candidate.key.startsWith('assets/')
+                || entry.object !== candidate.object || entry.size !== candidate.size) continue;
+            if (!fs.existsSync(path.join(dataRoot, 'kv', 'objects', entry.object))) continue;
+            accepted.push([candidate.key, entry]);
+        }
+        if (!accepted.length) return { retired: 0 };
+        const characters = { ...retired.characters, [owner]: { ...(retired.characters[owner] || {}) } };
+        for (const [key, entry] of accepted) {
+            characters[owner][key] = { object: entry.object, size: entry.size, updatedAt: entry.updatedAt ?? 0 };
+        }
+        // Retired index first: an interruption leaves the key in both files and the manifest wins.
+        saveRetired({ schemaVersion: 1, characters });
+        const previous = { ...manifest.entries };
+        for (const [key] of accepted) delete manifest.entries[key];
+        try { saveManifest(); }
+        catch (error) { manifest.entries = previous; throw error; }
+        return { retired: accepted.length };
+    }
+
+    // Puts an owner's retired entries back into the manifest. A missing object is
+    // rebuilt only from bytes matching its digest; otherwise the entry stays retired.
+    function restoreRetiredAssets(owner, readCopy) {
+        const keys = Object.entries(retired.characters[owner] || {});
+        if (!keys.length) return { restored: 0, failed: 0 };
+        const previous = { ...manifest.entries };
+        const restored = new Set();
+        let added = 0;
+        let failed = 0;
+        for (const [key, entry] of keys) {
+            if (!manifest.entries[key]) {
+                if (!fs.existsSync(path.join(dataRoot, 'kv', 'objects', entry.object))) {
+                    let bytes = null;
+                    try { bytes = readCopy?.(key, entry) ?? null; } catch { bytes = null; }
+                    if (!Buffer.isBuffer(bytes) || bytes.length !== entry.size || digest(bytes) !== entry.object) { failed += 1; continue; }
+                    writeObject(dataRoot, entry.object, bytes);
+                }
+                manifest.entries[key] = { object: entry.object, size: entry.size, updatedAt: entry.updatedAt ?? Date.now() };
+                added += 1;
+            }
+            restored.add(key);
+        }
+        if (added) {
+            try { saveManifest(); }
+            catch (error) { manifest.entries = previous; throw error; }
+        }
+        const next = retiredWithout(key => retiredEntries.get(key)?.owner === owner && restored.has(key));
+        if (next) saveRetired(next);
+        return { restored: restored.size, failed };
+    }
+
+    function retiredStatus(owner) {
+        const entries = Object.values(retired.characters[owner] || {});
+        return { retired: entries.length, bytes: entries.reduce((total, entry) => total + (entry.size ?? 0), 0) };
     }
 
     function reclaimableObjects() {
@@ -468,6 +624,9 @@ function createFileKv(options = {}) {
         objectStoreBytes,
         snapshotFootprint,
         characterAssets,
+        retireAssets,
+        restoreRetiredAssets,
+        retiredStatus,
     };
 }
 

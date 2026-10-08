@@ -30,7 +30,8 @@ const getVips = () => {
 }
 const { kvGet, kvSet, kvSetMany, kvSetManyAsync, kvReplacePrefixesAsync, kvReplacePrefixesFromFilesAsync, preparePrefixReplacementFromFilesAsync, reloadManifest, kvReplaceAllAsync, kvDel, kvDelMany, kvList,
         kvDelPrefix, kvListWithSizes, kvSize, kvGetUpdatedAt, kvCopyValue,
-        gcChunks, reclaimableChunkBytes, objectStoreBytes, isDbBlobChunked, snapshotFootprint, repository: userDataRepository, compatibilityCache, characterAssets } = require('./db.cjs');
+        gcChunks, reclaimableChunkBytes, objectStoreBytes, isDbBlobChunked, snapshotFootprint, repository: userDataRepository, compatibilityCache, characterAssets,
+        retireAssets, restoreRetiredAssets, retiredStatus } = require('./db.cjs');
 const {
     addLogBatch, queryLogs, clearLogs, countLogs,
     logger, installProcessHandlers, expressErrorMiddleware,
@@ -2875,6 +2876,7 @@ async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0
                 inlayStagingDir: stagingDir,
                 canonicalDirectories: CANONICAL_BACKUP_DIRECTORIES,
                 manifestBytes: preparedKv.manifestBytes,
+                retiredBytes: preparedKv.retiredBytes,
                 store: { reloadManifest },
                 restoreId: `backup-${nodeCrypto.randomUUID()}`,
             });
@@ -4279,6 +4281,7 @@ require('./character-package-routes.cjs').registerCharacterPackageRoutes(app, {
     repository: userDataRepository,
     assets: characterAssets,
     readSource: kvGet,
+    kv: { retireAssets, restoreRetiredAssets, retiredStatus },
     prepare: async () => {
         if (externalEditSession.isActive() || !canonicalProjectionReady || canonicalProjectionSync.hasExternalChanges()) return null;
         await flushPendingDbWithinQueue({ materialize: false });

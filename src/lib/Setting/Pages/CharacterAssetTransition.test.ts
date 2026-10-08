@@ -216,4 +216,25 @@ describe('character V3 transition selection', () => {
         click('V3 구조로 전환')
         await vi.waitFor(() => expect(mocks.transition).toHaveBeenLastCalledWith('active-b', 'migrate'))
     })
+
+    it('enables V4 only for a V3 character and reports moved, kept and restored assets', async () => {
+        const base = { directory: 'Tanya', chats: 1, assets: { enabled: true, copied: 3, skipped: 0, failed: 0 }, diagnostics: { reads: 0, fallbacks: 0 } }
+        mocks.transition.mockImplementation(async (_id, action) => action === 'retire-kv'
+            ? { ...base, enabled: true, kv: { retired: 2, bytes: 2097152 }, v4: { retired: 2, shared: 1, unverified: 0 } }
+            : action === 'restore-kv'
+                ? { ...base, enabled: true, kv: { retired: 0, bytes: 0 }, v4: { restored: 2, failed: 0 } }
+                : { ...base, enabled: true, kv: { retired: 0, bytes: 0 } })
+        await render()
+        await select('active-a')
+        const v4 = () => [...document.querySelectorAll('button')].find(button => button.textContent?.trim() === 'V4로 전환')!
+        expect(v4().disabled).toBe(true)
+        click('상태 확인')
+        await vi.waitFor(() => expect(document.body.textContent).toContain('V4 미사용'))
+        click('V4로 전환')
+        await vi.waitFor(() => expect(document.body.textContent).toContain('KV 목록에서 뺀 에셋 2개 (2.0MB)'))
+        expect(document.body.textContent).toContain('이번 전환: 2개 이동 / 공유 에셋이라 유지 1개')
+        click('V4 되돌리기')
+        await vi.waitFor(() => expect(document.body.textContent).toContain('되돌리기: 2개를 KV 목록에 복원'))
+        expect(mocks.transition.mock.calls).toEqual([['active-a', 'status'], ['active-a', 'retire-kv'], ['active-a', 'restore-kv']])
+    })
 })

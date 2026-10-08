@@ -436,6 +436,9 @@ it('falls back to KV when a trusted copy changes behind an unchanged size and mo
     vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000)
     try {
         expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
+        // The mocked clock trusts a just-changed file. Real trust needs a 5-second-old
+        // change, so wait past the OS timestamp tick (about 15ms on Windows) before editing.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100)
         fs.writeFileSync(target, 'PORTRAIT')
         fs.utimesSync(target, old, old)
         const read = vi.spyOn(fs, 'readFileSync')
@@ -492,4 +495,121 @@ it('restores KV reads for sync-managed copies when folder reads are switched off
         if (previous === undefined) delete process.env.RISUBARD_ASSET_FOLDER_READS
         else process.env.RISUBARD_ASSET_FOLDER_READS = previous
     }
+})
+
+function manifestKeys(root: string) {
+    return Object.keys(JSON.parse(fs.readFileSync(path.join(root, 'kv', 'manifest.json'), 'utf8')).entries)
+}
+function retireOne() {
+    const value = mappedFixture()
+    value.store.characterAssets.sync(value.db)
+    const plan = value.store.characterAssets.retirementCandidates(value.db, 'one')
+    const moved = value.store.retireAssets('one', plan.candidates)
+    return { ...value, plan, moved }
+}
+it('V4 retires only verified, unshared copies and keeps every KV API answer unchanged', () => {
+    const { root, store, plan, moved } = retireOne()
+    expect(plan).toMatchObject({ shared: 1, unverified: 0 })
+    expect(plan.candidates.map((entry: any) => entry.key)).toEqual(['assets/portrait.png'])
+    expect(moved).toEqual({ retired: 1 })
+    expect(manifestKeys(root)).not.toContain('assets/portrait.png')
+    expect(manifestKeys(root)).toContain('assets/shared.png')
+    expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
+    expect(store.kvList('assets/')).toEqual(['assets/portrait.png', 'assets/shared.png'])
+    expect(store.kvListWithSizes('assets/')).toEqual([{ key: 'assets/portrait.png', size: 8 }, { key: 'assets/shared.png', size: 6 }])
+    expect(store.kvSize('assets/portrait.png')).toBe(8)
+    expect(store.retiredStatus('one')).toEqual({ retired: 1, bytes: 8 })
+})
+it('V4 survives restart and saves, and reads the kept object when folder reads are off', () => {
+    const { root, db, directory } = retireOne()
+    const reopened = createFileKv({ dataRoot: root })
+    expect(reopened.characterAssets.sync(db).changed).toBe(false)
+    expect(reopened.kvGet('assets/portrait.png').toString()).toBe('portrait')
+    expect(reopened.characterAssets.diagnostics().reads).toBe(1)
+    fs.unlinkSync(path.join(directory, 'portrait.png'))
+    expect(reopened.kvGet('assets/portrait.png').toString()).toBe('portrait')
+    const previous = process.env.RISUBARD_ASSET_FOLDER_READS
+    process.env.RISUBARD_ASSET_FOLDER_READS = '0'
+    try { expect(createFileKv({ dataRoot: root }).kvGet('assets/portrait.png').toString()).toBe('portrait') }
+    finally {
+        if (previous === undefined) delete process.env.RISUBARD_ASSET_FOLDER_READS
+        else process.env.RISUBARD_ASSET_FOLDER_READS = previous
+    }
+})
+it('V4 keeps retired objects through garbage collection and restores them into the manifest', () => {
+    const { root, store } = retireOne()
+    const object = crypto.createHash('sha256').update('portrait').digest('hex')
+    store.gcChunks({})
+    expect(fs.existsSync(path.join(root, 'kv', 'objects', object))).toBe(true)
+    expect(store.restoreRetiredAssets('one', () => null)).toEqual({ restored: 1, failed: 0 })
+    expect(manifestKeys(root)).toContain('assets/portrait.png')
+    expect(store.retiredStatus('one')).toEqual({ retired: 0, bytes: 0 })
+    expect(createFileKv({ dataRoot: root }).kvGet('assets/portrait.png').toString()).toBe('portrait')
+})
+it('V4 restore rebuilds a missing object only from digest-matching bytes', () => {
+    const { root, store, directory } = retireOne()
+    const object = path.join(root, 'kv', 'objects', crypto.createHash('sha256').update('portrait').digest('hex'))
+    fs.unlinkSync(object)
+    expect(store.restoreRetiredAssets('one', () => Buffer.from('PORTRAIT'))).toEqual({ restored: 0, failed: 1 })
+    expect(manifestKeys(root)).not.toContain('assets/portrait.png')
+    expect(store.retiredStatus('one').retired).toBe(1)
+    expect(store.restoreRetiredAssets('one', (key: string, entry: any) => store.characterAssets.read(key, entry))).toEqual({ restored: 1, failed: 0 })
+    expect(fs.readFileSync(object).toString()).toBe('portrait')
+    fs.unlinkSync(path.join(directory, 'portrait.png'))
+    expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
+})
+it('V4 deletion and prefix replacement remove retired keys like manifest keys', () => {
+    const first = retireOne()
+    const object = path.join(first.root, 'kv', 'objects', crypto.createHash('sha256').update('portrait').digest('hex'))
+    expect(first.store.kvDelManyAndCollect(['assets/portrait.png'])).toMatchObject({ count: 1, bytes: 8 })
+    expect(first.store.kvGet('assets/portrait.png')).toBeNull()
+    expect(first.store.kvList('assets/')).toEqual(['assets/shared.png'])
+    expect(fs.existsSync(object)).toBe(false)
+    expect(createFileKv({ dataRoot: first.root }).kvList('assets/')).toEqual(['assets/shared.png'])
+    const second = retireOne()
+    second.store.kvReplacePrefixes([{ key: 'assets/other.png', value: Buffer.from('other') }], ['assets/'])
+    expect(second.store.kvList('assets/')).toEqual(['assets/other.png'])
+    expect(second.store.retiredStatus('one').retired).toBe(0)
+})
+it('V4 publishes retired index changes with a prepared backup restore manifest', async () => {
+    const { store } = retireOne()
+    const prepared = await store.preparePrefixReplacementFromFilesAsync([], ['assets/'])
+    expect(JSON.parse(prepared.retiredBytes.toString()).characters).toEqual({})
+    const untouched = await store.preparePrefixReplacementFromFilesAsync([], ['drafts/'])
+    expect(untouched.retiredBytes).toBeUndefined()
+})
+it('V4 never creates a retired index without an explicit transition', () => {
+    const { root, store, db } = mappedFixture()
+    store.characterAssets.sync(db)
+    store.kvDel('assets/shared.png')
+    store.kvReplacePrefixes([], ['drafts/'])
+    store.gcChunks({})
+    expect(fs.existsSync(path.join(root, 'kv', 'retired-assets.json'))).toBe(false)
+})
+it('V4 refuses changed copies and characters without a V3 package', () => {
+    const value = mappedFixture()
+    value.store.characterAssets.sync(value.db)
+    fs.writeFileSync(path.join(value.directory, 'portrait.png'), 'PORTRAIT')
+    expect(value.store.characterAssets.retirementCandidates(value.db, 'one')).toMatchObject({ candidates: [], shared: 1, unverified: 1 })
+    const legacy = fixture()
+    legacy.store.characterAssets.migrate(legacy.db, 'one', legacy.store.kvGet)
+    expect(() => legacy.store.characterAssets.retirementCandidates(legacy.db, 'one')).toThrow('V3 character package')
+})
+it('V4 characters keep saving new and replaced assets through KV', () => {
+    const { root, store, db, directory } = retireOne()
+    store.kvSet('assets/new.png', Buffer.from('new portrait'))
+    db.characters[0].image = 'assets/new.png'
+    expect(store.characterAssets.sync(db).changed).toBe(true)
+    expect(fs.readFileSync(path.join(directory, 'new.png')).toString()).toBe('new portrait')
+    expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
+    expect(createFileKv({ dataRoot: root }).kvGet('assets/new.png').toString()).toBe('new portrait')
+})
+it('V4 treats any outside reference, including a longer suffixed one, as shared', () => {
+    const value = mappedFixture()
+    value.store.characterAssets.sync(value.db)
+    const candidates = (database: any) => value.store.characterAssets.retirementCandidates(database, 'one').candidates.map((entry: any) => entry.key)
+    expect(candidates(value.db)).toEqual(['assets/portrait.png'])
+    expect(candidates({ ...value.db, modules: [{ assets: [['x', 'assets/portrait.png', 'png']] }] })).toEqual([])
+    expect(candidates({ ...value.db, css: 'url(xassets/aassets/portrait.png.bak)' })).toEqual([])
+    expect(candidates({ ...value.db, css: 'url(assets/portrait.pn)' })).toEqual(['assets/portrait.png'])
 })
