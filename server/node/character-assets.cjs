@@ -11,6 +11,10 @@ const { reportImportProgress } = require('./import-progress.cjs');
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const validFilename = value => typeof value === 'string' && value.length > 0 && sanitizeSegment(value) === value;
+// Coarse filesystems (FAT/exFAT) keep 2-second timestamps. A file changed this
+// recently can be edited again without a visible stat change, so it is hashed again.
+const RACY_STAMP_MS = 5000;
+const fileSignature = stat => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
 
 function candidateNames(character) {
     const names = new Map();
@@ -29,13 +33,16 @@ function candidateNames(character) {
     return names;
 }
 
-function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersion, sourcePath }) {
+function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersion, sourcePath,
+    folderReads = process.env.RISUBARD_ASSET_FOLDER_READS !== '0' }) {
     let state = { schemaVersion: 1, characters: {} };
     let routes = new Map();
     const directories = createCharacterDirectoryResolver(dataRoot);
     let routeMapping;
     const synced = new Map();
-    const counters = { reads: 0, fallbacks: 0, copied: 0, failed: 0 };
+    const counters = { reads: 0, fallbacks: 0, verified: 0, rejected: 0, copied: 0, failed: 0 };
+    // Per-session proof that a folder copy matched its KV digest at a stat signature.
+    let stamps = new Map();
     function safePath(relative) {
         const target = resolveInside(dataRoot, relative);
         let current = dataRoot;
@@ -50,21 +57,38 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
         routeMapping = directories.snapshot();
         for (const [id, record] of Object.entries(state.characters)) {
             if (!validId(id) || record?.enabled !== true || !Array.isArray(record.entries)) continue;
+            let directory = null;
+            if (folderReads) {
+                try { directory = safePath(`${directories.characterDirectory(id)}/assets`); } catch { continue; }
+            }
             for (const entry of record.entries) {
-                // Live-edit copies may change before reconciliation. Shared KV references
-                // must keep serving immutable originals until new per-character keys publish.
-                if (entry?.readFromKv === true) continue;
+                // Live-edit copies may change before reconciliation and shared KV keys must
+                // keep serving immutable originals. Folder reads therefore verify every copy
+                // against the KV digest (see readVerified); without them, sync-managed
+                // copies stay unread and KV serves the bytes.
+                if (entry?.readFromKv === true && !folderReads) continue;
                 if (entry && (entry.filename === undefined || validFilename(entry.filename)) && typeof entry.key === 'string' && entry.key.startsWith('assets/') && /^[a-f0-9]{64}$/.test(entry.hash) && Number.isSafeInteger(entry.size) && entry.size >= 0 && entry.size <= 64 * 1024 * 1024) {
                     try {
-                        const target = safePath(`${directories.characterDirectory(id)}/assets/${entry.filename ?? entry.hash}`);
+                        // One boundary check per character; per-file symlinks are rejected on verification.
+                        const target = directory
+                            ? path.join(directory, entry.filename ?? entry.hash)
+                            : safePath(`${directories.characterDirectory(id)}/assets/${entry.filename ?? entry.hash}`);
+                        if (directory && path.dirname(target) !== directory) continue;
                         routes.set(entry.key, { ...entry, id, target });
                     } catch { /* Validate path boundaries at publication/load, outside normal reads. */ }
                 }
             }
         }
+        const live = new Map();
+        for (const entry of routes.values()) {
+            const stampKey = `${entry.hash}\0${entry.target}`;
+            if (stamps.has(stampKey)) live.set(stampKey, stamps.get(stampKey));
+        }
+        stamps = live;
     }
     function reload() {
         synced.clear();
+        stamps = new Map();
         state = { schemaVersion: 1, characters: {} };
         try {
             safePath(INDEX);
@@ -276,12 +300,55 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
         for (const [id, signature] of completed) synced.set(id, signature);
         return { changed: true };
     }
+    // Serves a folder copy only when its bytes are proven to equal the KV object:
+    // a full SHA-256 on first use, then an unchanged stat signature (device, inode,
+    // size, modification and change times) for the rest of this server session.
+    // Every doubt throws so the caller falls back to the immutable KV original.
+    function readVerified(entry) {
+        const stampKey = `${entry.hash}\0${entry.target}`;
+        const stamp = stamps.get(stampKey);
+        const fd = fs.openSync(entry.target, 'r');
+        try {
+            const before = fs.fstatSync(fd, { bigint: true });
+            if (!before.isFile() || before.size !== BigInt(entry.size)) throw new Error('Invalid replica size');
+            const signature = fileSignature(before);
+            if (stamp?.rejected === signature) throw new Error('Replica content differs');
+            const value = Buffer.allocUnsafe(entry.size);
+            let offset = 0;
+            while (offset < value.length) {
+                const count = fs.readSync(fd, value, offset, value.length - offset, offset);
+                if (count === 0) throw new Error('Replica truncated during read');
+                offset += count;
+            }
+            if (fileSignature(fs.fstatSync(fd, { bigint: true })) !== signature) throw new Error('Replica changed during read');
+            if (stamp?.signature === signature && stamp.trusted) return value;
+            if (fs.lstatSync(entry.target).isSymbolicLink()) throw new Error('Asset path uses a symbolic link');
+            if (hash(value) !== entry.hash) {
+                stamps.set(stampKey, { rejected: signature });
+                counters.rejected++;
+                throw new Error('Replica content differs');
+            }
+            counters.verified++;
+            const changedAt = Math.max(Number(before.mtimeMs), Number(before.ctimeMs));
+            stamps.set(stampKey, { signature, trusted: Date.now() - changedAt > RACY_STAMP_MS });
+            return value;
+        } finally { fs.closeSync(fd); }
+    }
     function read(key, currentEntry) {
         try {
             if (directories.snapshot() !== routeMapping) rebuild();
         } catch { counters.fallbacks++; return null; }
         const entry = routes.get(key);
         if (!entry) return null;
+        if (folderReads) {
+            try {
+                // KV remains authoritative: replacement, import and deletion invalidate old replicas.
+                if (entry.hash !== currentEntry.object || entry.size !== currentEntry.size) throw new Error('Stale replica');
+                const value = readVerified(entry);
+                counters.reads++;
+                return value;
+            } catch { counters.fallbacks++; return null; }
+        }
         try {
             // KV remains authoritative: replacement, import and deletion invalidate old replicas.
             if (entry.hash !== currentEntry.object || entry.size !== currentEntry.size) throw new Error('Stale replica');
@@ -297,7 +364,7 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
         if (Object.hasOwn(state.characters, id)) publish({ schemaVersion: 1, characters: { ...state.characters, [id]: { ...state.characters[id], enabled: false } } });
         return status(id);
     }
-    return { migrate, sync, read, status, disable, reload, diagnostics: () => ({ scope: 'server-session', ...counters }) };
+    return { migrate, sync, read, status, disable, reload, diagnostics: () => ({ scope: 'server-session', folderReads, ...counters }) };
 }
 
 module.exports = { createCharacterAssets };

@@ -116,12 +116,15 @@ it('reads only added assets and retired copies when one reference changes in a l
     expect(fs.readFileSync(path.join(directory, 'new.png')).toString()).toBe('new portrait')
 })
 it('still verifies immutable KV content on use after the restarted delta fast path', () => {
-    const { root, store, db } = mappedFixture()
+    const { root, store, db, directory } = mappedFixture()
     store.characterAssets.sync(db)
     const reopened = createFileKv({ dataRoot: root })
     expect(reopened.characterAssets.sync(db).changed).toBe(false)
     const digest = crypto.createHash('sha256').update('portrait').digest('hex')
     fs.writeFileSync(path.join(root, 'kv/objects', digest), 'tampered')
+    // The verified folder copy carries the expected digest; KV is only the fallback.
+    expect(reopened.kvGet('assets/portrait.png').toString()).toBe('portrait')
+    fs.unlinkSync(path.join(directory, 'portrait.png'))
     expect(() => reopened.kvGet('assets/portrait.png')).toThrow('checksum mismatch')
 })
 it('preserves external asset bytes when app removal races with an unadopted edit and retries', () => {
@@ -326,30 +329,37 @@ it('retains published filenames through interrupted rename and retries without o
     expect(fs.readFileSync(path.join(root, 'characters', 'one', 'assets', 'Portrait.png')).toString()).toBe('portrait')
     expect(JSON.parse(fs.readFileSync(index, 'utf8')).characters.one.entries[0].filename).toBe('New portrait (2).png')
 })
-it('reads a current replica with one read and no hash, stat, lstat or metadata existence lookup', () => {
+it('reads a verified replica with one open and no hash, path stat or metadata existence lookup', () => {
     const { store, db } = fixture()
     store.characterAssets.migrate(db, 'one', store.kvGet)
-    const read = vi.spyOn(fs, 'readFileSync')
-    const stat = vi.spyOn(fs, 'statSync')
-    const lstat = vi.spyOn(fs, 'lstatSync')
-    const exists = vi.spyOn(fs, 'existsSync')
-    const digest = vi.spyOn(crypto, 'createHash')
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000)
     try {
         expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
-        expect(read).toHaveBeenCalledTimes(1)
+        expect(store.characterAssets.diagnostics().verified).toBe(1)
+        const open = vi.spyOn(fs, 'openSync')
+        const read = vi.spyOn(fs, 'readFileSync')
+        const stat = vi.spyOn(fs, 'statSync')
+        const lstat = vi.spyOn(fs, 'lstatSync')
+        const exists = vi.spyOn(fs, 'existsSync')
+        const digest = vi.spyOn(crypto, 'createHash')
+        expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
+        expect(open).toHaveBeenCalledTimes(1)
+        expect(read).not.toHaveBeenCalled()
         expect(stat).not.toHaveBeenCalled()
         expect(lstat).not.toHaveBeenCalled()
         expect(exists).not.toHaveBeenCalled()
         expect(digest).not.toHaveBeenCalled()
+        expect(store.characterAssets.diagnostics()).toMatchObject({ reads: 2, verified: 1, fallbacks: 0 })
     } finally { vi.restoreAllMocks() }
 })
-it('detects same-size external changes only on explicit revalidation and repairs from original KV', () => {
+it('never serves same-size external changes and repairs them from original KV on revalidation', () => {
     const { root, store, db } = fixture()
     store.characterAssets.migrate(db, 'one', store.kvGet)
     const index = path.join(root, 'index', 'character-asset-replicas.json')
     const old = JSON.parse(fs.readFileSync(index, 'utf8')).characters.one.entries[0]
     fs.writeFileSync(path.join(root, 'characters', 'one', 'assets', old.filename), 'modified')
-    expect(store.kvGet('assets/portrait.png').toString()).toBe('modified')
+    expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
+    expect(store.characterAssets.diagnostics()).toMatchObject({ reads: 0, rejected: 1, fallbacks: 1 })
     const digest = vi.spyOn(crypto, 'createHash')
     try {
         expect(store.characterAssets.migrate(db, 'one', store.kvGet).copied).toBe(1)
@@ -371,17 +381,115 @@ it('refreshes existing replica routes once after mapping publication and preserv
     store.characterAssets.migrate(db, 'one', store.kvGet)
     const mapped = repo.publishCharacterDirectoryMapping('one')
     fs.writeFileSync(path.join(root, 'characters/one/assets/portrait.png'), 'old copy')
-    expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
-    const read = vi.spyOn(fs, 'readFileSync')
-    const stat = vi.spyOn(fs, 'statSync')
-    const lstat = vi.spyOn(fs, 'lstatSync')
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000)
     try {
         expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
-        expect(read).toHaveBeenCalledTimes(1)
-        expect(String(read.mock.calls[0][0])).toContain(mapped.directory)
+        const open = vi.spyOn(fs, 'openSync')
+        const stat = vi.spyOn(fs, 'statSync')
+        const lstat = vi.spyOn(fs, 'lstatSync')
+        expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
+        expect(open).toHaveBeenCalledTimes(1)
+        expect(String(open.mock.calls[0][0])).toContain(mapped.directory)
         expect(stat).not.toHaveBeenCalled()
         expect(lstat).not.toHaveBeenCalled()
     } finally { vi.restoreAllMocks() }
     expect(createFileKv({ dataRoot: root }).kvGet('assets/portrait.png').toString()).toBe('portrait')
     expect(store.characterAssets.migrate(db, 'one', store.kvGet).copied).toBe(1)
+})
+
+function objectReads(read: any, root: string) {
+    return read.mock.calls.filter(([name]: any[]) => String(name).startsWith(path.join(root, 'kv', 'objects') + path.sep))
+}
+it('serves sync-managed V3 copies from the folder without reading the KV object', () => {
+    const { root, store, db } = mappedFixture()
+    store.characterAssets.sync(db)
+    const read = vi.spyOn(fs, 'readFileSync')
+    try {
+        expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
+        expect(store.kvGet('assets/shared.png').toString()).toBe('shared')
+        expect(objectReads(read, root)).toHaveLength(0)
+    } finally { read.mockRestore() }
+    expect(store.characterAssets.diagnostics()).toMatchObject({ folderReads: true, reads: 2, verified: 2, fallbacks: 0, rejected: 0 })
+})
+it('keeps folder reads after saves and a restart without rewriting the replica index', () => {
+    const { root, store, db } = mappedFixture()
+    store.characterAssets.sync(db)
+    const index = path.join(root, 'index', 'character-asset-replicas.json')
+    const before = fs.readFileSync(index)
+    expect(store.characterAssets.sync(db).changed).toBe(false)
+    const reopened = createFileKv({ dataRoot: root })
+    expect(reopened.characterAssets.sync(db).changed).toBe(false)
+    expect(fs.readFileSync(index)).toEqual(before)
+    const read = vi.spyOn(fs, 'readFileSync')
+    try {
+        expect(reopened.kvGet('assets/portrait.png').toString()).toBe('portrait')
+        expect(objectReads(read, root)).toHaveLength(0)
+    } finally { read.mockRestore() }
+    expect(reopened.characterAssets.diagnostics()).toMatchObject({ reads: 1, fallbacks: 0 })
+})
+it('falls back to KV when a trusted copy changes behind an unchanged size and modification time', () => {
+    const { root, store, db, directory } = mappedFixture()
+    store.characterAssets.sync(db)
+    const target = path.join(directory, 'portrait.png')
+    const old = new Date(Date.now() - 3_600_000)
+    fs.utimesSync(target, old, old)
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000)
+    try {
+        expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
+        fs.writeFileSync(target, 'PORTRAIT')
+        fs.utimesSync(target, old, old)
+        const read = vi.spyOn(fs, 'readFileSync')
+        expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
+        expect(objectReads(read, root)).toHaveLength(1)
+        // A known-bad signature falls back without hashing the copy again.
+        const digest = vi.spyOn(crypto, 'createHash')
+        expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
+        expect(digest.mock.calls.length).toBe(1)
+    } finally { vi.restoreAllMocks() }
+    expect(store.characterAssets.diagnostics()).toMatchObject({ verified: 1, rejected: 1, fallbacks: 2 })
+    expect(fs.readFileSync(target).toString()).toBe('PORTRAIT')
+})
+it('falls back to KV without an error when a copy is deleted, resized or replaced by a directory', () => {
+    const { store, db, directory } = mappedFixture()
+    store.characterAssets.sync(db)
+    fs.unlinkSync(path.join(directory, 'portrait.png'))
+    expect(store.kvGet('assets/portrait.png').toString()).toBe('portrait')
+    fs.writeFileSync(path.join(directory, 'shared.png'), 'shared and longer')
+    expect(store.kvGet('assets/shared.png').toString()).toBe('shared')
+    fs.unlinkSync(path.join(directory, 'shared.png'))
+    fs.mkdirSync(path.join(directory, 'shared.png'))
+    expect(store.kvGet('assets/shared.png').toString()).toBe('shared')
+    expect(store.characterAssets.diagnostics()).toMatchObject({ reads: 0, fallbacks: 3 })
+})
+it('serves a shared key only from a verified copy and never from another character edit', () => {
+    const { root, store, db, directory } = mappedFixture()
+    const { createUserDataRepository } = require('./user-data-repository.cjs')
+    const repo = createUserDataRepository({ dataRoot: root, allowDirectoryMapping: true })
+    const other = repo.publishCharacterDirectoryMapping('two')
+    store.characterAssets.sync(db)
+    const copies = [path.join(directory, 'shared.png'), path.join(root, 'characters', other.directory, 'assets/shared.png')]
+    for (const copy of copies) fs.writeFileSync(copy, 'edited')
+    expect(store.kvGet('assets/shared.png').toString()).toBe('shared')
+    expect(createFileKv({ dataRoot: root }).kvGet('assets/shared.png').toString()).toBe('shared')
+    for (const copy of copies) expect(fs.readFileSync(copy).toString()).toBe('edited')
+    expect(store.characterAssets.diagnostics()).toMatchObject({ reads: 0, rejected: 1 })
+})
+it('restores KV reads for sync-managed copies when folder reads are switched off', () => {
+    const { root, store, db } = mappedFixture()
+    store.characterAssets.sync(db)
+    const previous = process.env.RISUBARD_ASSET_FOLDER_READS
+    process.env.RISUBARD_ASSET_FOLDER_READS = '0'
+    try {
+        const reopened = createFileKv({ dataRoot: root })
+        const read = vi.spyOn(fs, 'readFileSync')
+        try {
+            expect(reopened.kvGet('assets/portrait.png').toString()).toBe('portrait')
+            expect(objectReads(read, root)).toHaveLength(1)
+        } finally { read.mockRestore() }
+        expect(reopened.characterAssets.diagnostics()).toMatchObject({ folderReads: false, reads: 0, fallbacks: 0 })
+        expect(reopened.characterAssets.sync(db).changed).toBe(false)
+    } finally {
+        if (previous === undefined) delete process.env.RISUBARD_ASSET_FOLDER_READS
+        else process.env.RISUBARD_ASSET_FOLDER_READS = previous
+    }
 })
