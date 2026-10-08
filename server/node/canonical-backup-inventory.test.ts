@@ -31,6 +31,16 @@ it('keeps user trash but excludes local pre-restore snapshots from subsequent ba
     ])
     expect(fs.existsSync(path.join(dataRoot, snapshot, 'characters/old/asset.png'))).toBe(true)
 })
+it('leaves module asset copies, their trash and their index out of backups', async () => {
+    const dataRoot = root()
+    for (const name of [
+        'modules/mod.json', 'modules/Fate/assets/first.png', 'trash/module-assets-1234/Fate/old.png',
+        'trash/2026-10-09/modules/gone.json', 'index/module-asset-replicas.json', 'index/sidebar.json',
+    ]) atomicWriteFile(dataRoot, name, Buffer.from(name))
+    expect(portable(await list(dataRoot))).toEqual([
+        'index/sidebar.json', 'modules/mod.json', 'trash/2026-10-09/modules/gone.json',
+    ])
+})
 it('preserves the legacy inventory shape, ordering and flat names while excluding only temporary/checksum files', async () => {
     const dataRoot = root()
     for (const name of ['settings/app.json', 'secrets/key.json', 'characters/one/chats/two/draft.json', 'risubard/wiki/history/old.md', 'trash/old/file.json', 'index/sidebar.json.bak', 'model-jobs/job/state.json']) atomicWriteFile(dataRoot, name, Buffer.from(name))

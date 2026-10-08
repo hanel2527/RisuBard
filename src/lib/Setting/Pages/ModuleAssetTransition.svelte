@@ -37,14 +37,17 @@
             return
         }
         busy = true
+        const checking = action === 'migrate' && result?.enabled === true
         result = null
-        message = action === 'migrate' ? `에셋 ${assetCount(id)}개를 폴더로 복사하고 검증하는 중입니다. 에셋이 많으면 몇 분 걸릴 수 있습니다.` : ''
+        message = action !== 'migrate' ? ''
+            : checking ? `폴더의 에셋 ${assetCount(id)}개를 원본과 대조하는 중입니다. 빠졌거나 바뀐 것만 다시 복사합니다.`
+            : `에셋 ${assetCount(id)}개를 폴더로 복사하고 검증하는 중입니다. 에셋이 많으면 몇 분 걸릴 수 있으며, 그동안에도 앱은 평소처럼 쓸 수 있습니다.`
         try {
             await forageStorage.Init()
             result = await forageStorage.realStorage.moduleAssetTransition(id, action)
             message = ''
         } catch {
-            const failure = action === 'migrate' ? '에셋 폴더로 풀기를 완료하지 못했습니다.'
+            const failure = action === 'migrate' ? (checking ? '폴더 점검을 완료하지 못했습니다.' : '에셋 폴더 만들기를 완료하지 못했습니다.')
                 : action === 'disable' ? '폴더 읽기 끄기를 완료하지 못했습니다.'
                 : action === 'retire-kv' ? 'V4 전환을 완료하지 못했습니다.'
                 : action === 'restore-kv' ? 'V4 되돌리기를 완료하지 못했습니다.'
@@ -67,8 +70,9 @@
 {#if isNodeServer}
     <section class="asset-pilot">
         <h2>모듈 에셋 폴더 (시험 기능)</h2>
-        <p>선택한 모듈의 에셋을 <code>modules/모듈이름/assets/</code> 폴더에 풀고, 원본과 같다고 확인된 복사본에서 읽습니다. 모듈 파일 자체와 KV 원본은 그대로이며, 복사본이 없거나 다르면 KV에서 읽습니다.</p>
-        <p>폴더로 푼 뒤 모듈에 새로 넣은 에셋은 KV에만 저장됩니다. 다시 풀기를 누르면 폴더에 추가됩니다. 에셋 수만큼 디스크와 백업 크기가 늘어납니다.</p>
+        <p>선택한 모듈의 에셋을 <code>modules/모듈이름/assets/</code> 폴더에 복사하고, 원본과 같다고 확인된 복사본에서 읽습니다. 모듈 파일 자체와 KV 원본은 그대로이며, 복사본이 없거나 다르면 KV에서 읽습니다.</p>
+        <p>폴더를 만든 뒤 모듈에 넣거나 뺀 에셋은 저장할 때 자동으로 폴더에 반영됩니다. 폴더 파일을 직접 지우거나 고쳤다면 폴더 점검을 눌러 주세요. 빠졌거나 바뀐 에셋만 원본에서 다시 복사합니다.</p>
+        <p>폴더는 에셋 수만큼 디스크를 쓰지만 백업에는 들어가지 않습니다. 에셋 자체는 백업에 모두 들어 있으며, 백업을 복원하면 폴더를 다시 만들어야 합니다. 삭제한 모듈의 폴더는 휴지통으로 옮겨집니다.</p>
         <label for="module-asset-module">모듈</label>
         <select id="module-asset-module" bind:value={moduleId} disabled={busy} onchange={() => { result = null; message = '' }}>
             <option value="">모듈을 선택해 주세요</option>
@@ -78,7 +82,7 @@
         </select>
         <div class="actions">
             <ShButton variant="outline" onclick={() => run('status')} disabled={!moduleId || busy}>상태 확인</ShButton>
-            <ShButton variant="primary" onclick={() => run('migrate')} disabled={!moduleId || busy}>{busy ? '처리 중…' : result?.enabled ? '에셋 폴더 다시 풀기' : '에셋 폴더로 풀기'}</ShButton>
+            <ShButton variant={result?.enabled ? 'outline' : 'primary'} onclick={() => run('migrate')} disabled={!moduleId || busy}>{busy ? '처리 중…' : result?.enabled ? '폴더 점검' : '에셋 폴더 만들기'}</ShButton>
             <ShButton variant="outline" onclick={() => run('disable')} disabled={!moduleId || busy || !result?.enabled}>폴더 읽기 끄기</ShButton>
         </div>
         <div class="actions">

@@ -72,6 +72,10 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
     let state = { schemaVersion: 1, characters: {} };
     let moduleState = { schemaVersion: 1, modules: {} };
     let routes = new Map();
+    // Module copies route separately: character publications rebuild only `routes`,
+    // module publications replace only their own module's entries.
+    let moduleRoutes = new Map();
+    let loadedModuleIndex = null;
     const directories = createCharacterDirectoryResolver(dataRoot);
     let routeMapping;
     const synced = new Map();
@@ -114,27 +118,45 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
                 }
             }
         }
-        if (folderReads) {
-            for (const [id, record] of Object.entries(moduleState.modules)) {
-                if (!validId(id) || record?.enabled !== true || !validFilename(record.directory) || !Array.isArray(record.entries)) continue;
-                let directory;
-                try { directory = safePath(`modules/${record.directory}/assets`); } catch { continue; }
-                for (const entry of record.entries) {
-                    // Character copies keep priority; either copy is digest-verified on use.
-                    if (!entry || routes.has(entry.key) || !validFilename(entry.filename) || typeof entry.key !== 'string'
-                        || !entry.key.startsWith('assets/') || !/^[a-f0-9]{64}$/.test(entry.hash)
-                        || !Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > 64 * 1024 * 1024) continue;
-                    const target = path.join(directory, entry.filename);
-                    if (path.dirname(target) === directory) routes.set(entry.key, { ...entry, id: MODULE_OWNER(id), target });
-                }
+        pruneStamps();
+    }
+    function pruneStamps() {
+        if (!stamps.size) return;
+        const live = new Map();
+        for (const map of [routes, moduleRoutes]) {
+            for (const entry of map.values()) {
+                const stampKey = `${entry.hash}\0${entry.target}`;
+                if (stamps.has(stampKey)) live.set(stampKey, stamps.get(stampKey));
             }
         }
-        const live = new Map();
-        for (const entry of routes.values()) {
-            const stampKey = `${entry.hash}\0${entry.target}`;
-            if (stamps.has(stampKey)) live.set(stampKey, stamps.get(stampKey));
-        }
         stamps = live;
+    }
+    function moduleRouteEntries(id, record) {
+        const result = [];
+        if (!folderReads || !validId(id) || record?.enabled !== true || !validFilename(record.directory) || !Array.isArray(record.entries)) return result;
+        let directory;
+        try { directory = safePath(`modules/${record.directory}/assets`); } catch { return result; }
+        for (const entry of record.entries) {
+            if (!entry || !validFilename(entry.filename) || typeof entry.key !== 'string'
+                || !entry.key.startsWith('assets/') || !/^[a-f0-9]{64}$/.test(entry.hash)
+                || !Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > 64 * 1024 * 1024) continue;
+            const target = path.join(directory, entry.filename);
+            if (path.dirname(target) === directory) result.push([entry.key, { ...entry, id: MODULE_OWNER(id), target }]);
+        }
+        return result;
+    }
+    function rebuildModules() {
+        moduleRoutes = new Map();
+        for (const [id, record] of Object.entries(moduleState.modules)) {
+            for (const [key, route] of moduleRouteEntries(id, record)) if (!moduleRoutes.has(key)) moduleRoutes.set(key, route);
+        }
+        pruneStamps();
+    }
+    function refreshModuleRoutes(id) {
+        const owner = MODULE_OWNER(id);
+        for (const [key, route] of moduleRoutes) if (route.id === owner) moduleRoutes.delete(key);
+        for (const [key, route] of moduleRouteEntries(id, moduleState.modules[id])) if (!moduleRoutes.has(key)) moduleRoutes.set(key, route);
+        pruneStamps();
     }
     function reload() {
         synced.clear();
@@ -145,15 +167,27 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
             const loaded = readVerifiedJson(dataRoot, INDEX);
             if (loaded?.schemaVersion === 1 && loaded.characters && typeof loaded.characters === 'object' && !Array.isArray(loaded.characters)) state = loaded;
         } catch { /* An optional replica index must never prevent startup. */ }
+        rebuild();
+        // The module index lists every copied file; parse it again only when it changed
+        // (restore, another process). Character reloads after external edits skip it.
+        const signature = moduleIndexSignature();
+        if (signature === loadedModuleIndex) return;
         moduleState = { schemaVersion: 1, modules: {} };
         try {
             safePath(MODULE_INDEX);
-            if (fs.existsSync(path.join(dataRoot, MODULE_INDEX))) {
+            if (signature !== 'missing') {
                 const loaded = readVerifiedJson(dataRoot, MODULE_INDEX);
                 if (loaded?.schemaVersion === 1 && loaded.modules && typeof loaded.modules === 'object' && !Array.isArray(loaded.modules)) moduleState = loaded;
             }
         } catch { /* Same as above: module folders are an optional read path. */ }
-        rebuild();
+        loadedModuleIndex = signature;
+        rebuildModules();
+    }
+    function moduleIndexSignature() {
+        try {
+            const stat = fs.statSync(path.join(dataRoot, MODULE_INDEX), { bigint: true });
+            return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+        } catch { return 'missing'; }
     }
     reload();
     function publish(next) {
@@ -396,7 +430,8 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
         try {
             if (directories.snapshot() !== routeMapping) rebuild();
         } catch { counters.fallbacks++; return null; }
-        const entry = routes.get(key);
+        // Character copies keep priority; either copy is digest-verified on use.
+        const entry = routes.get(key) ?? moduleRoutes.get(key);
         if (!entry) return null;
         if (folderReads) {
             try {
@@ -468,11 +503,14 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
         if (matches?.length !== 1) throw new Error('A unique module is required');
         return matches[0];
     }
-    function publishModules(next) {
+    // Compact JSON: the index lists every copied file and is rewritten per module action.
+    function publishModules(next, changedId) {
         safePath(MODULE_INDEX);
-        atomicWriteJson(dataRoot, MODULE_INDEX, next);
+        atomicWriteFile(dataRoot, MODULE_INDEX, Buffer.from(JSON.stringify(next)));
         moduleState = next;
-        rebuild();
+        loadedModuleIndex = moduleIndexSignature();
+        if (changedId) refreshModuleRoutes(changedId);
+        else rebuildModules();
     }
     function moduleStatus(id) {
         if (!validId(id)) throw new Error('Invalid module ID');
@@ -487,7 +525,9 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
     // belongs to this job alone, and every copy is digest-verified again on read.
     const moduleJobs = new Set();
     function prepareModuleCopy(database, id) {
-        const module = uniqueModule(database, id);
+        return planModuleCopy(id, uniqueModule(database, id));
+    }
+    function planModuleCopy(id, module) {
         if (moduleJobs.has(id)) throw Object.assign(new Error('Module asset copy already running'), { code: 'MODULE_COPY_RUNNING' });
         const previous = moduleState.modules[id];
         let directoryName = validFilename(previous?.directory) ? previous.directory : '';
@@ -514,7 +554,9 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
         catch (error) { await fs.promises.rm(temp, { force: true }); throw error; }
         return target;
     }
-    async function copyModule(plan, onProgress) {
+    // verifyExisting re-hashes every kept copy (manual check). Background sync trusts
+    // a kept copy whose size matches, because reads still verify the digest.
+    async function copyModule(plan, { verifyExisting = true, onProgress } = {}) {
         const directory = safePath(plan.relativeDirectory);
         const filenames = createSegmentAllocator(fs.existsSync(directory) ? await fs.promises.readdir(directory) : []);
         const reusable = new Map(plan.reusable.map(entry => [entry.key, entry]));
@@ -525,8 +567,11 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
                 if (sourceSize(key) > 64 * 1024 * 1024) throw new Error('Oversized source');
                 const old = reusable.get(key);
                 if (old && old.hash === sourceVersion?.(key)) {
-                    const existing = await fs.promises.readFile(path.join(directory, old.filename)).catch(() => null);
-                    if (existing && existing.length === old.size && hash(existing) === old.hash) {
+                    const kept = path.join(directory, old.filename);
+                    const usable = verifyExisting
+                        ? await fs.promises.readFile(kept).then(existing => existing.length === old.size && hash(existing) === old.hash, () => false)
+                        : await fs.promises.stat(kept).then(stat => stat.isFile() && stat.size === old.size, () => false);
+                    if (usable) {
                         record.entries.push(old);
                         record.copied++;
                         continue;
@@ -548,11 +593,31 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
         }
         return record;
     }
+    // Files this app copied and no longer lists go to trash/module-assets-*, which
+    // backups skip: the bytes stay in KV. Unknown files in the folder are never touched.
+    function moveModuleFilesToTrash(directoryName, filenames) {
+        if (!filenames.length) return;
+        const trash = `trash/module-assets-${crypto.randomUUID()}/${directoryName}`;
+        for (const filename of filenames) {
+            try {
+                const source = safePath(`modules/${directoryName}/assets/${filename}`);
+                if (!fs.existsSync(source)) continue;
+                const target = safePath(`${trash}/${filename}`);
+                fs.mkdirSync(path.dirname(target), { recursive: true });
+                fs.renameSync(source, target);
+            } catch { /* A leftover copy is unread and harmless. */ }
+        }
+    }
     // Only verified copies become readable; an interrupted copy leaves unread files.
     function publishModuleCopy(plan, record) {
-        publishModules({ schemaVersion: 1, modules: { ...moduleState.modules, [plan.id]: record } });
+        const previous = moduleState.modules[plan.id];
+        publishModules({ schemaVersion: 1, modules: { ...moduleState.modules, [plan.id]: record } }, plan.id);
         counters.copied += record.copied;
         counters.failed += record.failed;
+        if (previous?.directory === record.directory && Array.isArray(previous.entries)) {
+            const kept = new Set(record.entries.map(entry => entry.filename));
+            moveModuleFilesToTrash(record.directory, previous.entries.map(entry => entry?.filename).filter(name => validFilename(name) && !kept.has(name)));
+        }
         return moduleStatus(plan.id);
     }
     function releaseModuleCopy(plan) {
@@ -565,8 +630,79 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
     }
     function disableModule(id) {
         moduleStatus(id);
-        if (Object.hasOwn(moduleState.modules, id)) publishModules({ schemaVersion: 1, modules: { ...moduleState.modules, [id]: { ...moduleState.modules[id], enabled: false } } });
+        if (Object.hasOwn(moduleState.modules, id)) publishModules({ schemaVersion: 1, modules: { ...moduleState.modules, [id]: { ...moduleState.modules[id], enabled: false } } }, id);
         return moduleStatus(id);
+    }
+    // After each save: new or removed module assets reach the folder in the background,
+    // and folders of deleted modules move to trash. Neither delays nor fails the save.
+    const modulePending = new Map();
+    const moduleWork = new Set();
+    function moduleInSync(module, record) {
+        const candidates = moduleCandidateNames(module);
+        let matched = 0;
+        for (const entry of record.entries || []) {
+            if (!candidates.has(entry?.key) || entry.hash !== sourceVersion?.(entry.key)) return false;
+            matched++;
+        }
+        // Sources that failed to copy stay failed until a manual check retries them.
+        return candidates.size - matched <= (record.failed || 0);
+    }
+    function retireDeletedModule(id) {
+        const record = moduleState.modules[id];
+        const modules = { ...moduleState.modules };
+        delete modules[id];
+        publishModules({ schemaVersion: 1, modules }, id);
+        if (!validFilename(record?.directory)) return;
+        try {
+            const source = safePath(`modules/${record.directory}`);
+            if (!fs.existsSync(source)) return;
+            const target = safePath(`trash/module-assets-${crypto.randomUUID()}/${record.directory}`);
+            fs.mkdirSync(path.dirname(target), { recursive: true });
+            fs.renameSync(source, target);
+        } catch { /* The folder is no longer routed; a later run or the user can remove it. */ }
+    }
+    function queueModuleSync(id, module) {
+        if (moduleJobs.has(id)) { modulePending.set(id, module); return; }
+        let plan;
+        try { plan = planModuleCopy(id, module); } catch { return; }
+        const work = (async () => {
+            try {
+                const record = await copyModule(plan, { verifyExisting: false });
+                // A user may disable the folder while the copy runs; that choice wins.
+                if (moduleState.modules[id]?.enabled === true) publishModuleCopy(plan, record);
+            } catch { /* Reads keep using KV; the next save retries. */ }
+            finally {
+                releaseModuleCopy(plan);
+                const next = modulePending.get(id);
+                modulePending.delete(id);
+                if (next && moduleState.modules[id]?.enabled === true && !moduleInSync(next, moduleState.modules[id])) queueModuleSync(id, next);
+            }
+        })();
+        moduleWork.add(work);
+        work.finally(() => moduleWork.delete(work));
+    }
+    function checkModules(modules) {
+        const present = new Map(modules.filter(module => validId(module?.id)).map(module => [module.id, module]));
+        for (const [id, record] of Object.entries(moduleState.modules)) {
+            if (!validId(id)) continue;
+            const module = present.get(id);
+            if (!module) {
+                // Both the saved data and the canonical file must agree the module is gone.
+                if (!moduleJobs.has(id) && !fs.existsSync(path.join(dataRoot, 'modules', `${id}.json`))) retireDeletedModule(id);
+                continue;
+            }
+            if (record?.enabled === true && !moduleInSync(module, record)) queueModuleSync(id, module);
+        }
+    }
+    function scheduleModuleSync(database) {
+        const modules = database?.modules;
+        if (!Array.isArray(modules) || !Object.keys(moduleState.modules).length) return;
+        setImmediate(() => { try { checkModules(modules); } catch { /* Never affects saves. */ } });
+    }
+    // Tests and shutdown: resolves when background module work has finished.
+    async function moduleSyncIdle() {
+        await new Promise(resolve => setImmediate(resolve));
+        while (moduleWork.size) await Promise.allSettled([...moduleWork]);
     }
     // Queued part: decides which keys are shared from the current data (memory only).
     function moduleRetirementPlan(database, id) {
@@ -622,7 +758,7 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
     }
     return { migrate, sync, read, status, disable, reload, retirementCandidates,
         migrateModule, prepareModuleCopy, copyModule, publishModuleCopy, releaseModuleCopy,
-        disableModule, moduleStatus, moduleRetirementPlan, verifyModuleRetirement, moduleRetirementCandidates, overview, diagnostics: () => ({ scope: 'server-session', folderReads, ...counters }) };
+        disableModule, moduleStatus, scheduleModuleSync, moduleSyncIdle, moduleRetirementPlan, verifyModuleRetirement, moduleRetirementCandidates, overview, diagnostics: () => ({ scope: 'server-session', folderReads, ...counters }) };
 }
 
 module.exports = { createCharacterAssets, MODULE_OWNER };

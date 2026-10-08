@@ -1106,6 +1106,8 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
         errorStage = 'character-assets'
         reportImportProgress('character-assets');
         characterAssets.sync(databaseObject)
+        // Module folders follow saved module assets in the background; never fails a save.
+        try { characterAssets.scheduleModuleSync(databaseObject) } catch {}
         phaseMetrics.assetSyncMs = elapsedMs(phaseStartedAt)
         phaseStartedAt = performance.now()
         errorStage = 'revision-accept'

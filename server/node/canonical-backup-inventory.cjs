@@ -19,6 +19,15 @@ const CANONICAL_BACKUP_DIRECTORIES = [
 // next restore, including .bak copies created when old trash is overwritten.
 const RESTORE_SNAPSHOT_DIRECTORY = /^backup-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// Module asset folders are copies of KV assets that backups already carry, so they,
+// their trash and their index stay out. A restore starts with module folders off.
+function isModuleAssetCopy(relativeDirectory, child) {
+    if (relativeDirectory === 'modules') return child.isDirectory();
+    if (relativeDirectory === 'trash') return child.isDirectory() && child.name.startsWith('module-assets-');
+    if (relativeDirectory === 'index') return child.name.startsWith('module-asset-replicas.json');
+    return false;
+}
+
 async function listCanonicalBackupEntries(dataRoot) {
     const root = path.resolve(dataRoot);
     if ((await fs.lstat(root)).isSymbolicLink()) throw new Error('Canonical backup root uses a symbolic link');
@@ -62,6 +71,7 @@ async function listCanonicalBackupEntries(dataRoot) {
             if (child.isSymbolicLink()) throw new Error('Canonical backup path uses a symbolic link');
             if (child.name.endsWith('.tmp') || child.name.endsWith('.sha256')) continue;
             if (relativeDirectory === 'trash' && child.isDirectory() && RESTORE_SNAPSHOT_DIRECTORY.test(child.name)) continue;
+            if (isModuleAssetCopy(relativeDirectory, child)) continue;
             const key = collisionKey(child.name);
             if (names.has(key)) throw new Error('Canonical backup filename collision');
             names.add(key);
