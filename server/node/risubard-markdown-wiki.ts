@@ -4,6 +4,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { resolveMemoryWorkspace } from './risubard-memory-workspace'
 import { inquireMarkdownDocuments } from './risubard-markdown-inquiry'
+import { matchesWikiSearch } from '../../src/ts/risubard/wikiSearch'
+import { storySection } from '../../src/ts/risubard/storySoFar'
 import { detectWikiWritingLanguage, isWikiHeadingLabel, localizeWikiHeadings, normalizeWikiWritingLanguage, wikiHeadingLabelsPattern, wikiWritingHeadings, wikiWritingLocales, type WikiWritingLanguage } from '../../src/ts/risubard/wikiWritingLanguage'
 import {
     parseCanonicalTurnReceipt,
@@ -494,6 +496,30 @@ function parseDocument(
     }
 }
 
+const healthPassageCache = new WeakMap<MarkdownWikiDocument, Set<string>>()
+
+export type MarkdownWikiCatalogDocument = Omit<MarkdownWikiDocument, 'content'>
+
+export interface MarkdownWikiCatalog {
+    mode: 'markdown'
+    wikiPath: string
+    documents: MarkdownWikiCatalogDocument[]
+    health: MarkdownWikiHealth
+}
+
+const catalogEntries = new WeakMap<MarkdownWikiDocument, MarkdownWikiCatalogDocument>()
+
+function catalogEntry(document: MarkdownWikiDocument): MarkdownWikiCatalogDocument {
+    const cached = catalogEntries.get(document)
+    if (cached) return cached
+    const { content: _content, ...metadata } = document
+    const entry = document.type === 'event'
+        ? metadata
+        : { ...metadata, sourceMessageIds: [] }
+    catalogEntries.set(document, entry)
+    return entry
+}
+
 function computeHealth(documents: MarkdownWikiDocument[]): MarkdownWikiHealth {
     const possibleTargets = new Map<string, MarkdownWikiDocument | null>()
     for (const document of documents) {
@@ -539,15 +565,19 @@ function computeHealth(documents: MarkdownWikiDocument[]): MarkdownWikiHealth {
     const passageDocuments = new Map<string, Set<string>>()
     for (const document of documents) {
         if (document.status !== 'active' || document.type === 'scene') continue
-        const passages = new Set(document.content.split(/\r?\n\s*\r?\n/)
-            .map((passage) => passage.trim())
-            .filter((passage) => passage.length > 0
-                && !/^#{1,6}\s/u.test(passage)
-                && passage.replace(/\[\[[^\]]+\]\]/g, '')
-                    .replace(/[\s\-*•,;:|]+/gu, '').length > 0)
-            .map((passage) => passage.normalize('NFKC').toLocaleLowerCase()
-                .replace(/\s+/gu, ' ').trim())
-            .filter((passage) => Array.from(passage).length >= 80))
+        let passages = healthPassageCache.get(document)
+        if (!passages) {
+            passages = new Set(document.content.split(/\r?\n\s*\r?\n/)
+                .map((passage) => passage.trim())
+                .filter((passage) => passage.length > 0
+                    && !/^#{1,6}\s/u.test(passage)
+                    && passage.replace(/\[\[[^\]]+\]\]/g, '')
+                        .replace(/[\s\-*•,;:|]+/gu, '').length > 0)
+                .map((passage) => passage.normalize('NFKC').toLocaleLowerCase()
+                    .replace(/\s+/gu, ' ').trim())
+                .filter((passage) => Array.from(passage).length >= 80))
+            healthPassageCache.set(document, passages)
+        }
         for (const passage of passages) {
             const owners = passageDocuments.get(passage) ?? new Set<string>()
             owners.add(document.id)
@@ -638,6 +668,8 @@ export function createMarkdownNarrativeWiki(
     options: {
         fileSystem?: WikiFileSystem
         now?: () => Date
+        /** Minimum gap between background checks for external edits. */
+        externalEditSweepMs?: number
     } = {}
 ) {
     const fileSystem = options.fileSystem ?? nodeFs
@@ -651,7 +683,26 @@ export function createMarkdownNarrativeWiki(
     const invalidateDocuments = (key: string) => {
         documentCache.delete(key)
         documentLoads.delete(key)
+        writtenIndexes.delete(key)
         documentGenerations.set(key, (documentGenerations.get(key) ?? 0) + 1)
+    }
+    // Unchanged files keep their parsed document object, so a full reread
+    // costs one stat per file and downstream per-document caches stay warm.
+    type ParsedFile = { signature: string; document: MarkdownWikiDocument }
+    const parsedFiles = new Map<string, Map<string, ParsedFile>>()
+    const writtenIndexes = new Map<string, string>()
+    const healthCache = new Map<string, { signature: string; health: MarkdownWikiHealth }>()
+    const cachedHealth = (
+        key: string,
+        documents: MarkdownWikiDocument[]
+    ): MarkdownWikiHealth => {
+        const signature = documents.map((document) =>
+            `${document.relativePath}\0${document.contentHash}`).join('\n')
+        const cached = healthCache.get(key)
+        if (cached?.signature === signature) return cached.health
+        const health = computeHealth(documents)
+        healthCache.set(key, { signature, health })
+        return health
     }
     const embeddingCatalogCache = new WeakMap<MarkdownWikiDocument[], Omit<WikiEmbeddingCatalog, 'nextOffset'>>()
     type BardChatUndoFile = { relativePath: string; contents: string }
@@ -771,6 +822,8 @@ export function createMarkdownNarrativeWiki(
     ): Promise<MarkdownWikiDocument[]> => {
         const workspace = workspaceFor(characterId, chatId)
         const documents: MarkdownWikiDocument[] = []
+        const previousParsed = parsedFiles.get(workspace.directory)
+        const parsed = new Map<string, ParsedFile>()
         const folders = [
             [workspace.charactersDirectory, 'characters'],
             [workspace.locationsDirectory, 'locations'],
@@ -782,10 +835,18 @@ export function createMarkdownNarrativeWiki(
             [workspace.eventsDirectory, 'events'],
         ] as const
         try {
-            documents.push(parseDocument(
-                await fileSystem.readFile(workspace.sceneFile, 'utf8'),
-                'current-scene.md'
-            ))
+            const status = await fileSystem.lstat(workspace.sceneFile)
+            const signature = status.isSymbolicLink() ? null
+                : `${status.mtimeMs}:${status.ctimeMs}:${status.size}:${status.ino}`
+            const cached = previousParsed?.get(workspace.sceneFile)
+            const document = signature && cached?.signature === signature
+                ? cached.document
+                : parseDocument(
+                    await fileSystem.readFile(workspace.sceneFile, 'utf8'),
+                    'current-scene.md'
+                )
+            if (signature) parsed.set(workspace.sceneFile, { signature, document })
+            documents.push(document)
         }
         catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
@@ -801,16 +862,33 @@ export function createMarkdownNarrativeWiki(
                 if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
                 throw error
             }
-            const loaded = await Promise.all(files.map(async (file) => ({
-                file: join(directory, basename(file)),
-                document: parseDocument(
-                    await fileSystem.readFile(
-                        join(directory, basename(file)),
-                        'utf8'
-                    ),
-                    `${prefix}/${file}`
-                ),
-            })))
+            const loaded = (await Promise.all(files.map(async (file) => {
+                const path = join(directory, basename(file))
+                const relativePath = `${prefix}/${file}`
+                let status: Awaited<ReturnType<WikiFileSystem['lstat']>>
+                try {
+                    status = await fileSystem.lstat(path)
+                }
+                catch (error) {
+                    // A concurrent write or trash may remove a listed file.
+                    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+                    throw error
+                }
+                const signature = status.isSymbolicLink() ? null
+                    : `${status.mtimeMs}:${status.ctimeMs}:${status.size}:${status.ino}`
+                const cached = previousParsed?.get(path)
+                if (signature && cached?.signature === signature
+                    && cached.document.relativePath === relativePath) {
+                    parsed.set(path, cached)
+                    return { file: path, document: cached.document }
+                }
+                const document = parseDocument(
+                    await fileSystem.readFile(path, 'utf8'),
+                    relativePath
+                )
+                if (signature) parsed.set(path, { signature, document })
+                return { file: path, document }
+            }))).filter((item) => item !== null)
             for (const item of loaded) {
                 if (item.document.type === 'event'
                     && item.document.status === 'retracted') {
@@ -820,6 +898,7 @@ export function createMarkdownNarrativeWiki(
                 documents.push(item.document)
             }
         }
+        parsedFiles.set(workspace.directory, parsed)
         return documents
     }
 
@@ -830,8 +909,97 @@ export function createMarkdownNarrativeWiki(
         const key = workspaceFor(characterId, chatId).directory
         const generation = documentGenerations.get(key) ?? 0
         await cleanupLegacySnapshots(characterId, chatId)
-        const documents = await readDocuments(characterId, chatId)
+        const read = await readDocuments(characterId, chatId)
+        // An unchanged reread keeps the previous array so array-keyed caches stay warm.
+        const previous = documentCache.get(key)
+        const documents = previous && previous.length === read.length
+            && previous.every((document, index) => document === read[index])
+            ? previous : read
         if ((documentGenerations.get(key) ?? 0) === generation) documentCache.set(key, documents)
+        return documents
+    }
+
+    // At most one background stamp check per workspace every few seconds.
+    const externalEditSweeps = new Map<string, { running: boolean; finishedAt: number }>()
+    const sweepForExternalEdits = (characterId: string, chatId: string): void => {
+        const key = workspaceFor(characterId, chatId).directory
+        const state = externalEditSweeps.get(key) ?? { running: false, finishedAt: 0 }
+        if (state.running || Date.now() - state.finishedAt < (options.externalEditSweepMs ?? 5_000)) return
+        state.running = true
+        externalEditSweeps.set(key, state)
+        void refreshDocuments(characterId, chatId)
+            .catch(() => undefined)
+            .finally(() => {
+                state.running = false
+                state.finishedAt = Date.now()
+            })
+    }
+
+    const documentFolderOrder = [
+        'characters', 'locations', 'factions', 'creatures', 'items',
+        'concepts', 'notes', 'events',
+    ]
+    // Same order as readDocuments: scene first, then folder order, then file name.
+    const documentRank = (relativePath: string): [number, string] | null => {
+        if (relativePath === 'current-scene.md') return [-1, '']
+        const parts = relativePath.split('/')
+        const folder = documentFolderOrder.indexOf(parts[0])
+        return parts.length === 2 && folder >= 0 && parts[1].endsWith('.md')
+            ? [folder, parts[1]] : null
+    }
+
+    // A write knows which pages it touched; update only those cached entries
+    // instead of rereading the whole wiki.
+    const refreshPaths = async (
+        characterId: string,
+        chatId: string,
+        relativePaths: readonly string[]
+    ): Promise<MarkdownWikiDocument[]> => {
+        const workspace = workspaceFor(characterId, chatId)
+        const key = workspace.directory
+        const cached = documentCache.get(key)
+        const parsed = parsedFiles.get(key)
+        if (!cached || !parsed || relativePaths.some((path) => !documentRank(path))) {
+            return refreshDocuments(characterId, chatId)
+        }
+        const changed = new Set(relativePaths)
+        const documents = cached.filter((document) => !changed.has(document.relativePath))
+        const nextParsed = new Map(parsed)
+        for (const relativePath of changed) {
+            const path = relativePath === 'current-scene.md'
+                ? workspace.sceneFile
+                : join(workspace.directory, ...relativePath.split('/'))
+            nextParsed.delete(path)
+            let status: Awaited<ReturnType<WikiFileSystem['lstat']>>
+            try {
+                status = await fileSystem.lstat(path)
+            }
+            catch (error) {
+                if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+                throw error
+            }
+            const document = parseDocument(await fileSystem.readFile(path, 'utf8'), relativePath)
+            if (document.type === 'event' && document.status === 'retracted') {
+                await fileSystem.rm(path, { force: true })
+                continue
+            }
+            if (!status.isSymbolicLink()) {
+                nextParsed.set(path, {
+                    signature: `${status.mtimeMs}:${status.ctimeMs}:${status.size}:${status.ino}`,
+                    document,
+                })
+            }
+            documents.push(document)
+        }
+        documents.sort((left, right) => {
+            const [leftFolder, leftFile] = documentRank(left.relativePath) ?? [99, left.relativePath]
+            const [rightFolder, rightFile] = documentRank(right.relativePath) ?? [99, right.relativePath]
+            return leftFolder - rightFolder || (leftFile < rightFile ? -1 : leftFile > rightFile ? 1 : 0)
+        })
+        documentLoads.delete(key)
+        documentGenerations.set(key, (documentGenerations.get(key) ?? 0) + 1)
+        documentCache.set(key, documents)
+        parsedFiles.set(key, nextParsed)
         return documents
     }
 
@@ -882,10 +1050,13 @@ export function createMarkdownNarrativeWiki(
     const rebuildIndex = async (
         characterId: string,
         chatId: string,
-        writingLanguage?: WikiWritingLanguage
+        writingLanguage?: WikiWritingLanguage,
+        changedPaths?: readonly string[]
     ): Promise<void> => {
         const workspace = workspaceFor(characterId, chatId)
-        const documents = await refreshDocuments(characterId, chatId)
+        const documents = changedPaths
+            ? await refreshPaths(characterId, chatId, changedPaths)
+            : await refreshDocuments(characterId, chatId)
         const indexLanguage = normalizeWikiWritingLanguage(
             writingLanguage
             ?? documents.map((document) =>
@@ -904,7 +1075,9 @@ export function createMarkdownNarrativeWiki(
             ),
             '',
         ].join('\n')
+        if (writtenIndexes.get(workspace.directory) === index) return
         await writeAtomically(fileSystem, workspace.indexFile, index)
+        writtenIndexes.set(workspace.directory, index)
     }
 
     return {
@@ -1401,7 +1574,7 @@ export function createMarkdownNarrativeWiki(
                 join(workspace.eventsDirectory, file),
                 prepared.contents
             )
-            await rebuildIndex(input.characterId, input.chatId, writingLanguage)
+            await rebuildIndex(input.characterId, input.chatId, writingLanguage, [`events/${file}`])
             return prepared.document
         },
 
@@ -1544,7 +1717,7 @@ export function createMarkdownNarrativeWiki(
                 retrievalMetadata,
             })
             await writeAtomically(fileSystem, file, prepared.contents)
-            await rebuildIndex(input.characterId, input.chatId, writingLanguage)
+            await rebuildIndex(input.characterId, input.chatId, writingLanguage, [relativePath])
             return prepared.document
         },
 
@@ -1970,6 +2143,75 @@ export function createMarkdownNarrativeWiki(
             await rebuildIndex(characterId, chatId)
         },
 
+        /**
+         * Table of contents for the wiki dock: metadata without page bodies.
+         * Non-event pages omit source IDs; the dock reads them with the body.
+         */
+        async loadCatalog(
+            characterId: string,
+            chatId: string
+        ): Promise<MarkdownWikiCatalog> {
+            const workspace = workspaceFor(characterId, chatId)
+            const documents = await refreshDocuments(characterId, chatId)
+            return {
+                mode: 'markdown' as const,
+                wikiPath: workspace.directory,
+                documents: documents.map(catalogEntry),
+                health: cachedHealth(workspace.directory, documents),
+            }
+        },
+        /** Full pages for the given IDs; unknown IDs are omitted. */
+        async readDocumentBodies(
+            characterId: string,
+            chatId: string,
+            documentIds: readonly string[]
+        ): Promise<MarkdownWikiDocument[]> {
+            const wanted = new Set(documentIds)
+            return (await loadDocuments(characterId, chatId))
+                .filter((document) => wanted.has(document.id))
+        },
+        /** IDs of pages whose title, aliases, path or body contain the query. */
+        async searchDocumentIds(
+            characterId: string,
+            chatId: string,
+            query: string
+        ): Promise<string[]> {
+            return (await loadDocuments(characterId, chatId))
+                .filter((document) => matchesWikiSearch(document, query))
+                .map((document) => document.id)
+        },
+        /** Story-summary bullets of active events for the story view. */
+        async storySummaries(
+            characterId: string,
+            chatId: string
+        ): Promise<Array<{ id: string; contentHash: string; summary: string[] }>> {
+            return (await loadDocuments(characterId, chatId))
+                .filter((document) => document.type === 'event' && document.status === 'active')
+                .map((document) => ({
+                    id: document.id,
+                    contentHash: document.contentHash,
+                    summary: storySection(document.content),
+                }))
+                .filter((entry) => entry.summary.length > 0)
+        },
+        /** Parses the wiki into the cache ahead of the first dock open. */
+        async warm(characterId: string, chatId: string): Promise<number> {
+            return (await loadDocuments(characterId, chatId)).length
+        },
+        /** Newest active event from the cached catalog, for save previews. */
+        async latestActiveEvent(
+            characterId: string,
+            chatId: string
+        ): Promise<MarkdownWikiDocument | undefined> {
+            let latest: MarkdownWikiDocument | undefined
+            for (const document of await loadDocuments(characterId, chatId)) {
+                if (document.type !== 'event' || document.status !== 'active') continue
+                if (!latest
+                    || ((document.created || '').localeCompare(latest.created || '')
+                        || document.id.localeCompare(latest.id)) > 0) latest = document
+            }
+            return latest
+        },
         async loadView(
             characterId: string,
             chatId: string
@@ -2006,7 +2248,7 @@ export function createMarkdownNarrativeWiki(
                 mode: 'markdown' as const,
                 wikiPath: workspaceFor(characterId, chatId).directory,
                 documents: withReviewBases,
-                health: computeHealth(documents),
+                health: cachedHealth(workspace.directory, documents),
             }
         },
 
@@ -2154,12 +2396,14 @@ export function createMarkdownNarrativeWiki(
                 maximum: number
             }
         }) {
+            // Recall answers from the catalog at once. Writes no longer rescan
+            // the folder, so a background stamp check afterwards picks up pages
+            // edited outside the app for the next recall.
+            const documents = await loadDocuments(input.characterId, input.chatId)
+            setTimeout(() => sweepForExternalEdits(input.characterId, input.chatId), 0)
             return inquireMarkdownDocuments({
                 contextSelection: input.contextSelection,
-                documents: await loadDocuments(
-                    input.characterId,
-                    input.chatId
-                ),
+                documents,
                 currentInput: input.currentInput,
                 ...(input.retrievalLimits ? { retrievalLimits: input.retrievalLimits } : {}),
                 ...(input.entityHints ? { entityHints: input.entityHints } : {}),

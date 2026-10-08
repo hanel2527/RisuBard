@@ -657,4 +657,45 @@ describe('RisuBard memory CommonJS runtime', () => {
             'chat'
         )).resolves.toMatchObject({ facts: [], events: [] })
     })
+
+    test('lets wiki views read beside a save copy while later writes wait', async () => {
+        const { createRuntimeMemoryService } = require(
+            './risubard-memory-runtime.cjs'
+        )
+        const userDataDirectory = await mkdtemp(
+            join(tmpdir(), 'risubard-runtime-lanes-')
+        )
+        let releaseSave!: () => void
+        const saveBlocked = new Promise<void>((resolve) => { releaseSave = resolve })
+        const service = createRuntimeMemoryService(userDataDirectory, {
+            createSaveSlot: vi.fn(async () => {
+                await saveBlocked
+                return { saveId: 'save-1' }
+            }),
+        })
+        const turn = (id: string) => service.saveMarkdownWikiTurn({
+            characterId: 'character', chatId: 'chat',
+            sourceMessageIds: [id], markdown: `## ${id}\n\n문이 열렸다.`,
+        })
+        await turn('assistant-1')
+        const order: string[] = []
+        const save = service.createMemorySave({
+            characterId: 'character', sourceChatId: 'chat', saveId: 'save-1',
+            sourceChatName: 'chat', turnCount: 1, chatBytes: Buffer.from([1]),
+        }).then(() => order.push('save'))
+        const view = service.loadView('character', 'chat')
+            .then((value: { documents: unknown[] }) => {
+                order.push('view')
+                return value
+            })
+        const write = turn('assistant-2').then(() => order.push('write'))
+
+        await expect(view).resolves.toMatchObject({
+            documents: [expect.anything()],
+        })
+        expect(order).toEqual(['view'])
+        releaseSave()
+        await Promise.all([save, write])
+        expect(order).toEqual(['view', 'save', 'write'])
+    })
 })

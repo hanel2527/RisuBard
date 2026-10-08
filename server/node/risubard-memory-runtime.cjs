@@ -52,24 +52,63 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
     const previewSaveSlot = options.previewSaveSlot || readMemorySaveChat
     const renameSaveSlot = options.renameSaveSlot || renameMemorySaveSlot
     const deleteSaveSlot = options.deleteSaveSlot || deleteMemorySaveSlot
+    // Per-workspace reader/writer lanes: a write waits for every earlier
+    // operation; a read waits only for earlier writes, so views and save
+    // copies of the same chat do not queue behind each other.
     const queues = new Map()
-    const serializedMany = (pairs, operation) => {
-        const keys = [...new Set(pairs.map((pair) => JSON.stringify(pair)))]
-            .sort()
-        const previous = keys.map((key) => queues.get(key) || Promise.resolve())
-        const current = Promise.all(previous.map((pending) =>
-            pending.catch(() => undefined)
-        )).then(operation)
-        for (const key of keys) queues.set(key, current)
-        current.finally(() => {
-            for (const key of keys) {
-                if (queues.get(key) === current) queues.delete(key)
+    // Saves of one character share a page store; releasing unused pages must
+    // not race another save that is still adding pages.
+    const SAVE_STORE_LANE = '\u0000save-store'
+    const scheduled = (readPairs, writePairs, operation) => {
+        const keyOf = (pair) => JSON.stringify(pair)
+        const writeKeys = [...new Set(writePairs.map(keyOf))].sort()
+        const readKeys = [...new Set(readPairs.map(keyOf))]
+            .filter((key) => !writeKeys.includes(key)).sort()
+        const laneFor = (key) => {
+            let lane = queues.get(key)
+            if (!lane) {
+                lane = { write: null, reads: new Set() }
+                queues.set(key, lane)
             }
-        }).catch(() => undefined)
+            return lane
+        }
+        const previous = []
+        for (const key of writeKeys) {
+            const lane = laneFor(key)
+            if (lane.write) previous.push(lane.write)
+            previous.push(...lane.reads)
+        }
+        for (const key of readKeys) {
+            const lane = laneFor(key)
+            if (lane.write) previous.push(lane.write)
+        }
+        const current = Promise.all(previous).then(operation)
+        const settled = current.then(() => undefined, () => undefined)
+        for (const key of writeKeys) {
+            const lane = laneFor(key)
+            lane.write = settled
+            lane.reads = new Set()
+        }
+        for (const key of readKeys) laneFor(key).reads.add(settled)
+        settled.then(() => {
+            for (const key of [...writeKeys, ...readKeys]) {
+                const lane = queues.get(key)
+                if (!lane) continue
+                lane.reads.delete(settled)
+                if (lane.write === settled) lane.write = null
+                if (!lane.write && lane.reads.size === 0) queues.delete(key)
+            }
+        })
         return current
     }
+    const serializedMany = (pairs, operation) => scheduled([], pairs, operation)
     const serialized = (characterId, chatId, operation) => serializedMany(
         [[characterId, chatId]],
+        operation
+    )
+    const readSerialized = (characterId, chatId, operation) => scheduled(
+        [[characterId, chatId]],
+        [],
         operation
     )
     return {
@@ -126,21 +165,16 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
                 return completed
             }
         ),
-        createMemorySave: (input) => serializedMany([
+        createMemorySave: (input) => scheduled([
             [input.characterId, input.sourceChatId],
+        ], [
             [input.characterId, memorySaveWorkspaceId(input.saveId)],
+            [input.characterId, SAVE_STORE_LANE],
         ], async () => {
-            const view = await wiki.loadView(
+            const latest = await wiki.latestActiveEvent(
                 input.characterId,
                 input.sourceChatId
             )
-            const latest = view.documents
-                .filter((document) => document.type === 'event'
-                    && document.status === 'active')
-                .sort((left, right) =>
-                    (right.created || '').localeCompare(left.created || '')
-                    || right.id.localeCompare(left.id)
-                )[0]
             const excerpt = latest?.content
                 .replace(/^#\s+[^\r\n]+\r?\n*/, '')
                 .replace(/\s+/g, ' ')
@@ -171,14 +205,14 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
             memorySaveWorkspaceId(input.saveId),
             () => renameSaveSlot({ userDataDirectory, ...input })
         ),
-        deleteMemorySave: (input) => serialized(
-            input.characterId,
-            memorySaveWorkspaceId(input.saveId),
-            () => deleteSaveSlot({ userDataDirectory, ...input })
-        ),
+        deleteMemorySave: (input) => serializedMany([
+            [input.characterId, memorySaveWorkspaceId(input.saveId)],
+            [input.characterId, SAVE_STORE_LANE],
+        ], () => deleteSaveSlot({ userDataDirectory, ...input })),
         prepareMemorySaveLoad: (input) => serializedMany([
             [input.characterId, memorySaveWorkspaceId(input.saveId)],
             [input.characterId, input.destinationChatId],
+            [input.characterId, SAVE_STORE_LANE],
         ], () => prepareSaveLoad({
             userDataDirectory,
             ...input,
@@ -229,7 +263,7 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
             input.chatId,
             () => wiki.finalizeBardChatUndo(input)
         ),
-        getBardChatUndoStatus: (input) => serialized(
+        getBardChatUndoStatus: (input) => readSerialized(
             input.characterId,
             input.chatId,
             () => wiki.getBardChatUndoStatus(input)
@@ -327,8 +361,18 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
                 }
             })
         },
+        loadCatalog: (characterId, chatId) => readSerialized(characterId, chatId,
+            () => wiki.loadCatalog(characterId, chatId)),
+        readDocumentBodies: (characterId, chatId, documentIds) => readSerialized(characterId, chatId,
+            () => wiki.readDocumentBodies(characterId, chatId, documentIds)),
+        searchDocumentIds: (characterId, chatId, query) => readSerialized(characterId, chatId,
+            () => wiki.searchDocumentIds(characterId, chatId, query)),
+        storySummaries: (characterId, chatId) => readSerialized(characterId, chatId,
+            () => wiki.storySummaries(characterId, chatId)),
+        warmWiki: (characterId, chatId) => readSerialized(characterId, chatId,
+            () => wiki.warm(characterId, chatId)),
         async loadView(characterId, chatId) {
-            return serialized(characterId, chatId, async () => {
+            return readSerialized(characterId, chatId, async () => {
                 return wiki.loadView(characterId, chatId)
             })
         },

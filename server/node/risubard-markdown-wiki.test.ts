@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { afterEach, describe, expect, test } from 'vitest'
+import { basename, join } from 'node:path'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 import {
     createMarkdownNarrativeWiki,
     resolveMarkdownWikiWorkspace,
@@ -16,6 +16,125 @@ afterEach(async () => {
 })
 
 describe('Markdown narrative wiki', () => {
+    test('answers recall from the catalog and picks up external edits for the next recall', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        const wiki = createMarkdownNarrativeWiki(root, { externalEditSweepMs: 0 })
+        const scope = { characterId: 'character', chatId: 'chat' }
+        const alice = await wiki.saveCanonicalDocument({ ...scope, type: 'character', title: 'Alice',
+            sourceMessageIds: ['assistant-1'], markdown: '## Alice\n\nAlice guards the north gate.' })
+        const recall = async () => (await wiki.inquire({ ...scope, currentInput: 'Alice는 어디 있지?' }))
+            .sources.map((source) => source.content).join('\n')
+        expect(await recall()).toContain('north gate')
+
+        const file = join(resolveMarkdownWikiWorkspace(root, 'character', 'chat').directory,
+            ...alice.relativePath.split('/'))
+        await fs.writeFile(file, (await fs.readFile(file, 'utf8'))
+            .replace('Alice guards the north gate.', 'Alice moved to the harbor in Obsidian.'), 'utf8')
+        await recall()
+        await vi.waitFor(async () => expect(await recall()).toContain('harbor'))
+    })
+
+    test('serves a body-less catalog with bodies, search and story summaries on demand', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        const wiki = createMarkdownNarrativeWiki(root)
+        const scope = { characterId: 'character', chatId: 'chat' }
+        const event = await wiki.saveConfirmedTurn({ ...scope, sourceMessageIds: ['assistant-1'],
+            markdown: '## 성문\n\n### 이야기 요약\n\n- 성문이 열렸다.\n- 경비병이 비켜섰다.' })
+        const alice = await wiki.saveCanonicalDocument({ ...scope, type: 'character', title: 'Alice',
+            sourceMessageIds: ['assistant-1'], markdown: '## Alice\n\nAlice keeps a silver key.' })
+
+        const catalog = await wiki.loadCatalog('character', 'chat')
+        expect(catalog.documents.every((document) => !('content' in document))).toBe(true)
+        expect(catalog.documents.find((document) => document.id === event.id)?.sourceMessageIds)
+            .toEqual(['assistant-1'])
+        expect(catalog.documents.find((document) => document.id === alice.id)?.sourceMessageIds).toEqual([])
+
+        const [body] = await wiki.readDocumentBodies('character', 'chat', [alice.id, 'missing'])
+        expect(body).toMatchObject({ id: alice.id, sourceMessageIds: ['assistant-1'] })
+        expect(body.content).toContain('silver key')
+        expect(await wiki.searchDocumentIds('character', 'chat', 'SILVER')).toEqual([alice.id])
+        expect(await wiki.storySummaries('character', 'chat')).toEqual([{
+            id: event.id, contentHash: event.contentHash,
+            summary: ['성문이 열렸다.', '경비병이 비켜섰다.'],
+        }])
+    })
+
+    test('saves a new turn without listing or rereading the other pages', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        const calls = { readdir: 0, readFile: [] as string[] }
+        const countingFileSystem = {
+            ...fs,
+            readdir: async (...args: unknown[]) => {
+                calls.readdir += 1
+                return (fs.readdir as unknown as (...values: unknown[]) => Promise<unknown>)(...args)
+            },
+            readFile: async (...args: unknown[]) => {
+                calls.readFile.push(String(args[0]))
+                return (fs.readFile as unknown as (...values: unknown[]) => Promise<unknown>)(...args)
+            },
+        } as unknown as NonNullable<Parameters<typeof createMarkdownNarrativeWiki>[1]>['fileSystem']
+        const wiki = createMarkdownNarrativeWiki(root, { fileSystem: countingFileSystem })
+        const scope = { characterId: 'character', chatId: 'chat' }
+        for (let turn = 1; turn <= 5; turn++) {
+            await wiki.saveConfirmedTurn({ ...scope, sourceMessageIds: [`assistant-${turn}`],
+                markdown: `## 사건 ${turn}\n\n문이 ${turn}번 열렸다.` })
+        }
+        const alice = await wiki.saveCanonicalDocument({ ...scope, type: 'character', title: 'Alice',
+            sourceMessageIds: ['assistant-5'], markdown: '## Alice\n\nAlice guards the gate.' })
+        calls.readdir = 0
+        calls.readFile = []
+
+        const event = await wiki.saveConfirmedTurn({ ...scope, sourceMessageIds: ['assistant-6'],
+            markdown: '## 사건 6\n\nAlice가 문을 닫았다.' })
+        await wiki.saveCanonicalDocument({ ...scope, documentId: alice.id, type: 'character',
+            title: 'Alice', sourceMessageIds: ['assistant-6'], markdown: '## Alice\n\nAlice closed the gate.' })
+
+        expect(calls.readdir).toBe(0)
+        expect(calls.readFile.map((path) => basename(path))).toEqual([
+            basename(event.relativePath), basename(alice.relativePath), basename(alice.relativePath),
+        ])
+        const view = await wiki.loadView('character', 'chat')
+        const fresh = await createMarkdownNarrativeWiki(root).loadView('character', 'chat')
+        expect(view.documents.map((document) => document.id))
+            .toEqual(fresh.documents.map((document) => document.id))
+        expect(view.documents.find((document) => document.id === alice.id)?.content)
+            .toContain('closed the gate')
+        expect(view.documents.filter((document) => document.type === 'event')).toHaveLength(6)
+        const index = await fs.readFile(join(resolveMarkdownWikiWorkspace(root, 'character', 'chat').directory, 'index.md'), 'utf8')
+        expect(index).toContain('사건 6')
+    })
+
+    test('reuses unchanged parsed documents and still sees external edits', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        const wiki = createMarkdownNarrativeWiki(root)
+        const scope = { characterId: 'character', chatId: 'chat', sourceMessageIds: ['turn-1'] }
+        const alice = await wiki.saveCanonicalDocument({ ...scope, type: 'character',
+            title: 'Alice', markdown: '## Alice\n\nAlice guards the gate.' })
+        await wiki.saveCanonicalDocument({ ...scope, type: 'character',
+            title: 'Bram', markdown: '## Bram\n\nBram sells bread.' })
+        const first = await wiki.loadView('character', 'chat')
+        const byTitle = (view: typeof first, title: string) =>
+            view.documents.find((document) => document.title === title)!
+
+        const file = join(resolveMarkdownWikiWorkspace(root, 'character', 'chat').directory,
+            ...alice.relativePath.split('/'))
+        const edited = (await fs.readFile(file, 'utf8'))
+            .replace('Alice guards the gate.', 'Alice left the gate in Obsidian.')
+        await fs.writeFile(file, edited, 'utf8')
+        const second = await wiki.loadView('character', 'chat')
+
+        expect(byTitle(second, 'Alice').content).toContain('left the gate in Obsidian')
+        expect(byTitle(second, 'Alice').contentHash).not.toBe(byTitle(first, 'Alice').contentHash)
+        expect(byTitle(second, 'Bram')).toBe(byTitle(first, 'Bram'))
+        await fs.rm(file)
+        expect((await wiki.loadView('character', 'chat')).documents.map((document) =>
+            document.title)).toEqual(['Bram'])
+    })
+
     test('retrieves an inherited character from entity hints without old chat messages', async () => {
         const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
         temporaryDirectories.push(root)

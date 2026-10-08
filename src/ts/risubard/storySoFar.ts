@@ -2,7 +2,9 @@ import type { NarrativeMemoryWikiMarkdown } from './memoryWiki'
 import { isWikiHeadingLabel } from './wikiWritingLanguage'
 import { createEventOrder, type EventOrderMessage } from './eventOrder'
 
-type MarkdownDocument = NarrativeMemoryWikiMarkdown['documents'][number]
+type MarkdownDocument = Omit<NarrativeMemoryWikiMarkdown['documents'][number], 'content'> & {
+    content?: string
+}
 
 export type StorySourceRef = {
     kind: 'chat'
@@ -17,7 +19,8 @@ export interface StorySoFarEntry {
     source: StorySourceRef
 }
 
-function storySection(content: string): string[] {
+/** Bullets of an event's story summary section; also used by the server. */
+export function storySection(content: string): string[] {
     const lines = content.replace(/\r\n/g, '\n').split('\n')
     let headingLevel = 0
     const heading = lines.findIndex((line) => {
@@ -43,13 +46,18 @@ function sourceFor(document: MarkdownDocument): StorySourceRef {
 
 export function buildStorySoFar(
     documents: readonly MarkdownDocument[],
-    messages?: readonly EventOrderMessage[]
+    messages?: readonly EventOrderMessage[],
+    summaries?: ReadonlyMap<string, readonly string[]>
 ): StorySoFarEntry[] {
     const order = createEventOrder(messages)
     return documents
         .filter((document) => document.type === 'event'
             && document.status === 'active')
-        .map((document) => ({ document, summary: storySection(document.content) }))
+        .map((document) => ({
+            document,
+            summary: [...(summaries?.get(document.id)
+                ?? (document.content === undefined ? [] : storySection(document.content)))],
+        }))
         .filter(({ summary }) => summary.length > 0)
         .sort((left, right) => order.compare(left.document, right.document))
         .map(({ document, summary }) => ({

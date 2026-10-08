@@ -690,6 +690,44 @@ function registerRisuBardMemoryRoutes(app, options) {
         }
     })
 
+    // Wiki dock: table of contents first, page bodies and searches on demand.
+    const wikiScopeRoute = (path, extraKeys, valid, run) => {
+        app.post(path, async (req, res, next) => {
+            try {
+                if (!await options.auth(req, res)) return
+                if (!hasExactKeys(req.body, ['characterId', 'chatId', ...extraKeys])
+                    || !hasBoundedId(req.body.characterId)
+                    || !hasBoundedId(req.body.chatId)
+                    || !valid(req.body)) {
+                    res.status(400).send({ error: 'Invalid memory wiki request' })
+                    return
+                }
+                res.send(await run(req.body))
+            }
+            catch (error) {
+                next(error)
+            }
+        })
+    }
+    wikiScopeRoute('/api/risubard/memory/catalog', [], () => true,
+        (body) => options.service.loadCatalog(body.characterId, body.chatId))
+    wikiScopeRoute('/api/risubard/memory/wiki/documents', ['documentIds'],
+        (body) => Array.isArray(body.documentIds)
+            && body.documentIds.length > 0 && body.documentIds.length <= 256
+            && body.documentIds.every(hasBoundedId),
+        async (body) => ({ documents: await options.service.readDocumentBodies(
+            body.characterId, body.chatId, body.documentIds) }))
+    wikiScopeRoute('/api/risubard/memory/wiki/search', ['query'],
+        (body) => typeof body.query === 'string'
+            && body.query.trim().length > 0 && body.query.length <= 256,
+        async (body) => ({ documentIds: await options.service.searchDocumentIds(
+            body.characterId, body.chatId, body.query.trim()) }))
+    wikiScopeRoute('/api/risubard/memory/wiki/warm', [], () => true,
+        async (body) => ({ documents: await options.service.warmWiki(body.characterId, body.chatId) }))
+    wikiScopeRoute('/api/risubard/memory/wiki/story', [], () => true,
+        async (body) => ({ entries: await options.service.storySummaries(
+            body.characterId, body.chatId) }))
+
     app.post('/api/risubard/memory/wiki/replace', async (req, res, next) => {
         try {
             if (!await options.auth(req, res)) return
