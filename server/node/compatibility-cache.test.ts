@@ -10,18 +10,6 @@ const { encodeRisuSaveLegacyBuffer, decodeRisuSave } = require('./utils.cjs')
 let attachCompatibilityCache: any
 try { ({ attachCompatibilityCache } = require('./compatibility-cache.cjs')) } catch {}
 const roots: string[] = []
-// Durable KV state: the manifest snapshot plus the fsynced journal lines.
-function persistedEntries(root: string) {
-    const entries = JSON.parse(fs.readFileSync(path.join(root, 'kv/manifest.json'), 'utf8')).entries
-    const journal = path.join(root, 'kv/manifest.journal')
-    if (!fs.existsSync(journal)) return entries
-    for (const line of fs.readFileSync(journal, 'utf8').split('\n').slice(1).filter(Boolean)) {
-        const change = JSON.parse(line)
-        Object.assign(entries, change.set)
-        for (const key of change.del) delete entries[key]
-    }
-    return entries
-}
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
 function fixture() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'risubard-p1-')); roots.push(root)
@@ -49,10 +37,10 @@ describe('P1 regenerable compatibility cache', () => {
     })
     it('durably invalidates before canonical writes without deleting object bytes', async () => {
         const f = fixture()
-        const oldEntry = persistedEntries(f.root)['database/database.bin']
+        const oldEntry = JSON.parse(fs.readFileSync(path.join(f.root, 'kv/manifest.json'), 'utf8')).entries['database/database.bin']
         expect(f.cache.canDefer()).toBe(true)
         f.cache.invalidate()
-        expect(persistedEntries(f.root)['database/database.bin']).toBeUndefined()
+        expect(JSON.parse(fs.readFileSync(path.join(f.root, 'kv/manifest.json'), 'utf8')).entries['database/database.bin']).toBeUndefined()
         expect(fs.existsSync(path.join(f.root, 'kv/objects', oldEntry.object))).toBe(true)
         f.database.characters[0].chats[0].message[0].data = 'latest'
         f.repository.syncLegacyChatState(f.database, { chats: [{ characterId: 'char-1', chatId: 'chat-1' }] })
@@ -96,7 +84,7 @@ describe('P1 regenerable compatibility cache', () => {
         const original = f.repository.exportLegacyDatabase
         f.repository.exportLegacyDatabase = () => { throw Object.assign(new Error('read failure'), { code: 'EIO' }) }
         expect(() => f.store.kvGet('database/database.bin')).toThrow('read failure')
-        expect(persistedEntries(f.root)['database/database.bin']).toBeUndefined()
+        expect(JSON.parse(fs.readFileSync(path.join(f.root, 'kv/manifest.json'), 'utf8')).entries['database/database.bin']).toBeUndefined()
         f.repository.exportLegacyDatabase = original
         expect(await decodeRisuSave(f.store.kvGet('database/database.bin'))).toEqual(f.database)
     })

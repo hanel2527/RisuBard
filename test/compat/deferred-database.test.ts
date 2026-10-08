@@ -59,17 +59,7 @@ async function fixture(enabled = true) {
     const session = await client.fetch('/api/session', { method:'POST', headers:{'x-session-id':'p1-test'} })
     const headers = { 'x-session-id':'p1-test', 'x-user-active':'1', cookie:session.headers.get('set-cookie')!.split(';',1)[0] }
     expect((await client.fetch('/api/read', { headers:{...headers,'file-path':Buffer.from(key).toString('hex')} })).ok).toBe(true)
-    // Durable KV state: the snapshot plus the journal lines appended after it.
-    const manifest = async () => {
-        const value = JSON.parse(await readFile(path.join(server.cwd,'save/kv/manifest.json'),'utf8'))
-        const journal = await readFile(path.join(server.cwd,'save/kv/manifest.journal'),'utf8').catch(() => '')
-        for (const line of journal.split('\n').slice(1).filter(Boolean)) {
-            const change = JSON.parse(line)
-            Object.assign(value.entries, change.set)
-            for (const key of change.del) delete value.entries[key]
-        }
-        return value
-    }
+    const manifest = async () => JSON.parse(await readFile(path.join(server.cwd,'save/kv/manifest.json'),'utf8'))
     const rows = async () => (await readFile(path.join(server.cwd,'save/logs/storage-observation.jsonl'),'utf8')).trim().split(/\r?\n/).map(line=>JSON.parse(line))
     // Deferred writes require a verified canonical baseline. Verification now
     // runs after an idle period, so wait for that prerequisite explicitly.
