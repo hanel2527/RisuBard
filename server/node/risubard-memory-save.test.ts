@@ -109,13 +109,111 @@ describe('memory save slots', () => {
             }, { fileSystem })).rejects.toThrow('injected overwrite failure')
             expect(await readMemorySaveChat(input)).toEqual(Buffer.from('old'))
             expect(await listMemorySaveSlots(input)).toEqual([saved])
-            const slot = resolveMemoryWorkspace(input.userDataDirectory, 'character', 'save-slot:save-1')
-            expect(await fs.readFile(join(slot.directory, 'wiki', 'current-scene.md'), 'utf8'))
-                .toBe('old wiki')
             const entries = await fs.readdir(dirname(source.directory))
             expect(entries.filter((entry) => /\.(replace|restore)-/.test(entry))).toEqual([])
+            expect(await loadedScene(input)).toBe('old wiki')
         }
     )
+
+    async function loadedScene(input: { userDataDirectory: string; characterId: string; saveId: string }) {
+        const destinationChatId = `verify-${Math.random().toString(36).slice(2)}`
+        const prepared = await prepareMemorySaveLoad({ ...input, destinationChatId })
+        await completeMemoryWorkspaceFork({ ...input, destinationChatId,
+            forkToken: prepared.fork.forkToken, action: 'finalize' })
+        const loaded = resolveMemoryWorkspace(input.userDataDirectory, input.characterId, destinationChatId)
+        return fs.readFile(join(loaded.directory, 'wiki', 'current-scene.md'), 'utf8')
+    }
+
+    test('saves again by copying only pages that changed and releases replaced pages', async () => {
+        const root = await createRoot()
+        const source = resolveMemoryWorkspace(root, 'character', 'chat-source')
+        const events = join(source.directory, 'wiki', 'events')
+        await fs.mkdir(events, { recursive: true })
+        for (let index = 0; index < 20; index += 1) {
+            await fs.writeFile(join(events, `turn-${index}.md`), `사건 ${index}`)
+        }
+        const scene = join(source.directory, 'wiki', 'current-scene.md')
+        await fs.writeFile(scene, '첫 장면')
+        const input = {
+            userDataDirectory: root, characterId: 'character', sourceChatId: 'chat-source',
+            saveId: 'auto', sourceChatName: '자동', turnCount: 20, chatBytes: Buffer.from('chat'),
+        }
+        await createMemorySaveSlot(input)
+        const store = join(dirname(dirname(source.directory)), 'save-store')
+        const storedPages = async () => (await Promise.all((await fs.readdir(store)).map(
+            async (prefix) => fs.readdir(join(store, prefix))))).flat().sort()
+        const firstPages = await storedPages()
+        expect(firstPages).toHaveLength(21)
+
+        await fs.writeFile(scene, '다음 장면')
+        await fs.writeFile(join(events, 'turn-20.md'), '사건 20')
+        const sourceReads: string[] = []
+        const fileSystem = {
+            ...fs,
+            readFile: (async (path, ...args) => {
+                if (String(path).startsWith(source.directory)) sourceReads.push(String(path))
+                return fs.readFile(path, ...args)
+            }) as typeof fs.readFile,
+        }
+        await createMemorySaveSlot({ ...input, overwrite: true, turnCount: 21 }, { fileSystem })
+
+        expect(sourceReads.map((path) => path.slice(source.directory.length + 1).replaceAll('\\', '/')).sort())
+            .toEqual(['wiki/current-scene.md', 'wiki/events/turn-20.md'])
+        const secondPages = await storedPages()
+        expect(secondPages).toHaveLength(22)
+        expect(secondPages.filter((page) => !firstPages.includes(page))).toHaveLength(2)
+        expect(await loadedScene(input)).toBe('다음 장면')
+    })
+
+    test('keeps pages shared with another slot when one slot is deleted', async () => {
+        const root = await createRoot()
+        const source = resolveMemoryWorkspace(root, 'character', 'chat-source')
+        const scene = join(source.directory, 'wiki', 'current-scene.md')
+        await fs.mkdir(dirname(scene), { recursive: true })
+        await fs.writeFile(scene, '공유 장면')
+        const base = {
+            userDataDirectory: root, characterId: 'character', sourceChatId: 'chat-source',
+            sourceChatName: '모험', turnCount: 1, chatBytes: Buffer.from('chat'),
+        }
+        await createMemorySaveSlot({ ...base, saveId: 'first' })
+        await createMemorySaveSlot({ ...base, saveId: 'second' })
+        await deleteMemorySaveSlot({ ...base, saveId: 'first' })
+        expect(await loadedScene({ ...base, saveId: 'second' })).toBe('공유 장면')
+
+        await deleteMemorySaveSlot({ ...base, saveId: 'second' })
+        const store = join(dirname(dirname(source.directory)), 'save-store')
+        const remaining = (await Promise.all((await fs.readdir(store)).map(
+            async (prefix) => fs.readdir(join(store, prefix))))).flat()
+        expect(remaining).toEqual([])
+    })
+
+    test('refuses to load a save whose stored page was damaged', async () => {
+        const { input, source } = await overwriteFixture()
+        const store = join(dirname(dirname(source.directory)), 'save-store')
+        for (const prefix of await fs.readdir(store)) {
+            for (const page of await fs.readdir(join(store, prefix))) {
+                await fs.writeFile(join(store, prefix, page), 'tampered')
+            }
+        }
+        await expect(prepareMemorySaveLoad({ ...input, destinationChatId: 'broken' }))
+            .rejects.toThrow('Memory save page is damaged')
+        const entries = await fs.readdir(dirname(source.directory))
+        expect(entries.filter((entry) => /\.(replace|restore)-/.test(entry))).toEqual([])
+    })
+
+    test('still loads a legacy slot that holds a full workspace copy', async () => {
+        const root = await createRoot()
+        const slot = resolveMemoryWorkspace(root, 'character', 'save-slot:legacy')
+        await fs.mkdir(join(slot.directory, 'wiki'), { recursive: true })
+        await fs.writeFile(join(slot.directory, 'wiki', 'current-scene.md'), '예전 장면')
+        await fs.writeFile(join(slot.directory, 'chat.bin'), 'legacy chat')
+        await fs.writeFile(join(slot.directory, 'risubard-save.json'), JSON.stringify({
+            schemaVersion: 1, saveId: 'legacy', sourceChatId: 'chat-source',
+            sourceChatName: '예전', createdAt: '2026-08-01T00:00:00.000Z', turnCount: 3,
+        }))
+        const input = { userDataDirectory: root, characterId: 'character', saveId: 'legacy' }
+        expect(await loadedScene(input)).toBe('예전 장면')
+    })
 
     test('stores chat bytes and a complete immutable wiki snapshot', async () => {
         const root = await createRoot()

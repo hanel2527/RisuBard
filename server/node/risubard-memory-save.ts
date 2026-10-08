@@ -8,6 +8,15 @@ import {
     type MemoryForkReceipt,
 } from './risubard-memory-fork'
 import { resolveMemoryWorkspace } from './risubard-memory-workspace'
+import {
+    SAVE_FILES,
+    parseSavedFiles,
+    releaseStorePages,
+    restoreWorkspaceFromStore,
+    saveStoreDirectory,
+    serializeSavedFiles,
+    snapshotWorkspaceToStore,
+} from './risubard-memory-save-store'
 
 const SAVE_MANIFEST = 'risubard-save.json'
 const SAVE_CHAT = 'chat.bin'
@@ -31,8 +40,10 @@ export interface MemorySaveSlotSummary {
     latestEvent?: MemorySaveEventPreview
 }
 
+// 1: the slot holds a full workspace copy. 2: the slot holds a page list
+// (SAVE_FILES) whose pages live in the character's shared save store.
 interface StoredMemorySaveManifest extends MemorySaveSlotSummary {
-    schemaVersion: 1
+    schemaVersion: 1 | 2
 }
 
 type SaveFileSystem = Pick<
@@ -83,7 +94,7 @@ function parseManifest(value: unknown): StoredMemorySaveManifest {
     ]
     if (Object.keys(value).length !== keys.length
         || !keys.every((key) => Object.hasOwn(value, key))
-        || value.schemaVersion !== 1
+        || (value.schemaVersion !== 1 && value.schemaVersion !== 2)
         || typeof value.saveId !== 'string'
         || typeof value.sourceChatId !== 'string'
         || typeof value.sourceChatName !== 'string'
@@ -94,7 +105,7 @@ function parseManifest(value: unknown): StoredMemorySaveManifest {
         throw new Error('Invalid memory save manifest')
     }
     return {
-        schemaVersion: 1,
+        schemaVersion: value.schemaVersion as 1 | 2,
         saveId: required(value.saveId, 'saved saveId'),
         sourceChatId: required(value.sourceChatId, 'saved sourceChatId'),
         sourceChatName: required(value.sourceChatName, 'saved chat name', 512),
@@ -135,6 +146,44 @@ async function safeFile(
     const status = await fileSystem.lstat(path)
     if (status.isSymbolicLink() || !status.isFile()) {
         throw new Error(`${label} is unsafe`)
+    }
+}
+
+async function saveSlotDirectories(
+    fileSystem: SaveFileSystem,
+    userDataDirectory: string,
+    characterId: string
+): Promise<string[]> {
+    const chatsDirectory = dirname(resolveMemoryWorkspace(
+        userDataDirectory, characterId, 'save-list-probe'
+    ).directory)
+    let entries
+    try {
+        entries = await fileSystem.readdir(chatsDirectory, { withFileTypes: true })
+    }
+    catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+        throw error
+    }
+    // Staged and backup slot directories share the prefix and keep their pages.
+    return entries
+        .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink()
+            && entry.name.startsWith(SAVE_DIRECTORY_PREFIX))
+        .map((entry) => join(chatsDirectory, entry.name))
+}
+
+async function slotPageHashes(
+    fileSystem: SaveFileSystem,
+    directory: string
+): Promise<string[]> {
+    try {
+        return parseSavedFiles(await fileSystem.readFile(
+            join(directory, SAVE_FILES), 'utf8'
+        )).map((entry) => entry.hash)
+    }
+    catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+        throw error
     }
 }
 
@@ -185,12 +234,28 @@ export async function createMemorySaveSlot(input: {
     const saveId = required(input.saveId, 'saveId')
     const sourceChatId = required(input.sourceChatId, 'sourceChatId')
     let sourceChatName = required(input.sourceChatName, 'sourceChatName', 512)
+    let replacedPages: string[] = []
     if (input.overwrite) {
         const saved = await validatedSave(fileSystem, input)
         if (saved.manifest.sourceChatId !== sourceChatId) {
             throw new Error('Cannot overwrite a save from a different chat')
         }
         sourceChatName = saved.manifest.sourceChatName
+        replacedPages = await slotPageHashes(fileSystem, saved.directory)
+    }
+    const store = saveStoreDirectory(
+        workspaceFor(input.userDataDirectory, input.characterId, saveId).directory
+    )
+    // Unchanged pages are already in the store; only new pages are copied.
+    const populate = async (staging: string, sourceDirectory: string | null) => {
+        const entries = sourceDirectory
+            ? await snapshotWorkspaceToStore(fileSystem, sourceDirectory, store)
+            : []
+        await fileSystem.writeFile(
+            join(staging, SAVE_FILES),
+            serializeSavedFiles(entries),
+            { encoding: 'utf8', flag: 'wx', mode: 0o600 }
+        )
     }
     if (!Number.isSafeInteger(input.turnCount) || input.turnCount < 0) {
         throw new Error('turnCount must be a non-negative safe integer')
@@ -204,7 +269,7 @@ export async function createMemorySaveSlot(input: {
         throw new Error('createdAt must be an ISO-compatible date')
     }
     const manifest: StoredMemorySaveManifest = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         saveId,
         sourceChatId,
         sourceChatName,
@@ -230,8 +295,8 @@ export async function createMemorySaveSlot(input: {
             destinationChatId,
         }
         receipt = input.overwrite
-            ? await replaceMemoryWorkspace(forkInput, { fileSystem })
-            : await forkMemoryWorkspace({ ...forkInput, mode: 'copy' }, { fileSystem })
+            ? await replaceMemoryWorkspace(forkInput, { fileSystem, populate })
+            : await forkMemoryWorkspace({ ...forkInput, mode: 'copy' }, { fileSystem, populate })
         const directory = input.overwrite
             ? resolveMemoryReplacementStaging(
                 input.userDataDirectory, input.characterId,
@@ -255,6 +320,11 @@ export async function createMemorySaveSlot(input: {
             forkToken: receipt.forkToken,
             action: 'finalize',
         }, { fileSystem })
+        // Pages only the replaced version used are released; a failure leaves
+        // unused pages behind but never damages a slot.
+        await releaseStorePages(fileSystem, store, replacedPages,
+            await saveSlotDirectories(fileSystem, input.userDataDirectory, input.characterId)
+        ).catch(() => undefined)
         return summaryOf(manifest)
     }
     catch (error) {
@@ -364,7 +434,11 @@ export async function deleteMemorySaveSlot(input: {
 }, options: { fileSystem?: SaveFileSystem } = {}): Promise<void> {
     const fileSystem = options.fileSystem ?? nodeFs
     const saved = await validatedSave(fileSystem, input)
+    const pages = await slotPageHashes(fileSystem, saved.directory)
     await fileSystem.rm(saved.directory, { recursive: true, force: false })
+    await releaseStorePages(fileSystem, saveStoreDirectory(saved.directory), pages,
+        await saveSlotDirectories(fileSystem, input.userDataDirectory, input.characterId)
+    ).catch(() => undefined)
 }
 
 export async function prepareMemorySaveLoad(input: {
@@ -390,6 +464,11 @@ export async function prepareMemorySaveLoad(input: {
         await fileSystem.readFile(manifestPath, 'utf8')
     ))
     const chatBytes = Buffer.from(await fileSystem.readFile(chatPath))
+    const pages = manifest.schemaVersion === 2
+        ? parseSavedFiles(await fileSystem.readFile(
+            join(workspace.directory, SAVE_FILES), 'utf8'
+        ))
+        : null
     const fork = await replaceMemoryWorkspace({
         userDataDirectory: input.userDataDirectory,
         characterId: required(input.characterId, 'characterId'),
@@ -397,20 +476,29 @@ export async function prepareMemorySaveLoad(input: {
         destinationChatId: required(
             input.destinationChatId, 'destinationChatId'
         ),
-    }, { fileSystem: fileSystem as typeof nodeFs })
+    }, {
+        fileSystem: fileSystem as typeof nodeFs,
+        ...(pages ? {
+            populate: (staging: string) => restoreWorkspaceFromStore(
+                fileSystem, pages, saveStoreDirectory(workspace.directory), staging
+            ),
+        } : {}),
+    })
     try {
-        const destinationDirectory = resolveMemoryReplacementStaging(
-            input.userDataDirectory,
-            input.characterId,
-            input.destinationChatId,
-            fork.forkToken
-        )
-        await fileSystem.rm(join(destinationDirectory, SAVE_MANIFEST), {
-            force: false,
-        })
-        await fileSystem.rm(join(destinationDirectory, SAVE_CHAT), {
-            force: false,
-        })
+        if (!pages) {
+            const destinationDirectory = resolveMemoryReplacementStaging(
+                input.userDataDirectory,
+                input.characterId,
+                input.destinationChatId,
+                fork.forkToken
+            )
+            await fileSystem.rm(join(destinationDirectory, SAVE_MANIFEST), {
+                force: false,
+            })
+            await fileSystem.rm(join(destinationDirectory, SAVE_CHAT), {
+                force: false,
+            })
+        }
         return { chatBytes, save: summaryOf(manifest), fork }
     }
     catch (error) {

@@ -45,6 +45,12 @@ type ForkFileSystem = Pick<
 
 const FORK_MARKER = '.risubard-fork.json'
 
+/** Fills a staged workspace instead of copying the source file by file. */
+export type MemoryWorkspacePopulate = (
+    staging: string,
+    sourceDirectory: string | null
+) => Promise<void>
+
 function replacementBackupPath(directory: string, forkToken: string): string {
     return `${directory}.restore-${Buffer.from(forkToken).toString('base64url')}`
 }
@@ -157,7 +163,11 @@ async function copyDirectoryContents(
 
 export async function forkMemoryWorkspace(
     input: MemoryForkInput,
-    options: { fileSystem?: ForkFileSystem; wikiOnly?: boolean } = {}
+    options: {
+        fileSystem?: ForkFileSystem
+        wikiOnly?: boolean
+        populate?: MemoryWorkspacePopulate
+    } = {}
 ): Promise<MemoryForkReceipt> {
     required(input.characterId, 'characterId')
     required(input.sourceChatId, 'sourceChatId')
@@ -221,7 +231,10 @@ export async function forkMemoryWorkspace(
         catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
         }
-        if (sourceExists) {
+        if (options.populate) {
+            await options.populate(staging, sourceExists ? source.directory : null)
+        }
+        else if (sourceExists) {
             if (options.wikiOnly) {
                 const wikiSource = join(source.directory, 'wiki')
                 const wikiStatus = await fileSystem.lstat(wikiSource)
@@ -260,7 +273,7 @@ export async function forkMemoryWorkspace(
 
 export async function replaceMemoryWorkspace(
     input: Omit<MemoryForkInput, 'mode' | 'retainedMessageIds' | 'messageIds'>,
-    options: { fileSystem?: ForkFileSystem } = {}
+    options: { fileSystem?: ForkFileSystem; populate?: MemoryWorkspacePopulate } = {}
 ): Promise<MemoryForkReceipt> {
     required(input.characterId, 'characterId')
     required(input.sourceChatId, 'sourceChatId')
@@ -300,7 +313,10 @@ export async function replaceMemoryWorkspace(
         catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
         }
-        if (sourceExists) {
+        if (options.populate) {
+            await options.populate(staging, sourceExists ? source.directory : null)
+        }
+        else if (sourceExists) {
             await copyDirectoryContents(fileSystem, source.directory, staging)
         }
         await fileSystem.rm(join(staging, FORK_MARKER), { force: true })
