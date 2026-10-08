@@ -40,6 +40,8 @@ function ownedFiles(): string[] {
         .split('\0')
         .filter(Boolean)
         .filter((path) => !excludedPrefixes.some((prefix) => path.startsWith(prefix)))
+        // Local pre-edit backups (백업/) are untracked working copies, not product files.
+        .filter((path) => !path.split('/').includes('백업'))
         .filter(existsSync)
 }
 
