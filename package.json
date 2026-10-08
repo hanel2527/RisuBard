@@ -23,6 +23,7 @@
     "test": "vitest run && vitest run --config vitest.config.server.ts",
     "test:compat": "vitest run --config vitest.config.compat.ts",
     "test:server": "vitest run --config vitest.config.server.ts",
+    "bench:wiki-scale": "vitest run src/ts/risubard/wikiScale.bench.test.ts --silent=false --reporter=verbose && vitest run --config vitest.config.server.ts server/node/risubard-wiki-scale.bench.test.ts --silent=false --reporter=verbose",
     "verify:storage-change": "node node_modules/vitest/vitest.mjs run src/ts/storage/canonicalSaveConflict.test.ts src/ts/storage/liveFileSync.test.ts && node node_modules/vitest/vitest.mjs run --config vitest.config.server.ts server/node/character-assets.test.ts server/node/live-character-files.test.ts server/node/live-files-http.test.ts server/node/live-files-stability.test.ts server/node/new-character-packages.test.ts",
     "check:release-inputs": "node scripts/check-release-inputs.cjs",
     "test:release-inputs": "node --test scripts/check-release-inputs.node-test.cjs",
