@@ -260,4 +260,19 @@ describe('character V3 transition selection', () => {
         await tick()
         expect(options()).toHaveLength(3)
     })
+
+    it('explains a V4 transition that moved nothing and where the assets are shared', async () => {
+        const base = { enabled: true, directory: 'Tanya', chats: 1, assets: { enabled: true, copied: 1, skipped: 0, failed: 0 }, diagnostics: { reads: 0, fallbacks: 0 } }
+        mocks.transition.mockImplementation(async (_id, action) => action === 'retire-kv'
+            ? { ...base, kv: { retired: 0, bytes: 0 }, v4: { retired: 0, shared: 1, sharedBy: { plugins: 1 }, unverified: 0 } }
+            : { ...base, kv: { retired: 0, bytes: 0 } })
+        await render()
+        await select('active-a')
+        click('상태 확인')
+        await vi.waitFor(() => expect(document.body.textContent).toContain('V4 미사용'))
+        click('V4로 전환')
+        await vi.waitFor(() => expect(document.body.textContent).toContain('옮길 수 있는 에셋이 없어 아무것도 바꾸지 않았습니다'))
+        expect(document.body.textContent).toContain('공유 에셋이라 유지 1개 (플러그인 저장소 1개)')
+    })
 })
+

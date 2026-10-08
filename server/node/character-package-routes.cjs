@@ -64,7 +64,7 @@ function registerCharacterPackageRoutes(app, { auth, activeSession, queue, prepa
                     const moved = kv.retireAssets(characterId, plan.candidates);
                     const status = result(characterId);
                     record(action, 'success');
-                    return res.json({ ...status, v4: { retired: moved.retired, shared: plan.shared, unverified: plan.unverified + plan.candidates.length - moved.retired } });
+                    return res.json({ ...status, v4: { retired: moved.retired, shared: plan.shared, sharedBy: plan.sharedBy, unverified: plan.unverified + plan.candidates.length - moved.retired } });
                 }
                 if (action === 'rollback') {
                     // Folder paths change below, so retired entries return to the manifest first.

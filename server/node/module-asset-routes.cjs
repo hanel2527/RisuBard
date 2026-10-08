@@ -89,7 +89,7 @@ function registerModuleAssetRoutes(app, { auth, activeSession, queue, prepare, a
             // retireAssets re-checks each key against the current manifest object and size.
             await queue(async () => { moved = kv.retireAssets(MODULE_OWNER(moduleId), verified.candidates); });
             record('retire-kv', 'success');
-            res.json({ ...result(moduleId), v4: { retired: moved.retired, shared: verified.shared, unverified: verified.unverified + verified.candidates.length - moved.retired } });
+            res.json({ ...result(moduleId), v4: { retired: moved.retired, shared: verified.shared, sharedBy: verified.sharedBy, unverified: verified.unverified + verified.candidates.length - moved.retired } });
         } catch {
             record('retire-kv', 'failure');
             let status;

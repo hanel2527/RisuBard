@@ -454,12 +454,14 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
     }
     // Entries whose folder copy is proven equal to the KV object right now and whose
     // key no other owner or data references. Everything else stays in the manifest.
-    function retirable(entries, directory, otherKeys, referenced) {
+    function retirable(entries, directory, otherKeys, referencedBy) {
         const candidates = [];
+        const sharedBy = {};
         let shared = 0;
         let unverified = 0;
         for (const entry of entries) {
-            if (typeof entry?.key !== 'string' || otherKeys.has(entry.key) || referenced(entry.key)) { shared++; continue; }
+            const place = typeof entry?.key !== 'string' ? 'other' : otherKeys.has(entry.key) ? 'replica' : referencedBy(entry.key);
+            if (place) { shared++; sharedBy[place] = (sharedBy[place] || 0) + 1; continue; }
             try {
                 if (!(entry.filename === undefined || validFilename(entry.filename)) || !/^[a-f0-9]{64}$/.test(entry.hash)) throw new Error('Invalid entry');
                 const target = path.join(directory, entry.filename ?? entry.hash);
@@ -469,15 +471,31 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
                 candidates.push({ key: entry.key, object: entry.hash, size: entry.size });
             } catch { unverified++; }
         }
-        return { candidates, shared, unverified };
+        return { candidates, shared, unverified, sharedBy };
     }
-    function replicaKeys(skipCharacter, skipModule) {
+    // Names the first place that also references a key, for the transition summary.
+    // Together the parts cover exactly the data a whole-database search would cover.
+    function referencePlaces(database, skipCharacter, skipModule) {
+        const index = value => referenceIndex(JSON.stringify(value ?? null).replace(/\\\\/g, '/'));
+        const places = [
+            ['characters', index((database.characters || []).filter(value => value !== skipCharacter))],
+            ['modules', index((database.modules || []).filter(value => value !== skipModule))],
+            ['personas', index(database.personas)],
+            ['plugins', index(database.pluginCustomStorage)],
+            ['other', index({ ...database, characters: undefined, modules: undefined, personas: undefined, pluginCustomStorage: undefined })],
+        ];
+        return key => places.find(([, referenced]) => referenced(key))?.[0] ?? null;
+    }
+    // Copies recorded for characters or modules that no longer exist are not owners.
+    function replicaKeys(database, skipCharacter, skipModule) {
+        const characters = new Set((database.characters || []).map(character => character?.chaId));
+        const modules = new Set((database.modules || []).map(module => module?.id));
         const keys = new Set();
         for (const [owner, record] of Object.entries(state.characters)) {
-            if (owner !== skipCharacter && Array.isArray(record?.entries)) for (const entry of record.entries) keys.add(entry?.key);
+            if (owner !== skipCharacter && characters.has(owner) && Array.isArray(record?.entries)) for (const entry of record.entries) keys.add(entry?.key);
         }
         for (const [owner, record] of Object.entries(moduleState.modules)) {
-            if (owner !== skipModule && Array.isArray(record?.entries)) for (const entry of record.entries) keys.add(entry?.key);
+            if (owner !== skipModule && modules.has(owner) && Array.isArray(record?.entries)) for (const entry of record.entries) keys.add(entry?.key);
         }
         return keys;
     }
@@ -493,9 +511,8 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
         }
         const record = state.characters[id];
         if (record?.enabled !== true || !Array.isArray(record.entries)) throw new Error('Verified asset copies are required');
-        const otherData = JSON.stringify({ ...database, characters: database.characters.filter(value => value !== matches[0]) }).replace(/\\\\/g, '/');
         const directory = safePath(`${directories.characterDirectory(id)}/assets`);
-        return retirable(record.entries, directory, replicaKeys(id, null), referenceIndex(otherData));
+        return retirable(record.entries, directory, replicaKeys(database, id, null), referencePlaces(database, matches[0], null));
     }
     function uniqueModule(database, id) {
         if (!validId(id)) throw new Error('Invalid module ID');
@@ -709,12 +726,18 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
         const module = uniqueModule(database, id);
         const record = moduleState.modules[id];
         if (record?.enabled !== true || !Array.isArray(record.entries) || !validFilename(record.directory)) throw new Error('Verified module asset copies are required');
-        // Persona-embedded copies of the module stay in otherData and mark keys shared.
-        const otherData = JSON.stringify({ ...database, modules: database.modules.filter(value => value !== module) }).replace(/\\\\/g, '/');
-        const otherKeys = replicaKeys(null, id);
-        const referenced = referenceIndex(otherData);
-        const shared = record.entries.filter(entry => typeof entry?.key !== 'string' || otherKeys.has(entry.key) || referenced(entry.key));
-        return { directory: safePath(`modules/${record.directory}/assets`), entries: record.entries.filter(entry => !shared.includes(entry)), shared: shared.length };
+        // Persona-embedded copies of the module count as personas and mark keys shared.
+        const otherKeys = replicaKeys(database, null, id);
+        const referencedBy = referencePlaces(database, null, module);
+        const sharedBy = {};
+        const entries = [];
+        let shared = 0;
+        for (const entry of record.entries) {
+            const place = typeof entry?.key !== 'string' ? 'other' : otherKeys.has(entry.key) ? 'replica' : referencedBy(entry.key);
+            if (place) { shared++; sharedBy[place] = (sharedBy[place] || 0) + 1; }
+            else entries.push(entry);
+        }
+        return { directory: safePath(`modules/${record.directory}/assets`), entries, shared, sharedBy };
     }
     // Unqueued part: full digest check of each copy, yielding so saves keep flowing.
     // A key shared after planning stays readable: retired keys remain visible in every KV API.
@@ -732,7 +755,7 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
             } catch { unverified++; }
             if (index % 16 === 15) await new Promise(resolve => setImmediate(resolve));
         }
-        return { candidates, shared: plan.shared, unverified };
+        return { candidates, shared: plan.shared, sharedBy: plan.sharedBy, unverified };
     }
     async function moduleRetirementCandidates(database, id) {
         return verifyModuleRetirement(moduleRetirementPlan(database, id));

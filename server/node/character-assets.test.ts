@@ -772,3 +772,23 @@ it('module index is parsed again on reload only after it changes on disk', async
     expect(store.kvGet('assets/m1.png').toString()).toBe('module one')
     expect(store.characterAssets.diagnostics().reads).toBe(1)
 })
+it('V4 reports where shared keys are also used', async () => {
+    const value = mappedFixture()
+    value.store.characterAssets.sync(value.db)
+    const plan = value.store.characterAssets.retirementCandidates({ ...value.db, pluginCustomStorage: { index: [{ image: 'assets/portrait.png' }] } }, 'one')
+    expect(plan).toMatchObject({ candidates: [], shared: 2, sharedBy: { characters: 1, plugins: 1 } })
+    const modules = moduleFixture()
+    await modules.store.characterAssets.migrateModule(modules.db, 'mod')
+    const modulePlan = modules.store.characterAssets.moduleRetirementPlan({ ...modules.db, personas: [{ embeddedModule: { assets: [['x', 'assets/m1.png', 'png']] } }] }, 'mod')
+    expect(modulePlan).toMatchObject({ shared: 2, sharedBy: { characters: 1, personas: 1 } })
+})
+it('V4 ignores copies recorded for characters that no longer exist', () => {
+    const value = mappedFixture()
+    const { createUserDataRepository } = require('./user-data-repository.cjs')
+    createUserDataRepository({ dataRoot: value.root, allowDirectoryMapping: true }).publishCharacterDirectoryMapping('two')
+    value.store.characterAssets.sync(value.db)
+    expect(value.store.characterAssets.retirementCandidates(value.db, 'one').sharedBy).toEqual({ replica: 1 })
+    const withoutTwo = { ...value.db, characters: [value.db.characters[0]] }
+    expect(value.store.characterAssets.retirementCandidates(withoutTwo, 'one')).toMatchObject({ shared: 0, sharedBy: {} })
+})
+

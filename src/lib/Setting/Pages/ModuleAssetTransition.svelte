@@ -10,7 +10,7 @@
     type Result = {
         enabled: boolean; directory: string; copied: number; failed: number
         kv?: { retired: number; bytes: number }
-        v4?: { retired?: number; shared?: number; unverified?: number; restored?: number; failed?: number }
+        v4?: { retired?: number; shared?: number; sharedBy?: Record<string, number>; unverified?: number; restored?: number; failed?: number }
     }
 
     let moduleId = $state('')
@@ -25,6 +25,12 @@
         return counts
     })
     const megabytes = (bytes: number) => (bytes / 1048576).toFixed(1)
+    const sharedPlaceNames: Record<string, string> = {
+        replica: '다른 캐릭터나 모듈 폴더', characters: '다른 캐릭터', modules: '모듈',
+        personas: '페르소나', plugins: '플러그인 저장소', other: '설정',
+    }
+    const sharedPlaces = (sharedBy?: Record<string, number>) => Object.entries(sharedBy ?? {})
+        .map(([place, count]) => `${sharedPlaceNames[place] ?? place} ${count}개`).join(', ')
     onMount(() => { void refreshPackageStatus() })
 
     async function run(action: Action) {
@@ -100,7 +106,10 @@
                 {/if}
                 <p>{result.kv?.retired ? `V4 사용 중: KV 목록에서 뺀 에셋 ${result.kv.retired}개 (${megabytes(result.kv.bytes)}MB)` : 'V4 미사용: 에셋이 모두 KV 목록에 있습니다.'}</p>
                 {#if result.v4?.retired !== undefined}
-                    <p>이번 전환: {result.v4.retired}개 이동 / 공유 에셋이라 유지 {result.v4.shared ?? 0}개 / 복사본 검증 실패로 유지 {result.v4.unverified ?? 0}개</p>
+                    {#if result.v4.retired === 0}
+                        <p class="notice">옮길 수 있는 에셋이 없어 아무것도 바꾸지 않았습니다. 다른 곳에서도 쓰는 에셋과 복사본이 원본과 다른 에셋은 KV에 그대로 둡니다.</p>
+                    {/if}
+                    <p>이번 전환: {result.v4.retired}개 이동 / 공유 에셋이라 유지 {result.v4.shared ?? 0}개{result.v4.shared ? ` (${sharedPlaces(result.v4.sharedBy)})` : ''} / 복사본 검증 실패로 유지 {result.v4.unverified ?? 0}개</p>
                 {/if}
                 {#if result.v4?.restored !== undefined}
                     <p>되돌리기: {result.v4.restored}개를 KV 목록에 복원{result.v4.failed ? ` / 복원 실패 ${result.v4.failed}개 (보관 목록에 그대로 둠)` : ''}</p>
@@ -117,5 +126,6 @@
     p { color: var(--color-textcolor2); line-height: 1.5; overflow-wrap: anywhere; }
     code { font-size: .85em; }
     select { padding: .6rem; color: var(--color-textcolor); background: var(--color-darkbg); border: 1px solid var(--settings-border); border-radius: .4rem; max-width: 100%; }
+    .notice { color: var(--color-textcolor); }
     .actions { display: flex; flex-wrap: wrap; gap: .5rem; }
 </style>
