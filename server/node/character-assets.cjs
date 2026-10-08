@@ -7,6 +7,10 @@ const { atomicWriteFile, atomicWriteJson, readVerifiedJson, resolveInside, commi
 const { sanitizeSegment, allocateSegment, createSegmentAllocator } = require('./friendly-paths.cjs');
 const { createCharacterDirectoryResolver } = require('./character-directories.cjs');
 const INDEX = 'index/character-asset-replicas.json';
+// Module asset folders (pilot): modules/<friendly name>/assets/, created only by an
+// explicit per-module action. Module JSON files stay at modules/<id>.json.
+const MODULE_INDEX = 'index/module-asset-replicas.json';
+const MODULE_OWNER = id => `module:${id}`;
 const { reportImportProgress } = require('./import-progress.cjs');
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -33,9 +37,40 @@ function candidateNames(character) {
     return names;
 }
 
+function moduleCandidateNames(module) {
+    const names = new Map();
+    for (const asset of Array.isArray(module?.assets) ? module.assets : []) {
+        const key = asset?.[1];
+        if (typeof key !== 'string' || !/^assets\/[A-Za-z0-9._-]+$/.test(key) || names.has(key)) continue;
+        const basename = key.slice('assets/'.length);
+        const extension = path.posix.extname(basename) || (/^[A-Za-z0-9]{1,16}$/.test(asset?.[2] || '') ? `.${asset[2]}` : '');
+        let name = typeof asset?.[0] === 'string' && asset[0].trim() ? asset[0] : basename;
+        if (extension && !name.toLowerCase().endsWith(extension.toLowerCase())) name += extension;
+        names.set(key, name);
+    }
+    return names;
+}
+
+// Collects every (overlapping) "assets/..." run once; lookup by prefix gives the
+// same answer as text.includes(key) for asset keys without one scan per key.
+function referenceIndex(text) {
+    const references = [...new Set(Array.from(text.matchAll(/(?=(assets\/[A-Za-z0-9._-]+))/g), match => match[1]))].sort();
+    return key => {
+        let low = 0;
+        let high = references.length;
+        while (low < high) {
+            const middle = (low + high) >> 1;
+            if (references[middle] < key) low = middle + 1;
+            else high = middle;
+        }
+        return low < references.length && references[low].startsWith(key);
+    };
+}
+
 function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersion, sourcePath,
     folderReads = process.env.RISUBARD_ASSET_FOLDER_READS !== '0' }) {
     let state = { schemaVersion: 1, characters: {} };
+    let moduleState = { schemaVersion: 1, modules: {} };
     let routes = new Map();
     const directories = createCharacterDirectoryResolver(dataRoot);
     let routeMapping;
@@ -79,6 +114,21 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
                 }
             }
         }
+        if (folderReads) {
+            for (const [id, record] of Object.entries(moduleState.modules)) {
+                if (!validId(id) || record?.enabled !== true || !validFilename(record.directory) || !Array.isArray(record.entries)) continue;
+                let directory;
+                try { directory = safePath(`modules/${record.directory}/assets`); } catch { continue; }
+                for (const entry of record.entries) {
+                    // Character copies keep priority; either copy is digest-verified on use.
+                    if (!entry || routes.has(entry.key) || !validFilename(entry.filename) || typeof entry.key !== 'string'
+                        || !entry.key.startsWith('assets/') || !/^[a-f0-9]{64}$/.test(entry.hash)
+                        || !Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > 64 * 1024 * 1024) continue;
+                    const target = path.join(directory, entry.filename);
+                    if (path.dirname(target) === directory) routes.set(entry.key, { ...entry, id: MODULE_OWNER(id), target });
+                }
+            }
+        }
         const live = new Map();
         for (const entry of routes.values()) {
             const stampKey = `${entry.hash}\0${entry.target}`;
@@ -95,6 +145,14 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
             const loaded = readVerifiedJson(dataRoot, INDEX);
             if (loaded?.schemaVersion === 1 && loaded.characters && typeof loaded.characters === 'object' && !Array.isArray(loaded.characters)) state = loaded;
         } catch { /* An optional replica index must never prevent startup. */ }
+        moduleState = { schemaVersion: 1, modules: {} };
+        try {
+            safePath(MODULE_INDEX);
+            if (fs.existsSync(path.join(dataRoot, MODULE_INDEX))) {
+                const loaded = readVerifiedJson(dataRoot, MODULE_INDEX);
+                if (loaded?.schemaVersion === 1 && loaded.modules && typeof loaded.modules === 'object' && !Array.isArray(loaded.modules)) moduleState = loaded;
+            }
+        } catch { /* Same as above: module folders are an optional read path. */ }
         rebuild();
     }
     reload();
@@ -359,6 +417,35 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
             return value;
         } catch { counters.fallbacks++; return null; }
     }
+    // Entries whose folder copy is proven equal to the KV object right now and whose
+    // key no other owner or data references. Everything else stays in the manifest.
+    function retirable(entries, directory, otherKeys, referenced) {
+        const candidates = [];
+        let shared = 0;
+        let unverified = 0;
+        for (const entry of entries) {
+            if (typeof entry?.key !== 'string' || otherKeys.has(entry.key) || referenced(entry.key)) { shared++; continue; }
+            try {
+                if (!(entry.filename === undefined || validFilename(entry.filename)) || !/^[a-f0-9]{64}$/.test(entry.hash)) throw new Error('Invalid entry');
+                const target = path.join(directory, entry.filename ?? entry.hash);
+                if (path.dirname(target) !== directory || fs.lstatSync(target).isSymbolicLink()) throw new Error('Invalid replica path');
+                const bytes = fs.readFileSync(target);
+                if (bytes.length !== entry.size || hash(bytes) !== entry.hash) throw new Error('Replica differs');
+                candidates.push({ key: entry.key, object: entry.hash, size: entry.size });
+            } catch { unverified++; }
+        }
+        return { candidates, shared, unverified };
+    }
+    function replicaKeys(skipCharacter, skipModule) {
+        const keys = new Set();
+        for (const [owner, record] of Object.entries(state.characters)) {
+            if (owner !== skipCharacter && Array.isArray(record?.entries)) for (const entry of record.entries) keys.add(entry?.key);
+        }
+        for (const [owner, record] of Object.entries(moduleState.modules)) {
+            if (owner !== skipModule && Array.isArray(record?.entries)) for (const entry of record.entries) keys.add(entry?.key);
+        }
+        return keys;
+    }
     // V4 pilot: entries of one V3 character whose folder copy is proven equal to the
     // KV object right now and whose key nothing else references. Shared keys, keys
     // used by other replica owners and unverifiable copies stay in the manifest.
@@ -371,48 +458,171 @@ function createCharacterAssets({ dataRoot, sourceSize, readOriginal, sourceVersi
         }
         const record = state.characters[id];
         if (record?.enabled !== true || !Array.isArray(record.entries)) throw new Error('Verified asset copies are required');
-        const otherOwners = new Set();
-        for (const [owner, other] of Object.entries(state.characters)) {
-            if (owner === id || !Array.isArray(other?.entries)) continue;
-            for (const entry of other.entries) otherOwners.add(entry?.key);
-        }
         const otherData = JSON.stringify({ ...database, characters: database.characters.filter(value => value !== matches[0]) }).replace(/\\\\/g, '/');
-        // Same answer as otherData.includes(key) for asset keys, without one full scan per key:
-        // collect every (overlapping) "assets/..." run once and look keys up by prefix.
-        const references = [...new Set(Array.from(otherData.matchAll(/(?=(assets\/[A-Za-z0-9._-]+))/g), match => match[1]))].sort();
-        const referenced = key => {
-            let low = 0;
-            let high = references.length;
-            while (low < high) {
-                const middle = (low + high) >> 1;
-                if (references[middle] < key) low = middle + 1;
-                else high = middle;
-            }
-            return low < references.length && references[low].startsWith(key);
-        };
         const directory = safePath(`${directories.characterDirectory(id)}/assets`);
-        const candidates = [];
-        let shared = 0;
-        let unverified = 0;
-        for (const entry of record.entries) {
-            if (otherOwners.has(entry?.key) || typeof entry?.key !== 'string' || referenced(entry.key)) { shared++; continue; }
+        return retirable(record.entries, directory, replicaKeys(id, null), referenceIndex(otherData));
+    }
+    function uniqueModule(database, id) {
+        if (!validId(id)) throw new Error('Invalid module ID');
+        const matches = database.modules?.filter(module => module?.id === id);
+        if (matches?.length !== 1) throw new Error('A unique module is required');
+        return matches[0];
+    }
+    function publishModules(next) {
+        safePath(MODULE_INDEX);
+        atomicWriteJson(dataRoot, MODULE_INDEX, next);
+        moduleState = next;
+        rebuild();
+    }
+    function moduleStatus(id) {
+        if (!validId(id)) throw new Error('Invalid module ID');
+        const record = Object.hasOwn(moduleState.modules, id) ? moduleState.modules[id] : null;
+        return record
+            ? { enabled: record.enabled === true, directory: record.directory, copied: record.copied, failed: record.failed }
+            : { enabled: false, directory: '', copied: 0, failed: 0 };
+    }
+    // Module copies run in three steps so a large module never holds the storage
+    // queue or the event loop: plan (queued) -> copy (async, unqueued) -> publish (queued).
+    // Copying is safe outside the queue: KV objects are immutable, the target folder
+    // belongs to this job alone, and every copy is digest-verified again on read.
+    const moduleJobs = new Set();
+    function prepareModuleCopy(database, id) {
+        const module = uniqueModule(database, id);
+        if (moduleJobs.has(id)) throw Object.assign(new Error('Module asset copy already running'), { code: 'MODULE_COPY_RUNNING' });
+        const previous = moduleState.modules[id];
+        let directoryName = validFilename(previous?.directory) ? previous.directory : '';
+        if (!directoryName) {
+            const occupied = fs.existsSync(path.join(dataRoot, 'modules')) ? fs.readdirSync(safePath('modules')) : [];
+            for (const [owner, record] of Object.entries(moduleState.modules)) if (owner !== id && record?.directory) occupied.push(record.directory);
+            directoryName = createSegmentAllocator(occupied).allocate(typeof module.name === 'string' && module.name.trim() ? module.name : id, false, ['.json']);
+        }
+        moduleJobs.add(id);
+        return {
+            id, directoryName, relativeDirectory: `modules/${directoryName}/assets`,
+            candidates: [...moduleCandidateNames(module)],
+            reusable: (previous?.entries || []).filter(entry => validFilename(entry?.filename)),
+        };
+    }
+    async function writeReplica(directory, filename, bytes) {
+        await fs.promises.mkdir(directory, { recursive: true });
+        const target = path.join(directory, filename);
+        const temp = path.join(directory, `.${filename}.${crypto.randomUUID()}.tmp`);
+        const handle = await fs.promises.open(temp, 'wx', 0o600);
+        try { await handle.writeFile(bytes); await handle.sync(); }
+        finally { await handle.close(); }
+        try { await fs.promises.rename(temp, target); }
+        catch (error) { await fs.promises.rm(temp, { force: true }); throw error; }
+        return target;
+    }
+    async function copyModule(plan, onProgress) {
+        const directory = safePath(plan.relativeDirectory);
+        const filenames = createSegmentAllocator(fs.existsSync(directory) ? await fs.promises.readdir(directory) : []);
+        const reusable = new Map(plan.reusable.map(entry => [entry.key, entry]));
+        const record = { enabled: true, directory: plan.directoryName, copied: 0, failed: 0, entries: [] };
+        for (const [key, sourceName] of plan.candidates) {
+            onProgress?.(record.copied + record.failed, plan.candidates.length);
             try {
-                if (!(entry.filename === undefined || validFilename(entry.filename)) || !/^[a-f0-9]{64}$/.test(entry.hash)) throw new Error('Invalid entry');
-                const target = path.join(directory, entry.filename ?? entry.hash);
-                if (path.dirname(target) !== directory || fs.lstatSync(target).isSymbolicLink()) throw new Error('Invalid replica path');
-                const bytes = fs.readFileSync(target);
+                if (sourceSize(key) > 64 * 1024 * 1024) throw new Error('Oversized source');
+                const old = reusable.get(key);
+                if (old && old.hash === sourceVersion?.(key)) {
+                    const existing = await fs.promises.readFile(path.join(directory, old.filename)).catch(() => null);
+                    if (existing && existing.length === old.size && hash(existing) === old.hash) {
+                        record.entries.push(old);
+                        record.copied++;
+                        continue;
+                    }
+                }
+                const bytes = readOriginal(key);
+                if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > 64 * 1024 * 1024) throw new Error('Missing or oversized source');
+                const digest = hash(bytes);
+                // Fresh names never overwrite user files; the index digest replaces .sha256 sidecars.
+                const filename = filenames.allocate(sourceName, true, ['.sha256', '.bak']);
+                const target = await writeReplica(directory, filename, bytes);
+                const verified = await fs.promises.readFile(target);
+                if (verified.length !== bytes.length || hash(verified) !== digest) throw new Error('Replica verification failed');
+                record.entries.push({ key, filename, hash: digest, size: bytes.length });
+                record.copied++;
+            } catch { record.failed++; }
+            // Yield so saves and asset reads keep flowing during a long copy.
+            if ((record.copied + record.failed) % 16 === 0) await new Promise(resolve => setImmediate(resolve));
+        }
+        return record;
+    }
+    // Only verified copies become readable; an interrupted copy leaves unread files.
+    function publishModuleCopy(plan, record) {
+        publishModules({ schemaVersion: 1, modules: { ...moduleState.modules, [plan.id]: record } });
+        counters.copied += record.copied;
+        counters.failed += record.failed;
+        return moduleStatus(plan.id);
+    }
+    function releaseModuleCopy(plan) {
+        if (plan) moduleJobs.delete(plan.id);
+    }
+    async function migrateModule(database, id) {
+        const plan = prepareModuleCopy(database, id);
+        try { return publishModuleCopy(plan, await copyModule(plan)); }
+        finally { releaseModuleCopy(plan); }
+    }
+    function disableModule(id) {
+        moduleStatus(id);
+        if (Object.hasOwn(moduleState.modules, id)) publishModules({ schemaVersion: 1, modules: { ...moduleState.modules, [id]: { ...moduleState.modules[id], enabled: false } } });
+        return moduleStatus(id);
+    }
+    // Queued part: decides which keys are shared from the current data (memory only).
+    function moduleRetirementPlan(database, id) {
+        const module = uniqueModule(database, id);
+        const record = moduleState.modules[id];
+        if (record?.enabled !== true || !Array.isArray(record.entries) || !validFilename(record.directory)) throw new Error('Verified module asset copies are required');
+        // Persona-embedded copies of the module stay in otherData and mark keys shared.
+        const otherData = JSON.stringify({ ...database, modules: database.modules.filter(value => value !== module) }).replace(/\\\\/g, '/');
+        const otherKeys = replicaKeys(null, id);
+        const referenced = referenceIndex(otherData);
+        const shared = record.entries.filter(entry => typeof entry?.key !== 'string' || otherKeys.has(entry.key) || referenced(entry.key));
+        return { directory: safePath(`modules/${record.directory}/assets`), entries: record.entries.filter(entry => !shared.includes(entry)), shared: shared.length };
+    }
+    // Unqueued part: full digest check of each copy, yielding so saves keep flowing.
+    // A key shared after planning stays readable: retired keys remain visible in every KV API.
+    async function verifyModuleRetirement(plan) {
+        const candidates = [];
+        let unverified = 0;
+        for (const [index, entry] of plan.entries.entries()) {
+            try {
+                if (!validFilename(entry.filename) || !/^[a-f0-9]{64}$/.test(entry.hash)) throw new Error('Invalid entry');
+                const target = path.join(plan.directory, entry.filename);
+                if (path.dirname(target) !== plan.directory || (await fs.promises.lstat(target)).isSymbolicLink()) throw new Error('Invalid replica path');
+                const bytes = await fs.promises.readFile(target);
                 if (bytes.length !== entry.size || hash(bytes) !== entry.hash) throw new Error('Replica differs');
                 candidates.push({ key: entry.key, object: entry.hash, size: entry.size });
             } catch { unverified++; }
+            if (index % 16 === 15) await new Promise(resolve => setImmediate(resolve));
         }
-        return { candidates, shared, unverified };
+        return { candidates, shared: plan.shared, unverified };
+    }
+    async function moduleRetirementCandidates(database, id) {
+        return verifyModuleRetirement(moduleRetirementPlan(database, id));
+    }
+    // Read-only overview for status badges; no file access beyond memory state.
+    function overview() {
+        const packages = new Set(directories.snapshot().characters.filter(entry => entry.packageVersion === 1).map(entry => entry.id));
+        const characters = {};
+        for (const id of packages) characters[id] = { package: true, assets: false };
+        for (const [id, record] of Object.entries(state.characters)) {
+            characters[id] = { package: packages.has(id), assets: record?.enabled === true };
+        }
+        const modules = {};
+        for (const [id, record] of Object.entries(moduleState.modules)) {
+            modules[id] = { enabled: record?.enabled === true, copied: record?.copied ?? 0, failed: record?.failed ?? 0 };
+        }
+        return { characters, modules };
     }
     function disable(id) {
         status(id);
         if (Object.hasOwn(state.characters, id)) publish({ schemaVersion: 1, characters: { ...state.characters, [id]: { ...state.characters[id], enabled: false } } });
         return status(id);
     }
-    return { migrate, sync, read, status, disable, reload, retirementCandidates, diagnostics: () => ({ scope: 'server-session', folderReads, ...counters }) };
+    return { migrate, sync, read, status, disable, reload, retirementCandidates,
+        migrateModule, prepareModuleCopy, copyModule, publishModuleCopy, releaseModuleCopy,
+        disableModule, moduleStatus, moduleRetirementPlan, verifyModuleRetirement, moduleRetirementCandidates, overview, diagnostics: () => ({ scope: 'server-session', folderReads, ...counters }) };
 }
 
-module.exports = { createCharacterAssets };
+module.exports = { createCharacterAssets, MODULE_OWNER };

@@ -1,8 +1,9 @@
 <script lang="ts">
-    import { onDestroy } from 'svelte'
+    import { onDestroy, onMount } from 'svelte'
     import { DBState } from 'src/ts/stores.svelte'
     import { isNodeServer } from 'src/ts/platform'
     import { forageStorage } from 'src/ts/globalApi.svelte'
+    import { characterPackageLabel, packageStatus, refreshPackageStatus, type PackageLabel } from 'src/ts/storage/packageStatus.svelte'
     import ShButton from 'src/lib/UI/GUI/ShButton.svelte'
 
     let characterId = $state('')
@@ -21,6 +22,22 @@
         for (const character of characters) counts.set(character.name, (counts.get(character.name) ?? 0) + 1)
         return counts
     })
+    let filter = $state<'all' | PackageLabel>('all')
+    const labels = $derived(new Map(characters.map(character => [character.chaId, characterPackageLabel(character.chaId)])))
+    const filterOptions = $derived.by(() => {
+        const count = (label: PackageLabel) => characters.filter(character => labels.get(character.chaId) === label).length
+        return [
+            { value: 'all' as const, label: '전체', count: characters.length },
+            { value: '' as const, label: '기존 구조', count: count('') },
+            { value: 'V3' as const, label: 'V3', count: count('V3') },
+            { value: 'V3 일부' as const, label: 'V3 일부', count: count('V3 일부') },
+            { value: 'V4' as const, label: 'V4', count: count('V4') },
+        ].filter(option => option.value === 'all' || option.count > 0)
+    })
+    // The selected character stays listed even when the filter would hide it.
+    const listedCharacters = $derived(filter === 'all' ? characters
+        : characters.filter(character => labels.get(character.chaId) === filter || character.chaId === characterId))
+    onMount(() => { void refreshPackageStatus() })
 
     async function runAll() {
         if (busy) return
@@ -66,6 +83,7 @@
         } finally {
             busy = false
             batchRunning = false
+            void refreshPackageStatus()
         }
     }
 
@@ -99,7 +117,10 @@
                     message += ' 현재 상태도 확인하지 못했습니다.'
                 }
             }
-        } finally { busy = false }
+        } finally {
+            busy = false
+            if (action !== 'status') void refreshPackageStatus()
+        }
     }
 </script>
 
@@ -122,11 +143,18 @@
                 {/each}
             </ul>
         {/if}
+        {#if packageStatus.loaded}
+            <div class="filters" role="group" aria-label="저장 구조로 걸러 보기">
+                {#each filterOptions as option (option.value)}
+                    <button type="button" class="filter" aria-pressed={filter === option.value} onclick={() => { filter = option.value }}>{option.label} {option.count}</button>
+                {/each}
+            </div>
+        {/if}
         <label for="asset-transition-character">전환할 캐릭터</label>
         <select id="asset-transition-character" bind:value={characterId} disabled={busy} onchange={() => { result = null; message = '' }}>
             <option value="">캐릭터를 선택해 주세요</option>
-            {#each characters as character (character.chaId)}
-                <option value={character.chaId}>{character.name}{(nameCounts.get(character.name) ?? 0) > 1 ? ` (${character.chaId})` : ''}</option>
+            {#each listedCharacters as character (character.chaId)}
+                <option value={character.chaId}>{character.name}{(nameCounts.get(character.name) ?? 0) > 1 ? ` (${character.chaId})` : ''}{labels.get(character.chaId) ? ` [${labels.get(character.chaId)}]` : ''}</option>
             {/each}
         </select>
         <div class="actions">
@@ -171,5 +199,8 @@
     h3 { margin-top: .5rem; font-size: .95rem; color: var(--color-textcolor); }
     p { color: var(--color-textcolor2); line-height: 1.5; }
     select { padding: .6rem; color: var(--color-textcolor); background: var(--color-darkbg); border: 1px solid var(--settings-border); border-radius: .4rem; max-width: 100%; }
-    .actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+    .actions, .filters { display: flex; flex-wrap: wrap; gap: .5rem; }
+    .filter { padding: .3rem .65rem; font-size: .85rem; color: var(--color-textcolor2); background: var(--color-darkbg); border: 1px solid var(--settings-border); border-radius: 999px; }
+    .filter[aria-pressed='true'] { color: var(--color-textcolor); border-color: var(--color-borderc); background: var(--color-selected); }
+    .filter:focus-visible { outline: 2px solid var(--color-warning); outline-offset: 2px; }
 </style>

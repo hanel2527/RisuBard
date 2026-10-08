@@ -31,7 +31,7 @@ const getVips = () => {
 const { kvGet, kvSet, kvSetMany, kvSetManyAsync, kvReplacePrefixesAsync, kvReplacePrefixesFromFilesAsync, preparePrefixReplacementFromFilesAsync, reloadManifest, kvReplaceAllAsync, kvDel, kvDelMany, kvList,
         kvDelPrefix, kvListWithSizes, kvSize, kvGetUpdatedAt, kvCopyValue,
         gcChunks, reclaimableChunkBytes, objectStoreBytes, isDbBlobChunked, snapshotFootprint, repository: userDataRepository, compatibilityCache, characterAssets,
-        retireAssets, restoreRetiredAssets, retiredStatus } = require('./db.cjs');
+        retireAssets, restoreRetiredAssets, retiredStatus, retiredSummary } = require('./db.cjs');
 const {
     addLogBatch, queryLogs, clearLogs, countLogs,
     logger, installProcessHandlers, expressErrorMiddleware,
@@ -4282,6 +4282,21 @@ require('./character-package-routes.cjs').registerCharacterPackageRoutes(app, {
     assets: characterAssets,
     readSource: kvGet,
     kv: { retireAssets, restoreRetiredAssets, retiredStatus },
+    prepare: async () => {
+        if (externalEditSession.isActive() || !canonicalProjectionReady || canonicalProjectionSync.hasExternalChanges()) return null;
+        await flushPendingDbWithinQueue({ materialize: false });
+        if (!canonicalProjectionReady || canonicalProjectionSync.hasExternalChanges()) return null;
+        return userDataRepository.exportLegacyDatabase();
+    },
+});
+
+require('./module-asset-routes.cjs').registerModuleAssetRoutes(app, {
+    auth: checkAuth,
+    activeSession: checkActiveSession,
+    queue: queueStorageOperation,
+    recordTransition: event => saveObservation.record(event),
+    assets: characterAssets,
+    kv: { retireAssets, restoreRetiredAssets, retiredStatus, retiredSummary },
     prepare: async () => {
         if (externalEditSession.isActive() || !canonicalProjectionReady || canonicalProjectionSync.hasExternalChanges()) return null;
         await flushPendingDbWithinQueue({ materialize: false });

@@ -50,6 +50,7 @@
         completeMemoryWikiFork,
         forkMemoryWiki,
     } from 'src/ts/risubard/memoryWikiFork'
+    import { characterPackageLabel, refreshPackageStatus } from 'src/ts/storage/packageStatus.svelte'
 
     interface Props {
         open: boolean
@@ -58,6 +59,9 @@
     }
 
     let { open, onOpenChange, onSelectCharacter }: Props = $props()
+
+    // Storage layout badges (V3 folder, V4 retired assets); legacy characters show none.
+    $effect(() => { if (open) void refreshPackageStatus() })
     let query = $state('')
     let activeScope = $state('all')
     let selectedIds = $state<string[]>([])
@@ -714,6 +718,9 @@
                                 {#if image}<img src={image} alt="" />
                                 {:else}<UserRoundIcon size={24} />{/if}
                             {/await}
+                            {#if characterPackageLabel(item.character.chaId)}
+                                <span class="package-badge" title={`저장 구조: ${characterPackageLabel(item.character.chaId)}`}>{characterPackageLabel(item.character.chaId)}</span>
+                            {/if}
                             <button
                                 type="button"
                                 class="select-character"
@@ -873,6 +880,7 @@
     .portrait img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
     .select-character, .pin-character, .open-character, .rename-character { position: absolute; z-index: 2; display: grid; width: 1.55rem; height: 1.55rem; place-items: center; border: 1px solid color-mix(in srgb, var(--color-media-text) 22%, transparent); border-radius: .38rem; background: color-mix(in srgb, var(--color-media-bg) 62%, transparent); color: var(--color-media-text); backdrop-filter: blur(6px); }
     .select-character { left: .38rem; }
+    .package-badge { position: absolute; z-index: 1; top: 2.15rem; left: .38rem; padding: .05rem .38rem; border: 1px solid color-mix(in srgb, var(--color-media-text) 22%, transparent); border-radius: .3rem; background: color-mix(in srgb, var(--color-media-bg) 62%, transparent); color: var(--color-media-text); font-size: .68rem; font-weight: 600; line-height: 1.4; letter-spacing: .02em; pointer-events: none; backdrop-filter: blur(6px); }
     .select-character, .pin-character { top: .38rem; }
     .pin-character, .open-character { right: .38rem; }
     .open-character { bottom: .38rem; }

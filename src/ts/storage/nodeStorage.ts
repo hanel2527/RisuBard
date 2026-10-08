@@ -996,6 +996,24 @@ export class NodeStorage{
         return response.json()
     }
 
+    async storagePackageOverview() {
+        const response = await this.authFetch('/api/storage-packages/overview')
+        if (!response.ok) throw new Error(`Storage package overview failed: ${response.status}`)
+        return response.json()
+    }
+
+    async moduleAssetTransition(moduleId: string, action: 'status' | 'migrate' | 'disable' | 'retire-kv' | 'restore-kv') {
+        const response = action === 'status'
+            ? await this.authFetch(`/api/module-assets/status?moduleId=${encodeURIComponent(moduleId)}`)
+            : await this.authFetch('/api/module-assets/transition', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ moduleId, action }),
+            })
+        if (!response.ok) throw new Error(`Module asset transition failed: ${response.status}`)
+        return response.json()
+    }
+
     // ── Server-side backup ─────────────────────────────────────────────────────
 
     async saveServerBackup(

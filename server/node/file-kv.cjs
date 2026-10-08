@@ -518,6 +518,12 @@ function createFileKv(options = {}) {
         return { restored: restored.size, failed };
     }
 
+    function retiredSummary() {
+        const summary = {};
+        for (const [owner, keys] of Object.entries(retired.characters)) summary[owner] = Object.keys(keys || {}).length;
+        return summary;
+    }
+
     function retiredStatus(owner) {
         const entries = Object.values(retired.characters[owner] || {});
         return { retired: entries.length, bytes: entries.reduce((total, entry) => total + (entry.size ?? 0), 0) };
@@ -627,6 +633,7 @@ function createFileKv(options = {}) {
         retireAssets,
         restoreRetiredAssets,
         retiredStatus,
+        retiredSummary,
     };
 }
 

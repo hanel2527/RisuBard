@@ -613,3 +613,91 @@ it('V4 treats any outside reference, including a longer suffixed one, as shared'
     expect(candidates({ ...value.db, css: 'url(xassets/aassets/portrait.png.bak)' })).toEqual([])
     expect(candidates({ ...value.db, css: 'url(assets/portrait.pn)' })).toEqual(['assets/portrait.png'])
 })
+
+function moduleFixture() {
+    const value = fixture()
+    value.store.kvSet('assets/m1.png', Buffer.from('module one'))
+    const db: any = { ...value.db, modules: [
+        { id: 'mod', name: 'Fate 에셋', assets: [['first', 'assets/m1.png', 'png'], ['second', 'assets/shared.png', 'png']] },
+        { id: 'twin', name: 'Fate 에셋', assets: [] },
+    ] }
+    return { ...value, db, directory: path.join(value.root, 'modules', 'Fate 에셋', 'assets') }
+}
+it('module folders copy verified assets, serve them, and leave KV and module JSON untouched', async () => {
+    const { root, store, db, directory } = moduleFixture()
+    const manifest = fs.readFileSync(path.join(root, 'kv', 'manifest.json'))
+    expect(await store.characterAssets.migrateModule(db, 'mod')).toEqual({ enabled: true, directory: 'Fate 에셋', copied: 2, failed: 0 })
+    expect(fs.readFileSync(path.join(directory, 'first.png')).toString()).toBe('module one')
+    expect(fs.readFileSync(path.join(root, 'kv', 'manifest.json'))).toEqual(manifest)
+    expect(fs.existsSync(path.join(root, 'modules', 'mod.json'))).toBe(false)
+    expect(store.kvGet('assets/m1.png').toString()).toBe('module one')
+    expect(store.characterAssets.diagnostics()).toMatchObject({ reads: 1, verified: 1 })
+    fs.writeFileSync(path.join(directory, 'first.png'), 'MODULE ONE')
+    expect(createFileKv({ dataRoot: root }).kvGet('assets/m1.png').toString()).toBe('module one')
+    expect((await store.characterAssets.migrateModule(db, 'twin')).directory).toBe('Fate 에셋 (2)')
+    expect(store.characterAssets.overview().modules).toEqual({
+        mod: { enabled: true, copied: 2, failed: 0 }, twin: { enabled: true, copied: 0, failed: 0 },
+    })
+})
+it('module refresh reuses verified copies and repairs changed ones', async () => {
+    const { store, db, directory } = moduleFixture()
+    await store.characterAssets.migrateModule(db, 'mod')
+    const write = vi.spyOn(fs.promises, 'rename')
+    try {
+        await store.characterAssets.migrateModule(db, 'mod')
+        expect(write).not.toHaveBeenCalled()
+    } finally { write.mockRestore() }
+    fs.writeFileSync(path.join(directory, 'first.png'), 'MODULE ONE')
+    await store.characterAssets.migrateModule(db, 'mod')
+    expect(store.kvGet('assets/m1.png').toString()).toBe('module one')
+    expect(store.characterAssets.diagnostics().rejected).toBe(0)
+})
+it('module V4 retires only module-owned keys, survives restart, and restores', async () => {
+    const { root, store, db } = moduleFixture()
+    await store.characterAssets.migrateModule(db, 'mod')
+    const plan = await store.characterAssets.moduleRetirementCandidates(db, 'mod')
+    expect(plan).toMatchObject({ shared: 1, unverified: 0 })
+    expect(store.retireAssets('module:mod', plan.candidates)).toEqual({ retired: 1 })
+    expect(store.retiredSummary()).toEqual({ 'module:mod': 1 })
+    expect(manifestKeys(root)).not.toContain('assets/m1.png')
+    const reopened = createFileKv({ dataRoot: root })
+    expect(reopened.kvGet('assets/m1.png').toString()).toBe('module one')
+    expect(reopened.kvList('assets/')).toContain('assets/m1.png')
+    expect(reopened.restoreRetiredAssets('module:mod', () => null)).toEqual({ restored: 1, failed: 0 })
+    expect(manifestKeys(root)).toContain('assets/m1.png')
+})
+it('module folder reads stop when disabled or when folder reads are switched off', async () => {
+    const { root, store, db } = moduleFixture()
+    await store.characterAssets.migrateModule(db, 'mod')
+    store.characterAssets.disableModule('mod')
+    expect(store.kvGet('assets/m1.png').toString()).toBe('module one')
+    expect(store.characterAssets.diagnostics().reads).toBe(0)
+    await store.characterAssets.migrateModule(db, 'mod')
+    const previous = process.env.RISUBARD_ASSET_FOLDER_READS
+    process.env.RISUBARD_ASSET_FOLDER_READS = '0'
+    try {
+        const reopened = createFileKv({ dataRoot: root })
+        expect(reopened.kvGet('assets/m1.png').toString()).toBe('module one')
+        expect(reopened.characterAssets.diagnostics().reads).toBe(0)
+    } finally {
+        if (previous === undefined) delete process.env.RISUBARD_ASSET_FOLDER_READS
+        else process.env.RISUBARD_ASSET_FOLDER_READS = previous
+    }
+})
+it('module V4 keeps keys used by persona-embedded copies or other modules', async () => {
+    const { store, db } = moduleFixture()
+    await store.characterAssets.migrateModule(db, 'mod')
+    const keys = async (database: any) => (await store.characterAssets.moduleRetirementCandidates(database, 'mod')).candidates.map((entry: any) => entry.key)
+    expect(await keys(db)).toEqual(['assets/m1.png'])
+    expect(await keys({ ...db, personas: [{ embeddedModule: { assets: [['x', 'assets/m1.png', 'png']] } }] })).toEqual([])
+    expect(await keys({ ...db, modules: [...db.modules, { id: 'other', name: 'o', assets: [['x', 'assets/m1.png', 'png']] }] })).toEqual([])
+})
+it('module copies refuse a second concurrent run and leave no sidecar files', async () => {
+    const { store, db, directory } = moduleFixture()
+    const plan = store.characterAssets.prepareModuleCopy(db, 'mod')
+    expect(() => store.characterAssets.prepareModuleCopy(db, 'mod')).toThrow('already running')
+    store.characterAssets.publishModuleCopy(plan, await store.characterAssets.copyModule(plan))
+    store.characterAssets.releaseModuleCopy(plan)
+    expect(fs.readdirSync(directory).sort()).toEqual(['first.png', 'second.png'])
+    expect(store.characterAssets.prepareModuleCopy(db, 'mod').id).toBe('mod')
+})

@@ -5,12 +5,13 @@ import CharacterAssetTransition from './CharacterAssetTransition.svelte'
 const mocks = vi.hoisted(() => ({
     db: { characters: [] as { chaId: string; name: string; trashTime?: number }[] },
     transition: vi.fn(),
+    overview: vi.fn(),
 }))
 vi.mock('src/ts/stores.svelte', () => ({ DBState: { get db() { return mocks.db } } }))
 vi.mock('src/ts/platform', () => ({ isNodeServer: true }))
 vi.mock('src/ts/globalApi.svelte', () => ({ forageStorage: {
     Init: vi.fn(async () => undefined),
-    realStorage: { characterPackageTransition: mocks.transition },
+    realStorage: { characterPackageTransition: mocks.transition, storagePackageOverview: mocks.overview },
 } }))
 
 let component: ReturnType<typeof mount> | undefined
@@ -44,6 +45,7 @@ beforeEach(() => {
         { chaId: 'deleted', name: 'Deleted', trashTime: 123 },
     ]
     mocks.transition.mockReset()
+    mocks.overview.mockReset()
 })
 afterEach(async () => {
     if (component) await unmount(component)
@@ -236,5 +238,26 @@ describe('character V3 transition selection', () => {
         click('V4 되돌리기')
         await vi.waitFor(() => expect(document.body.textContent).toContain('되돌리기: 2개를 KV 목록에 복원'))
         expect(mocks.transition.mock.calls).toEqual([['active-a', 'status'], ['active-a', 'retire-kv'], ['active-a', 'restore-kv']])
+    })
+
+    it('labels characters by storage layout and filters the selection list', async () => {
+        mocks.db.characters.push({ chaId: 'v4-one', name: 'Ruri' })
+        mocks.overview.mockResolvedValue({ characters: {
+            'active-a': { package: true, assets: true },
+            'v4-one': { package: true, assets: true, retired: 12 },
+        }, modules: {} })
+        await render()
+        await vi.waitFor(() => expect(document.body.textContent).toContain('V4 1'))
+        const options = () => [...document.querySelectorAll('#asset-transition-character option')].slice(1).map(option => option.textContent)
+        expect(options()).toEqual(['Tanya (active-a) [V3]', 'Tanya (active-b)', 'Ruri [V4]'])
+        click('기존 구조 1')
+        await tick()
+        expect(options()).toEqual(['Tanya (active-b)'])
+        click('V4 1')
+        await tick()
+        expect(options()).toEqual(['Ruri [V4]'])
+        click('전체 3')
+        await tick()
+        expect(options()).toHaveLength(3)
     })
 })
