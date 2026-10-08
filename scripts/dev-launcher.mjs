@@ -1,10 +1,13 @@
 import { spawn } from 'node:child_process';
-import { existsSync, watch } from 'node:fs';
+import { existsSync, rmSync, watch, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 export const DEV_URL = 'http://127.0.0.1:5174';
+// Lets the start-menu normal launcher end this session (scripts/start-menu-launcher.mjs).
+const pidPath = path.join(os.tmpdir(), 'risubard-dev-launcher.pid');
 
 export function createChildSpecs(projectRoot) {
   return [
@@ -193,6 +196,7 @@ async function shutdown(exitCode = 0) {
     return;
   }
   restoreTerminal();
+  rmSync(pidPath, { force: true });
   process.exit(exitCode);
 }
 
@@ -212,6 +216,7 @@ function run() {
     return;
   }
 
+  writeFileSync(pidPath, String(process.pid));
   console.log('RisuBard Dev');
   console.log(`- 웹: ${DEV_URL}`);
   console.log('- API: http://127.0.0.1:7777');

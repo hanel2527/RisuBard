@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, openSync, closeSync, readFileSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +9,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const serverUrl = 'http://127.0.0.1:7777';
 const developmentUrl = 'http://127.0.0.1:5174';
+// Written by scripts/dev-launcher.mjs so the normal launcher can end a development session.
+export const developmentPidPath = path.join(os.tmpdir(), 'risubard-dev-launcher.pid');
+const { isBuildRequired } = createRequire(import.meta.url)('../server/node/server-build-cache.cjs');
 
 async function isReady(url, development) {
   let response;
@@ -45,12 +49,16 @@ export function builtVersion(root = projectRoot) {
   } catch { return null; }
 }
 
-// The release workflow builds in CI only, so refresh the local dist when it lags package.json.
+// The normal server runs the screen compiled at launch. Rebuild when the version moved
+// or any screen source is newer than the last build, so a fresh launch matches development.
+export function needsBuild(root = projectRoot, buildRequired = isBuildRequired) {
+  const { version } = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
+  return builtVersion(root) !== version || buildRequired(root);
+}
+
 function ensureCurrentBuild() {
-  const { version } = JSON.parse(readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
-  const built = builtVersion();
-  if (built === version) return;
-  console.log(`화면 빌드 갱신: ${built ? `v${built}` : '없음'} -> v${version}`);
+  if (!needsBuild()) return;
+  console.log('최신 개발 내역으로 화면을 컴파일합니다. 1~2분 걸릴 수 있습니다.');
   const result = spawnSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build', '--sourcemap'], { cwd: projectRoot, stdio: 'inherit' });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error('빌드 실패. 위 로그를 확인하세요.');
@@ -72,62 +80,79 @@ async function stopServer() {
   console.log('리스바드 서버를 종료했습니다.');
 }
 
-const serverWindowTitle = '리스바드 일반서버';
-
-// The server gets its own console window so its log stays visible and closing the
-// window stops it (after flushing saves). The window stays open if it exits on an error.
-function startServerWindow() {
-  const node = `"${process.execPath}" server\\node\\server.cjs`;
-  return spawn('cmd.exe', ['/d', '/c', `start "${serverWindowTitle}" /d "${projectRoot}" cmd /d /c "${node} & if errorlevel 1 pause"`], {
+// Each server gets its own console window so its log stays visible. Closing the window
+// stops it after flushing saves; the window stays open if it exits on an error.
+function startWindow(title, command, env = {}) {
+  return spawn('cmd.exe', ['/d', '/c', `start "${title}" /d "${projectRoot}" cmd /d /c "${command} & if errorlevel 1 pause"`], {
     cwd: projectRoot,
-    env: { ...process.env, PORT: '7777', OPEN_BROWSER: '0', RISU_DEV_SERVER_TARGET: serverUrl, RISUBARD_CONSOLE_TITLE: serverWindowTitle },
+    env: { ...process.env, PORT: '7777', OPEN_BROWSER: '0', RISU_DEV_SERVER_TARGET: serverUrl, ...env },
     windowsVerbatimArguments: true,
     windowsHide: true,
     stdio: 'ignore',
   });
 }
 
-function startBackground(label, args) {
-  const logs = path.join(projectRoot, 'log', 'start-menu');
-  mkdirSync(logs, { recursive: true });
-  const output = openSync(path.join(logs, `${label}.log`), 'a');
-  try {
-    const child = spawn(process.execPath, args, {
-      cwd: projectRoot,
-      env: { ...process.env, PORT: '7777', OPEN_BROWSER: '0', RISU_DEV_SERVER_TARGET: serverUrl },
-      detached: true,
-      windowsHide: true,
-      stdio: ['ignore', output, output],
-    });
-    child.unref();
-    return child;
-  } finally { closeSync(output); }
+const startServerWindow = () => startWindow('리스바드 일반서버', `"${process.execPath}" server\\node\\server.cjs`, { RISUBARD_CONSOLE_TITLE: '리스바드 일반서버' });
+// dev-launcher.mjs runs the server from source (restarted on server changes) and Vite.
+const startDevelopmentWindow = () => startWindow('리스바드 개발서버', `"${process.execPath}" scripts\\dev-launcher.mjs`);
+
+const quietReady = (url, development) => isReady(url, development).catch(() => false);
+
+// Development and normal servers share the data folder, so only one may run.
+// The server saves and exits first; then the development supervisor (and Vite) stops.
+async function stopDevelopment() {
+  if (await quietReady(serverUrl, false)) await stopServer();
+  let pid = 0;
+  try { pid = Number(readFileSync(developmentPidPath, 'utf8').trim()); } catch {}
+  if (pid > 0) spawnSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+  const deadline = Date.now() + 20000;
+  while (await quietReady(developmentUrl, true)) {
+    if (Date.now() > deadline) throw new Error('개발 서버를 끄지 못했습니다. "리스바드 개발서버" 창을 직접 닫은 뒤 다시 실행해 주세요.');
+    await delay(500);
+  }
+  rmSync(developmentPidPath, { force: true });
+}
+
+async function openBrowser(url) {
+  if (process.argv.includes('--no-open')) return;
+  await new Promise((resolve, reject) => {
+    const opener = spawn('rundll32.exe', ['url.dll,FileProtocolHandler', url], { windowsHide: true, stdio: 'ignore' });
+    opener.once('error', reject);
+    opener.once('exit', code => code === 0 ? resolve() : reject(new Error(`브라우저 열기 실패 (${code})`)));
+  });
 }
 
 async function main() {
   const mode = process.argv[2];
-  if (mode === 'stop') return stopServer();
+  if (mode === 'stop') {
+    if (await quietReady(developmentUrl, true)) return stopDevelopment();
+    return stopServer();
+  }
   if (!['normal', 'development'].includes(mode)) throw new Error('실행 모드는 normal, development 또는 stop이어야 합니다.');
-  const development = mode === 'development';
-  if (!development) ensureCurrentBuild();
-  else if (!existsSync(path.join(projectRoot, 'dist', 'index.html'))) {
-    throw new Error('컴파일된 화면이 없습니다. 먼저 pnpm build를 실행하세요.');
+  if (mode === 'development') {
+    if (await quietReady(developmentUrl, true)) {
+      console.log(`리스바드 개발: ${developmentUrl}`);
+      return openBrowser(developmentUrl);
+    }
+    if (await quietReady(serverUrl, false)) {
+      console.log('일반 서버를 저장 마무리 후 종료하고 개발 서버로 바꿉니다.');
+      await stopServer();
+    }
+    // dev-launcher.mjs opens the browser itself once Vite answers.
+    await ensureService(developmentUrl, true, startDevelopmentWindow, 180000);
+    return console.log(`리스바드 개발: ${developmentUrl}`);
   }
-  await ensureService(serverUrl, false, startServerWindow);
-  if (development) {
-    await ensureService(developmentUrl, true, () => startBackground('development', [
-      'node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '5174', '--strictPort',
-    ]));
+  if (await quietReady(developmentUrl, true)) {
+    console.log('개발 서버를 저장 마무리 후 종료하고 일반 서버로 바꿉니다.');
+    await stopDevelopment();
   }
-  const url = development ? developmentUrl : serverUrl;
-  console.log(`${development ? '리스바드 개발' : '리스바드 일반'}: ${url}`);
-  if (!process.argv.includes('--no-open')) {
-    await new Promise((resolve, reject) => {
-      const opener = spawn('rundll32.exe', ['url.dll,FileProtocolHandler', url], { windowsHide: true, stdio: 'ignore' });
-      opener.once('error', reject);
-      opener.once('exit', code => code === 0 ? resolve() : reject(new Error(`브라우저 열기 실패 (${code})`)));
-    });
+  // A running normal server keeps the screen it was compiled with until it is closed.
+  if (!await quietReady(serverUrl, false)) {
+    ensureCurrentBuild();
+    await ensureService(serverUrl, false, startServerWindow);
   }
+  console.log(`리스바드 일반: ${serverUrl}`);
+  await openBrowser(serverUrl);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase()) {

@@ -4,7 +4,7 @@ import http from 'node:http';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { builtVersion, ensureService } from './start-menu-launcher.mjs';
+import { builtVersion, ensureService, needsBuild } from './start-menu-launcher.mjs';
 
 async function fixture(t, html) {
   const server = http.createServer((_req, res) => res.end(html));
@@ -51,3 +51,16 @@ test('reads the version stamped into the compiled startup screen', t => {
   writeFileSync(path.join(root, 'dist', 'index.html'), '<span data-startup-version class="x">v0.9.57</span>');
   assert.equal(builtVersion(root), '0.9.57');
 });
+
+test('rebuilds the normal screen when sources changed even if the version did not', t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'risubard-launcher-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version: '1.2.3' }));
+  mkdirSync(path.join(root, 'dist'));
+  writeFileSync(path.join(root, 'dist', 'index.html'), '<p data-startup-version class="x">v1.2.3</p>');
+  assert.equal(needsBuild(root, () => false), false);
+  assert.equal(needsBuild(root, () => true), true);
+  writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version: '1.2.4' }));
+  assert.equal(needsBuild(root, () => false), true);
+});
+
