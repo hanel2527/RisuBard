@@ -14,6 +14,71 @@ function root() {
 }
 afterEach(() => roots.splice(0).forEach(value => fs.rmSync(value, { recursive: true, force: true })))
 
+describe('KV manifest journal', () => {
+    const manifestPath = (dataRoot: string) => path.join(dataRoot, 'kv/manifest.json')
+    const journalPath = (dataRoot: string) => path.join(dataRoot, 'kv/manifest.journal')
+
+    it('appends key writes without rewriting the snapshot and replays them on reopen', () => {
+        const dataRoot = root()
+        const store = createFileKv({ dataRoot })
+        store.kvSetMany(Array.from({ length: 50 }, (_, i) => ({ key: `assets/a-${i}`, value: Buffer.from(`a${i}`) })))
+        const snapshot = fs.readFileSync(manifestPath(dataRoot))
+        store.kvSet('assets/new.png', Buffer.from('new'))
+        store.kvDel('assets/a-0')
+        store.kvCopyValue('assets/a-1', 'assets/copy')
+        expect(fs.readFileSync(manifestPath(dataRoot))).toEqual(snapshot)
+        expect(fs.readFileSync(journalPath(dataRoot), 'utf8').trim().split('\n')).toHaveLength(4)
+
+        const reopened = createFileKv({ dataRoot })
+        expect(reopened.kvGet('assets/new.png')?.toString()).toBe('new')
+        expect(reopened.kvGet('assets/a-0')).toBeNull()
+        expect(reopened.kvGet('assets/copy')?.toString()).toBe('a1')
+        // Replayed changes are folded into the snapshot on load.
+        expect(JSON.parse(fs.readFileSync(manifestPath(dataRoot), 'utf8')).entries['assets/new.png']).toBeDefined()
+        expect(fs.readFileSync(journalPath(dataRoot), 'utf8').trim().split('\n')).toHaveLength(1)
+    })
+
+    it('ignores a torn final line from an interrupted append', () => {
+        const dataRoot = root()
+        const store = createFileKv({ dataRoot })
+        store.kvSet('assets/first', Buffer.from('first'))
+        store.kvSet('assets/second', Buffer.from('second'))
+        fs.appendFileSync(journalPath(dataRoot), '{"set":{"assets/torn":')
+        const reopened = createFileKv({ dataRoot })
+        expect(reopened.kvGet('assets/second')?.toString()).toBe('second')
+        expect(reopened.kvGet('assets/torn')).toBeNull()
+    })
+
+    it('drops a journal whose snapshot was replaced, as a backup restore does', () => {
+        const dataRoot = root()
+        const store = createFileKv({ dataRoot })
+        store.kvSet('assets/kept', Buffer.from('kept'))
+        store.compactManifest()
+        const restored = fs.readFileSync(manifestPath(dataRoot))
+        store.kvSet('assets/after-restore-point', Buffer.from('stale'))
+        // Simulate a restore publishing its own snapshot, then reloading.
+        const replaced = JSON.parse(restored.toString('utf8'))
+        replaced.updatedAt += 1
+        const bytes = Buffer.from(`${JSON.stringify(replaced, null, 2)}\n`)
+        fs.writeFileSync(manifestPath(dataRoot), bytes)
+        fs.writeFileSync(`${manifestPath(dataRoot)}.sha256`, `${crypto.createHash('sha256').update(bytes).digest('hex')}\n`)
+        store.reloadManifest()
+        expect(store.kvGet('assets/kept')?.toString()).toBe('kept')
+        expect(store.kvGet('assets/after-restore-point')).toBeNull()
+        expect(createFileKv({ dataRoot }).kvGet('assets/after-restore-point')).toBeNull()
+    })
+
+    it('compacts into the snapshot once the journal outgrows its limit', () => {
+        const dataRoot = root()
+        const store = createFileKv({ dataRoot, journalCompactBytes: 600 })
+        for (let i = 0; i < 10; i++) store.kvSet(`assets/item-${i}`, Buffer.from(`item ${i}`))
+        const snapshot = JSON.parse(fs.readFileSync(manifestPath(dataRoot), 'utf8'))
+        expect(Object.keys(snapshot.entries).length).toBeGreaterThan(1)
+        expect(fs.statSync(journalPath(dataRoot)).size).toBeLessThanOrEqual(600 + 300)
+        expect(createFileKv({ dataRoot }).kvList('assets/')).toHaveLength(10)
+    })
+})
+
 describe('file-native KV compatibility projection', () => {
     it('updates one key without reparsing the whole in-memory manifest, retaining checksum and reopen compatibility', () => {
         const dataRoot = root()

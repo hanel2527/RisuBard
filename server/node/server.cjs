@@ -29,7 +29,7 @@ const getVips = () => {
     return _vipsPromise
 }
 const { kvGet, kvSet, kvSetMany, kvSetManyAsync, kvReplacePrefixesAsync, kvReplacePrefixesFromFilesAsync, preparePrefixReplacementFromFilesAsync, reloadManifest, kvReplaceAllAsync, kvDel, kvDelMany, kvList,
-        kvDelPrefix, kvListWithSizes, kvSize, kvGetUpdatedAt, kvCopyValue,
+        kvDelPrefix, kvListWithSizes, kvSize, kvGetUpdatedAt, kvCopyValue, compactManifest,
         gcChunks, reclaimableChunkBytes, objectStoreBytes, isDbBlobChunked, snapshotFootprint, repository: userDataRepository, compatibilityCache, characterAssets } = require('./db.cjs');
 const {
     addLogBatch, queryLogs, clearLogs, countLogs,
@@ -7436,6 +7436,8 @@ async function shutdownGracefully(reason) {
     try { await chatContentUploads.close(); } catch (e) { logger.warn('[ChatContent] Upload cleanup error:', e); }
     try { await flushPendingDb(); } catch (e) { logger.error('[Server] Flush error:', e); }
     liveCharacterFiles.close();
+    // Fold the KV journal into manifest.json so the data folder is self-contained.
+    try { compactManifest(); } catch (e) { logger.error('[Server] KV compaction error:', e); }
     await saveObservation.flush();
     try { unlinkSync(localShutdownTokenPath); } catch {}
     process.exit(0);

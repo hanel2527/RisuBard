@@ -9,6 +9,8 @@ const { atomicWriteFile, atomicWriteJson, readVerifiedJson, recoverTransactions,
 const { createCharacterAssets } = require('./character-assets.cjs');
 
 const MANIFEST_PATH = 'kv/manifest.json';
+const JOURNAL_PATH = 'kv/manifest.journal';
+const JOURNAL_TYPE = 'risubard-kv-journal-v1';
 const HEX_MIGRATION_MARKER = 'migration/legacy-hex-save-folder.json';
 
 function digest(data) {
@@ -143,16 +145,101 @@ function createFileKv(options = {}) {
             return resolveInside(dataRoot, path.join('kv', 'objects', expectedDigest));
         } });
 
-    let manifest = fs.existsSync(path.join(dataRoot, MANIFEST_PATH))
-        ? readVerifiedJson(dataRoot, MANIFEST_PATH)
-        : { schemaVersion: 1, updatedAt: 0, entries: {} };
-    if (!manifest || manifest.schemaVersion !== 1 || typeof manifest.entries !== 'object') {
-        throw new Error('Unsupported or corrupt file KV manifest');
+    // manifest.json is the compacted snapshot. Ordinary writes append one line
+    // to kv/manifest.journal instead of rewriting the snapshot, whose size
+    // grows with every stored key (asset-heavy stores reach tens of MB).
+    // The journal header names the snapshot it extends; a replaced snapshot
+    // (backup restore, interrupted compaction) makes the journal stale.
+    let manifest;
+    let manifestBase = null;
+    let manifestBytes = 0;
+    // True while kv/manifest.journal extends the current snapshot. The file is
+    // opened per append so Windows can still replace it during compaction.
+    let journalReady = false;
+    let journalBytes = 0;
+    let journalChanged = false;
+    const journalLimit = Number.isFinite(options.journalCompactBytes)
+        ? Math.max(1, options.journalCompactBytes)
+        : null;
+    const journalTarget = () => resolveInside(dataRoot, JOURNAL_PATH);
+
+    function closeJournal() {
+        journalReady = false;
     }
+
+    function startJournal(base) {
+        closeJournal();
+        const target = journalTarget();
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        const header = Buffer.from(`${JSON.stringify({ type: JOURNAL_TYPE, base })}\n`, 'utf8');
+        const temp = `${target}.${crypto.randomUUID()}.tmp`;
+        const fd = fs.openSync(temp, 'wx', 0o600);
+        try {
+            fs.writeSync(fd, header);
+            fs.fsyncSync(fd);
+        } finally {
+            fs.closeSync(fd);
+        }
+        fs.renameSync(temp, target);
+        journalReady = true;
+        journalBytes = header.length;
+        journalChanged = false;
+    }
+
+    function loadManifest() {
+        closeJournal();
+        const snapshotPath = path.join(dataRoot, MANIFEST_PATH);
+        if (fs.existsSync(snapshotPath)) {
+            manifest = readVerifiedJson(dataRoot, MANIFEST_PATH);
+            const bytes = fs.readFileSync(snapshotPath);
+            manifestBase = digest(bytes);
+            manifestBytes = bytes.length;
+        } else {
+            manifest = { schemaVersion: 1, updatedAt: 0, entries: {} };
+            manifestBase = null;
+            manifestBytes = 0;
+        }
+        if (!manifest || manifest.schemaVersion !== 1 || typeof manifest.entries !== 'object') {
+            throw new Error('Unsupported or corrupt file KV manifest');
+        }
+        let lines = [];
+        try {
+            lines = fs.readFileSync(journalTarget(), 'utf8').split('\n');
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+        }
+        let header = null;
+        try { header = lines[0] ? JSON.parse(lines[0]) : null; } catch {}
+        if (!header || header.type !== JOURNAL_TYPE || header.base !== manifestBase || manifestBase === null) {
+            if (lines.length) fs.rmSync(journalTarget(), { force: true });
+            return;
+        }
+        // A torn final line from a crash ends replay; earlier lines were fsynced.
+        let applied = 0;
+        for (const line of lines.slice(1)) {
+            if (!line) continue;
+            let change;
+            try { change = JSON.parse(line); } catch { break; }
+            if (!change || typeof change !== 'object') break;
+            for (const [key, entry] of Object.entries(change.set ?? {})) manifest.entries[key] = entry;
+            for (const key of change.del ?? []) delete manifest.entries[key];
+            applied += 1;
+        }
+        if (applied === 0) {
+            journalReady = true;
+            journalBytes = fs.statSync(journalTarget()).size;
+            journalChanged = false;
+            return;
+        }
+        // Fold replayed changes back into the snapshot so the journal stays short.
+        writeSnapshot();
+    }
+
+    loadManifest();
     const objectWriteConcurrency = options.objectWriteConcurrency
         ?? Math.min(8, Math.max(1, (os.availableParallelism?.() ?? os.cpus().length) - 1));
 
-    function saveManifest() {
+    function writeSnapshot() {
         manifest.updatedAt = Date.now();
         // This internally constructed manifest was validated on load. JSON.stringify
         // already guarantees JSON syntax; reparsing a large asset index here only
@@ -160,7 +247,38 @@ function createFileKv(options = {}) {
         if (manifest.schemaVersion !== 1 || !manifest.entries || typeof manifest.entries !== 'object') {
             throw new Error('Unsupported or corrupt file KV manifest');
         }
-        atomicWriteFile(dataRoot, MANIFEST_PATH, Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8'));
+        const bytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+        atomicWriteFile(dataRoot, MANIFEST_PATH, bytes);
+        manifestBase = digest(bytes);
+        manifestBytes = bytes.length;
+        startJournal(manifestBase);
+    }
+
+    // Whole-set operations rewrite the snapshot; key-level changes append.
+    function saveManifest() {
+        writeSnapshot();
+    }
+
+    function recordChanges(set, del = []) {
+        if (!journalReady || manifestBase === null) {
+            writeSnapshot();
+            return;
+        }
+        const line = Buffer.from(`${JSON.stringify({ set, del })}\n`, 'utf8');
+        const fd = fs.openSync(journalTarget(), 'a');
+        try {
+            fs.writeSync(fd, line);
+            fs.fsyncSync(fd);
+        } finally {
+            fs.closeSync(fd);
+        }
+        journalBytes += line.length;
+        journalChanged = true;
+        if (journalBytes > (journalLimit ?? Math.max(8 * 1024 * 1024, manifestBytes))) writeSnapshot();
+    }
+
+    function compactManifest() {
+        if (journalReady && journalChanged) writeSnapshot();
     }
 
     function kvGet(key) {
@@ -186,8 +304,9 @@ function createFileKv(options = {}) {
         const data = Buffer.isBuffer(value) ? value : Buffer.from(value);
         const hash = digest(data);
         writeObject(dataRoot, hash, data);
-        manifest.entries[key] = { object: hash, size: data.length, updatedAt: Date.now() };
-        saveManifest();
+        const entry = { object: hash, size: data.length, updatedAt: Date.now() };
+        manifest.entries[key] = entry;
+        recordChanges({ [key]: entry });
     }
 
     function prepareEntries(entries) {
@@ -216,14 +335,15 @@ function createFileKv(options = {}) {
     }
 
     function kvSetMany(entries) {
-        for (const [key, entry] of prepareEntries(entries)) manifest.entries[key] = entry;
-        if (entries.length) saveManifest();
+        const prepared = prepareEntries(entries);
+        for (const [key, entry] of prepared) manifest.entries[key] = entry;
+        if (entries.length) recordChanges(Object.fromEntries(prepared));
     }
 
     async function kvSetManyAsync(entries) {
         const prepared = await prepareEntriesAsync(entries);
         for (const [key, entry] of prepared) manifest.entries[key] = entry;
-        if (entries.length) saveManifest();
+        if (entries.length) recordChanges(Object.fromEntries(prepared));
     }
 
     function kvReplacePrefixes(entries, prefixes) {
@@ -275,11 +395,7 @@ function createFileKv(options = {}) {
     }
 
     function reloadManifest() {
-        const next = readVerifiedJson(dataRoot, MANIFEST_PATH);
-        if (!next || next.schemaVersion !== 1 || typeof next.entries !== 'object') {
-            throw new Error('Unsupported or corrupt file KV manifest');
-        }
-        manifest = next;
+        loadManifest();
         characterAssets.reload();
     }
 
@@ -292,20 +408,22 @@ function createFileKv(options = {}) {
     function kvDel(key) {
         if (!(key in manifest.entries)) return;
         delete manifest.entries[key];
-        saveManifest();
+        recordChanges({}, [key]);
     }
 
     function kvDelMany(keys) {
         let count = 0;
         let bytes = 0;
+        const deleted = [];
         for (const key of new Set(keys)) {
             const entry = manifest.entries[key];
             if (!entry) continue;
             bytes += entry.size ?? 0;
             delete manifest.entries[key];
+            deleted.push(key);
             count += 1;
         }
-        if (count > 0) saveManifest();
+        if (count > 0) recordChanges({}, deleted);
         return { count, bytes };
     }
 
@@ -340,8 +458,9 @@ function createFileKv(options = {}) {
     function kvCopyValue(source, destination) {
         const entry = manifest.entries[source];
         if (!entry) return;
-        manifest.entries[destination] = { ...entry, updatedAt: Date.now() };
-        saveManifest();
+        const copied = { ...entry, updatedAt: Date.now() };
+        manifest.entries[destination] = copied;
+        recordChanges({ [destination]: copied });
     }
 
     function kvDelPrefix(prefix) {
@@ -452,6 +571,7 @@ function createFileKv(options = {}) {
         kvReplacePrefixesFromFilesAsync,
         preparePrefixReplacementFromFilesAsync,
         reloadManifest,
+        compactManifest,
         kvReplaceAll,
         kvReplaceAllAsync,
         kvDel,
