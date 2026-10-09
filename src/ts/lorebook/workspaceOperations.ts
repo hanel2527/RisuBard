@@ -150,11 +150,64 @@ export function ensureLorebookIds(entries: loreBook[], createId: () => string): 
     })
 }
 
-export function addLorebookEntry(entries: loreBook[], entry: loreBook, afterId?: string): loreBook[] {
+export function addLorebookEntry(
+    entries: loreBook[],
+    entry: loreBook,
+    anchorId?: string,
+    position: 'before' | 'after' = 'after',
+): loreBook[] {
     if (!hasId(entry) || entries.some((current) => current.id === entry.id)) return entries
     const appended = [...entries, entry]
-    if (!afterId || !entries.some((current) => current.id === afterId)) return appended
-    return moveLorebookEntries(appended, [entry.id], afterId, 'after')
+    const anchor = anchorId ? entries.find((current) => current.id === anchorId) : undefined
+    if (!anchor || !hasId(anchor)) return appended
+    // Folders never nest, so a folder placed before a child goes above that child's parent folder.
+    const parent = isFolder(entry) && position === 'before' && !isFolder(anchor) && anchor.folder
+        ? uniqueFolderLookup(entries).get(anchor.folder)
+        : undefined
+    const target = parent && hasId(parent) ? parent : anchor
+    return moveLorebookEntries(appended, [entry.id], target.id, position)
+}
+
+/**
+ * Moves the given entries one step up (-1) or down (1) among their siblings, like the
+ * prompt preset block list. Folders move as blocks among top-level nodes, entries stay in
+ * their folder, and top-level entries jump over a whole folder. Rows that are not visible
+ * (collapsed folders, filtered out) are skipped. Returns `entries` itself when nothing moves.
+ */
+export function stepLorebookEntries(
+    entries: loreBook[],
+    ids: string[],
+    direction: -1 | 1,
+    isVisible: (entry: loreBook) => boolean = () => true,
+): loreBook[] {
+    if (ids.length === 0 || hasDuplicateFolderKeys(entries)) return entries
+    if (entries.some((entry) => !hasId(entry))) return entries
+
+    const selected = new Set(ids)
+    const nodes = buildWorkspace(entries)
+    let changed = false
+
+    const step = (list: Array<{ entry: loreBook }>) => {
+        const indexes = list.map((_, index) => index)
+        if (direction > 0) indexes.reverse()
+        for (const index of indexes) {
+            const node = list[index]
+            if (!selected.has(node.entry.id!)) continue
+            let neighbor = index + direction
+            while (neighbor >= 0 && neighbor < list.length && !isVisible(list[neighbor].entry)) neighbor += direction
+            if (neighbor < 0 || neighbor >= list.length) continue
+            if (selected.has(list[neighbor].entry.id!)) continue
+            list.splice(index, 1)
+            list.splice(neighbor, 0, node)
+            changed = true
+        }
+    }
+
+    step(nodes)
+    for (const node of nodes) {
+        if (node.kind === 'folder') step(node.children)
+    }
+    return changed ? emitWorkspace(nodes) : entries
 }
 
 export function createLorebookDuplicate(

@@ -966,6 +966,8 @@ export const languageEnglish = {
         removeSecondaryKeys: "− Secondary",
         moveUp: "Move up",
         moveDown: "Move down",
+        moveUpTen: "Move up 10",
+        moveDownTen: "Move down 10",
         moveToFolder: "Move to folder",
         moveToRoot: "Move to root",
         duplicateLore: "Duplicate lore",

@@ -1033,6 +1033,8 @@ export const languageKorean = {
     removeSecondaryKeys: "− 보조 키",
     moveUp: "위로 이동",
     moveDown: "아래로 이동",
+    moveUpTen: "10칸 위로 이동",
+    moveDownTen: "10칸 아래로 이동",
     moveToFolder: "폴더로 이동",
     moveToRoot: "최상위로 이동",
     duplicateLore: "로어 복제",

@@ -26,6 +26,7 @@
         moveLorebookEntries,
         orderLorebookEntriesForDisplay,
         removeKeysFromEntries,
+        stepLorebookEntries,
         updateLorebookEntry,
         type LorebookDropPosition,
     } from 'src/ts/lorebook/workspaceOperations'
@@ -56,6 +57,8 @@
     import altArrowUpIcon from 'src/assets/solar-bold/alt-arrow-up-bold.svg'
     import altArrowDownIcon from 'src/assets/solar-bold/alt-arrow-down-bold.svg'
     import altArrowLeftIcon from 'src/assets/solar-bold/alt-arrow-left-bold.svg'
+    import doubleAltArrowUpIcon from 'src/assets/solar-bold/double-alt-arrow-up-bold.svg'
+    import doubleAltArrowDownIcon from 'src/assets/solar-bold/double-alt-arrow-down-bold.svg'
     import trashIcon from 'src/assets/solar-bold/trash-bin-2-bold.svg'
     import inlineTrashIcon from 'src/assets/solar-bold/trash-bin-trash-bold.svg'
     import clearIcon from 'src/assets/solar-bold/close-circle-bold.svg'
@@ -180,6 +183,15 @@
         }
         return counts
     })
+    let visibleRowIds = $derived(new Set(
+        visibleEntries.filter(rowIsVisible).map((item) => item.id).filter((id): id is string => Boolean(id)),
+    ))
+    let canMoveUp = $derived(
+        stepLorebookEntries(normalizedEntries, movableIds(), -1, isEntryVisibleInList) !== normalizedEntries,
+    )
+    let canMoveDown = $derived(
+        stepLorebookEntries(normalizedEntries, movableIds(), 1, isEntryVisibleInList) !== normalizedEntries,
+    )
     let restorableCount = $derived.by(() => {
         if (!legacyDisabledBackups) return 0
         return migrateLoremasterDisabledEntries(
@@ -666,6 +678,11 @@
 
     function addEntry(mode: loreBook['mode'] = 'normal') {
         const base = commitAllDirty()
+        // Folders go directly above the topmost selected row (or the active row); lore goes below it.
+        const folderAnchorId = mode === 'folder'
+            ? visibleEntries.find((item) => item.id && selectedIds.has(item.id))?.id
+                ?? (activeEntry?.mode !== 'child' ? activeEntry?.id : undefined)
+            : undefined
         const afterId = mode === 'normal' && selectedIds.size === 1
             ? [...selectedIds][0]
             : mode === 'normal' && activeEntry && isBatchEditable(activeEntry)
@@ -687,11 +704,45 @@
             selective: false,
         }
         const next = bardMode ? createBardLoreEntry(legacyEntry) : legacyEntry
-        emit(addLorebookEntry(base, next, afterId))
+        emit(mode === 'folder'
+            ? addLorebookEntry(base, next, folderAnchorId, 'before')
+            : addLorebookEntry(base, next, afterId))
         activeId = id
         selectedIds = mode === 'normal' ? new Set([id]) : new Set()
         selectionAnchorId = mode === 'normal' ? id : null
         mobileView = 'editor'
+    }
+
+    function movableIds(): string[] {
+        if (selectedIds.size > 0) return [...selectedIds]
+        return activeEntry?.id ? [activeEntry.id] : []
+    }
+
+    function isEntryVisibleInList(entry: loreBook): boolean {
+        return !entry.id || visibleRowIds.has(entry.id)
+    }
+
+    function moveSelection(direction: -1 | 1, steps = 1) {
+        const ids = movableIds()
+        if (ids.length === 0) return
+        const base = commitAllDirty()
+        let next = base
+        for (let step = 0; step < steps; step++) {
+            const moved = stepLorebookEntries(next, ids, direction, isEntryVisibleInList)
+            if (moved === next) break
+            next = moved
+        }
+        if (next === base) return
+        emit(next)
+        // Follow the moved rows: keep the leading row (topmost going up, bottommost going down) in view.
+        const movedIds = new Set(ids)
+        void tick().then(() => {
+            if (destroyed) return
+            const rows = [...listElement?.querySelectorAll<HTMLElement>('[data-lorebook-row]') ?? []]
+                .filter((row) => movedIds.has(row.dataset.lorebookRow ?? ''))
+            const leading = direction < 0 ? rows[0] : rows.at(-1)
+            leading?.scrollIntoView?.({ block: 'nearest' })
+        })
     }
 
     function duplicateActiveEntry() {
@@ -1032,6 +1083,18 @@
             </button>
             <button type="button" class="toolbar-action" data-lorebook-add-folder aria-label={language.lorebookWorkspace.addFolder} use:tooltip={language.lorebookWorkspace.addFolder}  onclick={() => addEntry('folder')}>
                 <SolarIcon src={addFolderIcon} name="add-folder-bold" size="1.15rem" />
+            </button>
+            <button type="button" class="toolbar-action" data-lorebook-move-up-ten aria-label={language.lorebookWorkspace.moveUpTen} use:tooltip={language.lorebookWorkspace.moveUpTen} disabled={!canMoveUp} onclick={() => moveSelection(-1, 10)}>
+                <SolarIcon src={doubleAltArrowUpIcon} name="double-alt-arrow-up-bold" size="1.15rem" />
+            </button>
+            <button type="button" class="toolbar-action" data-lorebook-move-up aria-label={language.lorebookWorkspace.moveUp} use:tooltip={language.lorebookWorkspace.moveUp} disabled={!canMoveUp} onclick={() => moveSelection(-1)}>
+                <SolarIcon src={altArrowUpIcon} name="alt-arrow-up-bold" size="1.15rem" />
+            </button>
+            <button type="button" class="toolbar-action" data-lorebook-move-down aria-label={language.lorebookWorkspace.moveDown} use:tooltip={language.lorebookWorkspace.moveDown} disabled={!canMoveDown} onclick={() => moveSelection(1)}>
+                <SolarIcon src={altArrowDownIcon} name="alt-arrow-down-bold" size="1.15rem" />
+            </button>
+            <button type="button" class="toolbar-action" data-lorebook-move-down-ten aria-label={language.lorebookWorkspace.moveDownTen} use:tooltip={language.lorebookWorkspace.moveDownTen} disabled={!canMoveDown} onclick={() => moveSelection(1, 10)}>
+                <SolarIcon src={doubleAltArrowDownIcon} name="double-alt-arrow-down-bold" size="1.15rem" />
             </button>
             <button type="button" class="toolbar-action" data-lorebook-duplicate aria-label={language.lorebookWorkspace.duplicateLore} use:tooltip={language.lorebookWorkspace.duplicateLore} disabled={!activeEntry || !isBatchEditable(activeEntry) || selectedIds.size > 1} onclick={duplicateActiveEntry}>
                 <CopyIcon size={18} />

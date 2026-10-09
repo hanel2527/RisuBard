@@ -418,10 +418,115 @@ describe('LoreBookWorkspace', () => {
         click('[data-lorebook-add-folder]')
         await tick()
         const folderResult = onChange.mock.calls.at(-1)?.[0] as any[]
-        expect(folderResult.at(-1).bard).toMatchObject({
-            sourceLegacyId: folderResult.at(-1).id,
+        const folder = folderResult.find((item) => item.mode === 'folder')
+        expect(folder.bard).toMatchObject({
+            sourceLegacyId: folder.id,
             activation: 'never',
         })
+    })
+
+    it('creates a folder directly above the selected row', async () => {
+        const folderKey = 'folder:places'
+        const onChange = vi.fn()
+        await render([
+            entry('first', { comment: 'First' }),
+            entry('second', { comment: 'Second' }),
+            entry('folder', { mode: 'folder', key: folderKey, comment: 'Places' }),
+            entry('child', { folder: folderKey, comment: 'Cafe' }),
+        ], { onChange })
+
+        click('[data-lorebook-row="second"] [data-lorebook-open]')
+        await tick()
+        click('[data-lorebook-add-folder]')
+        await tick()
+        const result = onChange.mock.calls.at(-1)?.[0] as loreBook[]
+        expect(result.map((item) => item.comment)).toEqual(['First', 'New folder', 'Second', 'Places', 'Cafe'])
+        expect(result[1].mode).toBe('folder')
+    })
+
+    it('moves the selected rows one step with the sidebar buttons', async () => {
+        const onChange = vi.fn()
+        await render([
+            entry('a', { comment: 'A' }),
+            entry('b', { comment: 'B' }),
+            entry('c', { comment: 'C' }),
+            entry('d', { comment: 'D' }),
+        ], { onChange })
+
+        const up = document.body.querySelector<HTMLButtonElement>('[data-lorebook-move-up]')!
+        const down = document.body.querySelector<HTMLButtonElement>('[data-lorebook-move-down]')!
+        expect(up.disabled).toBe(true)
+        expect(down.disabled).toBe(true)
+
+        click('[data-lorebook-row="b"] [data-lorebook-open]')
+        click('[data-lorebook-row="c"] [data-lorebook-select]')
+        await tick()
+        expect(up.disabled).toBe(false)
+        click('[data-lorebook-move-up]')
+        await tick()
+        expect((onChange.mock.calls.at(-1)?.[0] as loreBook[]).map((item) => item.comment)).toEqual(['B', 'C', 'A', 'D'])
+
+        click('[data-lorebook-move-down]')
+        await tick()
+        click('[data-lorebook-move-down]')
+        await tick()
+        const result = onChange.mock.calls.at(-1)?.[0] as loreBook[]
+        expect(result.map((item) => item.comment)).toEqual(['A', 'D', 'B', 'C'])
+        expect(down.disabled).toBe(true)
+    })
+
+    it('moves ten steps at once and scrolls the moved row into view', async () => {
+        const onChange = vi.fn()
+        const scrolled: string[] = []
+        const original = HTMLElement.prototype.scrollIntoView
+        HTMLElement.prototype.scrollIntoView = function (this: HTMLElement) {
+            scrolled.push(this.dataset.lorebookRow ?? '')
+        }
+        try {
+            const names = Array.from({ length: 15 }, (_, index) => `e${index}`)
+            await render(names.map((id) => entry(id, { comment: id })), { onChange })
+            const order = () => (onChange.mock.calls.at(-1)?.[0] as loreBook[]).map((item) => item.comment)
+
+            click('[data-lorebook-row="e12"] [data-lorebook-open]')
+            await tick()
+            click('[data-lorebook-move-up-ten]')
+            await tick()
+            await tick()
+            expect(order().indexOf('e12')).toBe(2)
+            expect(scrolled.at(-1)).toBe('e12')
+
+            click('[data-lorebook-move-up-ten]')
+            await tick()
+            expect(order().indexOf('e12')).toBe(0)
+
+            click('[data-lorebook-move-down-ten]')
+            await tick()
+            click('[data-lorebook-move-down-ten]')
+            await tick()
+            expect(order().indexOf('e12')).toBe(14)
+            expect(document.body.querySelector<HTMLButtonElement>('[data-lorebook-move-down-ten]')!.disabled).toBe(true)
+        }
+        finally {
+            HTMLElement.prototype.scrollIntoView = original
+        }
+    })
+
+    it('moves an active folder with its children as one block', async () => {
+        const folderKey = 'folder:places'
+        const onChange = vi.fn()
+        await render([
+            entry('root', { comment: 'Root' }),
+            entry('folder', { mode: 'folder', key: folderKey, comment: 'Places' }),
+            entry('child', { folder: folderKey, comment: 'Cafe' }),
+        ], { onChange })
+
+        click('[data-lorebook-folder-edit]')
+        await tick()
+        click('[data-lorebook-move-up]')
+        await tick()
+        const result = onChange.mock.calls.at(-1)?.[0] as loreBook[]
+        expect(result.map((item) => item.comment)).toEqual(['Places', 'Cafe', 'Root'])
+        expect(result[1].folder).toBe(folderKey)
     })
 
     it('creates and duplicates lore directly below the active entry in the same folder', async () => {
@@ -1073,11 +1178,11 @@ describe('LoreBookWorkspace', () => {
         expect(list.textContent).not.toContain('Weather')
     })
 
-    it('groups six actions in the vertical toolbar and legacy settings above the editor', async () => {
+    it('groups ten actions in the vertical toolbar and legacy settings above the editor', async () => {
         await render([entry('one')], { dragEnabled: false })
         const toolbar = document.body.querySelector('[data-lorebook-action-toolbar]')!
         expect(toolbar.getAttribute('aria-orientation')).toBe('vertical')
-        expect(toolbar.querySelectorAll('button')).toHaveLength(6)
+        expect(toolbar.querySelectorAll('button')).toHaveLength(10)
         expect(toolbar.querySelector<HTMLButtonElement>('[data-lorebook-duplicate]')!.disabled).toBe(true)
         click('[data-lorebook-row="one"] [data-lorebook-open]')
         await tick()

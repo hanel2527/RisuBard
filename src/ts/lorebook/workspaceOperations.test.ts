@@ -10,6 +10,7 @@ import {
     filterLorebookEntries,
     moveLorebookEntries,
     removeKeysFromEntries,
+    stepLorebookEntries,
     updateLorebookEntry,
 } from './workspaceOperations'
 
@@ -67,6 +68,68 @@ describe('workspaceOperations', () => {
             'root-before', 'new-root', 'folder', 'child-before', 'child-after', 'root-after',
         ])
         expect(rootResult.find((entry) => entry.id === 'new-root')?.folder).toBeUndefined()
+    })
+
+    it('adds a folder directly above the anchor, or above a child anchor parent folder', () => {
+        const folderKey = 'folder:places'
+        const entries = [
+            lore({ id: 'root', insertorder: 10 }),
+            lore({ id: 'folder', mode: 'folder', key: folderKey, insertorder: 20 }),
+            lore({ id: 'child', folder: folderKey, insertorder: 30 }),
+        ]
+        const created = lore({ id: 'new-folder', mode: 'folder', key: 'folder:new' })
+
+        expect(addLorebookEntry(entries, created, 'root', 'before').map((entry) => entry.id))
+            .toEqual(['new-folder', 'root', 'folder', 'child'])
+        expect(addLorebookEntry(entries, created, 'folder', 'before').map((entry) => entry.id))
+            .toEqual(['root', 'new-folder', 'folder', 'child'])
+        const aboveChild = addLorebookEntry(entries, created, 'child', 'before')
+        expect(aboveChild.map((entry) => entry.id)).toEqual(['root', 'new-folder', 'folder', 'child'])
+        expect(aboveChild.find((entry) => entry.id === 'child')?.folder).toBe(folderKey)
+        expect(addLorebookEntry(entries, created, 'missing', 'before').map((entry) => entry.id))
+            .toEqual(['root', 'folder', 'child', 'new-folder'])
+    })
+
+    describe('stepLorebookEntries', () => {
+        const folderKey = 'folder:places'
+        const sample = () => [
+            lore({ id: 'a' }),
+            lore({ id: 'folder', mode: 'folder', key: folderKey }),
+            lore({ id: 'c1', folder: folderKey }),
+            lore({ id: 'c2', folder: folderKey }),
+            lore({ id: 'b' }),
+        ]
+        const ids = (entries: loreBook[]) => entries.map((entry) => entry.id)
+
+        it('moves several selected entries one step and stops at the edges', () => {
+            const entries = [lore({ id: 'a' }), lore({ id: 'b' }), lore({ id: 'c' }), lore({ id: 'd' })]
+            expect(ids(stepLorebookEntries(entries, ['b', 'c'], -1))).toEqual(['b', 'c', 'a', 'd'])
+            expect(ids(stepLorebookEntries(entries, ['b', 'd'], 1))).toEqual(['a', 'c', 'b', 'd'])
+            expect(stepLorebookEntries(entries, ['a', 'b'], -1)).toBe(entries)
+            expect(stepLorebookEntries(entries, ['c', 'd'], 1)).toBe(entries)
+            expect(stepLorebookEntries(entries, [], 1)).toBe(entries)
+        })
+
+        it('moves a folder with its children and lets root entries jump over the whole folder', () => {
+            const entries = sample()
+            expect(ids(stepLorebookEntries(entries, ['folder'], -1))).toEqual(['folder', 'c1', 'c2', 'a', 'b'])
+            expect(ids(stepLorebookEntries(entries, ['folder'], 1))).toEqual(['a', 'b', 'folder', 'c1', 'c2'])
+            expect(ids(stepLorebookEntries(entries, ['b'], -1))).toEqual(['a', 'b', 'folder', 'c1', 'c2'])
+            expect(ids(stepLorebookEntries(entries, ['a'], 1))).toEqual(['folder', 'c1', 'c2', 'a', 'b'])
+        })
+
+        it('keeps children inside their folder', () => {
+            const entries = sample()
+            expect(ids(stepLorebookEntries(entries, ['c2'], -1))).toEqual(['a', 'folder', 'c2', 'c1', 'b'])
+            expect(stepLorebookEntries(entries, ['c1'], -1)).toBe(entries)
+            expect(stepLorebookEntries(entries, ['c2'], 1)).toBe(entries)
+        })
+
+        it('skips rows that are not visible', () => {
+            const entries = [lore({ id: 'a' }), lore({ id: 'hidden' }), lore({ id: 'b' })]
+            const visible = (entry: loreBook) => entry.id !== 'hidden'
+            expect(ids(stepLorebookEntries(entries, ['b'], -1, visible))).toEqual(['b', 'a', 'hidden'])
+        })
     })
 
     it('duplicates every entry field with a new identity and the next numbered name', () => {
