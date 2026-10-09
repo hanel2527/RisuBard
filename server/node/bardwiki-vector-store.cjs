@@ -13,6 +13,8 @@ const VECTOR_PREFIX = 'cache/bardwiki-vector/';
 const VECTOR_NAME = /^[0-9a-f]{64}\.json$/;
 const MAGIC = Buffer.from('RBV1', 'latin1');
 const MIGRATION_BATCH = 256;
+// Each KV deletion rewrites the whole manifest, so it covers many write batches.
+const DELETE_BATCH = 4096;
 
 function isBardWikiVectorKey(key) {
     return typeof key === 'string' && key.startsWith(VECTOR_PREFIX)
@@ -76,29 +78,102 @@ function createBardWikiVectorStore(options) {
         }
     }
 
-    // Moves KV vectors into the folder in batches, then drops their KV
-    // entries and unreferenced objects with one manifest save per batch.
+    // Bumped by clear() so an in-flight migration stops instead of refilling the folder.
+    let generation = 0;
+    const exists = (file) => fsp.access(file).then(() => true, () => false);
+    const yieldToRequests = () => new Promise((resolve) => setImmediate(resolve));
+
+    // Moves KV vectors into the folder, then drops their KV entries and
+    // unreferenced objects with one manifest save per DELETE_BATCH keys.
     async function migrateFromKv() {
+        const started = generation;
         let moved = 0;
         for (;;) {
-            const keys = options.kvList(VECTOR_PREFIX).filter(isBardWikiVectorKey)
-                .slice(0, MIGRATION_BATCH);
-            if (keys.length === 0) return moved;
-            // Folder writes run outside the storage queue; only the manifest
-            // update holds it, so chat saves are not kept waiting.
-            const compacted = keys
-                .map((key) => ({ key, value: compactVector(options.kvGet(key)) }))
-                .filter((entry) => entry.value);
-            await writeMany(compacted);
-            moved += compacted.length;
-            await options.queueStorageOperation(async () => {
-                options.kvDelManyAndCollect(keys);
-            });
-            await new Promise((resolve) => setImmediate(resolve));
+            const pending = options.kvList(VECTOR_PREFIX).filter(isBardWikiVectorKey);
+            if (pending.length === 0) return moved;
+            for (let offset = 0; offset < pending.length; offset += DELETE_BATCH) {
+                const keys = pending.slice(offset, offset + DELETE_BATCH);
+                // Folder writes run outside the storage queue; only the manifest
+                // update holds it, so chat saves are not kept waiting.
+                for (let index = 0; index < keys.length; index += MIGRATION_BATCH) {
+                    if (generation !== started) return moved;
+                    const batch = keys.slice(index, index + MIGRATION_BATCH);
+                    // A folder copy already exists after an interrupted run or a newer client write.
+                    const present = await Promise.all(batch.map((key) => exists(fileFor(key))));
+                    const compacted = batch.filter((_, position) => !present[position])
+                        .map((key) => ({ key, value: compactVector(options.kvGet(key)) }))
+                        .filter((entry) => entry.value);
+                    await writeMany(compacted);
+                    moved += compacted.length;
+                    await yieldToRequests();
+                }
+                if (generation !== started) return moved;
+                await options.queueStorageOperation(async () => {
+                    options.kvDelManyAndCollect(keys);
+                });
+                await yieldToRequests();
+            }
         }
     }
 
-    return { read, write, writeMany, migrateFromKv, root };
+    // Counts the folder plus vectors still waiting in the KV.
+    async function usage() {
+        const names = new Set();
+        let bytes = 0;
+        const shards = await fsp.readdir(root, { withFileTypes: true }).catch((error) => {
+            if (error.code === 'ENOENT') return [];
+            throw error;
+        });
+        for (const shard of shards) {
+            if (!shard.isDirectory()) continue;
+            const files = (await fsp.readdir(path.join(root, shard.name))).filter((name) => name.endsWith('.rbv'));
+            const sizes = await Promise.all(files.map((name) => fsp.stat(path.join(root, shard.name, name))
+                .then((stat) => stat.size, () => null)));
+            files.forEach((name, index) => {
+                if (sizes[index] === null) return;
+                names.add(name);
+                bytes += sizes[index];
+            });
+        }
+        let count = names.size;
+        for (const key of options.kvList(VECTOR_PREFIX)) {
+            if (!isBardWikiVectorKey(key) || names.has(path.basename(fileFor(key)))) continue;
+            count += 1;
+            bytes += options.kvSize(key);
+        }
+        return { count, bytes };
+    }
+
+    async function removeDeletedFolders() {
+        const parent = path.dirname(root);
+        const prefix = `${path.basename(root)}.deleting-`;
+        const names = await fsp.readdir(parent).catch(() => []);
+        await Promise.all(names.filter((name) => name.startsWith(prefix))
+            .map((name) => fsp.rm(path.join(parent, name), { recursive: true, force: true })));
+    }
+
+    // Drops every cached vector; each one is embedded again when next needed.
+    async function clear() {
+        generation += 1;
+        const before = await usage();
+        // Renaming first lets new writes start a fresh folder while the old one is removed.
+        try {
+            await fsp.rename(root, `${root}.deleting-${crypto.randomUUID()}`);
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+        }
+        const keys = options.kvList(VECTOR_PREFIX).filter(isBardWikiVectorKey);
+        for (let offset = 0; offset < keys.length; offset += DELETE_BATCH) {
+            const batch = keys.slice(offset, offset + DELETE_BATCH);
+            await options.queueStorageOperation(async () => {
+                options.kvDelManyAndCollect(batch);
+            });
+        }
+        await removeDeletedFolders();
+        return before;
+    }
+
+    return { read, write, writeMany, migrateFromKv, usage, clear, root };
 }
 
 module.exports = { createBardWikiVectorStore, isBardWikiVectorKey, compactVector };

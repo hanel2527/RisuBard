@@ -14,6 +14,8 @@
         TriangleAlertIcon,
         InfoIcon,
         BlocksIcon,
+        BrainIcon,
+        Trash2Icon,
     } from '@lucide/svelte'
     import { alertConfirm, alertMd, notifyError, notifySuccess } from 'src/ts/alert'
     import { forageStorage } from 'src/ts/globalApi.svelte'
@@ -70,6 +72,10 @@
     let modShown = $state(50)
 
     let orphanCleanupOpen = $state(false)
+
+    let vectorUsage = $state<PrefixInfo | null>(null)
+    let vectorUsageError = $state(false)
+    let vectorClearOpen = $state(false)
 
     // Default off = show only RisuAI internal breakdown (smaller scope, more
     // useful at-a-glance). Toggle on to expand the bar to disk-total scale
@@ -180,6 +186,45 @@
             notifyError(language.storageOrphanCleanupFailed + ': ' + (err instanceof Error ? err.message : String(err)))
         } finally {
             orphanCleanupOpen = false
+        }
+    }
+
+    async function loadVectorUsage() {
+        vectorUsageError = false
+        try {
+            const auth = await forageStorage.createAuth()
+            const res = await fetch('/api/bardwiki-vectors/usage', { headers: { 'risu-auth': auth } })
+            if (!res.ok) throw new Error(`HTTP ${res.status}`)
+            const json = await res.json()
+            vectorUsage = { count: json.count ?? 0, totalSize: json.bytes ?? 0 }
+        } catch {
+            vectorUsage = null
+            vectorUsageError = true
+        }
+    }
+
+    async function clearBardWikiVectors() {
+        if (!vectorUsage) return
+        const ok = await alertConfirm(language.storageBardWikiVectorsConfirm(vectorUsage.count, vectorUsage.totalSize))
+        if (!ok) return
+        vectorClearOpen = true
+        try {
+            const auth = await forageStorage.createAuth()
+            const res = await fetch('/api/bardwiki-vectors/clear', {
+                method: 'POST',
+                headers: { 'risu-auth': auth },
+            })
+            const json = await res.json().catch(() => ({}))
+            if (!res.ok) {
+                notifyError(language.storageBardWikiVectorsFailed + ': ' + (json?.error || `HTTP ${res.status}`))
+                return
+            }
+            notifySuccess(language.storageBardWikiVectorsDone(json.count ?? 0, json.bytes ?? 0))
+            await Promise.all([loadVectorUsage(), loadStats()])
+        } catch (err) {
+            notifyError(language.storageBardWikiVectorsFailed + ': ' + (err instanceof Error ? err.message : String(err)))
+        } finally {
+            vectorClearOpen = false
         }
     }
 
@@ -298,7 +343,7 @@
         alertMd(`### ${label}\n\n${fmtBytes(size)}\n\n${desc}`)
     }
 
-    $effect(() => { loadStats() })
+    $effect(() => { loadStats(); loadVectorUsage() })
 </script>
 
 <p class="text-textcolor2 text-sm mb-4">{language.storageDashboardDesc}</p>
@@ -493,6 +538,33 @@
         </div>
     </div>
 
+    <!-- ④ BardWiki vector cache ────────────────────────────────────────── -->
+    <div class="border border-darkborderc bg-darkbg/40 rounded-md p-4 mb-4">
+        <div class="flex items-center gap-2 text-textcolor mb-2">
+            <BrainIcon size={16} />
+            <span class="font-medium">{language.storageBardWikiVectorsTitle}</span>
+        </div>
+        <p class="text-textcolor2 text-sm leading-relaxed mb-3">{language.storageBardWikiVectorsDesc}</p>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+            <div class="rounded-md border border-darkborderc bg-bgcolor/60 p-3 min-w-48" aria-live="polite">
+                <div class="text-textcolor2 text-xs mb-1">{language.storageBardWikiVectorsUsage}</div>
+                <div class="text-textcolor text-sm font-medium tabular-nums">
+                    {#if vectorUsage}
+                        {language.storageOrphanCleanupCountSize(vectorUsage.count, vectorUsage.totalSize)}
+                    {:else if vectorUsageError}
+                        {language.storageOrphanCleanupUnavailable}
+                    {:else}
+                        {language.storageLoading}
+                    {/if}
+                </div>
+            </div>
+            <ShButton variant="destructive" onclick={clearBardWikiVectors} disabled={vectorClearOpen || !vectorUsage || vectorUsage.count === 0}>
+                <Trash2Icon size={16} />
+                {language.storageBardWikiVectorsClear}
+            </ShButton>
+        </div>
+    </div>
+
     <!-- ⑤ Per-character ─────────────────────────────────────────────────── -->
     <div class="border border-darkborderc bg-darkbg/40 rounded-md p-4 mb-4">
         <div class="flex items-center justify-between gap-2 mb-3">
@@ -645,3 +717,4 @@
 {/if}
 
 <ShLoadingDialog open={orphanCleanupOpen} message={language.storageOrphanCleanuping} tier="top" />
+<ShLoadingDialog open={vectorClearOpen} message={language.storageBardWikiVectorsClearing} tier="top" />

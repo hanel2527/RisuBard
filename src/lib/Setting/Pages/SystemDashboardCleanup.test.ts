@@ -26,4 +26,20 @@ describe('system dashboard orphan cleanup surface', () => {
             expect(source).toContain('storageOrphanCleanupDone:')
         }
     })
+
+    it('offers a separate confirmed deletion for the rebuildable BardWiki vector cache', () => {
+        const dashboard = read('src/lib/Setting/Pages/SystemDashboard.svelte')
+
+        expect(dashboard).toContain("fetch('/api/bardwiki-vectors/usage'")
+        expect(dashboard).toContain("fetch('/api/bardwiki-vectors/clear'")
+        expect(dashboard).toContain('language.storageBardWikiVectorsConfirm')
+        expect(dashboard).toContain('disabled={vectorClearOpen || !vectorUsage || vectorUsage.count === 0}')
+        // The orphan cleanup must not delete vectors that are still in use.
+        expect(dashboard.slice(dashboard.indexOf('async function cleanupAllOrphans()'), dashboard.indexOf('async function loadVectorUsage()')))
+            .not.toContain('bardwiki-vectors')
+        for (const source of [read('src/lang/ko.ts'), read('src/lang/en.ts')]) {
+            expect(source).toContain('storageBardWikiVectorsClear:')
+            expect(source).toContain('storageBardWikiVectorsDone:')
+        }
+    })
 })

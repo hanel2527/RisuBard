@@ -150,6 +150,31 @@ describe('data-root process lock', () => {
         expect(existsSync(lockPath)).toBe(false)
     })
 
+    test('reclaims a lock left by a previous process with the same PID', () => {
+        const root = tempRoot()
+        const lockPath = join(root, '.risubard-server.lock')
+        const script = `
+            const fs = require('node:fs')
+            const path = require('node:path')
+            const { acquireDataRootLock } = require(process.env.LOCK_MODULE)
+            fs.mkdirSync(process.env.LOCK_PATH, { recursive: true })
+            fs.writeFileSync(
+                path.join(process.env.LOCK_PATH, 'owner.json'),
+                JSON.stringify({ pid: process.pid, token: 'previous-container' }),
+            )
+            const lock = acquireDataRootLock(process.env.DATA_ROOT)
+            lock.release()
+        `
+
+        const result = spawnSync(process.execPath, ['-e', script], {
+            env: { ...process.env, LOCK_MODULE: lockModule, DATA_ROOT: root, LOCK_PATH: lockPath },
+            encoding: 'utf8',
+        })
+
+        expect(result.status, result.stderr).toBe(0)
+        expect(existsSync(lockPath)).toBe(false)
+    })
+
     test('server acquires the data-root lock before loading the database facade', () => {
         const source = readFileSync(resolve('server/node/server.cjs'), 'utf8')
         const acquisition = source.indexOf('acquireDataRootLock(processDataRoot);')

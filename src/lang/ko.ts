@@ -3378,6 +3378,18 @@ export const languageKorean = {
     `고아 미디어 ${mediaCount.toLocaleString()}개, Hypa 벡터 ${hypaCount.toLocaleString()}개, 미참조 오브젝트 ${objectCount.toLocaleString()}개를 정리해 ${(reclaimed / 1024 / 1024).toFixed(1)} MB를 회수했습니다.`,
   storageOrphanCleanupFailed: "고아 데이터 정리 실패",
 
+  storageBardWikiVectorsTitle: "바드위키 의미 검색 캐시",
+  storageBardWikiVectorsDesc:
+    "바드위키 의미 검색에 쓰는 임베딩 벡터입니다. 캐릭터나 위키 문서를 지워도 자동으로 정리되지 않습니다. 삭제해도 위키 문서와 채팅은 그대로 남고, 벡터는 다음에 필요할 때 다시 계산합니다. 사용하는 임베딩 모델에 따라 이때 API 비용이 들 수 있습니다.",
+  storageBardWikiVectorsUsage: "저장된 벡터",
+  storageBardWikiVectorsClear: "캐시 모두 삭제",
+  storageBardWikiVectorsConfirm: (count: number, size: number) =>
+    `바드위키 의미 검색 벡터 ${count.toLocaleString()}개 (${(size / 1024 / 1024).toFixed(1)} MB)를 모두 삭제할까요? 벡터는 다음에 필요할 때 다시 계산합니다.`,
+  storageBardWikiVectorsClearing: "바드위키 의미 검색 캐시를 삭제하는 중...",
+  storageBardWikiVectorsDone: (count: number, size: number) =>
+    `벡터 ${count.toLocaleString()}개를 삭제해 ${(size / 1024 / 1024).toFixed(1)} MB를 확보했습니다.`,
+  storageBardWikiVectorsFailed: "바드위키 의미 검색 캐시 삭제 실패",
+
   storageBackups: "백업",
   storageBackupsManage: "백업 관리",
   storageBackupsAuto: "호환 스냅샷",

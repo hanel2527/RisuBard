@@ -3182,6 +3182,17 @@ export const languageEnglish = {
         `Removed ${mediaCount.toLocaleString()} orphan media files, ${hypaCount.toLocaleString()} Hypa vectors, and ${objectCount.toLocaleString()} unreferenced objects; reclaimed ${(reclaimed / 1024 / 1024).toFixed(1)} MB.`,
     storageOrphanCleanupFailed: "Orphan data cleanup failed",
 
+    storageBardWikiVectorsTitle: "BardWiki semantic search cache",
+    storageBardWikiVectorsDesc: "Embedding vectors used by BardWiki semantic search. They are not removed automatically when characters or wiki documents are deleted. Deleting them keeps wiki documents and chats; vectors are computed again when next needed, which may cost API usage depending on the embedding model.",
+    storageBardWikiVectorsUsage: "Stored vectors",
+    storageBardWikiVectorsClear: "Delete all cache",
+    storageBardWikiVectorsConfirm: (count: number, size: number) =>
+        `Delete all ${count.toLocaleString()} BardWiki semantic search vectors (${(size / 1024 / 1024).toFixed(1)} MB)? Vectors are computed again when next needed.`,
+    storageBardWikiVectorsClearing: "Deleting BardWiki semantic search cache...",
+    storageBardWikiVectorsDone: (count: number, size: number) =>
+        `Deleted ${count.toLocaleString()} vectors and freed ${(size / 1024 / 1024).toFixed(1)} MB.`,
+    storageBardWikiVectorsFailed: "BardWiki semantic search cache deletion failed",
+
     storageBackups: "Backups",
     storageBackupsManage: "Manage backups",
     storageBackupsAuto: "Compatibility snapshots",

@@ -4039,7 +4039,7 @@ app.get('/api/read', async (req, res, next) => {
 const READ_MANY_LIMIT = 256;
 const { createBardWikiVectorStore, isBardWikiVectorKey } = require('./bardwiki-vector-store.cjs');
 const bardWikiVectors = createBardWikiVectorStore({
-    dataRoot: savePath, kvGet, kvList, kvDelManyAndCollect,
+    dataRoot: savePath, kvGet, kvList, kvSize, kvDelManyAndCollect,
     queueStorageOperation: (operation) => queueStorageOperation(operation),
 });
 app.post('/api/read-many', async (req, res, next) => {
@@ -4102,6 +4102,30 @@ app.post('/api/write-many', async (req, res, next) => {
             });
         }
         res.send({ success: true });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// BardWiki vectors are a rebuildable cache, so the whole set can be dropped at once.
+app.get('/api/bardwiki-vectors/usage', async (req, res, next) => {
+    if(!await checkAuth(req, res)){
+        return;
+    }
+    try {
+        res.json(await bardWikiVectors.usage());
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.post('/api/bardwiki-vectors/clear', async (req, res, next) => {
+    if(!await checkAuth(req, res)){
+        return;
+    }
+    if (!checkActiveSession(req, res)) return;
+    try {
+        res.json({ ok: true, ...(await bardWikiVectors.clear()) });
     } catch (error) {
         next(error);
     }

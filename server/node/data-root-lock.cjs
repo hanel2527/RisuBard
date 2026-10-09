@@ -7,6 +7,14 @@ const crypto = require('crypto');
 const LOCK_DIRECTORY_NAME = '.risubard-server.lock';
 const OWNER_FILE_NAME = 'owner.json';
 const INCOMPLETE_LOCK_GRACE_MS = 5000;
+const heldTokens = new Set();
+
+function isLiveOwner(owner) {
+    // A container restart reuses the same PID (often 1), so a lock naming this
+    // process is only live when this process actually acquired it.
+    if (owner.pid === process.pid) return heldTokens.has(owner.token);
+    return isProcessAlive(owner.pid);
+}
 
 function isProcessAlive(pid) {
     try {
@@ -76,12 +84,13 @@ function acquireDataRootLock(dataRoot) {
                 fs.rmSync(lockPath, { recursive: true, force: true });
                 throw error;
             }
+            heldTokens.add(token);
             break;
         } catch (error) {
             if (error?.code !== 'EEXIST') throw error;
 
             const existingOwner = readOwner(lockPath);
-            if (existingOwner && isProcessAlive(existingOwner.pid)) {
+            if (existingOwner && isLiveOwner(existingOwner)) {
                 throw createInUseError(resolvedDataRoot, existingOwner);
             }
 
@@ -106,6 +115,7 @@ function acquireDataRootLock(dataRoot) {
     const release = () => {
         if (released) return;
         released = true;
+        heldTokens.delete(token);
         process.removeListener('exit', release);
         for (const [signal, handler] of signalHandlers) {
             process.removeListener(signal, handler);
