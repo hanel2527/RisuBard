@@ -548,7 +548,7 @@ export const helpEn = {
         autoTranslation:
             "Automatically translate character responses as soon as they arrive. When off, use the per-message translate button. Pairs well with No Wait For Translate if you want the original shown first.",
         translationResponseSize:
-            "Maximum output tokens per LLM translation request. Long messages are split at paragraph, sentence, or word boundaries into source fragments of at most 5,000 characters, with smaller fragments for lower output limits. Results are joined in order and cached only after all fragments succeed. Very small limits can still cut off a response. Use Retranslate to replace an older incomplete cached translation.",
+            "Maximum output tokens per LLM translation request. Source splitting uses characters, not tokens: the per-request cap is the smaller of 8,000 characters and half the output-token limit. Short text fragments separated by HTML tags or macros are batched within this cap rather than requested individually. JSON batch formatting counts toward the cap, so the actual source may be slightly shorter. Markup, styles, code, and whitespace are preserved; the full translation is cached only after every batch succeeds. Very small limits can still cut off a response. Use Retranslate to replace an older incomplete cached translation.",
         translatorPreset:
             "LLM translation preset to edit and use. Each preset stores its own response-size limit and translation prompt, so switching presets changes the fields below.",
         postEndInnerFormat:

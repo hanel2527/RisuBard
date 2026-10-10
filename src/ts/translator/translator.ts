@@ -28,6 +28,7 @@ import { processScriptFull } from "../process/scripts"
 import { playNotificationSound } from '../notificationSound'
 import { safeStructuredClone } from '../polyfill'
 import { splitTranslationText } from './translationChunks'
+import { parseSingleJsonObject } from '../../../packages/risubard-core/src/modelOutput'
 
 let cache={
     origin: [''],
@@ -925,6 +926,18 @@ function needSuperChunkedTranslate(){
     return getDatabase().translatorType === 'deeplX'
 }
 
+const translationBatchSchema = JSON.stringify({
+    type: 'object',
+    additionalProperties: false,
+    required: ['translations'],
+    properties: {
+        translations: {
+            type: 'array',
+            items: { type: 'string' },
+        },
+    },
+})
+
 async function translateLLM(text:string, arg:{to:string, from:string, regenerate?:boolean,translatorNote?:string, onCacheState?:(cached:boolean) => void}):Promise<string>{
     const db = getDatabase()
     const chat = getCurrentChat()
@@ -962,21 +975,42 @@ async function translateLLM(text:string, arg:{to:string, from:string, regenerate
         return `<style-data style-index="${styleDecodes.length-1}"></style-data>`
     })
 
-    // Leave room for language expansion; a large output limit must not turn a
-    // long message back into one request. The historical DeepLX cap was 5,000.
-    const maxCharacters = Math.min(5000, maxResponse > 0 ? Math.max(2, Math.floor(maxResponse / 2)) : 5000)
+    // Bound each request while reserving output room for language expansion.
+    const maxCharacters = Math.min(8000, maxResponse > 0 ? Math.max(2, Math.floor(maxResponse / 2)) : 8000)
     const parts = splitTranslationText(text, maxCharacters)
     const prompt = presetPrompt || defaultTranslatorPrompt
     // Parse the template before inserting source text so literal ChatML/CBS in
     // a chunk cannot become another message or expand into the chat history.
     const promptMessages: OpenAIChat[] = parseChatML(prompt)
         || [{ role: 'system', content: prompt }, { role: 'user', content: '{{slot::content}}' }]
-    const translatedParts: string[] = []
-    for (const part of parts) {
-        if (!part.translate) {
-            translatedParts.push(part.text)
-            continue
+    const translatedParts = parts.map(part => part.translate ? '' : part.text)
+    let pendingEncodedText: string | undefined
+    for (let index = 0; index < parts.length;) {
+        const indices: number[] = []
+        const encodedTexts: string[] = []
+        let characters = 2 // JSON array brackets.
+        while (index < parts.length) {
+            const part = parts[index]
+            if (!part.translate) {
+                index++
+                continue
+            }
+            const encoded = pendingEncodedText ?? JSON.stringify(part.text)
+            const nextCharacters = characters + encoded.length + (indices.length ? 1 : 0)
+            if (indices.length && nextCharacters > maxCharacters) {
+                pendingEncodedText = encoded
+                break
+            }
+            pendingEncodedText = undefined
+            indices.push(index++)
+            encodedTexts.push(encoded)
+            characters = nextCharacters
         }
+        if (!indices.length) break
+        // Markup and code stay local. Translate nearby text nodes together
+        // instead of turning every HTML tag or CBS marker into an API call.
+        const batched = indices.length > 1
+        const source = batched ? `[${encodedTexts.join(',')}]` : parts[indices[0]].text
         const formated: OpenAIChat[] = promptMessages.map(message => ({
             ...message,
             content: message.content.replace(
@@ -986,17 +1020,25 @@ async function translateLLM(text:string, arg:{to:string, from:string, regenerate
                         case '{{slot}}': return arg.to
                         case '{{slot::from}}': return arg.from ?? ''
                         case '{{slot::tnote}}': return translatorNote
-                        default: return part.text
+                        default: return source
                     }
                 },
             ),
         }))
+        if (batched) {
+            formated.unshift({
+                role: 'system',
+                content: 'The source is a JSON array of separate text fragments. Apply the translation instructions to each string. Return only {"translations":["translated fragment",...]} with exactly one translated string per input, in the same order. Do not merge or omit fragments.',
+            })
+        }
         const rq = await requestChatData({
             formated,
             bias: {},
             useStreaming: false,
             noMultiGen: true,
             maxTokens: maxResponse,
+            schema: batched ? translationBatchSchema : undefined,
+            extractJson: batched ? '' : undefined,
             modelBindingTarget,
             realChatId,
         }, 'translate')
@@ -1013,7 +1055,23 @@ async function translateLLM(text:string, arg:{to:string, from:string, regenerate
             notifyError('Translation was cut off. Increase Translation Response Size and translate again.')
             return cacheKey
         }
-        translatedParts.push(parts.length > 1 ? rq.result.trim() : rq.result)
+        if (batched) {
+            try {
+                const parsed = parseSingleJsonObject(rq.result)
+                const translations = parsed && typeof parsed === 'object' && 'translations' in parsed
+                    ? parsed.translations : null
+                if (!Array.isArray(translations) || translations.length !== indices.length
+                    || translations.some(value => typeof value !== 'string')) {
+                    throw new Error('Translation batch must contain one translated string per source fragment.')
+                }
+                for (let i = 0; i < indices.length; i++) translatedParts[indices[i]] = translations[i].trim()
+            } catch (error) {
+                notifyError(error instanceof Error ? error.message : String(error))
+                return cacheKey
+            }
+        } else {
+            translatedParts[indices[0]] = parts.length > 1 ? rq.result.trim() : rq.result
+        }
     }
     const result = translatedParts.join('').replace(/<style-data style-index="(\d+)" ?\/?>/g, (match, p1) => {
         return styleDecodes[parseInt(p1)] ?? ''

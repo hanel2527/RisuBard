@@ -237,23 +237,26 @@ describe("LLM translation cache manager", () => {
         const paragraphs = ["First", "Second", "Third"].map(label => `${label} paragraph. ${"word ".repeat(600)}`.trim());
         const source = paragraphs.join("\n\n");
         const expected = "첫 번째 문단.\n\n두 번째 문단.\n\n세 번째 문단.";
-        for (const result of ["첫 번째 문단.", "두 번째 문단.", "세 번째 문단."]) {
+        for (const result of ["첫 번째 문단.\n\n두 번째 문단.", "세 번째 문단."]) {
             requestChatDataMock.mockResolvedValueOnce({ type: "success", result });
         }
 
         await expect(translateHTML(source, false, "", 0)).resolves.toBe(expected);
-        expect(requestChatDataMock.mock.calls.map(([request]) => request.formated.at(-1).content)).toEqual(paragraphs);
+        for (const [request] of requestChatDataMock.mock.calls) {
+            expect(request.formated.at(-1).content.length).toBeLessThanOrEqual(8000);
+        }
+        expect(requestChatDataMock.mock.calls[0][0].formated.at(-1).content.length).toBeGreaterThan(5000);
         expect(await getLLMCache(source)).toBe(expected);
         expect((await listLLMCache()).rows.map(row => ({ key: row.key, value: row.value }))).toEqual([{ key: source, value: expected }]);
 
         await expect(translateHTML(source, false, "", 0)).resolves.toBe(expected);
-        expect(requestChatDataMock).toHaveBeenCalledTimes(3);
-        for (const result of ["첫 번째 새 번역.", "두 번째 새 번역.", "세 번째 새 번역."]) {
+        expect(requestChatDataMock).toHaveBeenCalledTimes(2);
+        for (const result of ["첫 번째 새 번역.\n\n두 번째 새 번역.", "세 번째 새 번역."]) {
             requestChatDataMock.mockResolvedValueOnce({ type: "success", result });
         }
         await expect(translateHTML(source, false, "", 0, true)).resolves.toBe("첫 번째 새 번역.\n\n두 번째 새 번역.\n\n세 번째 새 번역.");
         expect(await getLLMCache(source)).toBe("첫 번째 새 번역.\n\n두 번째 새 번역.\n\n세 번째 새 번역.");
-        expect(requestChatDataMock).toHaveBeenCalledTimes(6);
+        expect(requestChatDataMock).toHaveBeenCalledTimes(4);
     });
 
     it.each([
@@ -270,11 +273,72 @@ describe("LLM translation cache manager", () => {
         expect(requestChatDataMock).toHaveBeenCalledTimes(2);
         expect(storage.size).toBe(0);
 
-        for (const result of ["처음", "중간", "마지막"]) {
+        for (const result of ["처음\n\n중간", "마지막"]) {
             requestChatDataMock.mockResolvedValueOnce({ type: "success", result });
         }
         await expect(runTranslator(source, false, "ko", "en")).resolves.toBe("처음\n\n중간\n\n마지막");
         expect(await getLLMCache(source)).toBe("처음\n\n중간\n\n마지막");
+    });
+
+    it.each([2000, 32000])("batches short HTML text nodes within the %i-token response budget without changing markup", async (maxResponse) => {
+        translatorPresetMock.maxResponse = maxResponse;
+        const paragraphs = Array.from({ length: 40 }, (_, index) =>
+            `Paragraph ${index}: "The traveler follows the river until sunset." ${"Another sentence about the river. ".repeat(10)}Path C:\\river.`,
+        );
+        const translations = paragraphs.map((_, index) => `문단 ${index}: 여행자는 강을 따라갑니다.`);
+        const source = `<div title="a > b"><style>${".scene{color:red}".repeat(400)}</style>\n`
+            + paragraphs.map((text, index) => `<p data-id="${index}">${text}</p>`).join("\n")
+            + `\n{{inlay::scene}}\n<pre>${'const value = "keep";\n'.repeat(300)}</pre></div>`;
+        const expected = paragraphs.reduce((html, text, index) => html.replace(text, translations[index]), source);
+        requestChatDataMock.mockImplementation(async (request) => {
+            const content = request.formated.at(-1).content;
+            const batched = content.startsWith("[");
+            const fragments: string[] = batched ? JSON.parse(content) : [content];
+            const translated = fragments.map(text => {
+                const index = paragraphs.indexOf(text);
+                if (index < 0) throw new Error(`Unexpected source fragment: ${text}`);
+                return translations[index];
+            });
+            return {
+                type: "success",
+                result: batched ? JSON.stringify({ translations: translated }) : translated[0],
+            };
+        });
+
+        await expect(translateHTML(source, false, "", 0)).resolves.toBe(expected);
+        expect(requestChatDataMock).toHaveBeenCalledTimes(maxResponse === 32000 ? 3 : 20);
+        for (const [request] of requestChatDataMock.mock.calls) {
+            expect(request.formated.at(-1).content.length).toBeLessThanOrEqual(Math.min(8000, maxResponse / 2));
+        }
+        expect(await getLLMCache(source)).toBe(expected);
+        await expect(translateHTML(source, false, "", 0)).resolves.toBe(expected);
+        expect(requestChatDataMock).toHaveBeenCalledTimes(maxResponse === 32000 ? 3 : 20);
+    });
+
+    it.each([
+        "not JSON",
+        JSON.stringify({ translations: ["처음", "중간"] }),
+        JSON.stringify({ translations: ["처음", 42, "끝"] }),
+        JSON.stringify({ other: ["처음", "중간", "끝"] }),
+    ])("does not publish missing or malformed batch translations: %s", async (result) => {
+        translatorPresetMock.maxResponse = 32000;
+        const code = `<pre>${"const protectedValue = 1;\n".repeat(400)}</pre>`;
+        const source = `<div>First<p>Second</p>{{user}}Third${code}</div>`;
+        const expected = `<div>처음<p>중간</p>{{user}}끝${code}</div>`;
+        requestChatDataMock.mockResolvedValueOnce({ type: "success", result });
+
+        await expect(translateHTML(source, false, "", 0)).resolves.toBe(source);
+        expect(await getLLMCache(source)).toBeNull();
+        expect(storage.size).toBe(0);
+        expect(requestChatDataMock).toHaveBeenCalledTimes(1);
+
+        requestChatDataMock.mockResolvedValueOnce({
+            type: "success",
+            result: JSON.stringify({ translations: ["처음", "중간", "끝"] }),
+        });
+        await expect(translateHTML(source, false, "", 0)).resolves.toBe(expected);
+        expect(await getLLMCache(source)).toBe(expected);
+        expect(requestChatDataMock).toHaveBeenCalledTimes(2);
     });
 
     it("lists, searches, sorts, and paginates rows deterministically", async () => {
