@@ -99,16 +99,29 @@ afterEach(async () => {
 })
 
 describe('message edit button', () => {
-    test('mobile keeps translation inside the flyout and saves quick edits', async () => {
+    test.each([390, 639, 640])('translation is directly accessible at %ipx without opening more actions', async (width) => {
         const originalWidth = window.innerWidth
-        window.innerWidth = 390
+        window.innerWidth = width
         DBState.db.translator = 'en'
         try {
             mounted = mount(Chat, { target: document.body, props: {
                 message: 'editable message', name: 'Character', isLastMemory: false, idx: 0, role: 'user',
             } })
             await tick(); await tick()
-            expect(document.querySelector('.button-icon-translate')).toBeNull()
+            expect(document.querySelector('.button-icon-translate')).not.toBeNull()
+        } finally {
+            window.innerWidth = originalWidth
+        }
+    })
+
+    test('mobile saves edits directly from the message toolbar', async () => {
+        const originalWidth = window.innerWidth
+        window.innerWidth = 390
+        try {
+            mounted = mount(Chat, { target: document.body, props: {
+                message: 'editable message', name: 'Character', isLastMemory: false, idx: 0, role: 'user',
+            } })
+            await tick(); await tick()
             const edit = document.querySelector<HTMLButtonElement>('.button-icon-edit')!
             edit.click()
             await tick()
@@ -118,10 +131,6 @@ describe('message edit button', () => {
             edit.click()
             await tick(); await tick()
             expect(DBState.db.characters[0].chats[0].message[0].data).toBe('수정한 메시지')
-            document.querySelector<HTMLButtonElement>('.button-icon-menu')!.click()
-            await tick(); await tick()
-            expect(document.querySelector('.button-icon-translate')?.textContent).toContain('axModelTranslate')
-            expect(document.querySelectorAll('.button-icon-edit')).toHaveLength(1)
         } finally {
             window.innerWidth = originalWidth
         }

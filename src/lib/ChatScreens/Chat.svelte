@@ -673,6 +673,7 @@
                     {/if}
                 {:else}
                     <div class="mobile-message-actions flex items-center gap-2">
+                        {@render translationButton()}
                         {@render editButton()}
                         <Popover.Root bind:open={mobileActionsOpen}>
                             <Popover.Trigger class="button-icon-menu flex min-h-11 min-w-11 items-center justify-center rounded-md hover:text-primary" aria-label={language.messageMoreActions}>
@@ -684,7 +685,6 @@
                                         const button = (event.target as Element).closest('button')
                                         if (button && !button.disabled) mobileActionsOpen = false
                                     }}>
-                                    {@render translationButton(true)}
                                     {@render majorIconButtonsBody(true)}
                                     {#if DBState.db.characters[selIdState.selId] && idx > -1}
                                         {@render minorIconButtonsBody(true)}
@@ -1070,15 +1070,12 @@
 {/if}
 {/snippet}
 
-{#snippet translationButton(showNames = false)}
+{#snippet translationButton()}
     {#if DBState.db.translator !== '' && !blankMessage && !isOptimizedStreamingMessage}
-        <button class={"flex items-center cursor-pointer hover:text-primary transition-colors button-icon-translate " + (translated ? 'text-info':'')} class:translating={translating} onclick={async () => {
+        <button aria-label={language.axModelTranslate} title={language.axModelTranslate} class={"flex items-center cursor-pointer hover:text-primary transition-colors button-icon-translate " + (translated ? 'text-info':'')} class:translating={translating} onclick={async () => {
             translated = !translated
         }}>
             <LanguagesIcon />
-            {#if showNames}
-                <span class="ml-1">{language.axModelTranslate}</span>
-            {/if}
         </button>
     {/if}
 {/snippet}
@@ -1810,6 +1807,7 @@
 {/if}
 
 <style>
+    .mobile-message-actions :global(.button-icon-translate),
     .mobile-message-actions :global(.button-icon-edit) {
         min-width: 44px;
         min-height: 44px;
