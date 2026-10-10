@@ -99,7 +99,10 @@
                     const lastTranslated = translated
 
                     setTimeout(() => {
-                            translated = translateText
+                            if (isEqual(lastCharArg, charArg) && lastChatId === chatID
+                                && msgDisplay === data && translated === lastTranslated && !retranslate) {
+                                translated = translateText
+                            }
                     }, 10)
 
                     // State change of `translated` triggers markParsing again,

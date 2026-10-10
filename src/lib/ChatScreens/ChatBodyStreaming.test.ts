@@ -3,6 +3,8 @@ import { mount, tick, unmount } from 'svelte'
 import { SvelteMap } from 'svelte/reactivity'
 import ChatBody from './ChatBody.svelte'
 import { ParseMarkdown } from 'src/ts/parser/parser.svelte'
+import { DBState } from 'src/ts/stores.svelte'
+import { getLLMCache, translateHTML } from 'src/ts/translator/translator'
 
 vi.mock('src/ts/stores.svelte', () => ({ DBState: { db: {} } }))
 vi.mock('src/ts/util', () => ({ sleep: async () => {} }))
@@ -31,6 +33,9 @@ afterEach(async () => {
     for (const component of mounted.splice(0)) await unmount(component)
     document.body.replaceChildren()
     vi.mocked(ParseMarkdown).mockReset().mockImplementation(async text => text)
+    DBState.db = {} as typeof DBState.db
+    vi.mocked(getLLMCache).mockReset()
+    vi.mocked(translateHTML).mockReset()
 })
 
 async function settle() {
@@ -142,5 +147,59 @@ describe('streaming chat body', () => {
         finishOld('<p>Outdated</p>')
         await settle()
         expect(target.textContent).toBe('Newest')
+    })
+
+    test('renders assets and both sides of a whole cached translation with all three translation options enabled', async () => {
+        DBState.db = {
+            translatorType: 'llm', autoTranslate: true, autoTranslateCachedOnly: true,
+            translateBeforeHTMLFormatting: true,
+        } as typeof DBState.db
+        const source = '<p>Before image.</p><img src="https://example.test/portrait.png"><p>After image.</p>'
+        const translatedHtml = '<p>이미지 앞.</p><img src="https://example.test/portrait.png"><p>이미지 뒤.</p>'
+        const cache = new Map<string, string>()
+        vi.mocked(getLLMCache).mockImplementation(async key => cache.get(key) ?? null)
+        let finish!: () => void
+        let networkRequests = 0
+        vi.mocked(translateHTML).mockImplementation(async key => {
+            const cached = cache.get(key)
+            if (cached !== undefined) return cached
+            networkRequests++
+            await new Promise<void>(resolve => { finish = resolve })
+            cache.set(key, translatedHtml)
+            return translatedHtml
+        })
+        const mountMessage = () => {
+            const flags = new SvelteMap([['translated', false], ['retranslate', false], ['translating', false]])
+            const target = document.createElement('div')
+            document.body.append(target)
+            mounted.push(mount(ChatBody, {
+                target, props: {
+                    msgDisplay: source, idx: 1, character: 'test', role: 'char', modelShortName: '', bodyRoot: target,
+                    get translated() { return flags.get('translated')! },
+                    set translated(value: boolean) { flags.set('translated', value) },
+                    get retranslate() { return flags.get('retranslate')! },
+                    set retranslate(value: boolean) { flags.set('retranslate', value) },
+                    get translating() { return flags.get('translating')! },
+                    set translating(value: boolean) { flags.set('translating', value) },
+                },
+            }))
+            return { target, flags }
+        }
+        const first = mountMessage()
+        await settle()
+        expect(first.target.textContent).toBe('Before image.After image.')
+        expect(networkRequests).toBe(0)
+        first.flags.set('translated', true)
+        await vi.waitFor(() => expect(networkRequests).toBe(1))
+        // The pending cached-only decision must not undo a manual translation.
+        expect(first.flags.get('translated')).toBe(true)
+        finish()
+        await vi.waitFor(() => expect(first.target.textContent).toBe('이미지 앞.이미지 뒤.'))
+        expect(first.target.querySelector('img')?.getAttribute('src')).toBe('https://example.test/portrait.png')
+
+        const reopened = mountMessage()
+        await vi.waitFor(() => expect(reopened.target.textContent).toBe('이미지 앞.이미지 뒤.'))
+        expect(reopened.target.querySelector('img')?.getAttribute('src')).toBe('https://example.test/portrait.png')
+        expect(networkRequests).toBe(1)
     })
 })

@@ -1,24 +1,34 @@
 import { describe, expect, it } from 'vitest'
 import { splitTranslationText } from './translationChunks'
 
-describe('bounded translation text', () => {
-    it('splits at sentence boundaries and retains the separators between translated fragments', () => {
-        const source = 'First sentence. Second sentence. Third sentence.'
-        const parts = splitTranslationText(source, 20)
-        expect(parts.filter(part => part.translate).map(part => part.text)).toEqual([
-            'First sentence.', 'Second sentence.', 'Third sentence.',
-        ])
-        expect(parts.filter(part => !part.translate).map(part => part.text)).toEqual([' ', ' '])
+describe('character-sized plaintext translation', () => {
+    it('fills requests to the character limit instead of splitting at paragraphs or HTML nodes', () => {
+        const source = ('First sentence.\n\n<p>Next sentence.</p>{{asset::portrait}} ').repeat(400)
+        const parts = splitTranslationText(source, 8000)
+        expect(parts.map(part => part.text).join('')).toBe(source)
+        expect(parts).toHaveLength(Math.ceil(source.length / 8000))
+        for (const part of parts.slice(0, -1)) {
+            expect(part.translate).toBe(true)
+            expect(part.text.length).toBeGreaterThan(7960)
+            expect(part.text.length).toBeLessThanOrEqual(8000)
+        }
+        expect(parts[0].text).toContain('Next sentence.</p>{{asset::portrait}} ')
     })
 
-    it('bounds a paragraph without whitespace and keeps both surrounding paragraph breaks', () => {
-        const source = `Opening line.\n\n${'中'.repeat(71)}\n\nClosing line.`
-        const parts = splitTranslationText(source, 17)
+    it.each([
+        '{{asset::portrait}}',
+        '{{inlay::scene}}',
+        '<img src="portrait.png" title="a > b">',
+        '![portrait](https://example.test/portrait.png)',
+        '&amp;',
+    ])('does not cut inside source syntax at the size boundary: %s', syntax => {
+        const source = 'A'.repeat(7998) + syntax + 'B'.repeat(8200)
+        const parts = splitTranslationText(source, 8000)
         expect(parts.map(part => part.text).join('')).toBe(source)
-        expect(parts.filter(part => part.translate).map(part => part.text)).toEqual([
-            'Opening line.', '中'.repeat(17), '中'.repeat(17), '中'.repeat(17), '中'.repeat(17), '中'.repeat(3), 'Closing line.',
-        ])
-        expect(parts.filter(part => !part.translate).map(part => part.text)).toEqual(['\n\n', '\n\n'])
+        expect(parts[0].text).toBe('A'.repeat(7998))
+        expect(parts[1].text.startsWith(syntax)).toBe(true)
+        expect(parts[1].text.length).toBe(8000)
+        expect(parts.every(part => part.translate)).toBe(true)
     })
 
     it('does not lose or split surrogate pairs at a hard character boundary', () => {
@@ -31,25 +41,14 @@ describe('bounded translation text', () => {
         }
     })
 
-    it('keeps large code and source markup verbatim rather than sending partial tags or macros', () => {
-        const protectedData = [
-            '<div title="a > b" data-id="scene">',
-            `<script>${'const value = 1;'.repeat(30)}</script>`,
-            `<style>${'.scene { color: red; }'.repeat(30)}</style>`,
-            '{{inlay::scene}}',
-            '`const inline = true;`',
-            '\n```js\n' + 'const value = 2;\n'.repeat(30) + '```\n',
-            '&amp;',
-            '</div>',
-        ]
-        const source = protectedData.join('Natural language sentence. '.repeat(4))
-        const parts = splitTranslationText(source, 40)
-        const literals = parts.filter(part => !part.translate).map(part => part.text).join('')
-        expect(parts.map(part => part.text).join('')).toBe(source)
-        for (const protectedPart of protectedData) expect(literals).toContain(protectedPart)
-        for (const part of parts.filter(part => part.translate)) {
-            expect(part.text.length).toBeLessThanOrEqual(40)
-            expect(part.text).not.toMatch(/<|>|\{\{|`|const |color:/)
-        }
+    it('retains an oversized encoded image without splitting or translating its bytes', () => {
+        const image = `<img src="data:image/png;base64,${'A'.repeat(9000)}">`
+        const source = `Before ${image} After`
+        const parts = splitTranslationText(source, 8000)
+        expect(parts).toEqual([
+            { text: 'Before ', translate: true },
+            { text: image, translate: false },
+            { text: ' After', translate: true },
+        ])
     })
 })

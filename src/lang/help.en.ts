@@ -194,8 +194,8 @@ export const helpEn = {
         translatorPrompt:
             "The prompt that is used for translation. if it is blank, it will use the default prompt. you can also use ChatML formating with {{slot}} for the dest language, {{solt::content}} for the content, and {{slot::tnote}} for the translator note.",
         translateBeforeHTMLFormatting:
-            "If enabled, it will translate the text before Regex scripts and HTML formatting. this could make the token lesser but could break the formatting.",
-        autoTranslateCachedOnly: "If enabled with Auto Translation option on, it will automatically translate only the messages that the user has translated previously.",
+            "For LLM translation, translate the message body as plain text before asset references become HTML image tags, then apply HTML/Markdown formatting to the completed translation. Ask the translation prompt to retain asset names and markup; changing them can break rendering.",
+        autoTranslateCachedOnly: "With Auto Translation enabled, automatically display only messages with a saved complete translation. Uncached messages do not trigger new requests. Manual translation saves the combined result once every fragment succeeds; subsequent views display it automatically.",
         presetChain:
             "If it is not blank, the preset will be changed and applied randomly every time when user sends a message in the preset list in this input. preset list should be seperated by comma, for example, `preset1,preset2`.",
         legacyMediaFindings: "If enabled, it will use the old method to find media assets, without using the additional search algorithm.",
@@ -548,7 +548,7 @@ export const helpEn = {
         autoTranslation:
             "Automatically translate character responses as soon as they arrive. When off, use the per-message translate button. Pairs well with No Wait For Translate if you want the original shown first.",
         translationResponseSize:
-            "Maximum output tokens per LLM translation request. Source splitting uses characters, not tokens: the per-request cap is the smaller of 8,000 characters and half the output-token limit. Short text fragments separated by HTML tags or macros are batched within this cap rather than requested individually. JSON batch formatting counts toward the cap, so the actual source may be slightly shorter. Markup, styles, code, and whitespace are preserved; the full translation is cached only after every batch succeeds. Very small limits can still cut off a response. Use Retranslate to replace an older incomplete cached translation.",
+            "Maximum output tokens per LLM translation request. Input content and translated output are plain text; no JSON format is required. Long messages fill consecutive requests up to 8,000 characters regardless of HTML or paragraph boundaries. A cut moves slightly earlier only when it falls inside an asset reference, image URL, tag attribute, or emoji. The output-token limit does not reduce the input chunk size, but a low limit can truncate the translated output. Once every fragment succeeds, results are joined and cached once under the complete source key. Use Retranslate to replace an older incomplete cached translation.",
         translatorPreset:
             "LLM translation preset to edit and use. Each preset stores its own response-size limit and translation prompt, so switching presets changes the fields below.",
         postEndInnerFormat:
