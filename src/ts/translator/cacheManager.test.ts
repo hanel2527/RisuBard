@@ -42,6 +42,7 @@ const databaseMock = vi.hoisted(() => ({
     translatorType: "llm",
     characters: [],
 }));
+const translatorPresetMock = vi.hoisted(() => ({ prompt: "", maxResponse: 100 }));
 
 vi.mock("../storage/persistentKv", async (importOriginal) => {
     const actual = await importOriginal<typeof import("../storage/persistentKv")>();
@@ -140,10 +141,13 @@ vi.mock("../storage/persistentKv", async (importOriginal) => {
 
 vi.mock("svelte/store", () => ({ get: vi.fn(() => 0) }));
 vi.mock("../parser/chatML", () => ({ parseChatML: vi.fn() }));
-vi.mock("../storage/database.svelte", () => ({ getDatabase: vi.fn(() => databaseMock) }));
+vi.mock("../storage/database.svelte", () => ({
+    getDatabase: vi.fn(() => databaseMock),
+    getCurrentChat: vi.fn(),
+}));
 vi.mock("./presets", () => ({
     defaultTranslatorPrompt: "",
-    getCurrentTranslatorPresetFromState: vi.fn(() => ({ prompt: "", maxResponse: 100 })),
+    getCurrentTranslatorPresetFromState: vi.fn(() => translatorPresetMock),
 }));
 vi.mock("../globalApi.svelte", () => ({
     forageStorage: forageStorageMock,
@@ -170,6 +174,7 @@ import {
     searchLLMCache,
     setLLMCache,
     updateLLMCacheValue,
+    translateHTML,
 } from "./translator";
 
 const prefix = "cache/llm-translate/";
@@ -222,7 +227,54 @@ describe("LLM translation cache manager", () => {
         asyncControls.clearRemoveGates.clear();
         asyncControls.startedClearRemoves.clear();
         requestChatDataMock.mockReset();
+        translatorPresetMock.prompt = "";
+        translatorPresetMock.maxResponse = 100;
         await clearLLMCache();
+    });
+
+    it("translates long paragraphs in bounded requests and caches the complete ordered result", async () => {
+        translatorPresetMock.maxResponse = 32000;
+        const paragraphs = ["First", "Second", "Third"].map(label => `${label} paragraph. ${"word ".repeat(600)}`.trim());
+        const source = paragraphs.join("\n\n");
+        const expected = "첫 번째 문단.\n\n두 번째 문단.\n\n세 번째 문단.";
+        for (const result of ["첫 번째 문단.", "두 번째 문단.", "세 번째 문단."]) {
+            requestChatDataMock.mockResolvedValueOnce({ type: "success", result });
+        }
+
+        await expect(translateHTML(source, false, "", 0)).resolves.toBe(expected);
+        expect(requestChatDataMock.mock.calls.map(([request]) => request.formated.at(-1).content)).toEqual(paragraphs);
+        expect(await getLLMCache(source)).toBe(expected);
+        expect((await listLLMCache()).rows.map(row => ({ key: row.key, value: row.value }))).toEqual([{ key: source, value: expected }]);
+
+        await expect(translateHTML(source, false, "", 0)).resolves.toBe(expected);
+        expect(requestChatDataMock).toHaveBeenCalledTimes(3);
+        for (const result of ["첫 번째 새 번역.", "두 번째 새 번역.", "세 번째 새 번역."]) {
+            requestChatDataMock.mockResolvedValueOnce({ type: "success", result });
+        }
+        await expect(translateHTML(source, false, "", 0, true)).resolves.toBe("첫 번째 새 번역.\n\n두 번째 새 번역.\n\n세 번째 새 번역.");
+        expect(await getLLMCache(source)).toBe("첫 번째 새 번역.\n\n두 번째 새 번역.\n\n세 번째 새 번역.");
+        expect(requestChatDataMock).toHaveBeenCalledTimes(6);
+    });
+
+    it.each([
+        { type: "fail", result: "provider failure" },
+        { type: "success", result: "잘린 번역", finishReason: "MAX_TOKENS" },
+    ])("does not publish a partial long translation after $type", async (failure) => {
+        translatorPresetMock.maxResponse = 32000;
+        const paragraphs = ["Beginning", "Middle", "End"].map(label => `${label}. ${"source ".repeat(500)}`.trim());
+        const source = paragraphs.join("\n\n");
+        requestChatDataMock.mockResolvedValueOnce({ type: "success", result: "앞부분 번역" }).mockResolvedValueOnce(failure);
+
+        await expect(runTranslator(source, false, "ko", "en")).resolves.toBe(source);
+        expect(await getLLMCache(source)).toBeNull();
+        expect(requestChatDataMock).toHaveBeenCalledTimes(2);
+        expect(storage.size).toBe(0);
+
+        for (const result of ["처음", "중간", "마지막"]) {
+            requestChatDataMock.mockResolvedValueOnce({ type: "success", result });
+        }
+        await expect(runTranslator(source, false, "ko", "en")).resolves.toBe("처음\n\n중간\n\n마지막");
+        expect(await getLLMCache(source)).toBe("처음\n\n중간\n\n마지막");
     });
 
     it("lists, searches, sorts, and paginates rows deterministically", async () => {

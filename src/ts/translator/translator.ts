@@ -1,6 +1,6 @@
 import { get } from "svelte/store"
 import { parseChatML } from "../parser/chatML";
-import { getDatabase, type character, type customscript } from "../storage/database.svelte"
+import { getCurrentChat, getDatabase, type character, type customscript } from "../storage/database.svelte"
 import {
     defaultTranslatorPrompt,
     getCurrentTranslatorPresetFromState,
@@ -26,6 +26,8 @@ import { getModuleRegexScripts } from "../process/modules"
 import { getNodetextToSentence, sleep } from "../util"
 import { processScriptFull } from "../process/scripts"
 import { playNotificationSound } from '../notificationSound'
+import { safeStructuredClone } from '../polyfill'
+import { splitTranslationText } from './translationChunks'
 
 let cache={
     origin: [''],
@@ -454,6 +456,9 @@ export function getCurrentTranslatorPreset(): TranslatorPreset {
 
 export async function translate(text:string, reverse:boolean) {
     let db = getDatabase()
+    if(db.translatorType === 'llm'){
+        return runTranslator(text, reverse, db.translator, db.aiModel.startsWith('novellist') ? 'ja' : 'en')
+    }
     if(!reverse){
         const ind = cache.origin.indexOf(text)
         if(ind !== -1){
@@ -480,6 +485,9 @@ export async function runTranslator(text:string, reverse:boolean, from:string,ta
         host: 'translate.googleapis.com',
 
         translatorNote: exarg?.translatorNote
+    }
+    if(getDatabase().translatorType === 'llm'){
+        return translateLLM(text, arg)
     }
     const texts = text.split('\n')
     let chunks:[string,boolean][] = [['', true]]
@@ -536,10 +544,6 @@ export async function runTranslator(text:string, reverse:boolean, from:string,ta
 
 async function translateMain(text:string, arg:{from:string, to:string, host:string, translatorNote?:string}){
     let db = getDatabase()
-    if(db.translatorType === 'llm'){
-        const tr = arg.to || 'en'
-        return translateLLM(text, {to: tr, from: arg.from, translatorNote: arg.translatorNote})
-    }
     if(db.translatorType === 'deepl'){
         const body = {
             text: [text],
@@ -922,6 +926,17 @@ function needSuperChunkedTranslate(){
 }
 
 async function translateLLM(text:string, arg:{to:string, from:string, regenerate?:boolean,translatorNote?:string, onCacheState?:(cached:boolean) => void}):Promise<string>{
+    const db = getDatabase()
+    const chat = getCurrentChat()
+    const modelBindingTarget = chat ? {
+        useModelPreset: chat.useModelPreset,
+        modelBinding: chat.modelBinding ? safeStructuredClone(chat.modelBinding) : undefined,
+        usePromptPresetParams: chat.usePromptPresetParams,
+    } : undefined
+    const realChatId = chat?.id
+    const currentChar = db.characters[get(selectedCharID)]
+    const translatorNote = arg.translatorNote ?? (currentChar?.type === 'character' ? currentChar.translatorNote ?? '' : '')
+    const { prompt: presetPrompt, maxResponse } = getCurrentTranslatorPreset()
     if(!arg.regenerate){
         const cacheMatch = llmTranslateCache.get(text)
         if(cacheMatch){
@@ -947,58 +962,60 @@ async function translateLLM(text:string, arg:{to:string, from:string, regenerate
         return `<style-data style-index="${styleDecodes.length-1}"></style-data>`
     })
 
-    const db = getDatabase()
-    const charIndex = get(selectedCharID)
-    const currentChar = db.characters[charIndex]
-    let translatorNote = ""
-    console.log(arg.translatorNote)
-    if(arg.translatorNote){
-        translatorNote = arg.translatorNote
-    }
-    else if (currentChar?.type === "character") {
-        translatorNote = currentChar.translatorNote ?? ""
-    } else {
-        translatorNote = ""
-    }
-    console.log(translatorNote)
+    // Leave room for language expansion; a large output limit must not turn a
+    // long message back into one request. The historical DeepLX cap was 5,000.
+    const maxCharacters = Math.min(5000, maxResponse > 0 ? Math.max(2, Math.floor(maxResponse / 2)) : 5000)
+    const parts = splitTranslationText(text, maxCharacters)
+    const prompt = presetPrompt || defaultTranslatorPrompt
+    // Parse the template before inserting source text so literal ChatML/CBS in
+    // a chunk cannot become another message or expand into the chat history.
+    const promptMessages: OpenAIChat[] = parseChatML(prompt)
+        || [{ role: 'system', content: prompt }, { role: 'user', content: '{{slot::content}}' }]
+    const translatedParts: string[] = []
+    for (const part of parts) {
+        if (!part.translate) {
+            translatedParts.push(part.text)
+            continue
+        }
+        const formated: OpenAIChat[] = promptMessages.map(message => ({
+            ...message,
+            content: message.content.replace(
+                /\{\{(?:slot(?:::(?:from|content|tnote))?|solt::content)\}\}/g,
+                (slot) => {
+                    switch (slot) {
+                        case '{{slot}}': return arg.to
+                        case '{{slot::from}}': return arg.from ?? ''
+                        case '{{slot::tnote}}': return translatorNote
+                        default: return part.text
+                    }
+                },
+            ),
+        }))
+        const rq = await requestChatData({
+            formated,
+            bias: {},
+            useStreaming: false,
+            noMultiGen: true,
+            maxTokens: maxResponse,
+            modelBindingTarget,
+            realChatId,
+        }, 'translate')
 
-    let formated:OpenAIChat[] = []
-    const preset = getCurrentTranslatorPreset()
-    let prompt = preset.prompt || defaultTranslatorPrompt
-    let parsedPrompt = parseChatML(prompt.replaceAll('{{slot::from}}', arg.from).replaceAll('{{slot}}', arg.to).replaceAll('{{solt::content}}', text).replaceAll('{{slot::content}}', text).replaceAll('{{slot::tnote}}', translatorNote))
-    if(parsedPrompt){
-        formated = parsedPrompt
+        if (rq.type === 'fail') {
+            notifyError(rq.result)
+            return cacheKey
+        }
+        if (rq.type === 'streaming' || rq.type === 'multiline') {
+            notifyError('Unexpected response type')
+            return cacheKey
+        }
+        if (['length', 'max_tokens', 'max_output_tokens'].includes(rq.finishReason?.toLowerCase() ?? '')) {
+            notifyError('Translation was cut off. Increase Translation Response Size and translate again.')
+            return cacheKey
+        }
+        translatedParts.push(parts.length > 1 ? rq.result.trim() : rq.result)
     }
-    else{
-        prompt = prompt.replaceAll('{{slot}}', arg.to).replaceAll('{{slot::tnote}}', translatorNote).replaceAll('{{slot::from}}', arg.from)
-        formated = [
-            {
-                'role': 'system',
-                'content': prompt
-            },
-            {
-                'role': 'user',
-                'content': text
-            }
-        ]
-    }
-    const rq = await requestChatData({
-        formated,
-        bias: {},
-        useStreaming: false,
-        noMultiGen: true,
-        maxTokens: preset.maxResponse,
-    }, 'translate')
-
-    if(rq.type === 'fail'){
-        notifyError(rq.result)
-        return text
-    }
-    if(rq.type === 'streaming' || rq.type === 'multiline'){
-        notifyError('Unexpected response type')
-        return text
-    }
-    const result = rq.result.replace(/<style-data style-index="(\d+)" ?\/?>/g, (match, p1) => {
+    const result = translatedParts.join('').replace(/<style-data style-index="(\d+)" ?\/?>/g, (match, p1) => {
         return styleDecodes[parseInt(p1)] ?? ''
     }).replace(/<\/style-data>/g, '')
     try {
