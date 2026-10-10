@@ -283,7 +283,7 @@ describe("LLM translation cache manager", () => {
 
     it.each([2000, 32000])("accepts plaintext around assets without shrinking input for the %i-token output setting", async (maxResponse) => {
         translatorPresetMock.maxResponse = maxResponse;
-        const source = `<p>Before ${"L".repeat(8100)}</p>{{asset::portrait}}<p>After ${"R".repeat(8300)}</p>`;
+        const source = `<p>Before ${"L".repeat(7900)}.</p>\n{{asset::portrait}}\n<p>After ${"R".repeat(7900)}.</p>\nEnd.`;
         const expected = source.replaceAll("L", "가").replaceAll("R", "나").replace("Before", "이미지 앞").replace("After", "이미지 뒤");
         requestChatDataMock.mockImplementation(async (request) => {
             expect(storage.size).toBe(0);
@@ -295,11 +295,15 @@ describe("LLM translation cache manager", () => {
         });
 
         await expect(translateHTML(source, false, "", 0)).resolves.toBe(expected);
-        expect(requestChatDataMock).toHaveBeenCalledTimes(3);
-        expect(requestChatDataMock.mock.calls.map(([request]) => request.formated.at(-1).content.length).slice(0, 2)).toEqual([8000, 8000]);
+        expect(requestChatDataMock).toHaveBeenCalledTimes(2);
+        const requests = requestChatDataMock.mock.calls.map(([request]) => request.formated.at(-1).content);
+        expect(requests.join("")).toBe(source);
+        expect(requests[0].length).toBeGreaterThan(5000);
+        expect(requests.every(content => content.length <= 8000)).toBe(true);
+        expect(requests[0]).toMatch(/\n$/);
         expect(await getLLMCache(source)).toBe(expected);
         await expect(translateHTML(source, false, "", 0)).resolves.toBe(expected);
-        expect(requestChatDataMock).toHaveBeenCalledTimes(3);
+        expect(requestChatDataMock).toHaveBeenCalledTimes(2);
     });
 
     it("lists, searches, sorts, and paginates rows deterministically", async () => {
