@@ -12,15 +12,26 @@
     import { onMount } from 'svelte'
     import { requestStatuses, isTerminalPhase, clearStatus, type RequestPhase, type RequestKind, type RequestInjectionItem, type RequestInjectionKind } from 'src/ts/status/requestStatus'
     import { language } from 'src/lang'
-    import { RotateCwIcon, XIcon } from '@lucide/svelte'
+    import { ChevronDownIcon, ChevronUpIcon, RotateCwIcon, XIcon } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import { requestPurposeLabels } from 'src/ts/requestPurpose'
+    import { DBState } from 'src/ts/stores.svelte'
 
     let { id }: { id: string } = $props()
 
     const entry = $derived($requestStatuses.get(id))
     const injectionManifest = $derived(entry && entry.injectionManifest)
     const rs = language.requestStatus
+
+    // Collapse is one shared, persisted flag: folding any toast folds every
+    // later one too. Failed toasts ignore the opacity setting.
+    const collapsed = $derived(DBState.db.requestStatusCollapsed === true)
+    const failed = $derived(!!entry && (entry.phase === 'failed' || !!entry.error))
+    const opacity = $derived(failed ? 1 : Math.min(100, Math.max(10, DBState.db.requestStatusOpacity ?? 100)) / 100)
+    const hoverOpaque = $derived(DBState.db.requestStatusHoverOpaque !== false)
+    function toggleCollapsed(): void {
+        DBState.db.requestStatusCollapsed = !collapsed
+    }
 
     // Live elapsed clock: tick while the entry is non-terminal.
     let now = $state(Date.now())
@@ -93,6 +104,13 @@
         return parts.join(' · ')
     })
 
+    // Collapsed summary: estimated/actual input plus thinking and output so far.
+    const totalTokens = $derived.by(() => {
+        const e = entry
+        if (!e) return 0
+        return (injectionManifest?.totalTokens ?? 0) + e.thinkingTokens + e.responseTokens
+    })
+
     const spinning = $derived(entry ? !isTerminalPhase(entry.phase) && entry.phase !== 'stalled' : false)
 
     function injectionLabel(item: RequestInjectionItem): string {
@@ -131,7 +149,8 @@
 {#if entry}
     <!-- sonner skips its default chrome for custom-component toasts
          (data-styled=false), so apply the app toast look + left accent bar. -->
-    <div class="rs-card {accentClass(entry.phase)}">
+    <div class="rs-card {accentClass(entry.phase)}" class:rs-hover-opaque={hoverOpaque}
+         class:rs-collapsed={collapsed} style:opacity={opacity}>
         <div class="rs-body">
             <div class="rs-row1">
                 <span class="rs-dot" class:rs-dot-success={entry.phase === 'done'}
@@ -145,24 +164,36 @@
 
                 <span class="rs-phase {phaseColor(entry.phase)}">{PHASE_LABEL[entry.phase]}</span>
                 <span class="rs-chip">{entry.purpose ? requestPurposeLabels[entry.purpose] : KIND_LABEL[entry.kind]}</span>
-                <span class="rs-elapsed">{elapsedStr(entry)}</span>
+                {#if !collapsed}
+                    <span class="rs-elapsed">{elapsedStr(entry)}</span>
 
-                {#if entry.retryAttempt}
-                    <span class="rs-retry">#{entry.retryAttempt}</span>
+                    {#if entry.retryAttempt}
+                        <span class="rs-retry">#{entry.retryAttempt}</span>
+                    {/if}
                 {/if}
                 <span class="rs-actions">
-                    {#if right}<span class="rs-right">{right.label} <b>{right.value}</b></span>{/if}
+                    {#if collapsed}
+                        {#if totalTokens > 0}<span class="rs-right">{rs?.totalTokens ?? 'total'} <b>{fmt(totalTokens)}</b></span>{/if}
+                    {:else if right}
+                        <span class="rs-right">{right.label} <b>{right.value}</b></span>
+                    {/if}
+                    <button class="rs-close" type="button" aria-expanded={!collapsed}
+                            aria-label={collapsed ? (rs?.expand ?? 'Expand') : (rs?.collapse ?? 'Collapse')}
+                            title={collapsed ? (rs?.expand ?? 'Expand') : (rs?.collapse ?? 'Collapse')}
+                            onclick={toggleCollapsed}>
+                        {#if collapsed}<ChevronDownIcon size={14} />{:else}<ChevronUpIcon size={14} />{/if}
+                    </button>
                     <button class="rs-close" type="button" aria-label={rs?.close ?? 'Close'} onclick={dismiss}><XIcon size={14} /></button>
                 </span>
             </div>
 
             {#if entry.error}
                 <div class="rs-detail rs-error truncate">{entry.error} · {entry.label}</div>
-            {:else if detail}
+            {:else if detail && !collapsed}
                 <div class="rs-detail truncate">{detail}</div>
             {/if}
 
-            {#if injectionManifest && injectionManifest.items.length > 0}
+            {#if !collapsed && injectionManifest && injectionManifest.items.length > 0}
                 <section class="rs-context" aria-label={rs?.injectedContext ?? 'Injected context'}>
                     <div class="rs-context-head">
                         <span>{rs?.injectedContext ?? 'Injected context'}</span>
@@ -179,7 +210,7 @@
                 </section>
             {/if}
 
-            {#each entry.badges as badge (badge.key)}
+            {#each collapsed ? [] : entry.badges as badge (badge.key)}
                 <div class="rs-badge-row"
                      class:rs-badge-success={badge.tone === 'success'}
                      class:rs-badge-warn={badge.tone === 'warn'}>
@@ -202,7 +233,10 @@
         font-size: 0.875rem;
     }
     /* left accent bar via left border */
-    .rs-card { border-left-width: 4px; }
+    .rs-card { border-left-width: 4px; transition: opacity .15s ease; }
+    .rs-card.rs-hover-opaque:hover,
+    .rs-card.rs-hover-opaque:focus-within { opacity: 1 !important; }
+    .rs-collapsed .rs-body { padding-top: 7px; padding-bottom: 7px; }
     .rs-accent-primary { border-left-color: var(--risu-theme-primary); }
     .rs-accent-success { border-left-color: var(--risu-theme-success); }
     .rs-accent-danger  { border-left-color: var(--risu-theme-draculared); }

@@ -33,7 +33,7 @@ beforeEach(() => {
         get botCatalog() { const refs = this.bot.globalOutfits ?? []; return { identities: this.bot.identities, outfits: [...this.bot.outfits, ...(this.globalLibrary?.outfits ?? []).filter((item: any) => !item.subjectId && refs.some((ref: any) => ref.id === item.id))] } },
         data, styles: [style], style,
         get settings() { return this.data.settings },
-        generationSettingsPinned: false, hasGenerationOverrides: true,
+        generationSettingsPinned: false, hasGenerationOverrides: true, unreflectedGlobalIdentities: [], blankIdentityIds: [],
         updateGenerationSettings: vi.fn(() => session.persist()), pinGenerationSettings: vi.fn(),
         applyGenerationSettingsToGlobal: vi.fn(), useGlobalGenerationSettings: vi.fn(),
         bot: { identities: [{ id: 'example', name: '예시 인물', aliases: [], appearance: '' }], outfits: [] },
@@ -114,24 +114,16 @@ describe('BardPainter tools', () => {
         expect(button('전역값으로 설정').disabled).toBe(true)
         expect(button('전역값 사용').disabled).toBe(true)
     })
-    test('saves changed generation values without sharing wiki selections', async () => {
+    test('saves changed generation values and leaves context choices to the main panel', async () => {
         await mount('settings')
         const model = [...document.querySelectorAll('select')].find(select => select.value === 'nai-diffusion-5-full')!
         model.value = 'nai-diffusion-5-curated'; model.dispatchEvent(new Event('change', { bubbles: true }))
         expect(session.updateGenerationSettings).toHaveBeenLastCalledWith(expect.objectContaining({ model: 'nai-diffusion-5-curated' }))
-        const persona = [...document.querySelectorAll('label')].find(label => label.textContent?.trim() === '페르소나')!.querySelector('input')!
-        persona.checked = true; persona.dispatchEvent(new Event('change', { bubbles: true }))
-        expect(session.updateGenerationSettings).toHaveBeenLastCalledWith(expect.objectContaining({ context: expect.objectContaining({ persona: true }) }))
-        session.updateGenerationSettings.mockClear(); session.persist.mockClear()
-        const wiki = [...document.querySelectorAll('label')].find(label => label.textContent?.trim() === '예시 장소')!.querySelector('input')!
-        wiki.checked = true; wiki.dispatchEvent(new Event('change', { bubbles: true }))
-        expect(session.persist).toHaveBeenCalledOnce()
-        expect(session.updateGenerationSettings).not.toHaveBeenCalled()
-        expect(session.data.settings.context.wikiIds).toEqual(['place'])
+        expect([...document.querySelectorAll('label')].some(label => label.textContent?.trim() === '페르소나')).toBe(false)
+        expect(document.body.textContent).toContain('메인 화면의 참고 자료')
     })
-    test('dismisses generation settings on an outside click and shows only the reference slot', async () => {
+    test('dismisses generation settings on an outside click', async () => {
         await mount('settings')
-        expect(document.querySelector('[data-painter-reference]')).not.toBeNull()
         expect(document.querySelector('[data-painter-gallery]')).toBeNull()
         await new Promise(resolve => setTimeout(resolve, 20))
         const overlay = document.querySelector('[data-dialog-overlay]')!
@@ -147,7 +139,7 @@ describe('BardPainter tools', () => {
         component!.$set({ mode: 'settings' })
         await tick()
         expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1)
-        expect(document.querySelector('[aria-label="이전 메시지 수"]')).not.toBeNull()
+        expect(document.querySelector('[aria-label="이미지 크기"]')).not.toBeNull()
         expect(document.querySelector('[data-painter-presets]')).toBeNull()
     })
     test('edits a separate style copy and saves only on an explicit action', async () => {
@@ -169,16 +161,10 @@ describe('BardPainter tools', () => {
         expect(document.querySelector('[data-painter-person="example"]')).not.toBeNull()
         expect(document.querySelector('[aria-label="인물과 의상 검색"]')).not.toBeNull()
     })
-    test('persists reference settings and resolution without making an AI request', async () => {
+    test('persists resolution and seed without making an AI request', async () => {
         await mount('settings')
-        await change('이전 메시지 수', '3')
         await change('이미지 크기', '1216x832')
         await change('이미지 시드', '0')
-        const wiki = [...document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find(item => item.parentElement?.textContent?.includes('예시 장소'))!
-        wiki.click()
-        await tick()
-        expect(session.data.settings.context.before).toBe(3)
-        expect(session.data.settings.context.wikiIds).toEqual(['place'])
         expect(session.data.settings).toMatchObject({ width: 1216, height: 832, seed: 0 })
         await change('이미지 시드', '')
         expect(session.data.settings.seed).toBeNull()
@@ -186,7 +172,7 @@ describe('BardPainter tools', () => {
     })
     test('locks changes during generation but still permits closing the window', async () => {
         await mount('settings', true)
-        expect(document.querySelector<HTMLInputElement>('[aria-label="이전 메시지 수"]')?.closest('fieldset')?.disabled).toBe(true)
+        expect(document.querySelector<HTMLInputElement>('[aria-label="이미지 시드"]')?.closest('fieldset')?.disabled).toBe(true)
         button('닫기').click()
         expect(onClose).toHaveBeenCalledOnce()
     })

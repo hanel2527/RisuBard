@@ -2,7 +2,7 @@
     import { onDestroy, onMount, tick, untrack } from 'svelte'
     import Sortable from 'sortablejs/modular/sortable.core.esm.js'
     import { v4 } from 'uuid'
-    import { Maximize2Icon, PlusIcon, SparklesIcon } from '@lucide/svelte'
+    import { BrushIcon, Maximize2Icon, PlusIcon, SparklesIcon } from '@lucide/svelte'
     import { language } from 'src/lang'
     import SettingPage from 'src/lib/UI/GUI/SettingPage.svelte'
     import Help from 'src/lib/Others/Help.svelte'
@@ -11,6 +11,7 @@
     import SolarBoldIcon from 'src/lib/UI/Icons/SolarBoldIcon.svelte'
     import ShButton from 'src/lib/UI/GUI/ShButton.svelte'
     import PersonaBuilder from '../../Others/PersonaBuilder.svelte'
+    import PersonaPortraitDialog from '../../Others/PersonaPortraitDialog.svelte'
     import { alertConfirm, alertSelect, notifySuccess } from 'src/ts/alert'
     import { getCharImage } from 'src/ts/characters'
     import { tooltip } from 'src/ts/gui/tooltip'
@@ -30,7 +31,7 @@
         type PersonaScope,
         type PersonaSelection,
     } from 'src/ts/personaScopes'
-    import type { RisuPersona } from 'src/ts/storage/database.svelte'
+    import { saveImage, type RisuPersona } from 'src/ts/storage/database.svelte'
     import { sortableOptions } from 'src/ts/util'
 
     type PersonaManagerScope = 'global' | 'character'
@@ -67,6 +68,8 @@
     let stopDescriptionResize: (() => void) | null = null
     let personaBuilderOpen = $state(false)
     let personaBuilderTarget = $state<RisuPersona | null>(null)
+    let portraitOpen = $state(false)
+    let portraitTarget = $state<RisuPersona | null>(null)
 
     const currentCharacter = $derived(DBState.db.characters[$selectedCharID])
 
@@ -256,6 +259,21 @@
             syncGlobalLegacyFields()
             void requestImmediateSave()
         }
+    }
+
+    function openPortraitDialog(): void {
+        if (!editingPersona) return
+        portraitTarget = editingPersona
+        portraitOpen = true
+    }
+
+    async function assignPortrait(png: Uint8Array): Promise<void> {
+        const target = portraitTarget
+        if (!target) return
+        target.icon = await saveImage(png)
+        target.id ??= v4()
+        if (target === editingPersona) syncGlobalLegacyFields()
+        await requestImmediateSave()
     }
 
     function togglePortraitMode(): void {
@@ -496,6 +514,14 @@
                                 : language.settingsWorkspace.personaManager.usePortraitImage}
                             onclick={togglePortraitMode}
                         ><SolarBoldIcon name="smartphone-rotate-2" size={17} /></button>
+                        <button
+                            data-persona-portrait-open
+                            class="portrait-mode-button portrait-ai-button"
+                            aria-label={language.settingsWorkspace.personaManager.portrait.launch}
+                            title={language.settingsWorkspace.personaManager.portrait.launch}
+                            use:tooltip={language.settingsWorkspace.personaManager.portrait.launch}
+                            onclick={openPortraitDialog}
+                        ><BrushIcon size={16} /></button>
                     </div>
                 </div>
                 <div class="fields">
@@ -611,6 +637,10 @@
     />
 {/if}
 
+{#if portraitTarget}
+    <PersonaPortraitDialog bind:open={portraitOpen} persona={portraitTarget} onAssign={assignPortrait} />
+{/if}
+
 <style>
     .persona-scope-tabs { display: flex; gap: .25rem; min-width: 0; margin-bottom: .75rem; padding: .25rem; overflow-x: auto; border: 1px solid var(--color-darkborderc); border-radius: .75rem; background: var(--color-surface-raised); }
     .persona-scope-tabs button { flex: 1 1 0; display: inline-flex; align-items: center; justify-content: center; gap: .4rem; min-width: 5.5rem; padding: .52rem .75rem; border-radius: .55rem; color: var(--color-textcolor2); font-size: .84rem; font-weight: 650; }
@@ -634,6 +664,7 @@
     .portrait-button { display: block; box-shadow: 0 .5rem 1.5rem color-mix(in srgb, var(--color-shadow) 16%, transparent); }
     .portrait-mode-button { position: absolute; right: .45rem; bottom: .45rem; width: 2rem; height: 2rem; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--color-textcolor) 26%, transparent); border-radius: .5rem; color: var(--color-textcolor); background: color-mix(in srgb, var(--color-darkbg) 86%, transparent); box-shadow: 0 .3rem .8rem color-mix(in srgb, var(--color-shadow) 28%, transparent); backdrop-filter: blur(6px); }
     .portrait-mode-button:hover { background: var(--color-selected); }
+    .portrait-ai-button { right: auto; left: .45rem; }
     .fields { display: flex; min-width: 0; flex-direction: column; justify-content: center; gap: .75rem; }
     .field-row { display: grid; grid-template-columns: 4.25rem minmax(0, 1fr); align-items: center; gap: .75rem; }
     .field-label { display: inline-flex; align-items: center; gap: .2rem; color: var(--color-textcolor2); font-size: .82rem; white-space: nowrap; }

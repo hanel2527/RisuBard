@@ -380,14 +380,17 @@
                 <button type="button" class="danger" onclick={() => void cleanseBardLoreOverlay()}>{language.lorebookWorkspace.bardPortableCleanse}</button>
             </div>
         </section>
-        <BardLoreAnalysisPanel
-            entries={bardEntries}
-            settings={DBState.db.characters[$selectedCharID].bardLore!.settings}
-            analysisRun={DBState.db.characters[$selectedCharID].bardLore!.analysisRun}
-            onChange={(next) => applyBardEntries(DBState.db.characters[$selectedCharID], next)}
-            onSettingsChange={(next) => { DBState.db.characters[$selectedCharID].bardLore!.settings = next }}
-            onAnalysisRunChange={(next) => { DBState.db.characters[$selectedCharID].bardLore!.analysisRun = next }}
-        />
+        {#key DBState.db.characters[$selectedCharID].chaId}
+            <BardLoreAnalysisPanel
+                characterId={DBState.db.characters[$selectedCharID].chaId}
+                entries={bardEntries}
+                settings={DBState.db.characters[$selectedCharID].bardLore!.settings}
+                analysisRun={DBState.db.characters[$selectedCharID].bardLore!.analysisRun}
+                onChange={(next) => applyBardEntries(DBState.db.characters[$selectedCharID], next)}
+                onSettingsChange={(next) => { DBState.db.characters[$selectedCharID].bardLore!.settings = next }}
+                onAnalysisRunChange={(next) => { DBState.db.characters[$selectedCharID].bardLore!.analysisRun = next }}
+            />
+        {/key}
         <BardLoreSearchPreview
             entries={bardEntries}
             settings={DBState.db.characters[$selectedCharID].bardLore!.settings}
@@ -625,6 +628,7 @@
 
 <LoreBookWorkspaceDialog
     bind:open={workspaceOpen}
+    dockable
     entries={activeBinding.entries}
     scopeKey={activeBinding.scopeKey}
     scopeLabel={activeBinding.scopeLabel}
@@ -634,6 +638,7 @@
     bardMode={bardView}
     bardSettings={bardView ? DBState.db.characters[$selectedCharID].bardLore?.settings : undefined}
     bardAnalysisRun={bardView ? DBState.db.characters[$selectedCharID].bardLore?.analysisRun : undefined}
+    bardCharacterId={bardView ? DBState.db.characters[$selectedCharID].chaId : undefined}
     onBardAnalysisRunChange={bardView
         ? (next) => { DBState.db.characters[$selectedCharID].bardLore!.analysisRun = next }
         : undefined}

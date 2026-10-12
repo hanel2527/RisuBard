@@ -8,7 +8,7 @@ const source = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf
 
 describe('chat toggle preset binding UI', () => {
     test('applies a selected preset as a named chat baseline and refreshes it on overwrite', () => {
-        const alert = source('src/lib/Others/AlertComp.svelte')
+        const alert = source('src/lib/SideBars/TogglePresetManager.svelte')
 
         expect(alert).toContain('applyTogglePresetToChat(preset)')
         expect(alert).toContain('setPinnedTogglePresetBaseline(getCurrentChat(), values, presetName)')

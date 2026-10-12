@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { CopyIcon, DownloadIcon, HardDriveUploadIcon, LockKeyholeIcon, PencilIcon, PlusIcon, Share2Icon, Trash2Icon, UploadIcon } from '@lucide/svelte'
+    import { CopyIcon, DownloadIcon, HardDriveUploadIcon, LockKeyholeIcon, PencilIcon, PlusIcon, Trash2Icon, UploadIcon } from '@lucide/svelte'
     import { v4 as uuidv4 } from 'uuid'
     import { language } from 'src/lang'
     import { alertConfirm, notifyError, notifySuccess } from 'src/ts/alert'
@@ -13,6 +13,7 @@
         serializeWikiPromptPreset,
         type WikiPromptPreset,
     } from 'src/ts/risubard/wikiPromptPreset'
+    import { assignCollectionItem, normalizeCollectionOrganizerState } from 'src/ts/collectionOrganizer'
     import { DBState } from 'src/ts/stores.svelte'
     import { selectSingleFile } from 'src/ts/util'
     import PresetHeader from 'src/lib/UI/GUI/PresetHeader.svelte'
@@ -21,6 +22,7 @@
     import ShButton from 'src/lib/UI/GUI/ShButton.svelte'
     import ShDialog from 'src/lib/UI/GUI/ShDialog.svelte'
     import TextInput from 'src/lib/UI/GUI/TextInput.svelte'
+    import CollectionOrganizerList from 'src/lib/UI/CollectionOrganizerList.svelte'
     import RisuBardWikiPromptReferenceSheet from './RisuBardWikiPromptReferenceSheet.svelte'
     import RisuBardWikiPromptV1Editor from './RisuBardWikiPromptV1Editor.svelte'
     import RisuBardWikiPromptV2Workspace from './RisuBardWikiPromptV2Workspace.svelte'
@@ -28,9 +30,9 @@
     let activeTab = $state(0)
     let choosingPreset = $state(false)
     let renaming = $state(false)
-    let presetSearch = $state('')
-    let filteredPresets = $derived((DBState.db.risuBardWikiPromptPresets ?? []).filter(
-        (preset) => preset.name.toLocaleLowerCase().includes(presetSearch.trim().toLocaleLowerCase()),
+    let selectedPresetFolder = $state<string | null | undefined>(undefined)
+    let organizerPresetItems = $derived((DBState.db.risuBardWikiPromptPresets ?? []).map(
+        (preset) => ({ id: preset.id, title: preset.name }),
     ))
     let promptingHelpOpen = $state(false)
     let promptWorkspace: RisuBardWikiPromptV2Workspace | undefined = $state()
@@ -51,7 +53,6 @@
     }
 
     function openPresetList() {
-        presetSearch = ''
         renaming = false
         choosingPreset = true
     }
@@ -60,21 +61,31 @@
         if (!preset.builtin) preset.revision = Math.min(2_147_483_647, preset.revision + 1)
     }
 
-    function createPreset() {
-        const preset = createWikiPromptPreset(uuidv4(), language.risuBardWikiPrompt.newPresetName)
+    function addPreset(preset: WikiPromptPreset, folderId: string | null | undefined) {
         DBState.db.risuBardWikiPromptPresets ??= []
         DBState.db.risuBardWikiPromptPresets.push(preset)
+        if (typeof folderId === 'string' && DBState.db.collectionOrganizers) {
+            const current = normalizeCollectionOrganizerState(
+                DBState.db.collectionOrganizers.wikiPromptPresets,
+                DBState.db.risuBardWikiPromptPresets.map((candidate) => candidate.id),
+            )
+            DBState.db.collectionOrganizers = {
+                ...DBState.db.collectionOrganizers,
+                wikiPromptPresets: assignCollectionItem(current, preset.id, folderId),
+            }
+        }
         activatePreset(preset.id)
+    }
+
+    function createPreset(folderId?: string | null) {
+        addPreset(createWikiPromptPreset(uuidv4(), language.risuBardWikiPrompt.newPresetName), folderId)
         notifySuccess(language.risuBardWikiPrompt.presetCreated)
     }
 
-    function duplicatePreset(source: WikiPromptPreset | undefined) {
+    function duplicatePreset(source: WikiPromptPreset | undefined, folderId?: string | null) {
         if (!source) return
         promptWorkspace?.flushPendingText()
-        const duplicate = duplicateWikiPromptPreset(source, uuidv4())
-        DBState.db.risuBardWikiPromptPresets ??= []
-        DBState.db.risuBardWikiPromptPresets.push(duplicate)
-        activatePreset(duplicate.id)
+        addPreset(duplicateWikiPromptPreset(source, uuidv4()), folderId)
         notifySuccess(language.presetDuplicated)
     }
 
@@ -86,14 +97,11 @@
         notifySuccess(language.presetExported)
     }
 
-    async function importPreset() {
+    async function importPreset(folderId?: string | null) {
         try {
             const file = await selectSingleFile(['json'])
             if (!file) return
-            const preset = parseWikiPromptPreset(new TextDecoder().decode(file.data), uuidv4)
-            DBState.db.risuBardWikiPromptPresets ??= []
-            DBState.db.risuBardWikiPromptPresets.push(preset)
-            activatePreset(preset.id)
+            addPreset(parseWikiPromptPreset(new TextDecoder().decode(file.data), uuidv4), folderId)
             notifySuccess(language.presetImported)
         }
         catch (error) {
@@ -112,7 +120,7 @@
         }
         DBState.db.risuBardWikiPromptPresets = result.presets
         if (DBState.db.risuBardChatWikiPromptPresetId === preset.id) {
-            DBState.db.risuBardChatWikiPromptPresetId = result.presets[0].id
+            DBState.db.risuBardChatWikiPromptPresetId = resolveWikiPromptPreset(result.presets, undefined)!.id
         }
         notifySuccess(language.presetDeleted)
     }
@@ -167,10 +175,10 @@
                 <p class="builtin-note"><LockKeyholeIcon size={14} />{language.risuBardWikiPrompt.builtinReadonly}</p>
             {/if}
             <div class="file-actions">
-                <ShButton variant="default" onclick={createPreset}><PlusIcon size={16} />{language.risuBardWikiPrompt.createPreset}</ShButton>
+                <ShButton variant="default" onclick={() => createPreset()}><PlusIcon size={16} />{language.risuBardWikiPrompt.createPreset}</ShButton>
                 <ShButton variant="default" onclick={() => duplicatePreset(activePreset)}><CopyIcon size={16} />{language.presetDuplicate}</ShButton>
                 <ShButton variant="default" onclick={() => exportPreset(activePreset)}><DownloadIcon size={16} />{language.presetExport}</ShButton>
-                <ShButton variant="default" onclick={importPreset}><UploadIcon size={16} />{language.presetImport}</ShButton>
+                <ShButton variant="default" onclick={() => importPreset()}><UploadIcon size={16} />{language.presetImport}</ShButton>
                 <ShButton variant="destructive" onclick={() => deletePreset(activePreset)} disabled={activePreset.builtin}><Trash2Icon size={16} />{language.presetDelete}</ShButton>
             </div>
         </div>
@@ -179,52 +187,52 @@
     <RisuBardWikiPromptReferenceSheet bind:open={promptingHelpOpen} />
 </SettingPage>
 
-<ShDialog bind:open={choosingPreset} size="lg" tier="base" closeOnEscape closeOnOutsideClick={false}>
-    {#snippet title()}{language.risuBardWikiPrompt.activePreset}{/snippet}
-    <div class="picker-tools">
-        <label class="picker-search">
-            <span class="sr-only">{language.search}</span>
-            <TextInput bind:value={presetSearch} placeholder={language.search} fullwidth />
-        </label>
-        <div class="picker-toolbar">
-            <ShButton variant="ghost" size="icon-sm" onclick={createPreset} title={language.risuBardWikiPrompt.createPreset} aria-label={language.risuBardWikiPrompt.createPreset}><PlusIcon /></ShButton>
-            <ShButton variant="ghost" size="icon-sm" onclick={importPreset} title={language.presetImport} aria-label={language.presetImport}><HardDriveUploadIcon /></ShButton>
-            <ShButton variant="ghost" size="icon-sm" className={renaming ? 'rename-on' : ''} onclick={() => { renaming = !renaming }} title={language.risuBardWikiPrompt.renamePresets} aria-label={language.risuBardWikiPrompt.renamePresets} aria-pressed={renaming}><PencilIcon /></ShButton>
-        </div>
-    </div>
-    <div class="preset-picker">
-        {#each filteredPresets as preset (preset.id)}
-            {@const isActive = preset.id === activePreset?.id}
-            <div class="preset-row" class:selected={isActive}>
-                {#if renaming && !preset.builtin}
-                    <div class="preset-rename"><TextInput bind:value={preset.name} fullwidth /></div>
-                {:else}
-                    <button type="button" class="preset-select" aria-pressed={isActive} onclick={() => selectPreset(preset.id)} disabled={renaming}>
-                        <span>{preset.name}</span>
-                        {#if isActive}<small>{language.risuBardWikiPrompt.current}</small>{/if}
-                    </button>
-                {/if}
-                <div class="preset-actions">
-                    <ShButton size="icon-sm" variant="ghost" onclick={() => duplicatePreset(preset)} title={language.presetDuplicate} aria-label={`${language.presetDuplicate}: ${preset.name}`}><CopyIcon /></ShButton>
-                    <ShButton size="icon-sm" variant="ghost" onclick={() => exportPreset(preset)} title={language.presetExport} aria-label={`${language.presetExport}: ${preset.name}`}><Share2Icon /></ShButton>
-                    {#if preset.builtin}
-                        <span class="preset-lock" role="img" title={language.risuBardWikiPrompt.builtinLocked} aria-label={language.risuBardWikiPrompt.builtinLocked}><LockKeyholeIcon size={16} /></span>
-                    {:else}
-                        <ShButton size="icon-sm" variant="ghost" className="preset-delete" onclick={() => deletePreset(preset)} title={language.presetDelete} aria-label={`${language.presetDelete}: ${preset.name}`}><Trash2Icon /></ShButton>
-                    {/if}
-                </div>
+<ShDialog bind:open={choosingPreset} size="xl" tier="base" closeOnEscape closeOnOutsideClick={false}>
+    {#snippet title()}{language.risuBardWikiPrompt.title}{/snippet}
+    <CollectionOrganizerList
+        kind="wikiPromptPresets"
+        items={organizerPresetItems}
+        collectionLabel={language.risuBardWikiPrompt.title}
+        bind:selectedFolderId={selectedPresetFolder}
+    >
+        {#snippet toolbar(selectedFolderId)}
+            <div class="picker-toolbar">
+                <ShButton variant="ghost" size="icon-sm" onclick={() => createPreset(selectedFolderId)} title={language.risuBardWikiPrompt.createPreset} aria-label={language.risuBardWikiPrompt.createPreset}><PlusIcon /></ShButton>
+                <ShButton variant="ghost" size="icon-sm" onclick={() => importPreset(selectedFolderId)} title={language.presetImport} aria-label={language.presetImport}><HardDriveUploadIcon /></ShButton>
+                <ShButton variant="ghost" size="icon-sm" className={renaming ? 'rename-on' : ''} onclick={() => { renaming = !renaming }} title={language.risuBardWikiPrompt.renamePresets} aria-label={language.risuBardWikiPrompt.renamePresets} aria-pressed={renaming}><PencilIcon /></ShButton>
             </div>
-        {:else}
-            <p class="picker-empty">{language.risuBardWikiPrompt.noSearchResult}</p>
-        {/each}
-    </div>
+        {/snippet}
+
+        {#snippet itemContent(presetId)}
+            {@const preset = (DBState.db.risuBardWikiPromptPresets ?? []).find((candidate) => candidate.id === presetId)}
+            {#if preset}
+                {@const isActive = preset.id === activePreset?.id}
+                <div class="preset-row" class:selected={isActive}>
+                    {#if renaming && !preset.builtin}
+                        <div class="preset-rename"><TextInput bind:value={preset.name} fullwidth /></div>
+                    {:else}
+                        <button type="button" class="preset-select" aria-pressed={isActive} onclick={() => selectPreset(preset.id)} disabled={renaming}>
+                            <span>{preset.name}</span>
+                            {#if isActive}<small>{language.risuBardWikiPrompt.current}</small>{/if}
+                        </button>
+                    {/if}
+                    <div class="preset-actions">
+                        <ShButton size="icon-sm" variant="ghost" onclick={() => duplicatePreset(preset, selectedPresetFolder)} title={language.presetDuplicate} aria-label={`${language.presetDuplicate}: ${preset.name}`}><CopyIcon /></ShButton>
+                        <ShButton size="icon-sm" variant="ghost" onclick={() => exportPreset(preset)} title={language.presetExport} aria-label={`${language.presetExport}: ${preset.name}`}><DownloadIcon /></ShButton>
+                        {#if preset.builtin}
+                            <span class="preset-lock" role="img" title={language.risuBardWikiPrompt.builtinLocked} aria-label={language.risuBardWikiPrompt.builtinLocked}><LockKeyholeIcon size={16} /></span>
+                        {:else}
+                            <ShButton size="icon-sm" variant="ghost" className="preset-delete" onclick={() => deletePreset(preset)} title={language.presetDelete} aria-label={`${language.presetDelete}: ${preset.name}`}><Trash2Icon /></ShButton>
+                        {/if}
+                    </div>
+                </div>
+            {/if}
+        {/snippet}
+    </CollectionOrganizerList>
 </ShDialog>
 
 <style>
-    .preset-picker, .basic-panel { border: 1px solid var(--settings-border, var(--risu-theme-darkborderc)); border-radius: var(--settings-radius, .75rem); background: var(--settings-surface, var(--risu-theme-bgcolor)); }
-    .preset-picker { max-height: 55dvh; overflow-y: auto; margin-top: .75rem; }
-    .picker-tools { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
-    .picker-search { display: grid; flex: 1 1 12rem; }
+    .basic-panel { border: 1px solid var(--settings-border, var(--risu-theme-darkborderc)); border-radius: var(--settings-radius, .75rem); background: var(--settings-surface, var(--risu-theme-bgcolor)); }
     .picker-toolbar { display: flex; align-items: center; gap: .25rem; }
     .picker-toolbar :global(.rename-on) { color: var(--risu-theme-textcolor); background: color-mix(in srgb, var(--risu-theme-selected) 55%, transparent); }
     .preset-row { display: flex; align-items: center; gap: .25rem; padding-right: .5rem; }
@@ -233,16 +241,14 @@
     .preset-actions :global(button) { color: var(--risu-theme-textcolor2); }
     .preset-actions :global(button:hover) { color: var(--risu-theme-textcolor); }
     .preset-lock { display: inline-flex; width: 2rem; align-items: center; justify-content: center; color: var(--risu-theme-textcolor2); opacity: .6; }
-    .picker-empty { margin: 0; padding: 1.25rem 1rem; color: var(--risu-theme-textcolor2); text-align: center; }
     .builtin-note { display: flex; align-items: center; gap: .4rem; margin: .6rem 0 0; color: var(--risu-theme-textcolor2); font-size: .8rem; }
     .preset-select:disabled { cursor: default; opacity: .6; }
-    .preset-row + .preset-row { border-top: 1px solid var(--settings-border, var(--risu-theme-darkborderc)); }
-    .preset-row.selected { color: var(--risu-theme-textcolor); background: color-mix(in srgb, var(--risu-theme-selected) 55%, transparent); }
+    .preset-row.selected { border-radius: .375rem; color: var(--risu-theme-textcolor); background: color-mix(in srgb, var(--risu-theme-selected) 55%, transparent); }
     .preset-select { display: flex; flex: 1 1 auto; min-width: 0; align-items: center; justify-content: space-between; padding: .75rem 1rem; text-align: left; }
     .preset-select span { overflow-wrap: anywhere; }
     .preset-select small { flex-shrink: 0; margin-left: .75rem; }
     .preset-row :global(.preset-delete:hover) { color: var(--risu-theme-draculared); }
-    .preset-picker small { color: var(--risu-theme-textcolor2); }
+    .preset-row small { color: var(--risu-theme-textcolor2); }
     .basic-panel { margin-top: 1rem; padding: 1rem; }
     .basic-panel label { display: grid; gap: .45rem; }
     .file-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem; margin-top: 1rem; }

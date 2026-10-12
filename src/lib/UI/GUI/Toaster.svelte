@@ -5,11 +5,15 @@
     let { ...rest }: ToasterProps = $props();
 
     const position = $derived<ToasterProps['position']>($isTouchDevice ? 'top-center' : 'top-right');
+    // Only request-status toasts can sit at the bottom (desktop setting); lift
+    // them above the chat input and save/page toolbar (~120px sticky area).
+    const offset = { top: '24px', right: '24px', bottom: '128px', left: '24px' };
 </script>
 
 <SonnerToaster
     theme="dark"
     {position}
+    {offset}
     richColors
     duration={3500}
     visibleToasts={8}

@@ -28,6 +28,7 @@ async function change(label: string, value: string) {
 beforeEach(() => {
     dirtyChange.mockReset()
     session = painterTestState({
+        unreflectedGlobalIdentities: [], blankIdentityIds: [],
         get botCatalog() { const refs = this.bot.globalOutfits ?? []; return { identities: this.bot.identities, outfits: [...this.bot.outfits, ...(this.globalLibrary?.outfits ?? []).filter((item: any) => !item.subjectId && refs.some((ref: any) => ref.id === item.id))] } },
         data: { ...createPainterChatData(), outfits: [
             { id: 'local-a', subjectId: 'person-a', name: '연습복', clothing: 'gray shirt', state: '' },
@@ -66,6 +67,7 @@ afterEach(() => { component?.$destroy(); component = undefined; document.body.re
 describe('BardPainter character and outfit manager', () => {
     test('copies characters to global and protects unsaved edits when switching libraries', async () => {
         session.globalLibrary = { identities: [{ id: 'global-person', name: '글로벌 인물', aliases: [], appearance: 'blue eyes' }], outfits: [] }
+        session.unreflectedGlobalIdentities = [...session.globalLibrary.identities]
         session.copyIdentityToGlobal = vi.fn().mockResolvedValue('copy')
         session.importGlobalIdentity = vi.fn().mockResolvedValue('import')
         mount(); await tick()
@@ -78,7 +80,8 @@ describe('BardPainter character and outfit manager', () => {
         expect(document.querySelector<HTMLInputElement>('[aria-label="인물 이름"]')?.value).toBe('글로벌 인물')
         expect(document.querySelector('[aria-label="봇에 첨부"]')).toBeNull()
         expect([...document.querySelectorAll('button')].some(item => item.textContent === '로어 연결')).toBe(false)
-        await click('현재 봇으로 가져오기')
+        expect(document.querySelector('[data-painter-person="global-person"]')?.textContent).toContain('이 봇에 미반영')
+        await click('이 봇에 반영')
         expect(session.importGlobalIdentity).toHaveBeenCalledWith('global-person')
     })
     test('creates independent outfits and assigns the same outfit with a default to a character', async () => {
@@ -377,5 +380,15 @@ describe('BardPainter character and outfit manager', () => {
         expect(document.querySelector<HTMLFieldSetElement>('[data-preset-editor]')?.disabled).toBe(true)
         button('덮어쓰기').click()
         expect(session.saveIdentity).not.toHaveBeenCalled()
+    })
+    test('points to unreflected global characters and cleans up blank characters on request', async () => {
+        session.unreflectedGlobalIdentities = [{ id: 'g', name: '공통 인물', aliases: [], appearance: 'x' }]
+        session.blankIdentityIds = ['blank']
+        session.pruneBlankIdentities = vi.fn().mockResolvedValue(1)
+        mount(); await tick()
+        expect(document.body.textContent).toContain('반영하지 않은 인물이 1명')
+        await click('빈 인물 정리')
+        expect(session.pruneBlankIdentities).toHaveBeenCalledOnce()
+        expect(document.body.textContent).toContain('정리했습니다')
     })
 })

@@ -10,6 +10,12 @@ import {
     deleteWikiPromptPreset,
     duplicateWikiPromptPreset,
     normalizeWikiPromptPresetState,
+    OFFICIAL_WIKI_ARCHIVE_FOLDER_ID,
+    OFFICIAL_WIKI_CURRENT_ID,
+    OFFICIAL_WIKI_RELEASE,
+    OFFICIAL_WIKI_V3_BACKUP_ID,
+    OFFICIAL_WIKI_V5_BACKUP_ID,
+    organizeOfficialWikiArchives,
     parseWikiPromptPreset,
     resolveWikiPromptPreset,
     serializeWikiPromptPreset,
@@ -101,7 +107,7 @@ describe('Wiki prompt presets', () => {
         expect(state.presets[0].blocks.some((block) =>
             block.id.startsWith('default-puzzle-')
         )).toBe(false)
-        expect(state.chatPresetId).toBe('unsafe')
+        expect(state.chatPresetId).toBe(OFFICIAL_WIKI_CURRENT_ID)
     })
 
     test('compiles stage blocks followed by character and chat injections', () => {
@@ -248,21 +254,148 @@ describe('Wiki prompt presets', () => {
     })
 })
 
-describe('versioned official character presets', () => {
-    test('ships current default and frozen backup and preserves selection on reload', () => {
-        const old = createDefaultWikiPromptPreset('old')
-        delete old.writingPolicyVersion
-        const state = normalizeWikiPromptPresetState({ presets: [old], chatPresetId: 'old' }, () => 'generated')
-        const backup = state.presets.find(p => p.name === '공식기본-260922')!
-        expect(backup).toBeDefined()
-        expect(state.chatPresetId).toBe('old')
-        expect(compileWikiPromptGuide(backup).canonicalRewrite).toContain('in separate sections from transient current state')
-        expect(compileWikiPromptGuide(state.presets[0]).canonicalRewrite).toContain('One primary home per fact')
-        const reloaded = normalizeWikiPromptPresetState({ presets: state.presets, chatPresetId: backup.id }, () => 'unused')
-        expect(reloaded.presets).toHaveLength(6)
-        expect(reloaded.chatPresetId).toBe(backup.id)
-        const imported = parseWikiPromptPreset(serializeWikiPromptPreset(backup), () => 'imported-backup')
-        expect(compileWikiPromptGuide(imported).canonicalRewrite).toBe(compileWikiPromptGuide(backup).canonicalRewrite)
+const CURRENT_NAME = '공식 기본 프리셋 (2026-10-10)'
+const officialOf = (presets: readonly WikiPromptPreset[]) => presets.filter(preset => preset.builtin)
+
+describe('official preset release and archives', () => {
+    test('ships one locked official preset and two unlocked dated archives', () => {
+        const state = normalizeWikiPromptPresetState(undefined, () => 'unused')
+        expect(state.presets.map(preset => [preset.name, preset.builtin, preset.writingPolicyVersion])).toEqual([
+            [CURRENT_NAME, true, 6],
+            ['공식 기본 프리셋 (2026-10-03)', false, 5],
+            ['공식 기본 프리셋 (2026-09-30)', false, 3],
+        ])
+        expect(state.chatPresetId).toBe(OFFICIAL_WIKI_CURRENT_ID)
+        expect(state.officialRelease).toBe(OFFICIAL_WIKI_RELEASE)
+        expect(normalizeWikiPromptPresetState(state, () => 'unused')).toEqual(state)
+    })
+
+    test('archives compile exactly like the instructions they replaced and stay deletable', () => {
+        const state = normalizeWikiPromptPresetState(undefined, () => 'unused')
+        const v5 = state.presets.find(preset => preset.id === OFFICIAL_WIKI_V5_BACKUP_ID)!
+        const v3 = state.presets.find(preset => preset.id === OFFICIAL_WIKI_V3_BACKUP_ID)!
+        expect(compileWikiPromptGuide(v5)).toEqual(compileWikiPromptGuide(previousLocalizedOfficial.preset as WikiPromptPreset))
+        expect(compileWikiPromptGuide(v3)).toEqual(compileWikiPromptGuide(previousRecallOfficial.preset as WikiPromptPreset))
+        expect(deleteWikiPromptPreset(state.presets, v5.id).deleted).toBe(true)
+        expect(deleteWikiPromptPreset(state.presets, OFFICIAL_WIKI_CURRENT_ID).deleted).toBe(false)
+    })
+
+    test('keeps a deleted archive deleted and an edited archive unchanged on reload', () => {
+        const state = normalizeWikiPromptPresetState(undefined, () => 'unused')
+        const edited = state.presets.find(preset => preset.id === OFFICIAL_WIKI_V3_BACKUP_ID)!
+        edited.blocks.find(block => block.id === 'main-wiki-guide')!.content = 'My archive edit.'
+        const remaining = state.presets.filter(preset => preset.id !== OFFICIAL_WIKI_V5_BACKUP_ID)
+        const reloaded = normalizeWikiPromptPresetState({ ...state, presets: remaining, chatPresetId: edited.id }, () => 'unused')
+        expect(reloaded.presets.map(preset => preset.id)).toEqual([OFFICIAL_WIKI_CURRENT_ID, OFFICIAL_WIKI_V3_BACKUP_ID])
+        expect(reloaded.chatPresetId).toBe(edited.id)
+        expect(compileWikiPromptGuide(reloaded.presets[1]).analysis).toContain('My archive edit.')
+    })
+
+    test('cleans up the legacy backup list once, keeping personal copies', () => {
+        const legacy = (id: string, preset: unknown, name: string) => ({ ...(preset as WikiPromptPreset), id, name, builtin: true })
+        const current = { ...createDefaultWikiPromptPreset(OFFICIAL_WIKI_CURRENT_ID), name: '공식기본' }
+        const copy = duplicateWikiPromptPreset(previousLocalizedOfficial.preset as WikiPromptPreset, 'personal-copy')
+        const presets = [
+            current,
+            legacy('official-wiki-260922', previousOfficial.preset, '공식기본-260922'),
+            legacy('official-wiki-260922-v2', previousOfficial.preset, '공식기본-260922-v2'),
+            // A broken legacy backup: labelled 2026-09-30 but carrying the v2 instructions.
+            legacy(OFFICIAL_WIKI_V3_BACKUP_ID, previousOfficial.preset, '공식기본'),
+            legacy('official-wiki-261003', previousCurrentStateOfficial.preset, '공식기본-261003'),
+            copy,
+            legacy(OFFICIAL_WIKI_V5_BACKUP_ID, previousLocalizedOfficial.preset, '공식기본-261003-v5'),
+        ]
+        const state = normalizeWikiPromptPresetState({ presets, chatPresetId: 'official-wiki-261003' }, () => 'unused')
+        expect(state.presets.map(preset => preset.name)).toEqual([
+            CURRENT_NAME, '공식기본-261003-v5 Copy', '공식 기본 프리셋 (2026-10-03)', '공식 기본 프리셋 (2026-09-30)',
+        ])
+        expect(officialOf(state.presets).map(preset => preset.id)).toEqual([OFFICIAL_WIKI_CURRENT_ID])
+        expect(state.presets.find(preset => preset.id === OFFICIAL_WIKI_V3_BACKUP_ID)?.writingPolicyVersion).toBe(3)
+        expect(state.presets.find(preset => preset.id === 'personal-copy')).toEqual(copy)
+        // A retired selection falls back to the official preset, not the first list entry.
+        expect(state.chatPresetId).toBe(OFFICIAL_WIKI_CURRENT_ID)
+        expect(normalizeWikiPromptPresetState(state, () => 'unused')).toEqual(state)
+    })
+
+    test('keeps only the first locked official preset', () => {
+        const state = normalizeWikiPromptPresetState({
+            presets: [createDefaultWikiPromptPreset('first-official'), createDefaultWikiPromptPreset('second-official')],
+            chatPresetId: 'second-official',
+            officialRelease: OFFICIAL_WIKI_RELEASE,
+        }, () => 'unused')
+        expect(officialOf(state.presets).map(preset => preset.id)).toEqual(['first-official'])
+        expect(state.chatPresetId).toBe('first-official')
+    })
+
+    test('places archives in their folder and the official preset first only on a release upgrade', () => {
+        const mine = duplicateWikiPromptPreset(createDefaultWikiPromptPreset('x'), 'mine')
+        const state = normalizeWikiPromptPresetState({ presets: [mine] }, () => 'unused')
+        const organized = organizeOfficialWikiArchives(undefined, state.presets, true)
+        expect(organized.folders).toEqual([{ id: OFFICIAL_WIKI_ARCHIVE_FOLDER_ID, name: '과거 공식 프리셋', createdAt: 0 }])
+        expect(organized.folderByItemId).toEqual({
+            [OFFICIAL_WIKI_V5_BACKUP_ID]: OFFICIAL_WIKI_ARCHIVE_FOLDER_ID,
+            [OFFICIAL_WIKI_V3_BACKUP_ID]: OFFICIAL_WIKI_ARCHIVE_FOLDER_ID,
+        })
+        expect(organized.itemOrder).toEqual([OFFICIAL_WIKI_CURRENT_ID, 'mine', OFFICIAL_WIKI_V5_BACKUP_ID, OFFICIAL_WIKI_V3_BACKUP_ID])
+        const legacyOrder = { itemOrder: [OFFICIAL_WIKI_V3_BACKUP_ID, 'mine', OFFICIAL_WIKI_CURRENT_ID] }
+        expect(organizeOfficialWikiArchives(legacyOrder, state.presets, true).itemOrder)
+            .toEqual([OFFICIAL_WIKI_CURRENT_ID, 'mine', OFFICIAL_WIKI_V5_BACKUP_ID, OFFICIAL_WIKI_V3_BACKUP_ID])
+        const folderDeletedByUser = { ...organized, folders: [], folderByItemId: {} }
+        expect(organizeOfficialWikiArchives(folderDeletedByUser, state.presets, false).folders).toEqual([])
+    })
+})
+
+test('keeps personal preset selection and policy while installing the official preset', () => {
+    const personal = duplicateWikiPromptPreset(createDefaultWikiPromptPreset('seed'), 'personal')
+    personal.writingPolicyVersion = 1
+    personal.name = 'My wiki'
+    personal.blocks.find(block => block.id === 'main-wiki-guide')!.content = 'Track my custom facts.'
+    const state = normalizeWikiPromptPresetState({ presets: [personal], chatPresetId: personal.id }, () => 'generated')
+    expect(state.chatPresetId).toBe('personal')
+    expect(state.presets[0].writingPolicyVersion).toBe(1)
+    expect(compileWikiPromptGuide(state.presets[0]).analysis).toContain('Track my custom facts.')
+    expect(officialOf(state.presets)).toHaveLength(1)
+    expect(normalizeWikiPromptPresetState(state, () => 'unused')).toEqual(state)
+})
+
+describe('in-place official preset upgrades', () => {
+    for (const [label, fixture] of [['v2', previousOfficial.preset], ['v3', previousRecallOfficial.preset]] as const) {
+        test(`upgrades a selected ${label} official preset while retaining its ID and optional toggles`, () => {
+            const old = structuredClone(fixture) as WikiPromptPreset
+            old.id = `selected-${label}`
+            old.blocks.find(block => block.id === 'default-character-equipment')!.enabled = false
+            old.blocks.find(block => block.id === 'default-length-compression')!.enabled = true
+            const state = normalizeWikiPromptPresetState({ presets: [old], chatPresetId: old.id }, () => 'unused')
+            const selected = resolveWikiPromptPreset(state.presets, state.chatPresetId)!
+            expect(selected).toMatchObject({ id: old.id, name: CURRENT_NAME, builtin: true, writingPolicyVersion: 6 })
+            expect(selected.blocks.find(block => block.id === 'default-character-equipment')?.enabled).toBe(false)
+            expect(selected.blocks.find(block => block.id === 'default-length-compression')?.enabled).toBe(true)
+        })
+    }
+
+    test('upgrades v4 in place and enables compression', () => {
+        const old = structuredClone(previousCurrentStateOfficial.preset) as WikiPromptPreset
+        old.id = OFFICIAL_WIKI_CURRENT_ID
+        old.blocks.find(block => block.id === 'default-character-equipment')!.enabled = false
+        const state = normalizeWikiPromptPresetState({ presets: [old], chatPresetId: old.id }, () => 'unused')
+        const selected = resolveWikiPromptPreset(state.presets, state.chatPresetId)!
+        expect(selected).toMatchObject({ id: old.id, name: CURRENT_NAME, writingPolicyVersion: 6 })
+        expect(selected.blocks.find(block => block.id === 'default-character-equipment')?.enabled).toBe(false)
+        expect(selected.blocks.find(block => block.id === 'default-length-compression')?.enabled).toBe(true)
+    })
+
+    test('upgrades v5 in place and keeps its compression choice', () => {
+        const old = structuredClone(previousLocalizedOfficial.preset) as WikiPromptPreset
+        old.id = OFFICIAL_WIKI_CURRENT_ID
+        old.blocks.find(block => block.id === 'default-length-compression')!.enabled = false
+        const state = normalizeWikiPromptPresetState({ presets: [old], chatPresetId: old.id }, () => 'unused')
+        const selected = resolveWikiPromptPreset(state.presets, state.chatPresetId)!
+        expect(selected).toMatchObject({ id: old.id, name: CURRENT_NAME, writingPolicyVersion: 6 })
+        expect(selected.blocks.find(block => block.id === 'default-length-compression')?.enabled).toBe(false)
+        const continuity = selected.blocks.find(block => block.id === 'core-character-continuity-contract')!.content
+        expect(continuity).toContain('It is not a catalogue of everything the character has seen or been told.')
+        expect(continuity).toContain('not a running chronicle of scenes')
+        expect(continuity).not.toContain('Retain who met whom and what each person learned.')
     })
 
     test('optional compression survives normalization and does not discard essential facts', () => {
@@ -277,73 +410,25 @@ describe('versioned official character presets', () => {
     })
 })
 
-
-test('keeps personal preset selection and policy while installing official choices', () => {
-    const personal = duplicateWikiPromptPreset(createDefaultWikiPromptPreset('seed'), 'personal')
-    personal.writingPolicyVersion = 1
-    personal.name = 'My wiki'
-    personal.blocks.find(block => block.id === 'main-wiki-guide')!.content = 'Track my custom facts.'
-    const state = normalizeWikiPromptPresetState({ presets: [personal], chatPresetId: personal.id }, () => 'generated')
-    expect(state.chatPresetId).toBe('personal')
-    expect(state.presets[0].writingPolicyVersion).toBe(1)
-    expect(compileWikiPromptGuide(state.presets[0]).analysis).toContain('Track my custom facts.')
-    expect(state.presets.filter(preset => preset.builtin)).toHaveLength(6)
-    expect(normalizeWikiPromptPresetState(state, () => 'unused')).toEqual(state)
+describe('personal presets keep their policy', () => {
+    for (const [label, fixture] of [
+        ['v2', previousOfficial.preset],
+        ['v3', previousRecallOfficial.preset],
+        ['v4', previousCurrentStateOfficial.preset],
+        ['v5', previousLocalizedOfficial.preset],
+    ] as const) {
+        test(`keeps personal ${label} instructions and selection unchanged`, () => {
+            const personal = duplicateWikiPromptPreset(fixture as WikiPromptPreset, `personal-${label}`)
+            const state = normalizeWikiPromptPresetState({ presets: [personal], chatPresetId: personal.id }, () => 'unused')
+            expect(state.chatPresetId).toBe(personal.id)
+            expect(state.presets[0]).toEqual(personal)
+            expect(compileWikiPromptGuide(state.presets[0])).toEqual(compileWikiPromptGuide(fixture as WikiPromptPreset))
+        })
+    }
 })
 
-describe('recall-focused official preset migration', () => {
-    const previous = previousOfficial.preset as WikiPromptPreset
-
-    test('selects the latest official preset for a new installation', () => {
-        const state = normalizeWikiPromptPresetState(undefined, () => 'new-default')
-        const selected = resolveWikiPromptPreset(state.presets, state.chatPresetId)!
-        expect(selected).toMatchObject({ id: 'new-default', name: '공식기본', writingPolicyVersion: 6 })
-        expect(state.presets.map(preset => preset.name)).toEqual([
-            '공식기본', '공식기본-260922', '공식기본-260922-v2', '공식기본-260930', '공식기본-261003', '공식기본-261003-v5',
-        ])
-        expect(normalizeWikiPromptPresetState(state, () => 'unused')).toEqual(state)
-    })
-
-    test('upgrades the selected official preset while retaining its ID and optional toggles', () => {
-        const old = structuredClone(previous)
-        old.id = 'existing-official'
-        old.blocks.find(block => block.id === 'default-character-equipment')!.enabled = false
-        old.blocks.find(block => block.id === 'default-length-compression')!.enabled = true
-        const state = normalizeWikiPromptPresetState({ presets: [old], chatPresetId: old.id }, () => 'unused')
-        const selected = resolveWikiPromptPreset(state.presets, state.chatPresetId)!
-        expect(selected).toMatchObject({ id: old.id, writingPolicyVersion: 6 })
-        expect(selected.blocks.find(block => block.id === 'default-character-equipment')?.enabled).toBe(false)
-        expect(selected.blocks.find(block => block.id === 'default-length-compression')?.enabled).toBe(true)
-        const backup = state.presets.find(preset => preset.name === '공식기본-260922-v2')!
-        expect(backup).toBeDefined()
-        expect(compileWikiPromptGuide(backup)).toEqual(compileWikiPromptGuide(previous))
-    })
-
-    test('keeps the archived policy through selection, reload, duplication and file import', () => {
-        const state = normalizeWikiPromptPresetState(undefined, () => 'current')
-        const backup = state.presets.find(preset => preset.name === '공식기본-260922-v2')!
-        expect(backup).toBeDefined()
-        const reloaded = normalizeWikiPromptPresetState({ presets: [backup], chatPresetId: backup.id }, () => 'unused')
-        expect(reloaded.chatPresetId).toBe(backup.id)
-        expect(reloaded.presets.some(preset => preset.builtin && preset.writingPolicyVersion === 6)).toBe(true)
-        const imported = parseWikiPromptPreset(serializeWikiPromptPreset(backup), () => 'imported')
-        const duplicate = duplicateWikiPromptPreset(backup, 'copy')
-        for (const candidate of [reloaded.presets[0], imported, duplicate]) {
-            expect(candidate.writingPolicyVersion).toBe(2)
-            expect(compileWikiPromptGuide(candidate)).toEqual(compileWikiPromptGuide(previous))
-        }
-        expect(normalizeWikiPromptPresetState(reloaded, () => 'unused')).toEqual(reloaded)
-    })
-
-    test('preserves a personal v2 preset without silently adding new instructions', () => {
-        const personal = duplicateWikiPromptPreset(previous, 'personal-v2')
-        const before = compileWikiPromptGuide(personal)
-        const state = normalizeWikiPromptPresetState({ presets: [personal], chatPresetId: personal.id }, () => 'unused')
-        expect(state.chatPresetId).toBe(personal.id)
-        expect(state.presets[0].writingPolicyVersion).toBe(2)
-        expect(compileWikiPromptGuide(state.presets[0])).toEqual(before)
-    })
-
+describe('official instruction content', () => {
+    const previous = previousCurrentStateOfficial.preset as WikiPromptPreset
     test('routes recall instructions to their intended stages after export and import', () => {
         const preset = createDefaultWikiPromptPreset('latest')
         const imported = parseWikiPromptPreset(serializeWikiPromptPreset(preset), () => 'imported')
@@ -368,78 +453,6 @@ describe('recall-focused official preset migration', () => {
         }
         expect(compileWikiPromptGuide(imported)).toEqual(compileWikiPromptGuide(preset))
     })
-})
-
-describe('current-state official preset migration', () => {
-    const previous = previousRecallOfficial.preset as WikiPromptPreset
-
-    test('upgrades v3 in place while keeping the old instructions selectable and frozen', () => {
-        const old = structuredClone(previous)
-        old.id = 'selected-official'
-        old.blocks.find(block => block.id === 'default-character-equipment')!.enabled = false
-        old.blocks.find(block => block.id === 'default-length-compression')!.enabled = true
-        const state = normalizeWikiPromptPresetState({ presets: [old], chatPresetId: old.id }, () => 'unused')
-        const selected = resolveWikiPromptPreset(state.presets, state.chatPresetId)!
-        expect(selected).toMatchObject({ id: old.id, writingPolicyVersion: 6 })
-        expect(selected.blocks.find(block => block.id === 'default-character-equipment')?.enabled).toBe(false)
-        expect(selected.blocks.find(block => block.id === 'default-length-compression')?.enabled).toBe(true)
-        const backup = state.presets.find(preset => preset.name === '공식기본-260930')!
-        expect(backup).toBeDefined()
-        // Compare to the saved pre-change payload, not a newly generated default.
-        expect(backup.blocks).toEqual(previous.blocks)
-        const reloaded = normalizeWikiPromptPresetState({ ...state, chatPresetId: backup.id }, () => 'unused')
-        expect(reloaded.chatPresetId).toBe(backup.id)
-        const imported = parseWikiPromptPreset(serializeWikiPromptPreset(backup), () => 'imported-v3')
-        const copied = duplicateWikiPromptPreset(backup, 'copied-v3')
-        for (const candidate of [reloaded.presets.find(preset => preset.id === backup.id)!, imported, copied]) {
-            expect(candidate.writingPolicyVersion).toBe(3)
-            expect(compileWikiPromptGuide(candidate)).toEqual(compileWikiPromptGuide(previous))
-        }
-        expect(normalizeWikiPromptPresetState(reloaded, () => 'unused')).toEqual(reloaded)
-    })
-
-    test('keeps personal v3 instructions and selection unchanged', () => {
-        const personal = duplicateWikiPromptPreset(previous, 'personal-v3')
-        const state = normalizeWikiPromptPresetState({ presets: [personal], chatPresetId: personal.id }, () => 'unused')
-        expect(state.chatPresetId).toBe(personal.id)
-        expect(state.presets[0]).toEqual(personal)
-        expect(compileWikiPromptGuide(state.presets[0])).toEqual(compileWikiPromptGuide(previous))
-    })
-})
-
-describe('localized transition official preset migration', () => {
-    const previous = previousCurrentStateOfficial.preset as WikiPromptPreset
-
-    test('upgrades v4 in place, enables compression and keeps the old instructions frozen', () => {
-        const old = structuredClone(previous)
-        old.id = 'official-wiki-current'
-        old.blocks.find(block => block.id === 'default-character-equipment')!.enabled = false
-        const state = normalizeWikiPromptPresetState({ presets: [old], chatPresetId: old.id }, () => 'unused')
-        const selected = resolveWikiPromptPreset(state.presets, state.chatPresetId)!
-        expect(selected).toMatchObject({ id: old.id, name: '공식기본', writingPolicyVersion: 6 })
-        expect(selected.blocks.find(block => block.id === 'default-character-equipment')?.enabled).toBe(false)
-        expect(selected.blocks.find(block => block.id === 'default-length-compression')?.enabled).toBe(true)
-        const backup = state.presets.find(preset => preset.name === '공식기본-261003')!
-        expect(backup).toBeDefined()
-        expect(backup.blocks).toEqual(previous.blocks)
-        const reloaded = normalizeWikiPromptPresetState({ ...state, chatPresetId: backup.id }, () => 'unused')
-        expect(reloaded.chatPresetId).toBe(backup.id)
-        const imported = parseWikiPromptPreset(serializeWikiPromptPreset(backup), () => 'imported-v4')
-        const copied = duplicateWikiPromptPreset(backup, 'copied-v4')
-        for (const candidate of [reloaded.presets.find(preset => preset.id === backup.id)!, imported, copied]) {
-            expect(candidate.writingPolicyVersion).toBe(4)
-            expect(compileWikiPromptGuide(candidate)).toEqual(compileWikiPromptGuide(previous))
-        }
-        expect(normalizeWikiPromptPresetState(reloaded, () => 'unused')).toEqual(reloaded)
-    })
-
-    test('keeps personal v4 instructions and selection unchanged', () => {
-        const personal = duplicateWikiPromptPreset(previous, 'personal-v4')
-        const state = normalizeWikiPromptPresetState({ presets: [personal], chatPresetId: personal.id }, () => 'unused')
-        expect(state.chatPresetId).toBe(personal.id)
-        expect(state.presets[0]).toEqual(personal)
-        expect(compileWikiPromptGuide(state.presets[0])).toEqual(compileWikiPromptGuide(previous))
-    })
 
     test('replaces hardcoded Korean role labels and per-event transition logging', () => {
         const instructions = (preset: WikiPromptPreset) => preset.blocks
@@ -455,40 +468,5 @@ describe('localized transition official preset migration', () => {
         expect(guide).toContain('revise that entry instead of appending a new one')
         expect(guide).toContain('one or two representative event links')
         expect(guide).not.toContain('Retain meaningful transition results and exact event links')
-    })
-})
-
-describe('knowledge-boundary official preset migration', () => {
-    const previous = previousLocalizedOfficial.preset as WikiPromptPreset
-
-    test('upgrades v5 in place, keeps its compression choice and freezes the v5 instructions', () => {
-        const old = structuredClone(previous)
-        old.id = 'official-wiki-current'
-        old.blocks.find(block => block.id === 'default-length-compression')!.enabled = false
-        const state = normalizeWikiPromptPresetState({ presets: [old], chatPresetId: old.id }, () => 'unused')
-        const selected = resolveWikiPromptPreset(state.presets, state.chatPresetId)!
-        expect(selected).toMatchObject({ id: old.id, name: '공식기본', writingPolicyVersion: 6 })
-        expect(selected.blocks.find(block => block.id === 'default-length-compression')?.enabled).toBe(false)
-        const continuity = selected.blocks.find(block => block.id === 'core-character-continuity-contract')!.content
-        expect(continuity).toContain('It is not a catalogue of everything the character has seen or been told.')
-        expect(continuity).toContain('not a running chronicle of scenes')
-        expect(continuity).not.toContain('Retain who met whom and what each person learned.')
-        const backup = state.presets.find(preset => preset.name === '공식기본-261003-v5')!
-        expect(backup.blocks).toEqual(previous.blocks)
-        const imported = parseWikiPromptPreset(serializeWikiPromptPreset(backup), () => 'imported-v5')
-        const copied = duplicateWikiPromptPreset(backup, 'copied-v5')
-        for (const candidate of [imported, copied]) {
-            expect(candidate.writingPolicyVersion).toBe(5)
-            expect(compileWikiPromptGuide(candidate)).toEqual(compileWikiPromptGuide(previous))
-        }
-        expect(normalizeWikiPromptPresetState(state, () => 'unused')).toEqual(state)
-    })
-
-    test('keeps personal v5 instructions and selection unchanged', () => {
-        const personal = duplicateWikiPromptPreset(previous, 'personal-v5')
-        const state = normalizeWikiPromptPresetState({ presets: [personal], chatPresetId: personal.id }, () => 'unused')
-        expect(state.chatPresetId).toBe(personal.id)
-        expect(state.presets[0]).toEqual(personal)
-        expect(compileWikiPromptGuide(state.presets[0])).toEqual(compileWikiPromptGuide(previous))
     })
 })

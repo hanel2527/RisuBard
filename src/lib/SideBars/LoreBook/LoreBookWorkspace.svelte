@@ -76,6 +76,7 @@
         bardMode?: boolean
         bardSettings?: BardLoreSettings
         bardAnalysisRun?: BardLoreAnalysisRun
+        bardCharacterId?: string
         onBardAnalysisRunChange?: (run: BardLoreAnalysisRun | undefined) => void
         legacyDisabledBackups?: Record<string, loreBook & { disabled?: boolean }>
         localActivation?: LorebookLocalActivation
@@ -94,6 +95,7 @@
         bardMode = false,
         bardSettings,
         bardAnalysisRun,
+        bardCharacterId,
         onBardAnalysisRunChange,
         legacyDisabledBackups,
         localActivation,
@@ -1519,16 +1521,19 @@
                             <strong>{activeBardEntry.bard.links.length}</strong>
                         </button>
                         {#if bardSettings}
-                            <BardLoreAnalysisPanel
-                                entries={normalizedEntries as BardLoreEntry[]}
-                                settings={bardSettings}
-                                activeEntryId={activeBardEntry.id}
-                                analysisRun={bardAnalysisRun}
-                                compact
-                                onChange={(next) => emit(next)}
-                                onSettingsChange={(next) => { if (bardSettings) Object.assign(bardSettings, next) }}
-                                onAnalysisRunChange={onBardAnalysisRunChange}
-                            />
+                            {#key bardCharacterId}
+                                <BardLoreAnalysisPanel
+                                    characterId={bardCharacterId}
+                                    entries={normalizedEntries as BardLoreEntry[]}
+                                    settings={bardSettings}
+                                    activeEntryId={activeBardEntry.id}
+                                    analysisRun={bardAnalysisRun}
+                                    compact
+                                    onChange={(next) => emit(next)}
+                                    onSettingsChange={(next) => { if (bardSettings) Object.assign(bardSettings, next) }}
+                                    onAnalysisRunChange={onBardAnalysisRunChange}
+                                />
+                            {/key}
                         {/if}
                     {/if}
                 </aside>

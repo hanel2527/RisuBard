@@ -11,7 +11,9 @@
     // (notify*), so they never collide even on the same Toaster. See
     // .agent/notes/request-status-toast-infra.md §4-3.
     import { onDestroy } from 'svelte'
+    import { get } from 'svelte/store'
     import { toast } from 'svelte-sonner'
+    import { DBState, isTouchDevice } from 'src/ts/stores.svelte'
     import { requestStatuses, isTerminalPhase, clearStatus } from 'src/ts/status/requestStatus'
     import RequestStatusToast from './RequestStatusToast.svelte'
 
@@ -51,6 +53,10 @@
                 toast.custom(RequestStatusToast, {
                     id: toastId(id),
                     duration: Number.POSITIVE_INFINITY,
+                    // Per-toast position puts status toasts in their own sonner
+                    // container, so moving them never moves notify* toasts.
+                    // Touch screens are narrow: keep them top-center.
+                    position: get(isTouchDevice) ? 'top-center' : (DBState.db.requestStatusPosition ?? 'top-right'),
                     componentProps: { id },
                 })
             }

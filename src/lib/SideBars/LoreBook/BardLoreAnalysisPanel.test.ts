@@ -3,15 +3,27 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mount, tick, unmount } from 'svelte'
 import { changeLanguage } from 'src/lang'
-import { createBardLoreSettings, fingerprintBardLoreEntry, type BardLoreEntry } from 'src/ts/lorebook/bardLore'
+import {
+    createBardLoreSettings,
+    fingerprintBardLoreEntry,
+    materializeBardLoreEntries,
+    upgradeLegacyLorebook,
+    type BardLoreAnalysisRun,
+    type BardLoreEntry,
+} from 'src/ts/lorebook/bardLore'
+import { abortAllBardLoreAnalysisJobs } from 'src/ts/lorebook/bardLoreAnalysisRunner.svelte'
+import { DBState } from 'src/ts/stores.svelte'
+import type { character, loreBook } from 'src/ts/storage/database.svelte'
 import BardLoreAnalysisPanel from './BardLoreAnalysisPanel.svelte'
 
 const requestChatData = vi.hoisted(() => vi.fn())
 const tokenizerMock = vi.hoisted(() => vi.fn(async (_value: string) => 20))
 const alertNormalMock = vi.hoisted(() => vi.fn())
+const notifySuccessMock = vi.hoisted(() => vi.fn())
+const notifyErrorMock = vi.hoisted(() => vi.fn())
 vi.mock('src/ts/process/request/request', () => ({ requestChatData }))
 vi.mock('src/ts/tokenizer', () => ({ tokenize: tokenizerMock }))
-vi.mock('src/ts/alert', () => ({ alertNormal: alertNormalMock, notifySuccess: vi.fn() }))
+vi.mock('src/ts/alert', () => ({ alertNormal: alertNormalMock, notifySuccess: notifySuccessMock, notifyError: notifyErrorMock }))
 
 const source: BardLoreEntry = {
     id: 'source',
@@ -37,10 +49,81 @@ const source: BardLoreEntry = {
     },
 }
 
+function successfulAnalysis({ formated }: { formated: Array<{ content: string }> }) {
+    return {
+        type: 'success',
+        result: JSON.stringify({
+            entries: JSON.parse(formated[0].content.split('\n').at(-1)!).targets.map(({ ref }: { ref: number }) => ({
+                ref, kind: 'location', activation: 'retrieve', aliases: [], tags: ['장소'], summary: '완성', links: [],
+            })),
+        }),
+    }
+}
+
+function deferredRequests() {
+    const pending: Array<() => void> = []
+    requestChatData.mockImplementation((request) => new Promise((resolve) => {
+        pending.push(() => resolve(successfulAnalysis(request)))
+    }))
+    return pending
+}
+
+function makeCharacter(chaId: string, name: string, lore: BardLoreEntry[]): character {
+    const globalLore = lore.map(({ bard: _bard, ...entry }) => entry as loreBook)
+    let next = 0
+    return {
+        chaId,
+        name,
+        globalLore,
+        bardLore: upgradeLegacyLorebook(globalLore, () => `${chaId}-derived-${next++}`, createBardLoreSettings({ analysisBatchEntries: 1 })),
+    } as character
+}
+
+function findCharacter(chaId: string) {
+    return DBState.db.characters.find((candidate) => candidate.chaId === chaId)!
+}
+
+function mountForCharacter(chaId: string) {
+    const owner = findCharacter(chaId)
+    return mount(BardLoreAnalysisPanel, {
+        target: document.body.appendChild(document.createElement('div')),
+        props: {
+            characterId: chaId,
+            entries: materializeBardLoreEntries(owner.bardLore!, owner.globalLore),
+            settings: owner.bardLore!.settings,
+            analysisRun: owner.bardLore!.analysisRun,
+            onChange: vi.fn(),
+            onAnalysisRunChange: (run: BardLoreAnalysisRun | undefined) => { findCharacter(chaId).bardLore!.analysisRun = run },
+        },
+    })
+}
+
+async function startFromWorkbench() {
+    await tick()
+    document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-open]')!.click()
+    await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-plan]')).not.toBeNull())
+    document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analyze]')!.click()
+}
+
+function addSecondEntry(): BardLoreEntry {
+    const second = structuredClone(source)
+    second.id = 'second'
+    second.key = '항구'
+    second.comment = '항구'
+    second.content = '도시의 항구'
+    second.bard.sourceLegacyId = 'second'
+    return second
+}
+
 let mounted: ReturnType<typeof mount> | undefined
+const originalCharacters = DBState.db.characters
 afterEach(async () => {
     if (mounted) await unmount(mounted)
     mounted = undefined
+    abortAllBardLoreAnalysisJobs()
+    DBState.db.characters = originalCharacters
+    notifySuccessMock.mockClear()
+    notifyErrorMock.mockClear()
     await new Promise((resolve) => window.setTimeout(resolve, 30))
     document.body.replaceChildren()
     requestChatData.mockReset()
@@ -553,10 +636,8 @@ describe('BardLoreAnalysisPanel', () => {
         expect(requestChatData).not.toHaveBeenCalled()
     })
 
-    it('stops and persists a paused run when the dialog closes', async () => {
-        requestChatData.mockImplementation((_arg, _mode, signal: AbortSignal) => new Promise((resolve) => {
-            signal.addEventListener('abort', () => resolve({ type: 'fail', result: 'aborted' }), { once: true })
-        }))
+    it('keeps analyzing after the dialog closes and the panel unmounts', async () => {
+        const pending = deferredRequests()
         const onAnalysisRunChange = vi.fn()
         mounted = mount(BardLoreAnalysisPanel, {
             target: document.body.appendChild(document.createElement('div')),
@@ -568,14 +649,135 @@ describe('BardLoreAnalysisPanel', () => {
             },
         })
 
-        await tick()
-        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-open]')!.click()
-        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-plan]')).not.toBeNull())
-        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analyze]')!.click()
+        await startFromWorkbench()
         await vi.waitFor(() => expect(requestChatData).toHaveBeenCalled())
+        expect(document.body.querySelector('[data-bard-lore-analysis-background-notice]')).not.toBeNull()
         document.body.querySelector<HTMLButtonElement>('.risu-modal-close')!.click()
+        await tick()
+        expect(document.body.querySelector('[data-bard-lore-analysis-running]')?.textContent).toContain('0 / 1')
+        await unmount(mounted)
+        mounted = undefined
+
+        expect(requestChatData.mock.calls[0][2].aborted).toBe(false)
+        pending[0]()
+        await vi.waitFor(() => expect(onAnalysisRunChange.mock.calls.at(-1)?.[0]?.status).toBe('review'))
+        expect(notifySuccessMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('stops and keeps a paused run when the user cancels', async () => {
+        requestChatData.mockImplementation((_arg, _mode, signal: AbortSignal) => new Promise((resolve) => {
+            signal.addEventListener('abort', () => resolve({ type: 'fail', result: 'aborted' }), { once: true })
+        }))
+        const onAnalysisRunChange = vi.fn()
+        mounted = mount(BardLoreAnalysisPanel, {
+            target: document.body.appendChild(document.createElement('div')),
+            props: { entries: [source], settings: createBardLoreSettings(), onChange: vi.fn(), onAnalysisRunChange },
+        })
+
+        await startFromWorkbench()
+        await vi.waitFor(() => expect(requestChatData).toHaveBeenCalled())
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-cancel]')!.click()
         await vi.waitFor(() => expect(onAnalysisRunChange.mock.calls.at(-1)?.[0]?.status).toBe('paused'))
         expect(requestChatData.mock.calls[0][2].aborted).toBe(true)
+        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-resume]')).not.toBeNull())
+        expect(notifySuccessMock).not.toHaveBeenCalled()
+    })
+
+    it.each([
+        ['discarding', '.run-layout button.danger'],
+        ['approving', '[data-bard-lore-analysis-apply]'],
+    ])('offers a startable plan right after %s the finished run', async (_action, selector) => {
+        requestChatData.mockImplementation(async (request) => successfulAnalysis(request))
+        const onAnalysisRunChange = vi.fn()
+        mounted = mount(BardLoreAnalysisPanel, {
+            target: document.body.appendChild(document.createElement('div')),
+            props: { entries: [source], settings: createBardLoreSettings(), onChange: vi.fn(), onAnalysisRunChange },
+        })
+
+        await startFromWorkbench()
+        await vi.waitFor(() => expect(onAnalysisRunChange.mock.calls.at(-1)?.[0]?.status).toBe('review'))
+        await vi.waitFor(() => expect(document.body.querySelector<HTMLButtonElement>(selector)?.disabled).toBe(false))
+        document.body.querySelector<HTMLButtonElement>(selector)!.click()
+
+        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analyze]')).not.toBeNull())
+        expect(onAnalysisRunChange.mock.calls.at(-1)?.[0]).toBeUndefined()
+        expect(document.body.querySelector('[data-bard-lore-analysis-plan]')?.textContent).toContain('1')
+    })
+
+    it('ignores a response that arrives after the user stopped the job', async () => {
+        // Some providers, such as the echo model, finish even after the request is aborted.
+        const pending = deferredRequests()
+        const onAnalysisRunChange = vi.fn()
+        mounted = mount(BardLoreAnalysisPanel, {
+            target: document.body.appendChild(document.createElement('div')),
+            props: { entries: [source], settings: createBardLoreSettings(), onChange: vi.fn(), onAnalysisRunChange },
+        })
+
+        await startFromWorkbench()
+        await vi.waitFor(() => expect(requestChatData).toHaveBeenCalled())
+        document.body.querySelector<HTMLButtonElement>('[data-bard-lore-analysis-cancel]')!.click()
+        await vi.waitFor(() => expect(onAnalysisRunChange.mock.calls.at(-1)?.[0]?.status).toBe('paused'))
+        const callsAfterStop = onAnalysisRunChange.mock.calls.length
+        pending[0]()
+        await new Promise((resolve) => window.setTimeout(resolve, 50))
+
+        expect(onAnalysisRunChange.mock.calls.length).toBe(callsAfterStop)
+        expect(onAnalysisRunChange.mock.calls.at(-1)?.[0]?.batches.map(({ status }: { status: string }) => status)).toEqual(['pending'])
+        expect(notifySuccessMock).not.toHaveBeenCalled()
+    })
+
+    it('saves background results to the owning character after the selection changes', async () => {
+        DBState.db.characters = [makeCharacter('alpha', 'Alpha', [source, addSecondEntry()]), makeCharacter('beta', 'Beta', [source])]
+        const pending = deferredRequests()
+        mounted = mountForCharacter('alpha')
+
+        await startFromWorkbench()
+        await vi.waitFor(() => expect(requestChatData).toHaveBeenCalledTimes(1))
+        await unmount(mounted)
+        mounted = undefined
+        // A new character shifts indexes; the job must still find its owner by ID.
+        DBState.db.characters = [makeCharacter('gamma', 'Gamma', [source]), ...DBState.db.characters]
+        pending[0]()
+        await vi.waitFor(() => expect(requestChatData).toHaveBeenCalledTimes(2))
+        pending[1]()
+
+        await vi.waitFor(() => expect(findCharacter('alpha').bardLore!.analysisRun?.status).toBe('review'))
+        expect(findCharacter('alpha').bardLore!.analysisRun!.batches.map((batch) => batch.status)).toEqual(['complete', 'complete'])
+        expect(findCharacter('beta').bardLore!.analysisRun).toBeUndefined()
+        expect(findCharacter('gamma').bardLore!.analysisRun).toBeUndefined()
+        expect(notifySuccessMock.mock.calls[0][0]).toContain('Alpha')
+    })
+
+    it('abandons a background job when its saved run is removed', async () => {
+        DBState.db.characters = [makeCharacter('alpha', 'Alpha', [source, addSecondEntry()])]
+        const pending = deferredRequests()
+        mounted = mountForCharacter('alpha')
+
+        await startFromWorkbench()
+        await vi.waitFor(() => expect(requestChatData).toHaveBeenCalledTimes(1))
+        delete findCharacter('alpha').bardLore!.analysisRun
+        pending[0]()
+        await vi.waitFor(() => expect(document.body.querySelector('[data-bard-lore-analysis-cancel]')).toBeNull())
+
+        expect(requestChatData).toHaveBeenCalledTimes(1)
+        expect(findCharacter('alpha').bardLore!.analysisRun).toBeUndefined()
+        expect(notifySuccessMock).not.toHaveBeenCalled()
+    })
+
+    it('drops lore deleted during a background job instead of restoring it to the saved run', async () => {
+        DBState.db.characters = [makeCharacter('alpha', 'Alpha', [source, addSecondEntry()])]
+        const pending = deferredRequests()
+        mounted = mountForCharacter('alpha')
+
+        await startFromWorkbench()
+        await vi.waitFor(() => expect(requestChatData).toHaveBeenCalledTimes(1))
+        const owner = findCharacter('alpha')
+        owner.globalLore = owner.globalLore.filter((entry) => entry.id !== 'second')
+        pending[0]()
+
+        await vi.waitFor(() => expect(findCharacter('alpha').bardLore!.analysisRun?.status).toBe('review'))
+        expect(requestChatData).toHaveBeenCalledTimes(1)
+        expect(findCharacter('alpha').bardLore!.analysisRun!.targetIds).toEqual(['source'])
     })
 
     it('shows persisted drafts and failed-batch reasons after reopening', async () => {

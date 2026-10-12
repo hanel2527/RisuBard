@@ -275,7 +275,7 @@
                 <!-- Keep one Sidebar instance mounted across the responsive breakpoint so portal dialogs retain state. -->
                 <Sidebar openGrid={() => {gridOpen = true}} hidden={!$DynamicGUI && !$sideBarStore} />
             </div>
-            <div class="flex h-full min-h-0 min-w-0 grow flex-col overflow-hidden">
+            <div class="relative flex h-full min-h-0 min-w-0 grow flex-col overflow-hidden" data-lorebook-dock-host>
                 <ChatScreen />
             </div>
         {/if}

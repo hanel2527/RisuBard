@@ -60,6 +60,8 @@ vi.mock('src/ts/stores.svelte', () => ({
     selIdState: { selId: 0 },
     isTouchDevice: writable(false),
     selectedCharID: writable(0),
+    DynamicGUI: writable(false),
+    MobileGUI: writable(false),
 }))
 
 vi.mock('src/ts/alert', () => ({
@@ -1935,6 +1937,48 @@ describe('LoreBookWorkspace', () => {
 })
 
 describe('LoreBookWorkspaceDialog source contract', () => {
+    it('docks over the chat column without a modal and commits the draft on close', async () => {
+        const host = document.body.appendChild(document.createElement('div'))
+        host.setAttribute('data-lorebook-dock-host', '')
+        const entries = [entry('one')]
+        const onChange = vi.fn((next: loreBook[]) => {
+            entries.splice(0, entries.length, ...next)
+        })
+        const onOpenChange = vi.fn()
+        mounted = mount(LoreBookWorkspaceDialog, {
+            target: document.body.appendChild(document.createElement('div')),
+            props: {
+                open: true,
+                dockable: true,
+                entries,
+                scopeKey: 'dock-scope',
+                scopeLabel: 'Docked lore',
+                onChange,
+                onOpenChange,
+            },
+        })
+        try {
+            await vi.waitFor(() => expect(host.querySelector('[data-lorebook-dock] [data-lorebook-row="one"]')).not.toBeNull())
+            expect(document.body.querySelector('.risu-modal-overlay')).toBeNull()
+            expect(host.querySelector('[data-lorebook-dock] h2')?.textContent).toBe('Docked lore')
+
+            click('[data-lorebook-row="one"] [data-lorebook-open]')
+            await tick()
+            const content = host.querySelector<HTMLTextAreaElement>('[data-lorebook-field="content"]')!
+            content.value = 'saved from dock'
+            content.dispatchEvent(new Event('input', { bubbles: true }))
+            await tick()
+
+            click('[data-lorebook-dock-close]')
+            await tick()
+            expect(onOpenChange).toHaveBeenCalledWith(false)
+            expect(host.querySelector('[data-lorebook-dock]')).toBeNull()
+            expect(entries.find((item) => item.id === 'one')?.content).toBe('saved from dock')
+        } finally {
+            host.remove()
+        }
+    })
+
     it('opens a Grimoire end-user guide from the square help button beside close', async () => {
         mounted = mount(LoreBookWorkspaceDialog, {
             target: document.body.appendChild(document.createElement('div')),

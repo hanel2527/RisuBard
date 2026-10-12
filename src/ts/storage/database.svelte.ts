@@ -77,6 +77,7 @@ import {
 } from '../risubard/memorySavePolicy';
 import {
     normalizeWikiPromptPresetState,
+    organizeOfficialWikiArchives,
     type WikiPromptPreset,
 } from '../risubard/wikiPromptPreset';
 import {
@@ -512,6 +513,14 @@ export function setDatabase(data:Database){
     // Concrete default so the settings toggle (reads !!value) and the runtime
     // gate (statusEnabled) agree. Default on — see request-status-toast-infra.md.
     data.showRequestStatus ??= true
+    data.requestStatusCollapsed ??= false
+    if (!['top-center', 'top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(data.requestStatusPosition)) {
+        data.requestStatusPosition = 'top-right'
+    }
+    data.requestStatusOpacity = Number.isFinite(data.requestStatusOpacity)
+        ? Math.min(100, Math.max(10, Math.round(data.requestStatusOpacity / 10) * 10))
+        : 100
+    data.requestStatusHoverOpaque ??= true
     // Request logging default ON. Bodies live in save/request-logs.db (never in
     // the .bin export) under a byte budget, and the log is the only way to see
     // what a server-side job actually sent — see request-log-usage.md.
@@ -645,6 +654,9 @@ export function setDatabase(data:Database){
         plugins: (Array.isArray(data.plugins) ? data.plugins : [])
             .map((plugin) => plugin?.name)
             .filter((name): name is string => typeof name === 'string'),
+        wikiPromptPresets: (Array.isArray(data.risuBardWikiPromptPresets) ? data.risuBardWikiPromptPresets : [])
+            .map((preset) => preset?.id)
+            .filter((id): id is string => typeof id === 'string'),
     })
     data.additionalParams ??= []
     data.heightMode ??= 'normal'
@@ -1035,9 +1047,16 @@ export function setDatabase(data:Database){
     const wikiPromptState = normalizeWikiPromptPresetState({
         presets: data.risuBardWikiPromptPresets,
         chatPresetId: data.risuBardChatWikiPromptPresetId,
+        officialRelease: data.risuBardWikiPromptOfficialRelease,
     }, uuidv4)
+    data.collectionOrganizers.wikiPromptPresets = organizeOfficialWikiArchives(
+        data.collectionOrganizers.wikiPromptPresets,
+        wikiPromptState.presets,
+        data.risuBardWikiPromptOfficialRelease !== wikiPromptState.officialRelease,
+    )
     data.risuBardWikiPromptPresets = wikiPromptState.presets
     data.risuBardChatWikiPromptPresetId = wikiPromptState.chatPresetId
+    data.risuBardWikiPromptOfficialRelease = wikiPromptState.officialRelease
     const grimoirePromptState = normalizeBardLoreInstructionPresetState({
         presets: data.risuBardGrimoirePromptPresets,
         activePresetId: data.risuBardGrimoirePromptPresetId,
@@ -1461,6 +1480,7 @@ export interface RisuPersona {
     id?:string
     note?:string
     embeddedModule?:RisuModule
+    portraitPrompt?:import('../bardPainter/personaPortrait').PersonaPortraitPrompt
 }
 
 export function ensurePersonaIds(
@@ -1881,6 +1901,7 @@ export interface Database{
     risuBardArcPlotterCustomPresets?: ArcPlotterPreset[]
     risuBardWikiPromptPresets?: WikiPromptPreset[]
     risuBardChatWikiPromptPresetId?: string
+    risuBardWikiPromptOfficialRelease?: string
     risuBardGrimoirePromptPresets?: BardLoreInstructionPreset[]
     risuBardGrimoirePromptPresetId?: string
     textAreaTextSize:number
@@ -2000,6 +2021,13 @@ export interface Database{
     // Show the floating request-status toast (phase / thinking+response tokens /
     // tok/s / stall) for model-preset requests. Memory-only UI feature; default on.
     showRequestStatus: boolean
+    // Request-status toast display: collapsed body (toggled from the toast
+    // itself), desktop position (touch devices stay top-center), card opacity
+    // in percent (10..100, failed toasts always opaque) and hover override.
+    requestStatusCollapsed: boolean
+    requestStatusPosition: 'top-center' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+    requestStatusOpacity: number
+    requestStatusHoverOpaque: boolean
     // Persist outgoing provider requests (body + assembled response + tokens)
     // to save/request-logs.db. Default on; the token usage statistics come from
     // the same write, so turning it off stops both.

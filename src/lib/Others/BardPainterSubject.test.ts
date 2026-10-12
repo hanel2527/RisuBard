@@ -7,118 +7,117 @@ import { painterTestState } from './BardPainterTestState.svelte'
 let component: ReturnType<typeof createClassComponent> | undefined
 let session: any
 let subject: any
+const onMove = vi.fn(), onRemove = vi.fn()
 async function mount(disabled = false) {
     component = createClassComponent({ component: BardPainterSubject, target: document.body,
-        props: { subject, session, disabled, index: 0, total: 2, onMove: vi.fn(), onRemove: vi.fn() } })
+        props: { subject, session, disabled, index: 0, total: 2, onMove, onRemove } })
     await tick()
 }
-async function change(label: string, value: string) {
-    const input = document.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(`[aria-label="${label}"]`)!
-    expect(input, label).not.toBeNull()
-    input.value = value
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-    input.dispatchEvent(new Event('change', { bubbles: true }))
+const field = <T extends HTMLElement = HTMLTextAreaElement>(selector: string) => document.querySelector<T>(selector)!
+const byLabel = (label: string) => document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!
+async function type(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
+    element.value = value
+    element.dispatchEvent(new Event('input', { bubbles: true }))
+    element.dispatchEvent(new Event('blur'))
     await tick()
 }
 beforeEach(() => {
+    onMove.mockReset(); onRemove.mockReset()
+    const cape = { id: 'cape', subjectId: 'saved-person', name: 'Travel cape', clothing: 'green cape', state: 'dusty' }
     session = painterTestState({
-        get botCatalog() { const refs = this.bot.globalOutfits ?? []; return { identities: this.bot.identities, outfits: [...this.bot.outfits, ...(this.globalLibrary?.outfits ?? []).filter((item: any) => !item.subjectId && refs.some((ref: any) => ref.id === item.id))] } },
         data: { draft: { subjects: [{ id: 'draft-person', name: 'Current', aliases: [], kind: 'character', appearance: 'short hair', clothing: 'old jacket', state: '', pose: 'looking left', negative: '' }] }, outfits: [] },
-        bot: { identities: [{ id: 'saved-person', name: 'Saved', aliases: ['Alias'], appearance: 'long hair' }],
-            outfits: [{ id: 'cape', subjectId: 'saved-person', name: 'Travel cape', clothing: 'green cape', state: 'dusty' }] },
+        bot: { identities: [{ id: 'saved-person', name: 'Saved', aliases: ['Alias'], appearance: 'long hair' }], outfits: [cape] },
+        unreflectedGlobalIdentities: [{ id: 'g-current', name: 'Current', aliases: [], appearance: 'global look' }],
+        globalMatchFor(item: any) { return item.id === 'saved-person' ? undefined : this.unreflectedGlobalIdentities.find((global: any) => global.name === item.name) },
+        outfitChoices(id: string) { return id === 'saved-person' ? [cape] : [] },
         state: { notice: '', error: '' },
-        persist: vi.fn().mockResolvedValue(undefined), rememberIdentity: vi.fn(), saveOutfit: vi.fn(),
-        applyOutfit: vi.fn(),
+        persist: vi.fn().mockResolvedValue(undefined), rememberIdentity: vi.fn(), saveOutfit: vi.fn().mockResolvedValue('new'),
+        applyOutfit: vi.fn(), linkSubject: vi.fn(),
     })
     subject = session.data.draft.subjects[0]
 })
 afterEach(() => { component?.$destroy(); component = undefined; document.body.replaceChildren() })
 
-describe('compact subject prompt editor', () => {
-    test('shows which saved preset filled the block and flags note-based matches for review', async () => {
-        Object.assign(subject, { id: 'saved-person', outfitId: 'cape', presetMatch: 'context' })
+describe('subject block', () => {
+    test('separates appearance, clothing, state and pose fields', async () => {
         await mount()
-        const link = document.querySelector('[data-preset-match="context"]')
-        expect(link?.textContent).toContain('Saved / Travel cape')
-        expect(link?.textContent).toContain('식별 메모로 판단')
-        subject.presetMatch = undefined
-        await tick()
-        expect(document.querySelector('[data-preset-match]')).toBeNull()
+        expect(field('#subject-draft-person-appearance').value).toBe('short hair')
+        expect(field('#subject-draft-person-clothing').value).toBe('old jacket')
+        expect(field('#subject-draft-person-pose').value).toBe('looking left')
+        await type(field('#subject-draft-person-clothing'), 'red coat')
+        await type(field<HTMLInputElement>('[aria-label="대상 1 상태"]'), 'wet')
+        expect(subject).toMatchObject({ clothing: 'red coat', state: 'wet', appearance: 'short hair' })
+        expect(session.persist).toHaveBeenCalled()
     })
-    test('starts with one prompt field and keeps advanced controls behind more', async () => {
+    test('marks hand-edited appearance so revisions keep it', async () => {
         await mount()
-        expect(document.querySelectorAll('textarea')).toHaveLength(1)
-        expect(document.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('short hair\n\nold jacket\n\nlooking left')
-        expect(document.querySelector('[aria-label="대상 1 종류"]')).toBeNull()
-        const details = document.querySelector<HTMLDetailsElement>('[data-subject-more]')!
-        details.open = true
-        details.dispatchEvent(new Event('toggle'))
-        await tick()
-        expect(document.querySelector('[aria-label="대상 1 종류"]')).not.toBeNull()
-        expect(document.querySelectorAll('textarea')).toHaveLength(2)
+        await type(field('#subject-draft-person-appearance'), 'braided hair')
+        expect(subject.appearanceEdited).toBe(true)
+        await type(field('#subject-draft-person-appearance'), '')
+        expect(subject.appearanceEdited).toBeUndefined()
     })
-    test('preserves direct edits and exposes sections for preset saves', async () => {
+    test('reverts an edited preset look and saves a new look as a preset', async () => {
+        Object.assign(subject, { id: 'saved-person', name: 'Saved', appearance: 'edited hair', appearanceEdited: true, presetMatch: 'name' })
         await mount()
-        await change('대상 1 프롬프트', ' long hair \n\n red coat \n\n facing front ')
-        expect(subject).toMatchObject({ prompt: ' long hair \n\n red coat \n\n facing front ', appearance: 'long hair', clothing: 'red coat', state: '', pose: 'facing front' })
+        expect(document.querySelector('[data-preset-match="name"]')?.textContent).toContain('프리셋')
+        expect(document.body.textContent).toContain('직접 수정함')
+        byLabel('프리셋 외형을 이 내용으로 덮어쓰기').click()
+        expect(session.rememberIdentity).toHaveBeenCalledWith('saved-person')
+        byLabel('프리셋 외형으로 되돌리기').click(); await tick()
+        expect(subject.appearance).toBe('long hair')
+        expect(subject.appearanceEdited).toBeUndefined()
+        expect(document.body.textContent).not.toContain('직접 수정함')
     })
-    test('selecting presets does not change prompt text or the linked character', async () => {
+    test('loads a bot or global character through the session', async () => {
         await mount()
-        await change('대상 1 캐릭터 불러오기', 'saved-person')
-        await change('대상 1 의상 불러오기', 'cape')
-        expect(subject).toMatchObject({ id: 'draft-person', name: 'Current', aliases: [], appearance: 'short hair', clothing: 'old jacket', pose: 'looking left' })
-        expect(document.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('short hair\n\nold jacket\n\nlooking left')
-        expect(session.persist).not.toHaveBeenCalled()
-        expect(session.applyOutfit).not.toHaveBeenCalled()
+        const select = field<HTMLSelectElement>('[aria-label="대상 1 캐릭터 불러오기"]')
+        expect([...select.querySelectorAll('optgroup')].map(group => group.label)).toEqual(['글로벌 (고르면 이 봇에 반영)'])
+        select.value = 'bot:saved-person'; select.dispatchEvent(new Event('change', { bubbles: true })); await tick()
+        expect(session.linkSubject).toHaveBeenCalledWith('draft-person', { identityId: 'saved-person' })
+        expect(select.value).toBe('')
+        select.value = 'global:g-current'; select.dispatchEvent(new Event('change', { bubbles: true })); await tick()
+        expect(session.linkSubject).toHaveBeenLastCalledWith('draft-person', { globalId: 'g-current' })
     })
-    test('pastes character text at the remembered caret without reassigning identity', async () => {
-        session.data.draft.subjects.push({ ...subject, id: 'saved-person' })
+    test('explains and reflects a same-named global character', async () => {
         await mount()
-        const editor = document.querySelector<HTMLTextAreaElement>('textarea')!
-        const before = editor.value
-        editor.focus(); editor.setSelectionRange(5, 5)
-        editor.dispatchEvent(new Event('select')); editor.blur()
-        await change('대상 1 캐릭터 불러오기', 'saved-person')
-        expect(document.querySelector<HTMLButtonElement>('[aria-label="대상 1 캐릭터 붙여넣기"]')!.disabled).toBe(false)
-        document.querySelector<HTMLButtonElement>('[aria-label="대상 1 캐릭터 붙여넣기"]')!.click()
-        await tick()
-        expect(editor.value).toBe(before.slice(0, 5) + 'long hair' + before.slice(5))
-        expect(subject.prompt).toBe(editor.value)
-        expect(subject.id).toBe('draft-person')
-        expect(subject.name).toBe('Current')
-        expect(editor.selectionStart).toBe(14)
-        expect(document.activeElement).toBe(editor)
+        expect(document.querySelector('.global')?.textContent).toContain('「Current」이 이 봇에 없어서')
+        ;[...document.querySelectorAll<HTMLButtonElement>('.global button')][0].click()
+        expect(session.linkSubject).toHaveBeenCalledWith('draft-person', { globalId: 'g-current' })
     })
-    test('pastes outfit text over only the selected range and continues at the new caret', async () => {
+    test('applies outfits and flags hand edits of the selected outfit', async () => {
+        Object.assign(subject, { id: 'saved-person', outfitId: 'cape', clothing: 'green cape' })
         await mount()
-        await change('대상 1 프롬프트', 'AI detail / replace here / pose, smile')
-        const editor = document.querySelector<HTMLTextAreaElement>('textarea')!
-        editor.focus(); editor.setSelectionRange(12, 24)
-        editor.dispatchEvent(new Event('select')); editor.blur()
-        await change('대상 1 의상 불러오기', 'cape')
-        const paste = document.querySelector<HTMLButtonElement>('[aria-label="대상 1 의상 붙여넣기"]')!
-        paste.click(); await tick()
-        expect(editor.value).toBe('AI detail / green cape, dusty / pose, smile')
-        expect(subject.prompt).toBe(editor.value)
-        paste.click(); await tick()
-        expect(editor.value).toBe('AI detail / green cape, dustygreen cape, dusty / pose, smile')
-        expect(subject.id).toBe('draft-person')
+        const select = field<HTMLSelectElement>('[aria-label="대상 1 의상 불러오기"]')
+        select.value = 'cape'; select.dispatchEvent(new Event('change', { bubbles: true })); await tick()
+        expect(session.applyOutfit).toHaveBeenCalledWith('saved-person', 'cape')
+        await type(field('#subject-saved-person-clothing'), 'green cape, torn')
+        expect(subject.outfitEdited).toBe(true)
     })
-    test('appends raw text when no cursor has been placed and disables empty or deleted presets', async () => {
+    test('keeps rare controls behind more and confirms deletion', async () => {
         await mount()
-        const editor = document.querySelector<HTMLTextAreaElement>('textarea')!
-        const before = editor.value
-        const paste = document.querySelector<HTMLButtonElement>('[aria-label="대상 1 캐릭터 붙여넣기"]')!
-        expect(paste.disabled).toBe(true)
-        await change('대상 1 캐릭터 불러오기', 'saved-person')
-        paste.click(); await tick()
-        expect(editor.value).toBe(before + 'long hair')
-        session.bot.identities = []; await tick()
-        expect(paste.disabled).toBe(true)
+        expect(document.querySelector('[data-subject-more]')).toBeNull()
+        byLabel('Current 더 보기').click(); await tick()
+        expect(document.querySelector('[aria-label="대상 1 별칭"]')).not.toBeNull()
+        byLabel('Current 아래로').click()
+        expect(onMove).toHaveBeenCalledWith(1)
+        byLabel('Current 블록 삭제').click(); await tick()
+        expect(onRemove).not.toHaveBeenCalled()
+        ;[...document.querySelectorAll('button')].find(el => el.textContent === '삭제')!.click()
+        expect(onRemove).toHaveBeenCalledOnce()
     })
-    test('keeps all editing controls disabled during generation', async () => {
+    test('toggles lock and kind, and collapses the fields', async () => {
+        await mount()
+        byLabel('AI로 개선할 때 이 블록 유지').click(); await tick()
+        expect(subject.locked).toBe(true)
+        byLabel('인물 블록 (누르면 사물로 바꿈)').click(); await tick()
+        expect(subject.kind).toBe('object')
+        expect(document.querySelector('[aria-label="대상 1 캐릭터 불러오기"]')).toBeNull()
+        byLabel('Current 접기').click(); await tick()
+        expect(document.querySelector('fieldset')).toBeNull()
+    })
+    test('disables editing during generation', async () => {
         await mount(true)
         expect(document.querySelector('fieldset')?.disabled).toBe(true)
-        expect(document.querySelectorAll('textarea')).toHaveLength(1)
+        expect(field<HTMLInputElement>('[aria-label="대상 1 이름"]').disabled).toBe(true)
     })
 })

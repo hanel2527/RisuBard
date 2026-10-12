@@ -771,6 +771,14 @@ function ensureSourceIds(entries: loreBook[], createId: () => string): loreBook[
     })
 }
 
+/** Drops analysis targets that no longer exist, as every lore edit does to the saved run. */
+export function reconcileBardLoreAnalysisRun(
+    run: BardLoreAnalysisRun,
+    validIds: Set<string>,
+): BardLoreAnalysisRun | undefined {
+    return reconcileAnalysisRun(run, validIds)
+}
+
 function reconcileAnalysisRun(
     run: BardLoreAnalysisRun | undefined,
     validIds: Set<string>,

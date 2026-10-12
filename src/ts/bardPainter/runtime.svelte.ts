@@ -12,17 +12,18 @@ import { applyPainterPresets, capturePainterOutfit, promotePainterOutfit, reconc
 import { insertPainterReference, shiftPainterAnchor } from './selection'
 import { createPainterChatData, type PainterAnchor, type PainterContextSource, type PainterIdentity, type PainterOutfit, type PainterResult, type PainterStyle } from './types'
 import { savePainterGalleryRecord } from './gallery'
-import { replaceSubjectOutfit } from './subjectPrompt'
+import { migrateLegacyDraft } from './subjectPrompt'
 import { painterSelection, painterInsertionRequest } from './selectionState'
 import { get } from 'svelte/store'
 import { ensureChatHydrated } from '../storage/chatStorage'
 import { resolvePersonaById } from '../personaScopes'
 import { createPainterSettings, painterGenerationSettings, painterImageSize, painterSizeMode, type PainterSettings } from './types'
 import { painterImageToggleScope, painterPromptDatabase, painterPromptPreset } from './imagePreset'
-import type { PainterFragment } from './types'
+import type { PainterContext, PainterDraft, PainterFragment, PainterSubject } from './types'
 import type { PainterLibraryData } from './types'
+import { painterSubjectLimit } from './types'
 import type { loreBook } from '../storage/database.svelte'
-import { botOutfitCatalog, copyPainterIdentity, copyPainterOutfit, getPainterLoreIdentity, outfitsForIdentity, withPainterLoreIdentity } from './library'
+import { blankPainterIdentityIds, botOutfitCatalog, copyPainterIdentity, copyPainterOutfit, getPainterLoreIdentity, globalIdentityForSubject, outfitsForIdentity, painterNameKey, unreflectedGlobalIdentities, withPainterLoreIdentity } from './library'
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value))
 const errorText = (cause: unknown) => cause instanceof Error ? cause.message : String(cause)
@@ -72,6 +73,9 @@ export class PainterSession {
         // Imported chat drafts may arrive before any bot-wide identity registry exists.
         // Initialize it here, before subject components read it in derived expressions.
         this.character.bardPainter ??= { identities: [], outfits: [] }
+        // The next save stores the converted fields; an unsaved migration only repeats.
+        migrateLegacyDraft(this.data.draft)
+        migrateLegacyDraft(this.data.previousDraft)
     }
     get character() {
         const character = DBState.db.characters.find((item) => item.chaId === this.characterId)
@@ -182,14 +186,39 @@ export class PainterSession {
         })
     }
     async importGlobalIdentity(id: string): Promise<string | undefined> {
-        return this.presetAction('캐릭터와 의상을 현재 봇으로 가져왔습니다.', write => {
-            const copied = copyPainterIdentity(this.globalLibrary, id, this.bot, new Set(this.globalLibrary.outfits.map(item => item.id)))
-            const refs = this.bot.globalOutfits ?? []
-            write(this.bot, 'identities', [...this.bot.identities, copied.identity])
-            write(this.bot, 'outfits', [...this.bot.outfits, ...copied.outfits])
-            write(this.bot, 'globalOutfits', [...refs, ...copied.linkedIds.filter(item => !refs.some(ref => ref.id === item)).map(item => ({ id: item }))])
-            return copied.identity.id
-        })
+        return this.presetAction('캐릭터와 의상을 현재 봇에 반영했습니다.', write => this.reflectGlobalIdentity(id, write))
+    }
+    /** Global characters this bot cannot use yet; the planner only reads bot presets. */
+    get unreflectedGlobalIdentities() { return unreflectedGlobalIdentities(this.bot, this.globalLibrary) }
+    /** Blank bot identities judged from loaded chats only; pruning rechecks every chat. */
+    get blankIdentityIds() { return blankPainterIdentityIds(this.bot, this.character.chats.flatMap(chat => chat.bardPainter?.outfits ?? []), this.character.globalLore ?? []) }
+    globalMatchFor(subject: Pick<PainterSubject, 'name' | 'aliases' | 'kind' | 'id'>) {
+        if (subject.kind !== 'character' || this.bot.identities.some(item => item.id === subject.id && item.appearance.trim())) return
+        return globalIdentityForSubject(subject, this.bot, this.globalLibrary)
+    }
+    /**
+     * Copy a global character into this bot. A same-named blank entry is filled in place so
+     * its chat outfits and lore links stay attached; an existing reflection is reused.
+     */
+    private reflectGlobalIdentity(id: string, write: PresetWrite): string {
+        const source = this.globalLibrary.identities.find(item => item.id === id)
+        if (!source) throw new Error('글로벌 캐릭터를 다시 선택해 주세요.')
+        const reflected = this.bot.identities.find(item => item.sourceId === id && item.appearance.trim())
+        if (reflected) return reflected.id
+        const copied = copyPainterIdentity(this.globalLibrary, id, this.bot, new Set(this.globalLibrary.outfits.map(item => item.id)))
+        const blank = this.bot.identities.find(item => !item.appearance.trim() && (item.sourceId === id || painterNameKey(item.name) === painterNameKey(source.name)))
+        const identity: PainterIdentity = blank ? {
+            ...blank, appearance: copied.identity.appearance, sourceId: id,
+            aliases: [...new Set([...blank.aliases, ...copied.identity.aliases])],
+            ...(blank.note?.trim() || copied.identity.note ? { note: blank.note?.trim() || copied.identity.note } : {}),
+            outfitIds: [...new Set([...(blank.outfitIds ?? []), ...(copied.identity.outfitIds ?? [])])],
+            ...(blank.defaultOutfitId ?? copied.identity.defaultOutfitId ? { defaultOutfitId: blank.defaultOutfitId ?? copied.identity.defaultOutfitId } : {}),
+        } : { ...copied.identity, sourceId: id }
+        const refs = this.bot.globalOutfits ?? []
+        write(this.bot, 'identities', blank ? this.bot.identities.map(item => item === blank ? identity : item) : [...this.bot.identities, identity])
+        write(this.bot, 'outfits', [...this.bot.outfits, ...copied.outfits])
+        write(this.bot, 'globalOutfits', [...refs, ...copied.linkedIds.filter(item => !refs.some(ref => ref.id === item)).map(item => ({ id: item }))])
+        return identity.id
     }
     async copyOutfitToGlobal(id: string, shared: boolean): Promise<string | undefined> {
         return this.presetAction('의상을 글로벌 라이브러리에 복사했습니다.', write => {
@@ -356,7 +385,7 @@ export class PainterSession {
             }
         }
     }
-    private async presetAction<T>(notice: string, work: (write: PresetWrite) => T | undefined | Promise<T | undefined>, global = false): Promise<T | undefined> {
+    private async presetAction<T>(notice: string, work: (write: PresetWrite) => T | undefined | Promise<T | undefined>, global = false, draftOnly = false): Promise<T | undefined> {
         if (this.state.status !== 'idle' || this.state.pendingImage || presetMutationInProgress) return
         this.state.status = 'saving'
         presetMutationInProgress = true
@@ -370,7 +399,8 @@ export class PainterSession {
         try {
             await this.action(async () => {
                 try {
-                    this.assertPresetReady(global)
+                    // Draft edits touch only this chat; other chats may keep streaming.
+                    if (!draftOnly) this.assertPresetReady(global)
                     const value = await work(write)
                     if (value === undefined || value === false) return
                     await persist()
@@ -383,6 +413,118 @@ export class PainterSession {
             })
         } finally { this.state.status = 'idle'; presetMutationInProgress = false }
         return result
+    }
+
+    /** Outfits a saved character can wear here: its chat, bot and selected global outfits. */
+    outfitsFor(identityId: string): PainterOutfit[] {
+        return [...this.data.outfits.filter(outfit => outfit.subjectId === identityId),
+            ...outfitsForIdentity(this.botCatalog, identityId).map(outfit => ({ ...outfit, subjectId: identityId }))]
+    }
+    /** Outfits offered in a block's picker: its own first, then shared templates. */
+    outfitChoices(subjectId: string): PainterOutfit[] {
+        const own = this.outfitsFor(subjectId)
+        const shared = [...this.data.outfits, ...this.botCatalog.outfits].filter(item => !item.subjectId && !own.some(outfit => outfit.id === item.id))
+        return [...own, ...shared]
+    }
+    /** A block filled from a saved character: its look verbatim, plus the default outfit when the block has none. */
+    private linkedSubject(subject: PainterSubject, identity: PainterIdentity, replaceOutfit = false): PainterSubject {
+        const next: PainterSubject = { ...clone(subject), id: identity.id, name: identity.name, aliases: [...identity.aliases], kind: 'character', presetMatch: 'manual' }
+        if (identity.appearance.trim()) { next.appearance = identity.appearance; delete next.appearanceEdited }
+        const outfit = identity.defaultOutfitId && (replaceOutfit || !next.clothing.trim()) ? this.outfitsFor(identity.id).find(item => item.id === identity.defaultOutfitId) : undefined
+        if (outfit) { next.clothing = outfit.clothing; next.state = outfit.state; next.outfitId = outfit.id; delete next.outfitEdited }
+        return next
+    }
+    private findBotIdentity(id: string) {
+        const identity = this.bot.identities.find(item => item.id === id)
+        if (!identity) throw new Error('캐릭터 프리셋을 다시 선택해 주세요.')
+        return identity
+    }
+    /** Add a block before or after planning. A global character is reflected into this bot first. */
+    async addSubject(options: { kind?: PainterSubject['kind']; identityId?: string; globalId?: string } = {}): Promise<string | undefined> {
+        const notice = options.globalId ? '글로벌 캐릭터를 이 봇에 반영하고 인물 블록을 추가했습니다.' : options.identityId ? '캐릭터 프리셋으로 인물 블록을 추가했습니다.' : options.kind === 'object' ? '사물 블록을 추가했습니다.' : '인물 블록을 추가했습니다.'
+        return this.presetAction(notice, write => {
+            const subjects = this.data.draft?.subjects ?? []
+            if (subjects.length >= painterSubjectLimit(this.settings.model)) throw new Error(`선택한 모델은 인물과 사물 블록을 최대 ${painterSubjectLimit(this.settings.model)}개까지 지원합니다.`)
+            let subject: PainterSubject = { id: v4(), name: '', aliases: [], kind: options.kind ?? 'character', appearance: '', clothing: '', state: '', pose: '', negative: '', manual: true }
+            const identityId = options.globalId ? this.reflectGlobalIdentity(options.globalId, write) : options.identityId
+            if (identityId) {
+                if (subjects.some(item => item.id === identityId)) throw new Error('이미 인물 블록에 있는 캐릭터입니다.')
+                subject = this.linkedSubject(subject, this.findBotIdentity(identityId))
+            }
+            if (this.data.draft) write(this.data.draft, 'subjects', [...subjects, subject])
+            else write(this.data, 'draft', { rendering: '', scene: '', negative: '', subjects: [subject] } satisfies PainterDraft)
+            return subject.id
+        }, false, !options.globalId)
+    }
+    /** Fill a block from a bot character, or from a global one after reflecting it into this bot. */
+    async linkSubject(subjectId: string, target: { identityId?: string; globalId?: string }): Promise<boolean> {
+        return (await this.presetAction(target.globalId ? '글로벌 캐릭터를 이 봇에 반영하고 블록에 불러왔습니다.' : '캐릭터 프리셋을 블록에 불러왔습니다.', write => {
+            const draft = this.data.draft
+            const subject = draft?.subjects.find(item => item.id === subjectId)
+            if (!draft || !subject) throw new Error('인물 블록을 다시 선택해 주세요.')
+            const identityId = target.globalId ? this.reflectGlobalIdentity(target.globalId, write) : target.identityId
+            if (!identityId) return
+            if (draft.subjects.some(item => item !== subject && item.id === identityId)) throw new Error('이미 다른 블록에 불러온 캐릭터입니다.')
+            const linked = this.linkedSubject(subject, this.findBotIdentity(identityId), subject.id !== identityId)
+            write(draft, 'subjects', draft.subjects.map(item => item === subject ? linked : item))
+            return true
+        }, false, !target.globalId)) === true
+    }
+    /** Pick another moment. User-added and locked blocks carry over; the planned text does not. */
+    async changeScene(anchor: PainterAnchor): Promise<boolean> {
+        if (this.state.status !== 'idle' || this.state.pendingImage) return false
+        if (anchor.characterId !== this.characterId || anchor.chatId !== this.chatId) return false
+        this.state.status = 'saving'
+        try {
+            return await this.action(async () => {
+                if (this.chat.isStreaming) throw new Error('메시지 작성이 끝난 뒤 장면을 바꿔 주세요.')
+                const data = this.data
+                const prior = { anchor: data.anchor, draft: data.draft, previousDraft: data.previousDraft, conversation: data.conversation }
+                const kept = (data.draft?.subjects ?? []).filter(item => item.manual || item.locked).map(item => item.locked ? clone(item) : { ...clone(item), pose: '' })
+                const fragments = data.draft?.fragments
+                data.anchor = clone(anchor)
+                data.draft = kept.length || fragments?.length ? { rendering: '', scene: '', negative: '', subjects: kept, ...(fragments?.length ? { fragments: clone(fragments) } : {}) } : undefined
+                data.previousDraft = undefined
+                data.conversation = []
+                try { await persist() } catch (cause) { Object.assign(data, prior); throw cause }
+                this.state.notice = kept.length ? '장면을 바꿨습니다. 직접 추가하거나 잠근 블록은 유지했습니다.' : '그릴 장면을 정했습니다.'
+            })
+        } finally { this.state.status = 'idle' }
+    }
+    /** Context choices made in the main panel follow the same scope as other generation options. */
+    async updateContext(patch: Partial<PainterContext>): Promise<boolean> {
+        const { wikiIds, referenceId: _referenceId, referenceAssetId: _referenceAssetId, ...shared } = patch
+        if (wikiIds) this.data.settings.context.wikiIds = [...new Set(wikiIds)]
+        if (!Object.keys(shared).length) return this.persist()
+        const settings = this.settings
+        return this.updateGenerationSettings({ ...settings, context: { ...settings.context, ...shared } })
+    }
+    /** Remove bot identities with nothing saved in them, after loading every chat's outfits. */
+    async pruneBlankIdentities(): Promise<number | undefined> {
+        if (!blankPainterIdentityIds(this.bot, [], this.character.globalLore ?? []).length) return 0
+        const removed = await this.presetAction('', async write => {
+            const character = this.character
+            const chatIds = character.chats.map(chat => chat.id)
+            for (const chatId of chatIds) {
+                const index = character.chats.findIndex(chat => chat.id === chatId)
+                const hydrated = index < 0 ? null : await ensureChatHydrated(character.chats, index, character.chaId)
+                if (!hydrated || hydrated._placeholder || !Array.isArray(hydrated.message)) throw new Error('챗의 의상 프리셋을 읽지 못해 빈 인물 정리를 미뤘습니다.')
+            }
+            this.assertPresetReady()
+            const ids = new Set(blankPainterIdentityIds(this.bot, character.chats.flatMap(chat => chat.bardPainter?.outfits ?? []), character.globalLore ?? []))
+            if (!ids.size) return 0
+            write(this.bot, 'identities', this.bot.identities.filter(item => !ids.has(item.id)))
+            return ids.size
+        })
+        if (removed) this.state.notice = `내용이 비어 있던 인물 프리셋 ${removed}개를 정리했습니다.`
+        return removed
+    }
+    /** Clean up once per bot and app run; failures stay silent and the manual button remains. */
+    async autoPruneBlankIdentities() {
+        if (autoPruned.has(this.characterId) || !blankPainterIdentityIds(this.bot, [], this.character.globalLore ?? []).length) return
+        autoPruned.add(this.characterId)
+        const error = this.state.error
+        if (await this.pruneBlankIdentities() === undefined) this.state.error = error
     }
 
     loadWiki() {
@@ -500,16 +642,21 @@ export class PainterSession {
             const settings = clone(this.settings)
             if (options.instruction !== undefined) settings.instruction = options.instruction
             const style = clone(this.style)
-            const draft = sameScene && !options.fresh ? previousDraft : undefined
+            const revising = sameScene && !options.fresh
+            // A new scene or a rewrite starts only from the blocks the user added or locked.
+            const seed = previousDraft && !revising ? {
+                rendering: '', scene: '', negative: '',
+                subjects: previousDraft.subjects.filter(item => item.manual || item.locked).map(item => item.locked ? item : { ...item, pose: '' }),
+            } : previousDraft
+            const draft = seed && (seed.scene.trim() || seed.subjects.length) ? seed : undefined
             const requestCharacter = { ...this.character, chatPage: this.character.chats.indexOf(this.chat) }
             const userName = resolvePersonaById(DBState.db, this.character, this.chat.bindedPersona)?.persona.name ?? DBState.db.username ?? 'User'
             const presets = clone(this.bot.identities)
-            const outfitsFor = (identityId: string) => [...this.data.outfits.filter(outfit => outfit.subjectId === identityId),
-                ...outfitsForIdentity(this.botCatalog, identityId).map(outfit => ({ ...outfit, subjectId: identityId }))]
+            const outfitsFor = (identityId: string) => this.outfitsFor(identityId)
             const formated = buildPainterMessages({ anchor: target, settings, style, sources, userName,
                 identities: presets, draft, fragments: previousDraft?.fragments,
                 outfits: clone(presets.flatMap(identity => outfitsFor(identity.id))),
-                conversation: sameScene && !options.fresh ? clone((this.data.conversation ?? []).slice(-12)) : [] })
+                conversation: revising ? clone((this.data.conversation ?? []).slice(-12)) : [] })
             const viewerNames = new Set([userName, '{{user}}', 'user', 'you', '당신'].map(name => name.trim().toLowerCase()).filter(Boolean))
             const plan = async (messages: ReturnType<typeof buildPainterRepairMessages>) => {
                 const response = await requestChatData({ formated: messages, currentChar: requestCharacter, bias: {},
@@ -532,17 +679,21 @@ export class PainterSession {
                 : subjects
             // Reconciliation otherwise restores omitted locked blocks, including the viewer.
             const previousSubjects = visibleSubjects(draft?.subjects ?? [])
-            next.subjects = applyPainterPresets(reconcilePainterSubjects(visibleSubjects(next.subjects), this.bot, previousSubjects),
+            next.subjects = applyPainterPresets(reconcilePainterSubjects(visibleSubjects(next.subjects), presets, previousSubjects),
                 presets, outfitsFor, previousSubjects, this.loreIdentityIds)
             if (previousDraft?.fragments) next.fragments = clone(previousDraft.fragments)
             this.data.draft = next
-            this.data.previousDraft = sameScene ? previousDraft : undefined
-            const history = sameScene && !options.fresh ? this.data.conversation ?? [] : []
-            this.data.conversation = [...history, { id: v4(), role: 'user' as const, text: settings.instruction.trim() || (draft ? '현재 초안을 다듬어 주세요.' : '선택한 장면의 프롬프트를 작성해 주세요.') },
-                { id: v4(), role: 'assistant' as const, text: draft ? '요청을 반영해 초안을 수정했습니다. 위의 프롬프트를 확인해 주세요.' : '선택한 장면의 초안을 작성했습니다. 원하는 방향을 더 알려 주세요.' }].slice(-12)
+            this.data.previousDraft = previousDraft?.scene.trim() ? previousDraft : undefined
+            const planned = !!draft?.scene.trim()
+            const history = revising ? this.data.conversation ?? [] : []
+            this.data.conversation = [...history, { id: v4(), role: 'user' as const, text: settings.instruction.trim() || (planned ? '현재 초안을 다듬어 주세요.' : '선택한 장면의 프롬프트를 작성해 주세요.') },
+                { id: v4(), role: 'assistant' as const, text: planned ? '요청을 반영해 초안을 수정했습니다.' : '선택한 장면의 초안을 작성했습니다. 원하는 방향을 더 알려 주세요.' }].slice(-12)
             prepared = true
             await persist()
-            this.state.notice = '프롬프트를 작성했습니다. 외형과 의상을 확인한 뒤 이미지를 생성하세요.'
+            const unreflected = next.subjects.filter(subject => this.globalMatchFor(subject)).length
+            this.state.notice = unreflected
+                ? `프롬프트를 작성했습니다. 글로벌 캐릭터와 이름이 같은 인물 ${unreflected}명이 이 봇에 반영되지 않아 저장된 외형을 쓰지 못했습니다. 해당 블록에서 '봇에 반영'을 눌러 주세요.`
+                : '프롬프트를 작성했습니다. 외형과 의상을 확인한 뒤 이미지를 생성하세요.'
         })
         if (!prepared && previousDraft && previousAnchor) {
             this.data.anchor = previousAnchor
@@ -734,13 +885,13 @@ export class PainterSession {
     async applyOutfit(subjectId: string, id: string) {
         return this.presetAction('초안에 의상을 불러왔습니다.', write => {
             const subject = this.data.draft?.subjects.find((item) => item.id === subjectId)
-            const outfit = [...this.data.outfits, ...this.botCatalog.outfits].find((item) => item.id === id && (!item.subjectId || item.subjectId === subjectId))
+            const outfit = this.outfitChoices(subjectId).find(item => item.id === id)
             if (!subject || !outfit) return
-            const updated = clone(subject)
-            replaceSubjectOutfit(updated, outfit.clothing, outfit.state)
+            const updated: PainterSubject = { ...clone(subject), clothing: outfit.clothing, state: outfit.state, outfitId: outfit.id }
+            delete updated.outfitEdited
             write(this.data.draft!, 'subjects', this.data.draft!.subjects.map(item => item.id === subjectId ? updated : item))
             return true
-        })
+        }, false, true)
     }
     async removeOutfit(id: string, shared: boolean, global = false) {
         return (await this.presetAction('의상 프리셋을 삭제했습니다.', write => {
@@ -801,10 +952,21 @@ export class PainterSession {
             return true
         })) === true
     }
+    /** Save a block's look as this bot's character, filling a same-named blank entry instead of failing on its name. */
     async rememberIdentity(subjectId: string) {
         const subject = this.data.draft?.subjects.find(item => item.id === subjectId)
         if (!subject) return
-        return this.saveIdentity({ id: subject.id, name: subject.name, aliases: [...subject.aliases], appearance: subject.appearance })
+        const target = this.bot.identities.find(item => item.id === subject.id)
+            ?? this.bot.identities.find(item => !item.appearance.trim() && painterNameKey(item.name) === painterNameKey(subject.name))
+        const id = await this.saveIdentity({ ...(target ? clone(target) : {}), id: target?.id ?? subject.id, name: subject.name, aliases: [...new Set([...(target?.aliases ?? []), ...subject.aliases])], appearance: subject.appearance })
+        const saved = id && !this.data.draft?.subjects.some(item => item !== subject && item.id === id) && this.data.draft?.subjects.find(item => item === subject)
+        if (saved) {
+            saved.id = id; saved.presetMatch = 'manual'
+            delete saved.appearanceEdited
+            await this.persist()
+            this.state.notice = '인물의 이름과 외형을 이 봇의 캐릭터 프리셋으로 저장했습니다.'
+        }
+        return id
     }
     async saveIdentity(identity: PainterIdentity, asNew = false, global = false): Promise<string | undefined> {
         return this.presetAction('인물의 이름과 외형을 저장했습니다.', write => {
@@ -816,6 +978,7 @@ export class PainterSession {
             const custom: PainterIdentity = { id: asNew || !identity.id ? v4() : identity.id, name: identity.name.trim(),
                 aliases: [...new Set(identity.aliases.map(alias => alias.trim()).filter(Boolean))], appearance: identity.appearance,
                 ...(note ? { note } : {}),
+                ...(!asNew && previous?.sourceId ? { sourceId: previous.sourceId } : {}),
                 ...(outfitIds ? { outfitIds: [...new Set(outfitIds)] } : {}),
                 ...(defaultOutfitId ? { defaultOutfitId } : {}),
                 ...(!global && identity.attachToCard === true && !(asNew && identity.id) ? { attachToCard: true } : {}) }
@@ -940,6 +1103,7 @@ export class PainterSession {
 }
 
 const sessions = new Map<string, PainterSession>()
+const autoPruned = new Set<string>()
 export function isPainterChatBusy(characterId: string, chatId: string): boolean {
     const session = sessions.get(`${characterId}\u0000${chatId}`)
     return !!session && (session.state.status !== 'idle' || session.state.pendingImage)

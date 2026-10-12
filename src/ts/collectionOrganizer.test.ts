@@ -124,10 +124,12 @@ describe('collection organizer state', () => {
             promptPresets: ['prompt-a'],
             modules: ['module-a'],
             plugins: ['plugin-a'],
+            wikiPromptPresets: ['wiki-a'],
         })).toEqual({
             promptPresets: { folders: [], folderByItemId: {}, itemOrder: ['prompt-a'] },
             modules: { folders: [], folderByItemId: {}, itemOrder: ['module-a'] },
             plugins: { folders: [], folderByItemId: {}, itemOrder: ['plugin-a'] },
+            wikiPromptPresets: { folders: [], folderByItemId: {}, itemOrder: ['wiki-a'] },
         })
     })
 

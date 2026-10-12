@@ -19,6 +19,11 @@
     let { endGrid = () => {} }: Props = $props();
     let search = $state('')
     let selected = $state(3)
+    // Deletion is permanent now; only characters trashed by older versions remain until the 3-day purge.
+    const hasTrash = $derived(DBState.db.characters.some((c) => c.trashTime))
+    $effect(() => {
+        if (selected === 2 && !hasTrash) selected = 3
+    })
 
     function selectAndClose(index = -1){
         changeChar(index)
@@ -83,9 +88,11 @@
                 <Button styled={selected === 1  ? 'primary' : 'outlined'} size="sm" onclick={() => {selected = 1}}>
                     {language.list}
                 </Button>
-                <Button styled={selected === 2  ? 'primary' : 'outlined'} size="sm" onclick={() => {selected = 2}}>
-                    {language.trash}
-                </Button>
+                {#if hasTrash}
+                    <Button styled={selected === 2  ? 'primary' : 'outlined'} size="sm" onclick={() => {selected = 2}}>
+                        {language.trash}
+                    </Button>
+                {/if}
                 <div class="grow"></div>
                 <span class="text-textcolor2 text-sm">
                     {formatChars(search, DBState.db).length} {language.character}

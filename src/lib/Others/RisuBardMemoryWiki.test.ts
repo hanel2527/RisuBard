@@ -1102,8 +1102,10 @@ describe('RisuBardMemoryWiki', () => {
         await vi.waitFor(() => {
             const views = document.body.querySelector('.dock-views')
             expect(views).not.toBeNull()
-            expect(views?.parentElement?.classList.contains('dock-header')).toBe(true)
-            expect(views?.previousElementSibling?.classList.contains('dock-titlebar')).toBe(true)
+            const shell = views?.parentElement
+            expect(shell?.classList.contains('dock-views-shell')).toBe(true)
+            expect(shell?.parentElement?.classList.contains('dock-header')).toBe(true)
+            expect(shell?.previousElementSibling?.classList.contains('dock-titlebar')).toBe(true)
             expect(views?.querySelector('[data-risubard-force-wiki-update]'))
                 .not.toBeNull()
             expect(views?.querySelector('[data-memory-settings]')).not.toBeNull()

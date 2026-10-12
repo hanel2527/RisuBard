@@ -2,7 +2,7 @@
     import BardPainterPromptInput from './BardPainterPromptInput.svelte'
     import BardPainterLorePicker from './BardPainterLorePicker.svelte'
     import BardPainterHelp from './BardPainterHelp.svelte'
-    import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ListChecks, Search, Shirt, UserPlus } from '@lucide/svelte'
+    import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Eraser, ListChecks, Search, Shirt, UserPlus } from '@lucide/svelte'
     import { tick, untrack } from 'svelte'
     import type { getPainterSession } from 'src/ts/bardPainter/runtime.svelte'
     import type { PainterIdentity, PainterOutfit } from 'src/ts/bardPainter/types'
@@ -35,6 +35,8 @@
     let independentOutfits = $derived(catalog.outfits.filter(item => !item.subjectId))
     let globalChoices = $derived((session.globalLibrary?.outfits ?? []).filter(item => !item.subjectId))
     let selectedGlobalIds = $derived((session.bot.globalOutfits ?? []).map(ref => ref.id))
+    let unreflectedIds = $derived(new Set(session.unreflectedGlobalIdentities.map(item => item.id)))
+    let blankCount = $derived(session.blankIdentityIds.length)
     let personLimit = $state(12)
     let independentLimit = $state(12)
     let outfitLimits = $state<Record<string, number>>({})
@@ -253,7 +255,11 @@
         void run(() => item.kind === 'identity'
             ? global ? session.importGlobalIdentity(item.id) : session.copyIdentityToGlobal(item.id)
             : global ? session.importGlobalOutfit(item.id) : session.copyOutfitToGlobal(item.id, item.shared), () => {},
-            global ? '현재 봇에 복사했습니다. 프리셋 보관함을 현재 봇으로 바꾸면 확인할 수 있습니다.' : '글로벌 보관함에 복사했습니다. 이후 수정은 복사본끼리 공유되지 않습니다.')
+            global ? (item.kind === 'identity' ? '이 봇에 반영했습니다. 이제 프롬프트를 작성할 때 AI가 이 인물을 알아봅니다.' : '현재 봇에 복사했습니다. 프리셋 보관함을 현재 봇으로 바꾸면 확인할 수 있습니다.') : '글로벌 보관함에 복사했습니다. 이후 수정은 복사본끼리 공유되지 않습니다.')
+    }
+    function pruneBlank() {
+        void run(async () => { const count = await session.pruneBlankIdentities(); return count === undefined ? undefined : { count } },
+            () => selectFallback(''), '내용이 비어 있던 인물 프리셋을 정리했습니다.')
     }
     function linkOutfits(ids: string[], defaultId = owner?.identity?.defaultOutfitId) {
         if (!owner?.identity) return
@@ -293,6 +299,12 @@
                 {/if}
             </div>
         </div>
+        {#if !global && unreflectedIds.size}
+            <div class="filter-note"><span class="hint">글로벌 보관함에 이 봇에 반영하지 않은 인물이 {unreflectedIds.size}명 있습니다. 반영한 인물만 프롬프트를 작성할 때 AI가 알아보고 저장된 외형을 넣습니다.</span><button type="button" class="text-button" disabled={locked} onclick={() => switchLibrary(true)}>글로벌 보관함 보기</button></div>
+        {/if}
+        {#if !global && blankCount}
+            <div class="filter-note"><span class="hint">외형, 식별 메모, 의상과 로어 연결이 모두 없는 인물이 {blankCount}명 있습니다. AI가 쓸 정보가 없어 같은 이름의 프리셋을 가릴 수 있습니다.</span><button type="button" class="text-button" disabled={locked} onclick={() => navigate(pruneBlank)}><Eraser size={15} aria-hidden="true" />빈 인물 정리</button></div>
+        {/if}
         {#if query || scope !== 'all'}<div class="filter-note"><span class="hint">인물 {folders.length}명 검색됨</span><button type="button" class="text-button" onclick={resetFilters}>검색과 필터 초기화</button></div>{/if}
         {#if pendingAction}
             <div class="confirmation" role="alert">
@@ -329,7 +341,7 @@
                             <div class="row owner-row" class:selected={draft?.kind === 'identity' && draft.subjectId === person.id}>
                                 <button type="button" class="icon-button" aria-label={`${person.name} 의상 ${isOpen ? '접기' : '펼치기'}`} aria-expanded={isOpen} onclick={() => togglePerson(person.id)}>{#if isOpen}<ChevronDown size={15} aria-hidden="true" />{:else}<ChevronRight size={15} aria-hidden="true" />{/if}</button>
                                 <button type="button" class="row-name" disabled={locked} aria-label={`${person.name} 외형 편집`} aria-pressed={draft?.kind === 'identity' && draft.subjectId === person.id} onclick={() => navigate(() => selectIdentity(person))}>
-                                    <strong>{person.name}</strong><span class="hint">{person.aliases.join(', ') || `${person.outfits.length}개 의상`}</span>
+                                    <span class="name-line"><strong>{person.name}</strong>{#if person.identity && !person.identity.appearance.trim()}<span class="tag">외형 없음</span>{/if}{#if global && unreflectedIds.has(person.id)}<span class="tag warn">이 봇에 미반영</span>{/if}</span><span class="hint">{person.aliases.join(', ') || `${person.outfits.length}개 의상`}</span>
                                 </button>
                                 {#if person.identity}<div class="reorder"><button type="button" class="icon-button" aria-label={`${person.name} 위로`} title="인물 위로" disabled={locked || index === 0} onclick={() => run(() => movePerson(person.id, -1), () => {}, '인물 순서를 바꿨습니다.')}><ArrowUp size={14} aria-hidden="true" /></button><button type="button" class="icon-button" aria-label={`${person.name} 아래로`} title="인물 아래로" disabled={locked || index === presets.identities.length - 1} onclick={() => run(() => movePerson(person.id, 1), () => {}, '인물 순서를 바꿨습니다.')}><ArrowDown size={14} aria-hidden="true" /></button></div>{/if}
                             </div>
@@ -430,7 +442,7 @@
                     </div>
                     {#if draft.exists}
                         <div class="actions secondary-actions">
-                            {#if !draft.globalRef}<button type="button" disabled={locked || dirty} title={dirty ? '편집 내용을 먼저 저장하세요.' : undefined} onclick={copyAcrossLibraries}>{global ? '현재 봇으로 가져오기' : '글로벌에 복사'}</button>{/if}
+                            {#if !draft.globalRef}<button type="button" disabled={locked || dirty || (global && draft.kind === 'identity' && !unreflectedIds.has(draft.id))} title={dirty ? '편집 내용을 먼저 저장하세요.' : undefined} onclick={copyAcrossLibraries}>{global ? (draft.kind === 'outfit' ? '현재 봇으로 가져오기' : unreflectedIds.has(draft.id) ? '이 봇에 반영' : '이 봇에 반영됨') : '글로벌에 복사'}</button>{/if}
                             {#if !global && draft.kind === 'identity'}<button type="button" disabled={locked || dirty} title={dirty ? '편집 내용을 먼저 저장하세요.' : undefined} onclick={() => loreOpen = true}>로어 연결</button><span class="count">{(session.loreEntries ?? []).filter(item => item.identityId === draft!.id).length}개 연결</span>{/if}
                             {#if draft.globalRef}<button type="button" disabled={locked || dirty} title={dirty ? '편집 내용을 먼저 저장하세요.' : undefined} onclick={excludeFromBot}>이 봇에서 제외</button>{/if}
                             {#if draft.kind === 'identity'}<BardPainterHelp label="보관함 간 복사">{global ? '현재 봇으로 가져오면 인물은 복사하고, 연결된 공용 의상은 복사하지 않고 이 봇에서 쓰도록 선택합니다.' : '글로벌에 복사하면 외형과 연결된 의상을 함께 가져갑니다. 이미 글로벌에 있는 의상은 복사하지 않고 연결합니다.'} 로어 연결은 복사하지 않습니다.</BardPainterHelp>{/if}
@@ -513,7 +525,8 @@
     .row-name.inline { flex-direction: row; align-items: center; gap: .35rem; }
     .row-name > * { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .row-name.inline > span:first-child { flex: 1; min-width: 0; }
-    .row-name strong { font-weight: 600; font-size: .85rem; }
+    .row-name strong { font-weight: 600; font-size: .85rem; overflow: hidden; text-overflow: ellipsis; }
+    .name-line { display: flex; align-items: center; gap: .3rem; min-width: 0; }
     .tag { flex-shrink: 0; padding: .05rem .35rem; border-radius: .25rem; background: var(--color-bgcolor); color: var(--color-textcolor2); font-size: .68rem; line-height: 1.5; white-space: nowrap; }
     .tag.accent { color: var(--color-primary); }
     .tag.warn { color: var(--color-danger); }

@@ -4,7 +4,6 @@ import { createClassComponent } from 'svelte/legacy'
 import BardPainterGallery from './BardPainterGallery.svelte'
 import { painterTestState } from './BardPainterTestState.svelte'
 import { createPainterChatData } from 'src/ts/bardPainter/types'
-import BardPainterReference from './BardPainterReference.svelte'
 
 const mocks = vi.hoisted(() => ({
     list: vi.fn(), blob: vi.fn(), remove: vi.fn(), load: vi.fn(), preserve: vi.fn(), confirm: vi.fn(), error: vi.fn(), success: vi.fn(), copy: vi.fn(), busy: vi.fn(), save: vi.fn(), getSession: vi.fn(), setReference: vi.fn(),
@@ -16,7 +15,6 @@ vi.mock('src/ts/bardPainter/runtime.svelte', () => ({ isPainterChatBusy: mocks.b
 vi.mock('src/ts/storage/nodeStorage', () => ({ NodeStorage: class {} }))
 vi.mock('src/ts/bardPainter/gallery', async (original) => ({ ...await original<any>(), loadPainterGalleryRecord: mocks.load, preservePainterChatsGallery: mocks.preserve }))
 let component: ReturnType<typeof createClassComponent> | undefined
-let referenceComponent: ReturnType<typeof createClassComponent> | undefined
 let bot: any
 const item = (n: number, chatId = 'chat') => ({ id: `image-${n}`, name: `Image ${n}`, ext: 'webp', type: 'image', hasMeta: true, meta: { charId: 'bot', chatId, createdAt: n + 1, updatedAt: n + 1 } })
 const record = () => ({ version: 1, chatName: '예시 챗', result: { draft: { rendering: '', scene: 'quiet garden', negative: 'blur', subjects: [] }, style: { artist: '', rendering: '', negative: '', steps: 28, scale: 5, sampler: 'k_euler_ancestral', name: '기본' }, settings: { model: 'nai-diffusion-5-full', width: 832, height: 1216 }, seed: 42 } })
@@ -46,7 +44,7 @@ beforeEach(() => {
     })
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: mocks.copy.mockResolvedValue(undefined) } })
 })
-afterEach(() => { referenceComponent?.$destroy(); referenceComponent = undefined; component?.$destroy(); component = undefined; document.body.replaceChildren() })
+afterEach(() => { component?.$destroy(); component = undefined; document.body.replaceChildren() })
 
 describe('BardPainter gallery UI', () => {
     it('deletes one card in one click without opening the viewer or confirmation and clears its saved references', async () => {
@@ -139,19 +137,15 @@ describe('BardPainter gallery UI', () => {
         await vi.waitFor(() => expect(document.body.textContent).toContain('참고 삽화로 지정했습니다.'))
         expect(document.querySelector('[role="dialog"]')).not.toBeNull()
     })
-    it('keeps the current-chat reference slot and viewer action synchronized when assigned and cleared', async () => {
+    it('keeps the viewer action synchronized when the current-chat reference is assigned and cleared', async () => {
         mocks.load.mockResolvedValue(record())
         const session = mocks.getSession('bot', 'chat')
-        referenceComponent = createClassComponent({ component: BardPainterReference, target: document.body, props: { session } })
         await mount([item(1)])
-        expect(document.querySelector('img[alt="선택한 참고 삽화"]')).toBeNull()
         document.querySelector<HTMLButtonElement>('[data-gallery-image]')!.click(); await settle()
         document.querySelector<HTMLButtonElement>('[data-gallery-reference]')!.click()
-        await vi.waitFor(() => expect(document.querySelector('img[alt="선택한 참고 삽화"]')).not.toBeNull())
-        expect(document.querySelector<HTMLButtonElement>('[data-gallery-reference]')!.disabled).toBe(true)
-        document.querySelector<HTMLButtonElement>('[data-painter-reference] button')!.click()
-        await vi.waitFor(() => expect(document.querySelector('img[alt="선택한 참고 삽화"]')).toBeNull())
-        expect(document.querySelector<HTMLButtonElement>('[data-gallery-reference]')!.disabled).toBe(false)
+        await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-gallery-reference]')!.disabled).toBe(true))
+        await session.setReference('')
+        await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-gallery-reference]')!.disabled).toBe(false))
         expect(document.querySelector<HTMLButtonElement>('[data-gallery-reference]')!.textContent).toContain('참고 삽화 지정')
         expect(document.body.textContent).not.toContain('참고 삽화로 지정했습니다.')
     })

@@ -6,7 +6,11 @@ import RisuBardWikiPromptSettings from './RisuBardWikiPromptSettings.svelte'
 
 vi.mock('src/ts/stores.svelte', () => ({ DBState: { db: {} } }))
 vi.mock('src/ts/alert', () => ({ alertConfirm: vi.fn(), notifyError: vi.fn(), notifySuccess: vi.fn() }))
-vi.mock('src/ts/globalApi.svelte', () => ({ downloadFile: vi.fn() }))
+vi.mock('src/ts/globalApi.svelte', () => ({ downloadFile: vi.fn(), requestImmediateSave: vi.fn() }))
+vi.mock('src/ts/storage/database.svelte', async () => {
+    const { DBState } = await import('src/ts/stores.svelte')
+    return { getDatabase: () => DBState.db }
+})
 vi.mock('src/ts/util', () => ({ selectSingleFile: vi.fn() }))
 // Keep the actual settings header and portaled dialog, isolating the unrelated editors.
 vi.mock('./RisuBardWikiPromptV2Workspace.svelte', async () => ({ default: (await import('src/lib/UI/GUI/TextInput.svelte')).default }))
@@ -38,12 +42,13 @@ test('opens all presets outside the constrained page and filters and selects a d
     const dialog = document.querySelector('[role="dialog"]')!
     expect(dialog).not.toBeNull()
     expect(dialog.closest('[data-settings-page-body]')).toBeNull()
-    expect(dialog.querySelectorAll('.preset-picker .preset-select')).toHaveLength(40)
-    const search = dialog.querySelector('.picker-search input') as HTMLInputElement
+    expect(dialog.querySelector('[data-collection-organizer-list="wikiPromptPresets"]')).not.toBeNull()
+    expect(dialog.querySelectorAll('.preset-select')).toHaveLength(40)
+    const search = dialog.querySelector('.collection-toolbar input') as HTMLInputElement
     search.value = 'Preset 39'
     search.dispatchEvent(new Event('input', { bubbles: true }))
     await tick()
-    const choices = dialog.querySelectorAll<HTMLButtonElement>('.preset-picker .preset-select')
+    const choices = dialog.querySelectorAll<HTMLButtonElement>('.preset-select')
     expect(choices).toHaveLength(1)
     choices[0].click()
     await tick()

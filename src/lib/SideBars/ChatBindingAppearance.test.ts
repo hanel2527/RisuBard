@@ -137,6 +137,23 @@ test.each([false, true])('opens the manager instead of the legacy picker when re
     expect(onBindingChange).toHaveBeenCalledOnce()
 })
 
+test('binding a global persona leaves the global selection for other bots unchanged', async () => {
+    DBState.db.personas.push({ id: 'persona-2', name: '두 번째', icon: '', personaPrompt: '' })
+    vi.mocked(alertSelect).mockResolvedValue('1')
+    mounted = mount(PersonaBind, { target: document.body })
+    await tick()
+    document.body.querySelector('button')!.click()
+    await vi.waitFor(() => expect(get(personaSelectCallback)).toBeTypeOf('function'))
+    get(personaSelectCallback)!({ persona: DBState.db.personas[1], index: 1, scope: 'global' })
+
+    expect(DBState.db.characters[0].chats[0].bindedPersona).toBe('persona-2')
+    expect(DBState.db.selectedPersona).toBe(0)
+    selectedCharID.set(1)
+    await tick()
+    expect(document.body.querySelector('button')!.textContent).toContain('페르소나')
+    expect(document.body.querySelector('button')!.textContent).not.toContain('두 번째')
+})
+
 test('does not open either persona picker when the selection menu is cancelled', async () => {
     vi.mocked(alertSelect).mockResolvedValue('2')
     mounted = mount(PersonaBind, { target: document.body })

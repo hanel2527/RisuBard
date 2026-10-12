@@ -122,7 +122,8 @@ describe('BardPainter model output', () => {
     it('lets a recognized identity leave appearance for the application and keeps the chosen outfit id', () => {
         const parsed = parsePainterDraft(JSON.stringify({ ...draft, subjects: [{ ...draft.subjects[0], id: 'aria', appearance: '', clothing: '', outfitId: 'travel' }] }))
         expect(parsed.subjects[0]).toMatchObject({ id: 'aria', appearance: '', outfitId: 'travel' })
-        expect(() => parsePainterDraft(JSON.stringify({ ...draft, subjects: [{ ...draft.subjects[0], id: '', appearance: '' }] }))).toThrow()
+        // A name-matched preset may still fill it; applyPainterPresets rejects a block left empty.
+        expect(parsePainterDraft(JSON.stringify({ ...draft, subjects: [{ ...draft.subjects[0], id: '', appearance: '' }] })).subjects[0].appearance).toBe('')
         expect(() => composePainterPrompts({ ...draft, subjects: [{ ...draft.subjects[0], id: 'aria', appearance: '' }] }, style)).toThrow()
     })
 

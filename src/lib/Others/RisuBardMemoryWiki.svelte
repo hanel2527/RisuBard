@@ -12,6 +12,8 @@
         NetworkIcon,
         RefreshCwIcon,
         ChevronDownIcon,
+        ChevronLeftIcon,
+        ChevronRightIcon,
         SquareTerminalIcon,
         MonitorIcon,
         SmartphoneIcon,
@@ -195,6 +197,41 @@
     let settingsOpen = $state(false)
     let settingsPopoverElement = $state<HTMLElement | null>(null)
     let layoutMode = $state<MemoryWikiLayout>('desktop')
+    let dockViewsElement = $state<HTMLElement | null>(null)
+    let dockViewsOverflow = $state({ start: false, end: false })
+    function updateDockViewsOverflow() {
+        const element = dockViewsElement
+        if (!element) return
+        const start = element.scrollLeft > 1
+        const end = element.scrollWidth - element.clientWidth - element.scrollLeft > 1
+        if (start !== dockViewsOverflow.start || end !== dockViewsOverflow.end) dockViewsOverflow = { start, end }
+    }
+    function scrollDockViews(direction: -1 | 1) {
+        const element = dockViewsElement
+        if (!element) return
+        const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        element.scrollBy({ left: direction * element.clientWidth * .7, behavior: reduceMotion ? 'auto' : 'smooth' })
+    }
+    // 좁은 폭에서 툴바가 가로로 넘치면 양 끝에 화살표를 띄워 숨은 버튼이 있음을 알린다.
+    $effect(() => {
+        const element = dockViewsElement
+        if (!element) return
+        let frame = 0
+        const schedule = () => {
+            cancelAnimationFrame(frame)
+            frame = requestAnimationFrame(updateDockViewsOverflow)
+        }
+        const resizeObserver = new ResizeObserver(schedule)
+        resizeObserver.observe(element)
+        const mutationObserver = new MutationObserver(schedule)
+        mutationObserver.observe(element, { childList: true, subtree: true })
+        schedule()
+        return () => {
+            cancelAnimationFrame(frame)
+            resizeObserver.disconnect()
+            mutationObserver.disconnect()
+        }
+    })
     $effect(() => {
         if (layoutMode === 'mobile' && $painterInsertionRequest?.characterId === characterId && $painterInsertionRequest.chatId === chatId) open = false
     })
@@ -856,7 +893,8 @@
                 <PanelRightCloseIcon size={18} />
             </button>
         </div>
-        <nav class="dock-views" aria-label="BardWiki 보기">
+        <div class="dock-views-shell">
+        <nav class="dock-views" aria-label="BardWiki 보기" bind:this={dockViewsElement} onscroll={updateDockViewsOverflow}>
             {#if wiki?.mode === 'markdown' && activeView !== 'painter'}
                 <button
                     type="button"
@@ -997,6 +1035,19 @@
                 </div>
             {/if}
         </nav>
+            {#if dockViewsOverflow.start}
+                <button type="button" class="dock-views-scroll start" tabindex="-1" aria-label="툴바 왼쪽으로 넘기기"
+                    data-dock-views-scroll="start" onclick={() => scrollDockViews(-1)}>
+                    <ChevronLeftIcon size={18} />
+                </button>
+            {/if}
+            {#if dockViewsOverflow.end}
+                <button type="button" class="dock-views-scroll end" tabindex="-1" aria-label="툴바 오른쪽으로 넘기기"
+                    data-dock-views-scroll="end" onclick={() => scrollDockViews(1)}>
+                    <ChevronRightIcon size={18} />
+                </button>
+            {/if}
+        </div>
         {#if wiki?.mode === 'markdown'}
             <section
                 class="settings-popover"
@@ -1520,7 +1571,38 @@
         color: var(--risu-theme-primary);
         background: color-mix(in srgb, var(--risu-theme-primary) 9%, transparent);
     }
-    .dock-views { display: flex; flex-wrap: wrap; width: 100%; min-height: 44px; align-items: center; gap: .3rem; padding: .3rem .35rem; border-radius: .48rem; background: color-mix(in srgb, var(--risu-theme-darkbg) 78%, var(--risu-theme-textcolor2) 8%); }
+    .dock-views-shell { position: relative; width: 100%; min-width: 0; }
+    .dock-views-scroll {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        z-index: 1;
+        display: flex;
+        width: 2.6rem;
+        align-items: center;
+        padding: 0 .3rem;
+        border: 0;
+        color: var(--risu-theme-textcolor2);
+        cursor: pointer;
+    }
+    .dock-views-scroll.start {
+        left: 0;
+        justify-content: flex-start;
+        border-radius: .48rem 0 0 .48rem;
+        background:
+            linear-gradient(270deg, transparent, color-mix(in srgb, var(--risu-theme-darkbg) 78%, var(--risu-theme-textcolor2) 8%) 55%),
+            linear-gradient(270deg, transparent, color-mix(in srgb, var(--risu-theme-darkbg) 91%, var(--color-bgcolor)) 55%);
+    }
+    .dock-views-scroll.end {
+        right: 0;
+        justify-content: flex-end;
+        border-radius: 0 .48rem .48rem 0;
+        background:
+            linear-gradient(90deg, transparent, color-mix(in srgb, var(--risu-theme-darkbg) 78%, var(--risu-theme-textcolor2) 8%) 55%),
+            linear-gradient(90deg, transparent, color-mix(in srgb, var(--risu-theme-darkbg) 91%, var(--color-bgcolor)) 55%);
+    }
+    .dock-views-scroll:hover { color: var(--risu-theme-textcolor); }
+    .dock-views { position: relative; display: flex; flex-wrap: wrap; width: 100%; min-height: 44px; align-items: center; gap: .3rem; padding: .3rem .35rem; border-radius: .48rem; background: color-mix(in srgb, var(--risu-theme-darkbg) 78%, var(--risu-theme-textcolor2) 8%); }
     .dock-view-actions { display: flex; align-items: center; justify-content: flex-end; gap: .25rem; margin-left: auto; }
     .reboot-progress {
         flex: 1 0 100%;

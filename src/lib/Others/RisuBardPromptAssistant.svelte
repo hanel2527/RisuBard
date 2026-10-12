@@ -4,6 +4,9 @@
     import DOMPurify from 'dompurify'
     import {
         CheckIcon,
+        CopyIcon,
+        DownloadIcon,
+        GitBranchIcon,
         LoaderCircleIcon,
         MessageSquareTextIcon,
         PanelRightCloseIcon,
@@ -21,11 +24,14 @@
     import { getActiveBotPresetId, getBotPresetIndexById, selectChatPromptPreset } from 'src/ts/storage/database.svelte'
     import { openSettings, SettingsRoute } from 'src/ts/routing'
     import { alertConfirm } from 'src/ts/alert'
+    import { downloadFile } from 'src/ts/globalApi.svelte'
     import { tokenize } from 'src/ts/tokenizer'
     import {
         BLOCK_REFERENCE_PATTERN,
         clampChatMessageCount,
         collectBlockNames,
+        formatPromptAssistantMarkdown,
+        promptAssistantExportFileName,
         formatChatLogForAssistant,
         markStrongForCjk,
         PROMPT_ASSISTANT_MAX_CHAT_MESSAGES,
@@ -33,8 +39,11 @@
         STRONG_OPEN_MARK,
         stripBlockWrapper,
         resolveBlockIndex,
+        restoreEscapedLineBreaks,
         serializePresetForAssistant,
+        describeAttachment,
         type PromptAssistantIndex,
+        type PromptAssistantMessage,
         type PromptAssistantModel,
         type PromptAssistantProject,
     } from 'src/ts/risubard/promptAssistant'
@@ -42,6 +51,7 @@
         collectPromptAssistantChatLines,
         createPromptAssistantMessage,
         deletePromptAssistantProject,
+        forkPromptAssistantProject,
         findLatestSentRequest,
         listPromptAssistantPresets,
         loadPromptAssistantIndex,
@@ -49,8 +59,10 @@
         newPromptAssistantProject,
         rememberPromptAssistantProject,
         resolvePromptAssistantPreset,
+        savePromptAssistantModel,
         savePromptAssistantProject,
         sendPromptAssistant,
+        type PromptAssistantStage,
     } from 'src/ts/risubard/promptAssistantStore'
 
     interface Props {
@@ -66,6 +78,8 @@
     const markdown = markdownit({ html: false, linkify: true, breaks: true })
     const renderFence = markdown.renderer.rules.fence!
     markdown.renderer.rules.fence = (tokens, idx, options, env, self) => {
+        // Display and copy both read this content, so the fix reaches the clipboard too.
+        tokens[idx].content = restoreEscapedLineBreaks(tokens[idx].content)
         const no = tokens[idx].content.match(/^\s*<block\s+no="(\d{1,4})"/)?.[1]
         const openButton = no ? `<button type="button" data-block-ref="${no}" title="${OPEN_BLOCK_TITLE}">편집기에서 열기</button>` : ''
         return `<div data-code-block>${renderFence(tokens, idx, options, env, self)}<div data-code-actions>${openButton}<button type="button" data-copy-code title="블록 태그를 뺀 본문을 복사합니다">복사</button></div></div>`
@@ -76,7 +90,9 @@
         '이 프리셋에서 서로 충돌하거나 중복되는 지시를 찾아 줘.',
     ]
 
-    let index = $state<PromptAssistantIndex>({ version: 1, projects: [] })
+    let index = $state<PromptAssistantIndex>({ version: 1, projects: [], model: 'model' })
+    let copiedMessageId = $state('')
+    let copiedTimer: ReturnType<typeof setTimeout> | undefined
     let project = $state<PromptAssistantProject | null>(null)
     let loading = $state(true)
     let loadError = $state('')
@@ -105,9 +121,13 @@
     })
     const currentCharacter = $derived($selectedCharID >= 0 ? DBState.db.characters[$selectedCharID] : undefined)
     const currentChat = $derived(currentCharacter?.chats[currentCharacter.chatPage])
+    let stage = $state<PromptAssistantStage | null>(null)
     const attachmentLabel = $derived(project
-        ? ['프리셋', project.chatMessages > 0 ? `최근 챗 최대 ${project.chatMessages}개` : '', project.includeRequest ? '마지막 실제 요청' : '']
-            .filter(Boolean).join(', ')
+        ? [
+            project.sendFullPreset ? '프리셋 전체' : '프리셋 목차와 필요한 블록',
+            project.chatMessages > 0 ? `최근 챗 최대 ${project.chatMessages}개` : '',
+            project.includeRequest ? '마지막 실제 요청' : '',
+        ].filter(Boolean).join(', ')
         : '')
     const projectPreset = $derived(project ? presets.find((preset) => preset.id === project.presetId) : undefined)
 
@@ -471,10 +491,72 @@
         await persist()
     }
 
-    function setModel(model: PromptAssistantModel) {
-        if (!project || project.model === model) return
-        project.model = model
-        void persist()
+    // One model for all projects, stored with the project list so it survives
+    // new projects, other chats and reloads.
+    async function setModel(model: PromptAssistantModel) {
+        if (index.model === model) return
+        const previous = index.model
+        index.model = model
+        saveError = ''
+        try {
+            index = await savePromptAssistantModel(model, $state.snapshot(index) as PromptAssistantIndex)
+        }
+        catch (cause) {
+            index.model = previous
+            saveError = `모델 설정을 저장하지 못했습니다. ${errorText(cause)}`
+        }
+    }
+
+    async function forkFrom(message: PromptAssistantMessage) {
+        if (!project || running) return
+        const fork = forkPromptAssistantProject($state.snapshot(project) as PromptAssistantProject, message.id)
+        if (!fork) return
+        saveScrollNow()
+        try {
+            index = await savePromptAssistantProject(fork.project, index)
+            project = fork.project
+            formMode = 'none'
+            draft = fork.draft
+            notice = `'${fork.project.name}' 프로젝트를 만들었습니다.`
+            await restoreScroll()
+            if (fork.draft) inputElement?.focus()
+        }
+        catch (cause) {
+            notice = `포크하지 못했습니다. ${errorText(cause)}`
+        }
+    }
+
+    async function copyMessage(message: PromptAssistantMessage) {
+        try {
+            await copyText(message.text)
+            copiedMessageId = message.id
+            clearTimeout(copiedTimer)
+            copiedTimer = setTimeout(() => { copiedMessageId = '' }, 1600)
+        }
+        catch {
+            notice = '복사하지 못했습니다.'
+        }
+    }
+
+    async function deleteMessage(message: PromptAssistantMessage) {
+        if (!project || running) return
+        const label = message.role === 'user' ? '질문' : '답변'
+        if (!await alertConfirm(`이 ${label}을 삭제할까요? 되돌릴 수 없습니다.`)) return
+        project.messages = project.messages.filter((item) => item.id !== message.id)
+        await persist()
+    }
+
+    async function exportConversation() {
+        if (!project || project.messages.length === 0) return
+        const savedAt = new Date()
+        const presetName = presets.find((preset) => preset.id === project?.presetId)?.name ?? '삭제된 프리셋'
+        const snapshot = $state.snapshot(project) as PromptAssistantProject
+        try {
+            await downloadFile(promptAssistantExportFileName(snapshot.name, savedAt), formatPromptAssistantMarkdown(snapshot, presetName, savedAt))
+        }
+        catch (cause) {
+            notice = `저장하지 못했습니다. ${errorText(cause)}`
+        }
     }
 
     async function scrollToEnd() {
@@ -510,13 +592,15 @@
                     ? '요청 기록이 꺼져 있어 실제 요청을 첨부하지 못했습니다.'
                     : '마지막 AI 응답의 요청 기록이 없어 실제 요청을 첨부하지 못했습니다.'
             }
-            target.messages.push(createPromptAssistantMessage('user', userText, {
+            const question = createPromptAssistantMessage('user', userText, {
                 attached: { chatMessages: chatLines.length, request: !!sentRequest },
-            }))
+            })
+            target.messages.push(question)
             if (text === draft) draft = ''
             await scrollToEnd()
-            const reply = await sendPromptAssistant({
-                project: { ...target, messages: history },
+            const result = await sendPromptAssistant({
+                project: { ...($state.snapshot(target) as PromptAssistantProject), messages: history },
+                model: index.model,
                 userText,
                 preset,
                 chatLines,
@@ -527,7 +611,16 @@
                     streamingText = value
                     void scrollToEnd()
                 },
+                onStage: (next) => {
+                    stage = next
+                    if (next.step !== 'answer') return
+                    const sent = target.messages.find((message) => message.id === question.id)
+                    if (sent?.attached) sent.attached.blocks = next.blocks === 'all' ? 'all' : [...next.blocks]
+                },
             })
+            const reply = result.text
+            // The model has now seen this preset, so the next change notice compares against it.
+            if (reply.trim()) target.presetFingerprint = result.fingerprint
             const blockNames = collectBlockNames(preset, reply)
             if (signal.aborted) {
                 if (reply.trim()) target.messages.push(createPromptAssistantMessage('assistant', reply, { blockNames }))
@@ -546,6 +639,7 @@
         }
         finally {
             running = false
+            stage = null
             streamingText = ''
             controller = null
             if (project === target) {
@@ -579,7 +673,11 @@
         const lines = currentCharacter && currentChat
             ? collectPromptAssistantChatLines(currentCharacter, currentChat, project.chatMessages)
             : []
-        const material = (preset ? serializePresetForAssistant(preset) : '') + formatChatLogForAssistant(lines)
+        // Two-step sends always carry the index; the chosen bodies come on top.
+        const presetText = preset
+            ? serializePresetForAssistant(preset, project.sendFullPreset ? {} : { include: new Set(), preview: true })
+            : ''
+        const material = presetText + formatChatLogForAssistant(lines)
         let cancelled = false
         const timer = setTimeout(async () => {
             try {
@@ -617,6 +715,7 @@
     })
 
     onDestroy(() => {
+        clearTimeout(copiedTimer)
         controller?.abort()
         stopFollowingAnchor?.()
         saveScrollNow()
@@ -684,6 +783,7 @@
                     </select>
                     <button class="icon-button" type="button" aria-label="새 프로젝트" title="새 프로젝트" disabled={running} onclick={startCreate}><PlusIcon size={16} /></button>
                     <button class="icon-button" type="button" aria-label="프로젝트 이름 바꾸기" title="이름 바꾸기" disabled={running} onclick={startRename}><PencilIcon size={15} /></button>
+                    <button class="icon-button" type="button" aria-label="전체 챗 저장" title="전체 챗을 Markdown 파일로 저장" disabled={project.messages.length === 0} onclick={() => void exportConversation()} data-prompt-assistant-export><DownloadIcon size={15} /></button>
                     <button class="icon-button danger" type="button" aria-label="프로젝트 삭제" title="프로젝트 삭제" disabled={running} onclick={() => void removeProject()}><TrashIcon size={15} /></button>
                 </div>
 
@@ -708,8 +808,8 @@
                     <div class="setting">
                         <span>모델</span>
                         <div class="segmented" role="radiogroup" aria-label="모델">
-                            <button type="button" role="radio" aria-checked={project.model === 'model'} class:active={project.model === 'model'} disabled={running} onclick={() => setModel('model')}>메인</button>
-                            <button type="button" role="radio" aria-checked={project.model === 'otherAx'} class:active={project.model === 'otherAx'} disabled={running} onclick={() => setModel('otherAx')}>보조</button>
+                            <button type="button" role="radio" aria-checked={index.model === 'model'} class:active={index.model === 'model'} disabled={running} onclick={() => void setModel('model')}>메인</button>
+                            <button type="button" role="radio" aria-checked={index.model === 'otherAx'} class:active={index.model === 'otherAx'} disabled={running} onclick={() => void setModel('otherAx')}>보조</button>
                         </div>
                     </div>
                     <label class="setting">
@@ -745,10 +845,20 @@
                         />
                         <span>실제 요청 첨부</span>
                     </label>
+                    <label class="setting check" title="꺼 두면 먼저 블록 목차만 보내 필요한 블록을 고르게 한 뒤, 그 블록의 본문만 보내 답을 받습니다. 켜면 매번 모든 블록의 본문을 보냅니다.">
+                        <input
+                            type="checkbox"
+                            bind:checked={project.sendFullPreset}
+                            disabled={running}
+                            onchange={() => void persist()}
+                            data-prompt-assistant-full-preset
+                        />
+                        <span>항상 프리셋 전체 보내기</span>
+                    </label>
                 </div>
                 <p class="attach-summary" aria-live="polite">
                     <span>함께 보냄: {attachmentLabel}</span>
-                    {#if estimate !== null}<span class="tabular">약 {estimate.toLocaleString()} 토큰{project.includeRequest ? ' + 요청' : ''}</span>{/if}
+                    {#if estimate !== null}<span class="tabular">약 {estimate.toLocaleString()} 토큰{project.sendFullPreset ? '' : ' + 고른 블록'}{project.includeRequest ? ' + 요청' : ''}</span>{/if}
                 </p>
             {:else if formMode !== 'none'}
                 <form class="project-form" onsubmit={(event) => { event.preventDefault(); void submitForm() }} data-prompt-assistant-form>
@@ -808,10 +918,8 @@
                 <article class="message {message.role}" class:failed={message.failed} data-message-id={message.id}>
                     <header>
                         <span class="role">{message.role === 'user' ? '나' : '비서'}</span>
-                        {#if message.attached && (message.attached.chatMessages > 0 || message.attached.request)}
-                            <span class="attached">
-                                {message.attached.chatMessages > 0 ? `챗 ${message.attached.chatMessages}개` : ''}{message.attached.chatMessages > 0 && message.attached.request ? ', ' : ''}{message.attached.request ? '실제 요청' : ''} 첨부
-                            </span>
+                        {#if describeAttachment(message.attached)}
+                            <span class="attached">{describeAttachment(message.attached)} 첨부</span>
                         {/if}
                     </header>
                     {#if message.role === 'assistant' && !message.failed}
@@ -821,6 +929,19 @@
                     {:else}
                         <p class="body">{message.text}</p>
                     {/if}
+                    <div class="message-actions" data-message-actions>
+                        <button type="button" disabled={running} title={message.role === 'user' ? '이 질문 직전까지 새 프로젝트로 복사하고, 질문은 입력창에 넣습니다' : '이 답변까지 새 프로젝트로 복사합니다'} onclick={() => void forkFrom(message)} data-message-fork>
+                            <GitBranchIcon size={13} /> 여기서 포크하기
+                        </button>
+                        {#if message.role === 'assistant' && !message.failed}
+                            <button type="button" class:done={copiedMessageId === message.id} onclick={() => void copyMessage(message)} data-message-copy>
+                                {#if copiedMessageId === message.id}<CheckIcon size={13} /> 복사됨{:else}<CopyIcon size={13} /> 답변 복사{/if}
+                            </button>
+                        {/if}
+                        <button type="button" class="danger" disabled={running} onclick={() => void deleteMessage(message)} data-message-delete>
+                            <TrashIcon size={13} /> 삭제
+                        </button>
+                    </div>
                 </article>
             {/each}
             {#if running}
@@ -829,7 +950,15 @@
                     {#if streamingText}
                         <div class="markdown">{@html renderMarkdown(streamingText)}</div>
                     {:else}
-                        <p class="body waiting"><LoaderCircleIcon class="animate-spin" size={14} /> 프리셋을 읽는 중입니다.</p>
+                        <p class="body waiting"><LoaderCircleIcon class="animate-spin" size={14} />
+                            {#if stage?.step === 'select'}
+                                답에 필요한 블록을 고르는 중입니다.
+                            {:else if stage?.step === 'answer' && stage.blocks !== 'all'}
+                                블록 {stage.blocks.length}개를 읽고 답하는 중입니다.
+                            {:else}
+                                프리셋을 읽고 답하는 중입니다.
+                            {/if}
+                        </p>
                     {/if}
                 </article>
             {:else if project.messages.at(-1)?.failed}
@@ -1179,6 +1308,37 @@
         overflow-wrap: anywhere;
     }
     .message.failed .body { color: var(--risu-theme-draculared); }
+    .message-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: .15rem .35rem;
+        margin-left: -.35rem;
+    }
+    .message.user .message-actions { margin-top: .1rem; }
+    .message-actions button {
+        display: inline-flex;
+        align-items: center;
+        gap: .28rem;
+        min-height: 1.7rem;
+        padding: 0 .4rem;
+        border: 0;
+        border-radius: .3rem;
+        color: var(--risu-theme-textcolor2);
+        background: transparent;
+        font-size: .68rem;
+        font-weight: 600;
+        cursor: pointer;
+    }
+    .message-actions button:hover:not(:disabled),
+    .message-actions button:focus-visible {
+        color: var(--risu-theme-textcolor);
+        background: color-mix(in srgb, var(--risu-theme-primary) 8%, transparent);
+        outline: 0;
+    }
+    .message-actions button.done { color: var(--risu-theme-primary); }
+    .message-actions button.danger:hover:not(:disabled),
+    .message-actions button.danger:focus-visible { color: var(--risu-theme-draculared); }
+    .message-actions button:disabled { cursor: not-allowed; opacity: .42; }
     .waiting { display: inline-flex; align-items: center; gap: .4rem; color: var(--risu-theme-textcolor2); }
     .retry { display: flex; }
     .markdown {

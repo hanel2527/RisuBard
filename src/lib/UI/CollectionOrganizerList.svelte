@@ -154,6 +154,7 @@
             promptPresets: emptyState(),
             modules: emptyState(),
             plugins: emptyState(),
+            wikiPromptPresets: emptyState(),
         }
         db.collectionOrganizers = {
             ...organizers,

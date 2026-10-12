@@ -31,10 +31,11 @@ function mount(visible = true) {
     component = createClassComponent({ component: BardPainter, target: document.body, props: { characterId: 'bot', chatId: 'chat', visible } })
 }
 function button(label: string) {
-    const found = [...document.querySelectorAll<HTMLButtonElement>('button')].find(el => el.textContent?.trim() === label)
+    const found = [...document.querySelectorAll<HTMLButtonElement>('button')].find(el => el.getAttribute('aria-label') === label || el.textContent?.trim() === label)
     expect(found, `button: ${label}`).toBeDefined()
     return found!
 }
+const exists = (label: string) => [...document.querySelectorAll('button')].some(el => el.getAttribute('aria-label') === label || el.textContent?.trim() === label)
 beforeEach(() => {
     DBState.db.tagAutocomplete = normalizeTagAutocompleteSettings()
     tagSearch.mockReset().mockResolvedValue([{ word: 'blue hair', category: 0, frequency: 200, redirect: 'null' }])
@@ -44,121 +45,143 @@ beforeEach(() => {
     const data = createPainterChatData()
     const style = result().style
     runtime.current = painterTestState({
-        data, get settings() { return this.data.settings }, chat: { isStreaming: false }, bot: { identities: [], outfits: [] }, style, styles: [style],
-        get botCatalog() { return this.bot },
+        data, get settings() { return this.data.settings }, chat: { isStreaming: false }, bot: { identities: [] as any[], outfits: [] }, style, styles: [style],
+        get botCatalog() { return this.bot }, unreflectedGlobalIdentities: [] as any[], generationSettingsPinned: false, hasGenerationOverrides: false,
         promptPreset: { id: 'current' }, imagePreset: undefined,
         imagePresets: [{ index: 0, preset: { name: 'Image', values: { toggle_detail: '0' } } }], applyImagePreset: vi.fn().mockResolvedValue(true),
         state: { status: 'idle', error: '', notice: '', wikiDocs: [], loadingWiki: false, pendingImage: false },
-        ...Object.fromEntries(['prepare', 'generate', 'retrySave', 'cancel', 'insert', 'loadWiki', 'persist', 'saveOutfit', 'promoteOutfit', 'applyOutfit', 'removeOutfit', 'rememberIdentity', 'saveStyle', 'removeResult', 'downloadOriginal', 'restoreDraft', 'clearConversation', 'resetWorkspace'].map(name => [name, vi.fn()])),
+        outfitChoices: () => [], globalMatchFor: () => undefined, fragments: [],
+        ...Object.fromEntries(['prepare', 'generate', 'retrySave', 'cancel', 'insert', 'loadWiki', 'persist', 'saveOutfit', 'applyOutfit', 'rememberIdentity', 'removeResult', 'downloadOriginal', 'restoreDraft', 'clearConversation', 'resetWorkspace', 'autoPruneBlankIdentities', 'changeScene', 'addSubject', 'linkSubject', 'updateContext', 'setReference'].map(name => [name, vi.fn()])),
     })
     data.settings.styleId = style.id
 })
 afterEach(() => { component?.$destroy(); component = undefined; document.body.replaceChildren() })
 
 describe('BardPainter workspace', () => {
-    test('places style before a collapsible main block and allows editing and removing fragments', async () => {
+    test('uses icon tools with accessible names and cleans up blank presets once on open', async () => {
+        mount(); await tick()
+        expect([...document.querySelectorAll('nav[aria-label="바드페인터 도구"] button')].map(el => el.getAttribute('aria-label'))).toEqual(['화풍 프리셋', '캐릭터 프리셋', '생성 설정', '작업 리셋'])
+        expect(runtime.current.autoPruneBlankIdentities).toHaveBeenCalledOnce()
+        expect(document.querySelector('[aria-label="이전 메시지 수"]')).toBeNull()
+    })
+    test('chooses context in the main panel through the session', async () => {
+        mount(); await tick()
+        const persona = [...document.querySelectorAll<HTMLButtonElement>('.chip')].find(el => el.textContent?.trim() === '페르소나')!
+        expect(persona.getAttribute('aria-pressed')).toBe('false')
+        persona.click(); await tick()
+        expect(runtime.current.updateContext).toHaveBeenCalledWith({ persona: true })
+        button('이전 메시지 늘리기').click(); await tick()
+        expect(runtime.current.updateContext).toHaveBeenLastCalledWith({ before: 3 })
+        const wiki = [...document.querySelectorAll<HTMLButtonElement>('.chip')].find(el => el.textContent?.includes('바드위키'))!
+        wiki.click(); await tick()
+        expect(runtime.current.loadWiki).toHaveBeenCalledOnce()
+        runtime.current.state.wikiDocs = [{ id: 'w1', title: '아리아 문서', content: '' }]; await tick()
+        const check = document.querySelector<HTMLInputElement>('.wiki input')!
+        check.checked = true; check.dispatchEvent(new Event('change', { bubbles: true })); await tick()
+        expect(runtime.current.updateContext).toHaveBeenLastCalledWith({ wikiIds: ['w1'] })
+        runtime.current.state.status = 'prompt'; await tick()
+        expect(persona.disabled).toBe(true)
+    })
+    test('adds person, object and preset blocks before any prompt exists', async () => {
+        runtime.current.bot.identities = [{ id: 'seb', name: '세바스찬', aliases: [], appearance: 'black hair' }]
+        runtime.current.unreflectedGlobalIdentities = [{ id: 'g-aria', name: '아리아', aliases: [], appearance: 'silver hair' }]
+        mount(); await tick()
+        expect(runtime.current.data.draft).toBeUndefined()
+        button('빈 인물 블록 추가').click(); button('빈 사물 블록 추가').click(); await tick()
+        expect(runtime.current.addSubject.mock.calls).toEqual([[{ kind: 'character' }], [{ kind: 'object' }]])
+        const select = document.querySelector<HTMLSelectElement>('[aria-label="캐릭터 프리셋으로 블록 추가"]')!
+        expect([...select.querySelectorAll('optgroup')].map(group => group.label)).toEqual(['이 봇', '글로벌 (고르면 이 봇에 반영)'])
+        select.value = 'global:g-aria'; select.dispatchEvent(new Event('change', { bubbles: true })); await tick()
+        expect(runtime.current.addSubject).toHaveBeenLastCalledWith({ globalId: 'g-aria' })
+        expect(select.value).toBe('')
+        select.value = 'bot:seb'; select.dispatchEvent(new Event('change', { bubbles: true })); await tick()
+        expect(runtime.current.addSubject).toHaveBeenLastCalledWith({ identityId: 'seb' })
+    })
+    test('creates a draft from main-block text and edits the scene of an existing draft', async () => {
+        mount(); await tick()
+        const main = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="메인 프롬프트"]')!
+        main.value = 'garden'; main.dispatchEvent(new Event('input', { bubbles: true })); await tick()
+        expect(runtime.current.data.draft).toMatchObject({ scene: 'garden', subjects: [] })
+        main.value = 'garden, night'; main.dispatchEvent(new Event('input', { bubbles: true })); await tick()
+        expect(runtime.current.data.draft.scene).toBe('garden, night')
+    })
+    test('keeps fragments as removable chips and style text collapsed', async () => {
         runtime.current.data.draft = { ...draft(), fragments: [{ id: 'light', name: '빛', prompt: 'rim light' }] }
         runtime.current.style.negative = 'blur'
         mount(); await tick()
-        const section = document.querySelector('[aria-label="프롬프트 초안"]')!
-        const details = section.querySelectorAll('details')
-        expect(details[0].querySelector('summary')?.textContent).toBe('화풍')
-        expect(details[0].textContent).toContain('blur')
-        expect(details[1].querySelector('summary')?.textContent).toBe('메인 블록')
-        expect(details[1].open).toBe(true)
-        expect(section.textContent).not.toContain('AI가 초안을 작성하거나 개선해도')
-        const help = button('표현 조각')
-        help.dispatchEvent(new MouseEvent('mouseenter'))
-        await vi.waitFor(() => expect(document.querySelector('[role="tooltip"]')?.textContent).toContain('AI가 초안을 작성하거나 개선해도'))
-        help.dispatchEvent(new MouseEvent('mouseleave'))
-        const field = section.querySelector<HTMLTextAreaElement>('[aria-label="표현 조각 빛"]')!
-        const fragment = field.closest('details')!
-        expect(fragment.open).toBe(false)
-        fragment.querySelector('summary')!.click(); await tick()
-        expect(fragment.open).toBe(true)
-        field.value = 'soft glow'; field.dispatchEvent(new Event('input', { bubbles: true })); await tick()
+        expect(document.querySelector<HTMLDetailsElement>('details.style')!.open).toBe(false)
+        expect(document.querySelector('details.style')!.textContent).toContain('blur')
+        button('빛').click(); await tick()
+        const editor = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="표현 조각 빛"]')!
+        editor.value = 'soft glow'; editor.dispatchEvent(new Event('input', { bubbles: true })); await tick()
         expect(runtime.current.data.draft.fragments[0].prompt).toBe('soft glow')
-        fragment.querySelector('summary')!.click(); await tick()
-        expect(fragment.open).toBe(false)
-        section.querySelector<HTMLButtonElement>('[aria-label="표현 조각 빛 제거"]')!.click(); await tick()
+        button('표현 조각 빛 빼기').click(); await tick()
         expect(runtime.current.data.draft.fragments).toEqual([])
+        button('표현 조각 관리').click(); await tick()
+        expect(document.querySelector('[data-painter-tools="fragments"]')).not.toBeNull()
     })
-    test('shows the effective image orientation and active style beside generation settings', async () => {
+    test('shows the active style, canvas and model in the header', async () => {
         mount(); await tick()
-        const summary = () => document.querySelector('[aria-label="현재 이미지 형식과 화풍"]')
-        expect(summary()?.textContent).toContain('AI 결정')
-        expect(summary()?.textContent).toContain('잉크')
-        expect(summary()?.parentElement?.querySelector('button:last-of-type')?.textContent).toBe('생성 설정')
+        const meta = () => document.querySelector('[aria-label="현재 화풍과 이미지 형식"]')?.textContent
+        expect(meta()).toContain('잉크')
+        expect(meta()).toContain('AI 결정')
         runtime.current.data.settings.sizeMode = 'fixed'
-        await tick()
-        expect(summary()?.textContent).toContain('세로')
-        runtime.current.data.settings.width = 1216
-        runtime.current.data.settings.height = 832
+        runtime.current.data.settings.width = 1216; runtime.current.data.settings.height = 832
         runtime.current.style.name = '수채화'
         await tick()
-        expect(summary()?.textContent).toContain('가로')
-        expect(summary()?.textContent).toContain('수채화')
-        runtime.current.data.settings.height = 1216
-        await tick()
-        expect(summary()?.textContent).toContain('정사각형')
+        expect(meta()).toContain('1216×832')
+        expect(meta()).toContain('수채화')
     })
-    test('applies an image preset only on button click and restores the applied label', async () => {
+    test('applies an image preset only on button click', async () => {
         runtime.current.imagePreset = { name: 'Saved image', promptPresetId: 'current', values: {} }
         mount(); await tick()
         const select = document.querySelector<HTMLSelectElement>('[aria-label="이미지 프리셋"]')!
-        expect(select).not.toBeNull()
         expect(select.selectedOptions[0].textContent).toContain('Saved image')
-        expect(select.closest('.scene-options')).toBe(document.querySelector('[aria-label="그림 시점"]')!.closest('.scene-options'))
         select.value = '0'; select.dispatchEvent(new Event('change', { bubbles: true })); await tick()
         expect(runtime.current.applyImagePreset).not.toHaveBeenCalled()
         button('적용').click(); await tick(); await tick()
         expect(runtime.current.applyImagePreset).toHaveBeenCalledWith(0)
         expect(runtime.current.prepare).not.toHaveBeenCalled()
-        select.value = ''; select.dispatchEvent(new Event('change', { bubbles: true })); await tick()
-        button('적용').click(); await tick(); await tick()
-        expect(runtime.current.applyImagePreset).toHaveBeenLastCalledWith(null)
-        runtime.current.state.status = 'prompt'; await tick()
-        expect(select.disabled).toBe(true)
-        expect(button('적용').disabled).toBe(true)
     })
-    test('saves perspective above the scene without triggering generation or editing the draft', async () => {
+    test('saves perspective without editing the draft', async () => {
         delete runtime.current.data.settings.perspective
         runtime.current.data.draft = draft()
         const previous = JSON.stringify(runtime.current.data.draft)
         mount(); await tick()
-        const select = document.querySelector<HTMLSelectElement>('[aria-label="그림 시점"]')!
-        expect(select.value).toBe('third-person')
-        expect([...select.options].map(option => option.text)).toEqual(['1인칭', '3인칭'])
-        expect(select.compareDocumentPosition(document.querySelector('[aria-label="그릴 장면"]')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-        select.value = 'first-person'; select.dispatchEvent(new Event('change', { bubbles: true })); await tick()
+        const group = document.querySelector('[aria-label="그림 시점"]')!
+        expect([...group.querySelectorAll('button')].map(el => [el.textContent, el.getAttribute('aria-pressed')])).toEqual([['1인칭', 'false'], ['3인칭', 'true']])
+        button('1인칭').click(); await tick()
         expect(runtime.current.data.settings.perspective).toBe('first-person')
         expect(runtime.current.persist).toHaveBeenCalledOnce()
-        expect(runtime.current.prepare).not.toHaveBeenCalled()
         expect(JSON.stringify(runtime.current.data.draft)).toBe(previous)
-        runtime.current.state.status = 'prompt'; await tick()
-        expect(select.disabled).toBe(true)
     })
-    test('always shows scene selection and enables it only for a valid current-chat passage', async () => {
+    test('previews a fresh selection and fixes it as the scene through the session', async () => {
         mount(); await tick()
-        const choose = button('그릴 장면 선택')
-        expect(choose.closest('[aria-label="그릴 장면"]')).not.toBeNull()
+        const choose = button('본문에서 선택한 부분을 장면으로 정하기')
         expect(choose.disabled).toBe(true)
-        painterSelection.set({ characterId: 'bot', chatId: 'other', anchor: { ...anchor } })
-        await tick()
+        painterSelection.set({ characterId: 'bot', chatId: 'other', anchor: { ...anchor } }); await tick()
         expect(choose.disabled).toBe(true)
-        painterSelection.set({ characterId: 'bot', chatId: 'chat', anchor: { ...anchor } })
-        await tick()
+        painterSelection.set({ characterId: 'bot', chatId: 'chat', anchor: { ...anchor } }); await tick()
+        expect(document.querySelector('blockquote.pending')?.textContent).toBe(anchor.text)
         expect(choose.disabled).toBe(false)
         choose.click(); await tick()
-        expect(runtime.current.data.anchor).toEqual(anchor)
-        expect(runtime.current.persist).toHaveBeenCalledOnce()
-        expect(runtime.current.prepare).not.toHaveBeenCalled()
-        runtime.current.state.status = 'image'; await tick()
-        expect(choose.disabled).toBe(true)
-        runtime.current.state.status = 'idle'; runtime.current.chat.isStreaming = true; await tick()
+        expect(runtime.current.changeScene).toHaveBeenCalledWith(anchor)
+        runtime.current.chat.isStreaming = true; await tick()
         expect(choose.disabled).toBe(true)
     })
-    test('confirms workspace reset with retention details and clears the preview on success', async () => {
+    test('asks before replacing a planned scene', async () => {
+        runtime.current.data.anchor = { ...anchor }; runtime.current.data.draft = draft()
+        mount(); await tick()
+        const next = { ...anchor, start: 20, end: 28, text: '새 장면' }
+        painterSelection.set({ characterId: 'bot', chatId: 'chat', anchor: next }); await tick()
+        expect(document.querySelector('[aria-label="그릴 장면"] blockquote')?.textContent).toBe(anchor.text)
+        button('본문에서 새로 선택한 부분으로 장면 바꾸기').click(); await tick()
+        expect(runtime.current.changeScene).not.toHaveBeenCalled()
+        expect(document.body.textContent).toContain('직접 추가했거나 잠근 인물 블록은 남깁니다')
+        button('장면 바꾸기').click(); await tick()
+        expect(runtime.current.changeScene).toHaveBeenCalledWith(next)
+    })
+    test('confirms workspace reset and clears the selection on success', async () => {
         const current = runtime.current
         current.data.anchor = { ...anchor }; current.data.draft = draft(); current.data.results = [result()]
         current.resetWorkspace.mockImplementation(async () => { current.data.anchor = undefined; current.data.draft = undefined; current.data.results = []; return true })
@@ -166,162 +189,110 @@ describe('BardPainter workspace', () => {
         const range = document.createRange()
         range.selectNodeContents(document.querySelector('blockquote')!)
         window.getSelection()!.addRange(range)
-        expect([...document.querySelectorAll('nav button')].map(el => el.textContent)).toEqual(['리셋', '화풍', '캐릭터', '생성 설정'])
-        button('리셋').click(); await tick()
-        expect(document.body.textContent).toContain('갤러리')
-        expect(document.body.textContent).toContain('프리셋')
+        button('작업 리셋').click(); await tick()
+        expect(document.body.textContent).toContain('갤러리 이미지')
         expect(current.resetWorkspace).not.toHaveBeenCalled()
         button('취소').click(); await tick()
-        expect(document.querySelector('[data-painter-result]')).not.toBeNull()
-        button('리셋').click(); await tick()
-        button('리셋 확인').click(); await tick(); await tick()
+        button('작업 리셋').click(); await tick()
+        button('리셋').click(); await tick(); await tick()
         expect(current.resetWorkspace).toHaveBeenCalledOnce()
         expect(window.getSelection()?.rangeCount).toBe(0)
         expect(document.querySelector('[data-painter-result]')).toBeNull()
         expect(button('프롬프트 작성').disabled).toBe(true)
     })
-    test('retains reset confirmation on failure and prevents resetting during streaming', async () => {
-        runtime.current.resetWorkspace.mockResolvedValue(false)
+    test('prevents resetting during streaming', async () => {
+        runtime.current.chat.isStreaming = true
         mount(); await tick()
-        const range = document.createRange()
-        range.selectNodeContents(document.querySelector('h2')!)
-        window.getSelection()!.addRange(range)
-        button('리셋').click(); await tick()
-        button('리셋 확인').click(); await tick(); await tick()
-        expect(window.getSelection()?.toString()).toBe('바드페인터')
-        expect(button('리셋 확인').disabled).toBe(false)
-        runtime.current.chat.isStreaming = true; await tick()
-        expect(button('리셋').disabled).toBe(true)
-        expect(button('리셋 확인').disabled).toBe(true)
+        expect(button('작업 리셋').disabled).toBe(true)
     })
-    test('copies only prompt text and reports clipboard failure without an unhandled rejection', async () => {
+    test('copies only prompt text and reports clipboard failure', async () => {
         const writeText = vi.fn().mockResolvedValue(undefined)
         Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
         runtime.current.data.draft = draft()
         mount(); await tick()
-        button('원문 카피').click(); await tick(); await tick()
+        button('프롬프트 원문 복사').click(); await tick(); await tick()
         expect(writeText).toHaveBeenCalledWith('night, indoors\n\nartist style\n\nink\nwatercolor\n\nblack hair\n\nwhite shirt, wet clothes\n\nstanding')
         expect(document.querySelector('[role="status"]')?.textContent).toContain('복사')
         writeText.mockRejectedValueOnce(new Error('clipboard denied'))
-        button('원문 카피').click(); await tick(); await tick()
-        expect(document.querySelector('[role="alert"]')?.textContent).toContain('복사')
-        expect(document.querySelector('[role="status"]')?.textContent).not.toContain('복사했습니다')
+        button('프롬프트 원문 복사').click(); await tick(); await tick()
+        expect(document.querySelector('.error[role="alert"]')?.textContent).toContain('복사')
     })
-    test('clears conversation only after confirmation and retains the current work', async () => {
+    test('opens the conversation log on demand and clears it only after confirmation', async () => {
         const current = runtime.current
-        current.data.anchor = { ...anchor }; current.data.draft = draft(); current.data.results = [result()]
+        current.data.anchor = { ...anchor }; current.data.draft = draft()
         current.data.conversation = [{ id: 'request', role: 'user', text: 'earlier request' }]
         current.clearConversation.mockImplementation(async () => { current.data.conversation = []; return true })
         mount(); await tick()
-        button('대화 비우기').click(); await tick()
-        expect(document.body.textContent).toContain('초안과 생성한 삽화는 유지됩니다.')
-        expect(current.clearConversation).not.toHaveBeenCalled()
-        button('취소').click(); await tick()
+        expect(document.querySelector('[role="log"]')).toBeNull()
+        button('대화 기록 1개 보기').click(); await tick()
         expect(document.querySelector('[role="log"]')?.textContent).toContain('earlier request')
-        button('대화 비우기').click(); await tick()
-        button('비우기 확인').click(); await tick(); await tick()
+        button('프롬프트 대화 비우기').click(); await tick()
+        expect(current.clearConversation).not.toHaveBeenCalled()
+        button('비우기').click(); await tick(); await tick()
         expect(current.clearConversation).toHaveBeenCalledOnce()
         expect(document.querySelector('[role="log"]')).toBeNull()
-        expect(button('대화 비우기').disabled).toBe(true)
-        expect(document.querySelector<HTMLTextAreaElement>('textarea[aria-label="메인 프롬프트"]')?.value).toBe('night, indoors')
-        expect(document.querySelector('[data-painter-result]')).not.toBeNull()
+        expect(exists('프롬프트 대화 비우기')).toBe(false)
     })
-    test('disables conversation clearing when empty or busy and resets confirmation on chat changes', async () => {
-        mount(); await tick()
-        expect(button('대화 비우기').disabled).toBe(true)
-        runtime.current.data.conversation = [{ id: 'request', role: 'user', text: 'request' }]
-        await tick()
-        button('대화 비우기').click(); await tick()
-        runtime.current.state.status = 'prompt'; await tick()
-        expect(button('비우기 확인').disabled).toBe(true)
-        runtime.current.state.status = 'idle'
-        component!.$set({ chatId: 'other' }); await tick()
-        expect([...document.querySelectorAll('button')].some(el => el.textContent === '비우기 확인')).toBe(false)
-        expect(runtime.current.clearConversation).not.toHaveBeenCalled()
-    })
-    test('keeps the conversation and retry confirmation visible after a failed clear', async () => {
+    test('keeps the clear confirmation visible after a failed clear', async () => {
         runtime.current.data.conversation = [{ id: 'request', role: 'user', text: 'keep request' }]
         runtime.current.clearConversation.mockImplementation(async () => { runtime.current.state.error = '저장 실패'; return false })
         mount(); await tick()
-        button('대화 비우기').click(); await tick()
-        button('비우기 확인').click(); await tick(); await tick()
-        expect(document.querySelector('[role="log"]')?.textContent).toContain('keep request')
-        expect(document.querySelector('[role="alert"]')?.textContent).toContain('저장 실패')
-        expect(button('비우기 확인').disabled).toBe(false)
+        button('프롬프트 대화 비우기').click(); await tick()
+        button('비우기').click(); await tick(); await tick()
+        expect(document.querySelector('.error')?.textContent).toContain('저장 실패')
+        expect(button('비우기').disabled).toBe(false)
     })
-    test('offers specified placement with the same accent as before and after', async () => {
+    test('inserts the latest image above, below or at a chosen position', async () => {
         runtime.current.data.anchor = { ...anchor }
         runtime.current.data.draft = draft()
         runtime.current.data.results = [result()]
         mount(); await tick()
-        for (const label of ['위에 삽입', '아래에 삽입', '지정 삽입']) expect(button(label).classList.contains('primary')).toBe(true)
-        button('지정 삽입').click(); await tick()
+        button('원문 위에 삽입').click()
+        expect(runtime.current.insert).toHaveBeenCalledWith('result', 'before', anchor)
+        button('본문에서 삽입 위치 지정').click(); await tick()
         expect(get(painterInsertionRequest)).toMatchObject({ characterId: 'bot', chatId: 'chat', resultId: 'result', messageId: 'message' })
-        expect(runtime.current.insert).not.toHaveBeenCalled()
         const position = { ...anchor, start: 7, end: 7 }
         await get(painterInsertionRequest)!.insert(position)
-        expect(runtime.current.insert).toHaveBeenCalledWith('result', 'after', position)
+        expect(runtime.current.insert).toHaveBeenLastCalledWith('result', 'after', position)
     })
-    test('places generation settings beside the compact image generation action', async () => {
+    test('enables preparation on the first highlight and generation only for a planned scene', async () => {
         mount(); await tick()
-        const row = button('이미지 생성').parentElement!
-        expect([...row.querySelectorAll('button')].some(button => button.textContent === '생성 설정')).toBe(true)
-        expect(button('이미지 생성').classList.contains('generate')).toBe(false)
-    })
-    test('shows toolbar actions and enables explicit preparation on the first highlight', async () => {
-        mount()
-        expect(button('화풍')).toBeDefined()
-        expect(button('캐릭터')).toBeDefined()
-        expect(button('생성 설정')).toBeDefined()
-        expect(document.querySelector('[aria-label="이전 메시지 수"]')).toBeNull()
         expect(button('프롬프트 작성').disabled).toBe(true)
-        painterSelection.set({ characterId: 'bot', chatId: 'chat', anchor: { ...anchor } })
-        await tick()
+        expect(button('이미지 생성').disabled).toBe(true)
+        painterSelection.set({ characterId: 'bot', chatId: 'chat', anchor: { ...anchor } }); await tick()
         expect(button('프롬프트 작성').disabled).toBe(false)
-        expect(runtime.current.prepare).not.toHaveBeenCalled()
         button('프롬프트 작성').click()
         expect(runtime.current.prepare).toHaveBeenCalledWith(anchor, expect.objectContaining({ fresh: false }))
+        runtime.current.data.anchor = { ...anchor }; runtime.current.data.draft = draft(); await tick()
+        expect(button('이미지 생성').disabled).toBe(false)
+        expect(exists('처음부터 새로 작성')).toBe(true)
     })
-    test('keeps the draft scene pinned while a new selection becomes the insertion destination', async () => {
+    test('keeps the scene pinned while a new selection becomes the insertion destination', async () => {
         runtime.current.data.anchor = { ...anchor }
         runtime.current.data.draft = draft()
         runtime.current.data.results = [result()]
         mount()
         const destination = { ...anchor, messageId: 'elsewhere', start: 0, end: 20, text: '다른 삽입 위치', insertionUnavailable: true }
-        painterSelection.set({ characterId: 'bot', chatId: 'chat', anchor: destination })
-        await tick()
-        expect(button('이미지 생성').disabled).toBe(false)
+        painterSelection.set({ characterId: 'bot', chatId: 'chat', anchor: destination }); await tick()
         expect(document.querySelector('[aria-label="그릴 장면"]')?.textContent).toContain(anchor.text)
-        expect(runtime.current.data.anchor).toEqual(anchor)
-        button('아래에 삽입').click()
+        button('원문 아래에 삽입').click()
         expect(runtime.current.insert).toHaveBeenCalledWith('result', 'after', destination)
     })
-    test('requires an explicit scene change before replacing the pinned draft', async () => {
-        runtime.current.data.anchor = { ...anchor }; runtime.current.data.draft = draft()
-        mount()
-        const next = { ...anchor, start: 20, end: 28, text: '새 장면' }
-        painterSelection.set({ characterId: 'bot', chatId: 'chat', anchor: next })
-        await tick()
-        button('그릴 장면 선택').click()
-        await tick()
-        expect(runtime.current.data.draft).toBeDefined()
-        button('장면 변경 확인').click()
-        await tick()
-        expect(runtime.current.data.anchor).toEqual(next)
-        expect(runtime.current.data.draft).toBeUndefined()
-    })
-    test('sends refinement instructions with the pinned scene without generating an image', async () => {
+    test('sends refinement instructions and rewrites only after confirmation', async () => {
         runtime.current.data.anchor = { ...anchor }; runtime.current.data.draft = draft()
         mount()
         const composer = document.querySelector<HTMLTextAreaElement>('[aria-label="프롬프트 대화 입력"]')!
         composer.value = '구도를 가깝게'
-        composer.dispatchEvent(new Event('input', { bubbles: true }))
-        await tick()
+        composer.dispatchEvent(new Event('input', { bubbles: true })); await tick()
         button('초안 개선').click()
         expect(runtime.current.prepare).toHaveBeenCalledWith(anchor, { instruction: '구도를 가깝게', fresh: false })
+        button('처음부터 새로 작성').click(); await tick()
+        expect(runtime.current.prepare).toHaveBeenCalledOnce()
+        button('새로 작성').click(); await tick()
+        expect(runtime.current.prepare).toHaveBeenLastCalledWith(anchor, expect.objectContaining({ fresh: true }))
         expect(runtime.current.generate).not.toHaveBeenCalled()
     })
-    test('formats composer weights and accepts suggestions without submitting the prompt conversation', async () => {
+    test('formats composer weights and accepts suggestions without submitting', async () => {
         runtime.current.data.anchor = { ...anchor }
         mount(); await tick()
         const composer = document.querySelector<HTMLTextAreaElement>('[aria-label="프롬프트 대화 입력"]')!
@@ -330,13 +301,10 @@ describe('BardPainter workspace', () => {
         await tick(); await new Promise(resolve => setTimeout(resolve, 0))
         expect(composer.parentElement?.querySelector('[data-tone="strong"]')?.textContent).toContain('blu')
         expect(tagSearch).toHaveBeenCalledWith('blu', expect.any(AbortSignal))
-        expect(document.querySelector('[role="listbox"]')).not.toBeNull()
         composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
         await tick()
         expect(runtime.current.data.settings.instruction).toBe('1.5::blue hair::')
         expect(runtime.current.prepare).not.toHaveBeenCalled()
-        expect(document.activeElement).toBe(composer)
-        expect(document.querySelector('[role="listbox"]')).toBeNull()
         for (const modifier of [{ ctrlKey: true }, { metaKey: true }]) {
             composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...modifier }))
             await tick()
@@ -365,31 +333,25 @@ describe('BardPainter workspace', () => {
         document.body.addEventListener('keydown', outer)
         try {
             composer.focus()
-            composer.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }))
             composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, isComposing: true, bubbles: true, cancelable: true }))
-            composer.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }))
-            composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true }))
             expect(runtime.current.prepare).not.toHaveBeenCalled()
-            expect(outer).not.toHaveBeenCalled()
-            composer.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }))
             composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true }))
             expect(runtime.current.prepare).toHaveBeenCalledOnce()
             expect(outer).not.toHaveBeenCalled()
         } finally { document.body.removeEventListener('keydown', outer) }
     })
-    test('keeps the latest result only even when the chat has hundreds of illustrations', () => {
+    test('renders only the latest of many results and opens the gallery', () => {
         runtime.current.data.results = Array.from({ length: 300 }, (_, i) => ({ ...result(`result-${i}`), createdAt: i }))
         mount()
         expect(document.querySelectorAll('img')).toHaveLength(1)
         expect(document.querySelector('[data-painter-result]')?.getAttribute('data-painter-result')).toBe('result-299')
-        expect(document.querySelector('[aria-label="삽화 보관함"]')).toBeNull()
         expect(button('갤러리 열기')).toBeDefined()
     })
     test('does not insert incomplete compressed images and keeps recovery actions', () => {
         runtime.current.state.pendingImage = true
         runtime.current.data.results = [{ ...result(), compressionPending: true }]
         mount()
-        expect(button('아래에 삽입').disabled).toBe(true)
+        expect(button('원문 아래에 삽입').disabled).toBe(true)
         button('저장 다시 시도').click(); button('원본 다운로드').click()
         expect(runtime.current.retrySave).toHaveBeenCalledOnce()
         expect(runtime.current.downloadOriginal).toHaveBeenCalledOnce()

@@ -1,9 +1,7 @@
 <script lang="ts">
-    import { onDestroy, untrack } from 'svelte'
+    import { tick } from 'svelte'
     import { v4 as createUuid } from 'uuid'
     import { language } from 'src/lang'
-    import { requestWithProviderOutputLimit } from 'src/ts/risubard/providerOutputTokenLimit'
-    import { diagnoseBardLoreAnalysisFailure, type BardLoreFailureContext } from 'src/ts/lorebook/bardLoreAnalysisDiagnostics'
     import { DBState } from 'src/ts/stores.svelte'
     import { alertNormal, notifySuccess } from 'src/ts/alert'
     import { tooltip } from 'src/ts/gui/tooltip'
@@ -24,7 +22,6 @@
     import altArrowUpIcon from 'src/assets/solar-bold/alt-arrow-up-bold.svg'
     import {
         createBardLoreSettings,
-        fingerprintBardLoreEntry,
         type BardLoreAnalysisRun,
         type BardLoreAnalysisScope,
         type BardLoreEntry,
@@ -39,29 +36,13 @@
     import { orderLorebookEntriesForDisplay } from 'src/ts/lorebook/workspaceOperations'
     import {
         BardLoreAnalysisBudgetError,
-        BARD_LORE_PARTIAL_RECOVERY_ENABLED,
         applyBardLoreAnalysisDraft,
-        auditBardLoreAnalysisDraft,
         auditBardLoreMetadata,
-        bardLoreAtomicAnalysisSchema,
         bardLoreAnalysisDraftFromRun,
-        bardLoreAnalysisSchema,
-        buildBardLoreAtomicRetryPrompt,
-        buildBardLoreAnalysisPrompt,
-        buildBardLoreAnalysisQualityRepairPrompt,
         collectBardLoreAnalysisTargets,
-        completeBardLoreAnalysisBatch,
         createBardLoreAnalysisRun,
         estimateBardLoreAnalysisOutputTokens,
-        failBardLoreAnalysisBatch,
-        finishBardLoreAnalysisRun,
-        isBardLoreCompositeEntry,
-        parseBardLoreAnalysisResponse,
-        partitionRecoveredBardLoreAnalysisBatch,
-        pauseBardLoreAnalysisRun,
         planBardLoreAnalysisBatches,
-        recoverBardLoreAnalysisResponse,
-        startBardLoreAnalysisBatch,
         type BardLoreAnalysisPlan,
         type BardLoreAnalysisQualityIssue,
     } from 'src/ts/lorebook/bardLoreAnalysis'
@@ -74,8 +55,19 @@
         createDefaultBardLoreInstructionPreset,
         resolveBardLoreInstructionPreset,
     } from 'src/ts/lorebook/bardLoreInstructionPreset'
+    import {
+        bardLoreAnalysisJobError,
+        clearBardLoreAnalysisJobError,
+        createCharacterBardLoreAnalysisTarget,
+        isBardLoreAnalysisJobRunning,
+        startBardLoreAnalysisJob,
+        stopBardLoreAnalysisJob,
+        type BardLoreAnalysisJobTarget,
+    } from 'src/ts/lorebook/bardLoreAnalysisRunner.svelte'
 
     interface Props {
+        /** Owner of the saved run. Analysis keeps running for it after this panel closes. */
+        characterId?: string
         entries: BardLoreEntry[]
         settings: BardLoreSettings
         activeEntryId?: string | null
@@ -88,6 +80,7 @@
     }
 
     let {
+        characterId,
         entries,
         settings,
         activeEntryId,
@@ -106,7 +99,6 @@
     let settingsPaneElement = $state<HTMLElement | null>(null)
     let scope = $state<BardLoreAnalysisScope>('all')
     let planning = $state(false)
-    let analyzing = $state(false)
     let qualityRepair = $state(false)
     let error = $state('')
     let conflicts = $state<Array<{ id: string; reason: string }>>([])
@@ -124,11 +116,21 @@
     let plannedLanguage = $state<ResolvedBardLoreAnalysisLanguage>('ko')
     let currentRun = $state<BardLoreAnalysisRun | undefined>()
     let workingSettings = $state(createBardLoreSettings())
-    let controller: AbortController | undefined
     let lastExternalRun: BardLoreAnalysisRun | undefined
     let lastExternalSettings: BardLoreSettings | undefined
     let replanSequence = 0
 
+    // Without an owner the job reports through this panel, as tests and previews mount it.
+    const fallbackTarget: BardLoreAnalysisJobTarget = {
+        key: `panel:${createUuid()}`,
+        label: () => '',
+        readEntries: () => entries,
+        readRun: () => currentRun,
+        writeRun: (run) => saveRun(run),
+    }
+    const analysisTarget = $derived(characterId ? createCharacterBardLoreAnalysisTarget(characterId) : fallbackTarget)
+    const analyzing = $derived(isBardLoreAnalysisJobRunning(analysisTarget.key))
+    const displayError = $derived(error || bardLoreAnalysisJobError(analysisTarget.key))
     const eligibleEntries = $derived(entries.filter((entry) => entry.mode !== 'folder' && entry.mode !== 'child'))
     const activeInstructionPreset = $derived(resolveBardLoreInstructionPreset(
         DBState.db.risuBardGrimoirePromptPresets,
@@ -164,7 +166,8 @@
         const next = analysisRun
         if (next === lastExternalRun) return
         lastExternalRun = next
-        if (!untrack(() => analyzing)) currentRun = next
+        // The background job writes the saved run, so it is always the latest state.
+        currentRun = next
     })
     $effect(() => {
         const next = settings
@@ -591,13 +594,6 @@
         return labels[reason] ?? value
     }
 
-    function isJsonProtocolFailure(value: string): boolean {
-        if (value === 'bard-lore-analysis-invalid:invalid-json') return true
-        const normalized = value.toLowerCase()
-        return normalized.includes('structured output validation failed')
-            || normalized.includes('structured-output validation failed')
-    }
-
     function qualityIssueLabel(issue: BardLoreAnalysisQualityIssue): string {
         switch (issue.code) {
             case 'missing-summary': return language.lorebookWorkspace.bardAnalysisQualityMissingSummary
@@ -608,221 +604,9 @@
         }
     }
 
-    async function executeRun(initial: BardLoreAnalysisRun) {
-        const nextController = new AbortController()
-        controller?.abort()
-        controller = nextController
-        analyzing = true
+    function executeRun(initial: BardLoreAnalysisRun) {
         error = ''
-        let next = initial
-        const byId = new Map(entries.map((entry) => [entry.id, entry]))
-        const { requestChatData } = await import('src/ts/process/request/request')
-        try {
-            for (let batchIndex = 0; batchIndex < next.batches.length; batchIndex += 1) {
-                const batchState = next.batches[batchIndex]
-                if (batchState.status !== 'pending') continue
-                if (nextController.signal.aborted) break
-                const batch = batchState.targetIds.map((id) => byId.get(id)).filter((entry): entry is BardLoreEntry => Boolean(entry))
-                const sourceHashes = new Map(batch.map((entry) => [entry.id, fingerprintBardLoreEntry(entry)]))
-                next = startBardLoreAnalysisBatch(next, batchState.id)
-                saveRun(next)
-                let responseText = ''
-                let diagnosticContext: BardLoreFailureContext = { error: '' }
-                let attempt = 0
-                try {
-                    if (batch.length !== batchState.targetIds.length) throw new Error(language.lorebookWorkspace.bardAnalysisMissingEntry)
-                    const requestBatch = async (prompt: string, schema = bardLoreAnalysisSchema) => {
-                        // A failed retry must never reuse the previous attempt's text or metadata.
-                        responseText = ''
-                        diagnosticContext = {
-                            error: '', attempt: ++attempt, entryCount: batch.length,
-                            estimatedInputTokens: batchState.estimatedInputTokens,
-                            inputTokenLimit: next.settingsSnapshot.analysisInputTokens,
-                            outputTokenLimit: next.settingsSnapshot.analysisOutputTokens,
-                        }
-                        const response = await requestWithProviderOutputLimit<Parameters<typeof requestChatData>[0], Awaited<ReturnType<typeof requestChatData>>>({
-                            formated: [{ role: 'user', content: prompt }],
-                            bias: {},
-                            useStreaming: false,
-                            noMultiGen: true,
-                            tools: [],
-                            disablePromptCache: false,
-                            maxTokens: next.settingsSnapshot.analysisOutputTokens,
-                            temperature: next.settingsSnapshot.analysisTemperature,
-                            schema,
-                            extractJson: '',
-                            logSource: 'other',
-                            logPurpose: 'bard-lore-analysis' as const,
-                        }, (request) => requestChatData(request, 'model', nextController.signal))
-                        diagnosticContext.responseType = response.type
-                        if (response.type === 'success' || response.type === 'fail') {
-                            diagnosticContext.finishReason = response.finishReason
-                            diagnosticContext.usage = response.usage
-                            diagnosticContext.model = response.model
-                        }
-                        if (response.type !== 'success') {
-                            throw new Error(response.type === 'fail' && response.result.trim()
-                                ? response.result
-                                : language.lorebookWorkspace.bardAnalysisRequestFailed)
-                        }
-                        responseText = response.result
-                        diagnosticContext.responseText = responseText
-                        return responseText
-                    }
-                    const prompt = buildBardLoreAnalysisPrompt(
-                        batch,
-                        entries,
-                        next.settingsSnapshot.router.filterFacetKeys,
-                        next.languageSnapshot ?? 'bilingual',
-                        'ko',
-                        next.instructionPresetSnapshot ?? createDefaultBardLoreInstructionPreset(),
-                    )
-                    let parsed
-                    try {
-                        parsed = parseBardLoreAnalysisResponse(await requestBatch(prompt), batch, entries, sourceHashes)
-                    }
-                    catch (cause) {
-                        const message = cause instanceof Error ? cause.message : String(cause)
-                        if (
-                            !isJsonProtocolFailure(message)
-                            || batch.length !== 1
-                            || nextController.signal.aborted
-                        ) throw cause
-                        const atomicRetry = !isBardLoreCompositeEntry(batch[0])
-                        const retryPrompt = atomicRetry
-                            ? buildBardLoreAtomicRetryPrompt(prompt)
-                            : [
-                                prompt,
-                                'Previous response was not valid JSON. Regenerate the complete object from the beginning. Return exactly one JSON object matching the supplied schema, with no Markdown fence or commentary.',
-                            ].join('\n\n')
-                        parsed = parseBardLoreAnalysisResponse(await requestBatch(
-                            retryPrompt,
-                            atomicRetry ? bardLoreAtomicAnalysisSchema : bardLoreAnalysisSchema,
-                        ), batch, entries, sourceHashes)
-                    }
-                    let audit = auditBardLoreAnalysisDraft(parsed, batch, next.settingsSnapshot)
-                    if (audit.issues.length > 0 && !nextController.signal.aborted) {
-                        const repairPrompt = buildBardLoreAnalysisQualityRepairPrompt(prompt, audit.issues)
-                        parsed = parseBardLoreAnalysisResponse(await requestBatch(repairPrompt), batch, entries, sourceHashes)
-                        audit = auditBardLoreAnalysisDraft(parsed, batch, next.settingsSnapshot)
-                    }
-                    if (nextController.signal.aborted) break
-                    if (audit.issues.length > 0) {
-                        const diagnostics = [...new Set(audit.issues.map((issue) =>
-                            `${issue.code}${issue.detail ? `:${issue.detail}` : ''}`
-                        ))].join(',')
-                        throw new Error(`bard-lore-analysis-quality:${diagnostics}`)
-                    }
-                    next = completeBardLoreAnalysisBatch(next, batchState.id, parsed.entries)
-                    saveRun(next)
-                }
-                catch (cause) {
-                    if (nextController.signal.aborted) break
-                    const message = cause instanceof Error ? cause.message : String(cause)
-                    const diagnostic = diagnoseBardLoreAnalysisFailure({ ...diagnosticContext, error: message })
-                    next = { ...next, batches: next.batches.map((item) => item.id === batchState.id ? { ...item, diagnostic } : item) }
-                    let failedBatch = batchState
-                    let failedBatchIndex = batchIndex
-                    if (BARD_LORE_PARTIAL_RECOVERY_ENABLED && isJsonProtocolFailure(message) && responseText) {
-                        const recovered = recoverBardLoreAnalysisResponse(responseText, batch, entries, sourceHashes)
-                        const qualityFailedIds = new Set(auditBardLoreAnalysisDraft(
-                            { entries: recovered.completeEntries },
-                            batch,
-                            next.settingsSnapshot,
-                        ).failedEntryIds)
-                        const qualityFailedEntries = recovered.completeEntries.filter((candidate) => qualityFailedIds.has(candidate.id))
-                        const recovery = {
-                            ...recovered,
-                            completeEntries: recovered.completeEntries.filter((candidate) => !qualityFailedIds.has(candidate.id)),
-                            incompleteEntries: [...recovered.incompleteEntries, ...qualityFailedEntries],
-                            recoveredFields: {
-                                ...recovered.recoveredFields,
-                                ...Object.fromEntries(qualityFailedEntries.map((candidate) => [
-                                    candidate.id,
-                                    ['kind', 'activation', 'aliases', 'tags', 'summary', 'facets', 'injection', 'atoms', 'links'],
-                                ])),
-                            },
-                            unresolvedTargetIds: [...new Set([
-                                ...recovered.unresolvedTargetIds,
-                                ...qualityFailedEntries.map((candidate) => candidate.id),
-                            ])],
-                        }
-                        if (recovery.completeEntries.length > 0 || recovery.incompleteEntries.length > 0) {
-                            next = partitionRecoveredBardLoreAnalysisBatch(
-                                next,
-                                batchState.id,
-                                recovery,
-                                message,
-                                createUuid,
-                            )
-                            const unresolvedIndex = next.batches.findIndex((item, index) =>
-                                index >= batchIndex && item.status === 'failed' && item.targetIds.some((id) => batchState.targetIds.includes(id)),
-                            )
-                            if (unresolvedIndex < 0 || batchState.targetIds.length === 1) {
-                                saveRun(next)
-                                continue
-                            }
-                            failedBatchIndex = unresolvedIndex
-                            failedBatch = next.batches[unresolvedIndex]
-                            if (failedBatch.targetIds.length === 1) {
-                                next = { ...next, batches: next.batches.map((item, index) =>
-                                    index === unresolvedIndex ? { ...item, status: 'pending' as const, error: undefined, diagnostic: undefined } : item,
-                                ) }
-                                saveRun(next)
-                                batchIndex = unresolvedIndex - 1
-                                continue
-                            }
-                        }
-                    }
-                    if (isJsonProtocolFailure(message) && failedBatch.targetIds.length > 1) {
-                        const midpoint = Math.ceil(failedBatch.targetIds.length / 2)
-                        const targetGroups = [
-                            failedBatch.targetIds.slice(0, midpoint),
-                            failedBatch.targetIds.slice(midpoint),
-                        ]
-                        const replacements = targetGroups.map((targetIds) => ({
-                            id: createUuid(),
-                            index: 0,
-                            targetIds,
-                            estimatedInputTokens: Math.ceil(
-                                failedBatch.estimatedInputTokens * targetIds.length / failedBatch.targetIds.length,
-                            ),
-                            status: 'pending' as const,
-                        }))
-                        next = {
-                            ...next,
-                            updatedAt: new Date().toISOString(),
-                            batches: [
-                                ...next.batches.slice(0, failedBatchIndex),
-                                ...replacements,
-                                ...next.batches.slice(failedBatchIndex + 1),
-                            ].map((item, index) => ({ ...item, index })),
-                        }
-                        saveRun(next)
-                        batchIndex = failedBatchIndex - 1
-                        continue
-                    }
-                    next = failBardLoreAnalysisBatch(
-                        next,
-                        batchState.id,
-                        message,
-                    )
-                    saveRun(next)
-                }
-            }
-            next = nextController.signal.aborted
-                ? pauseBardLoreAnalysisRun(next)
-                : finishBardLoreAnalysisRun(next)
-            saveRun(next)
-        }
-        catch (cause) {
-            if (!nextController.signal.aborted) error = cause instanceof Error ? cause.message : String(cause)
-            saveRun(pauseBardLoreAnalysisRun(next))
-        }
-        finally {
-            if (controller === nextController) controller = undefined
-            analyzing = false
-        }
+        void startBardLoreAnalysisJob(analysisTarget, initial)
     }
 
     function startAnalysis() {
@@ -844,8 +628,7 @@
     }
 
     function cancelAnalysis() {
-        controller?.abort()
-        if (currentRun) saveRun(pauseBardLoreAnalysisRun(currentRun))
+        stopBardLoreAnalysisJob(analysisTarget)
     }
 
     function resumeAnalysis() {
@@ -889,6 +672,7 @@
             saveRun(undefined)
             plan = null
             plannedTargets = []
+            void prepareAfterRunCleared()
             return
         }
         saveRun({
@@ -903,23 +687,25 @@
     }
 
     function discardRun() {
-        controller?.abort()
+        stopBardLoreAnalysisJob(analysisTarget)
+        clearBardLoreAnalysisJobError(analysisTarget.key)
         saveRun(undefined)
         plan = null
         plannedTargets = []
         conflicts = []
         error = ''
+        void prepareAfterRunCleared()
+    }
+
+    // Without a run the window must offer a fresh plan, or the checked targets cannot be started.
+    async function prepareAfterRunCleared() {
+        await tick()
+        if (open && !currentRun) await prepare()
     }
 
     function handleOpenChange(next: boolean) {
-        if (!next && analyzing) cancelAnalysis()
         open = next
     }
-
-    onDestroy(() => {
-        controller?.abort()
-        if (currentRun?.status === 'running') onAnalysisRunChange(pauseBardLoreAnalysisRun(currentRun))
-    })
 </script>
 
 <svelte:window onpointerup={finishSelectionPaint} onpointercancel={finishSelectionPaint} />
@@ -931,7 +717,11 @@
                 <strong>{language.lorebookWorkspace.bardAiAnalysis}</strong>
                 <p>{language.lorebookWorkspace.bardAnalysisDescription}</p>
             </div>
-            {#if currentRun}<span class="run-badge">{language.lorebookWorkspace.bardAnalysisDraftSaved(candidateCount)}</span>{/if}
+            {#if currentRun && analyzing}
+                <span class="run-badge" data-bard-lore-analysis-running>{language.lorebookWorkspace.bardAnalysisRunningBadge(completeCount + failedCount, currentRun.batches.length)}</span>
+            {:else if currentRun}
+                <span class="run-badge">{language.lorebookWorkspace.bardAnalysisDraftSaved(candidateCount)}</span>
+            {/if}
         </div>
         <div
             class:quality-pass={qualityAudit.issues.length === 0}
@@ -976,7 +766,9 @@
     <button type="button" class="primary" data-bard-lore-analysis-open onclick={openWorkbench}>
         {currentRun ? language.lorebookWorkspace.bardAnalysisResumeReview : language.lorebookWorkspace.bardAnalysisOpen}
     </button>
-    {#if compact && currentRun}
+    {#if compact && currentRun && analyzing}
+        <small data-bard-lore-analysis-running>{language.lorebookWorkspace.bardAnalysisRunningBadge(completeCount + failedCount, currentRun.batches.length)}</small>
+    {:else if compact && currentRun}
         <small>{language.lorebookWorkspace.bardAnalysisDraftSaved(candidateCount)}</small>
     {/if}
 </section>
@@ -1132,6 +924,7 @@
 
             {#if analyzing}
                 <p class="status-line">{language.lorebookWorkspace.bardAnalysisRunningBatch(completeCount + failedCount + 1, currentRun.batches.length)}</p>
+                <p class="notice" data-bard-lore-analysis-background-notice>{language.lorebookWorkspace.bardAnalysisBackgroundNotice}</p>
                 <button type="button" class="secondary" data-bard-lore-analysis-cancel onclick={cancelAnalysis}>
                     {language.lorebookWorkspace.bardAnalysisCancelKeep}
                 </button>
@@ -1267,7 +1060,7 @@
             <button type="button" class="primary" data-bard-lore-analysis-apply disabled={analyzing} onclick={applyDraft}>{language.lorebookWorkspace.bardApproveAnalysis}</button>
         </section>
     {/if}
-    {#if error}<p class="error">{error}</p>{/if}
+    {#if displayError}<p class="error">{displayError}</p>{/if}
     {#if conflicts.length > 0}<p class="error">{language.lorebookWorkspace.bardAnalysisConflicts(conflicts.length)}</p>{/if}
     <p class="close-behavior">{language.lorebookWorkspace.bardAnalysisCloseBehavior}</p>
     <ManagerResizeHandles target={dialogElement} centered />

@@ -57,6 +57,34 @@ export function copyPainterIdentity(source: PainterLibraryData, identityId: stri
     return { identity, outfits, linkedIds }
 }
 
+/** Name key that ignores case and the " (2)" suffix added to copies. */
+export const painterNameKey = (name: string) => name.normalize('NFKC').trim().replace(/\s*\(\d+\)$/, '').toLocaleLowerCase()
+
+/** Global characters with no usable copy in this bot. A same-named blank entry does not count. */
+export function unreflectedGlobalIdentities(bot: PainterLibraryData, global?: PainterLibraryData): PainterIdentity[] {
+    return (global?.identities ?? []).filter(item => !bot.identities.some(own => own.sourceId === item.id
+        || (own.appearance.trim() && painterNameKey(own.name) === painterNameKey(item.name))))
+}
+
+/** The one unreflected global character a draft block's name or aliases point to. */
+export function globalIdentityForSubject(subject: { name: string; aliases: string[] }, bot: PainterLibraryData, global?: PainterLibraryData): PainterIdentity | undefined {
+    const names = new Set([subject.name, ...subject.aliases].map(painterNameKey).filter(Boolean))
+    if (!names.size) return
+    const matches = unreflectedGlobalIdentities(bot, global).filter(item => [item.name, ...item.aliases].some(name => names.has(painterNameKey(name))))
+    return matches.length === 1 ? matches[0] : undefined
+}
+
+/**
+ * Bot identities with nothing saved in them: no look, note, outfit, lore link or card
+ * opt-in. Earlier versions created these automatically for every unrecognized subject.
+ */
+export function blankPainterIdentityIds(bot: PainterLibraryData, chatOutfits: PainterOutfit[], lore: LoreEntry[]): string[] {
+    const referenced = new Set([...bot.outfits, ...chatOutfits].map(item => item.subjectId).filter(Boolean))
+    const linked = new Set(lore.map(entry => getPainterLoreIdentity(entry)).filter(Boolean))
+    return bot.identities.filter(item => !item.appearance.trim() && !item.note?.trim() && !item.outfitIds?.length && !item.defaultOutfitId
+        && item.attachToCard !== true && !referenced.has(item.id) && !linked.has(item.id)).map(item => item.id)
+}
+
 type LoreEntry = { extentions?: unknown }
 
 export function getPainterLoreIdentity(entry: LoreEntry): string | undefined {

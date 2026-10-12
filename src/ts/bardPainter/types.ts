@@ -23,8 +23,14 @@ export interface PainterSubject {
     /** Outfit preset whose saved text fills clothing and state. */
     outfitId?: string
     /** Why the subject was linked to a saved character preset. */
-    presetMatch?: 'lore' | 'name' | 'context'
-    /** Verbatim text edited in the single character prompt block. */
+    presetMatch?: 'lore' | 'name' | 'context' | 'manual'
+    /** Added by the user; kept as a planning seed when the scene changes or the draft is rewritten. */
+    manual?: boolean
+    /** The user edited appearance by hand; it survives revisions instead of the saved preset text. */
+    appearanceEdited?: boolean
+    /** The user edited the selected outfit text by hand; it survives while the same outfit stays selected. */
+    outfitEdited?: boolean
+    /** Legacy single-field prompt; migrated into the structured fields when a chat opens. */
     prompt?: string
 }
 
@@ -127,6 +133,8 @@ export interface PainterIdentity {
     note?: string
     outfitIds?: string[]
     defaultOutfitId?: string
+    /** Global library identity this bot copy was reflected from. */
+    sourceId?: string
     /** Explicit opt-in for public character cards; missing means private. */
     attachToCard?: boolean
 }

@@ -6,7 +6,6 @@
     import BardPainterFragments from './BardPainterFragments.svelte'
     import ShDialog from 'src/lib/UI/GUI/ShDialog.svelte'
     import BardPainterPresets from './BardPainterPresets.svelte'
-    import BardPainterReference from './BardPainterReference.svelte'
     import { PAINTER_IMAGE_SIZES, painterSizeMode } from 'src/ts/bardPainter/types'
     let { session, mode, onClose, disabled = false }: {
         session: ReturnType<typeof getPainterSession>
@@ -15,7 +14,6 @@
         disabled?: boolean
     } = $props()
 
-    let data = $derived(session.data)
     let settings = $derived(session.settings)
     let dialogElement = $state<HTMLElement | null>(null)
     let dirty = $state(false), confirmClose = $state(false)
@@ -40,11 +38,6 @@
     })
 
     function save() { void session.updateGenerationSettings(settings) }
-    function selectWiki(id: string, checked: boolean) {
-        const ids = data.settings.context.wikiIds
-        data.settings.context.wikiIds = checked ? [...new Set([...ids, id])] : ids.filter(value => value !== id)
-        void session.persist()
-    }
 </script>
 
 {#if mode}
@@ -67,37 +60,11 @@
                         <button type="button" disabled={!session.hasGenerationOverrides} title="현재 생성 옵션을 전역 기본값으로 저장합니다. 봇 고정 상태는 유지합니다." onclick={() => void session.applyGenerationSettingsToGlobal()}>전역값으로 설정</button>
                         <button type="button" disabled={!session.hasGenerationOverrides} title={session.generationSettingsPinned ? '이 봇의 고정 설정을 현재 전역값으로 바꿉니다.' : '이 챗의 개별 설정을 지우고 전역값을 사용합니다.'} onclick={() => void session.useGlobalGenerationSettings()}>전역값 사용</button>
                     </div>
-                    <p class="hint">{session.generationSettingsPinned ? '이 봇에 고정된 값' : session.hasGenerationOverrides ? '이 챗의 개별 값' : '전역값'}을 사용 중입니다. 요청문, 화풍, 선택한 위키 항목과 참고 그림은 현재 챗에서 유지됩니다.</p>
-                    <section aria-label="AI에 보낼 참고 자료">
-                        <h3>AI에 보낼 참고 자료</h3>
-                        <p class="hint">그릴 순간은 확정한 원문으로 고정됩니다. 아래 자료는 외형과 배경을 보완할 때 사용합니다.</p>
-                        <div class="grid">
-                            <label>이전 메시지 수<input aria-label="이전 메시지 수" type="number" min="0" max="20" step="1" value={settings.context.before} onchange={event => { settings.context.before = event.currentTarget.valueAsNumber; save() }} /></label>
-                            <label>이후 메시지 수<input aria-label="이후 메시지 수" type="number" min="0" max="20" step="1" value={settings.context.after} onchange={event => { settings.context.after = event.currentTarget.valueAsNumber; save() }} /></label>
-                        </div>
-                        <div class="checks">
-                            <label class="check"><input type="checkbox" checked={settings.context.surrounding} onchange={event => { settings.context.surrounding = event.currentTarget.checked; save() }} />선택한 메시지의 나머지 내용</label>
-                            <label class="check"><input type="checkbox" checked={settings.context.characterDescription} onchange={event => { settings.context.characterDescription = event.currentTarget.checked; save() }} />캐릭터 설명</label>
-                            <label class="check"><input type="checkbox" checked={settings.context.persona} onchange={event => { settings.context.persona = event.currentTarget.checked; save() }} />페르소나</label>
-                            <label class="check"><input type="checkbox" checked={settings.context.systemPrompt} onchange={event => { settings.context.systemPrompt = event.currentTarget.checked; save() }} />채팅 시스템 프롬프트</label>
-                            <label class="check"><input type="checkbox" checked={settings.context.characterLorebook} onchange={event => { settings.context.characterLorebook = event.currentTarget.checked; save() }} />캐릭터 로어북</label>
-                            <label class="check"><input type="checkbox" checked={settings.context.moduleLorebook} onchange={event => { settings.context.moduleLorebook = event.currentTarget.checked; save() }} />모듈 로어북</label>
-                        </div>
-                        <details class="advanced">
-                            <summary>바드위키 항목 선택{#if data.settings.context.wikiIds.length} ({data.settings.context.wikiIds.length}개){/if}</summary>
-                            <div class="actions">
-                                <button type="button" disabled={session.state.loadingWiki} onclick={() => session.loadWiki()}>{session.state.loadingWiki ? '위키 불러오는 중…' : '위키 목록 불러오기'}</button>
-                                {#if data.settings.context.wikiIds.length}<button type="button" onclick={() => { data.settings.context.wikiIds = []; void session.persist() }}>선택 해제</button>{/if}
-                            </div>
-                            <div class="wiki-list">
-                                {#each session.state.wikiDocs as doc (doc.id)}
-                                    <label class="check"><input type="checkbox" checked={data.settings.context.wikiIds.includes(doc.id)} onchange={event => selectWiki(doc.id, event.currentTarget.checked)} />{doc.title}</label>
-                                {/each}
-                            </div>
-                            <p class="hint">선택한 항목만 전송합니다. 위키를 수정하지 않습니다.</p>
-                        </details>
-                        <BardPainterReference {session} disabled={locked}/>
+                    <p class="hint">{session.generationSettingsPinned ? '이 봇에 고정된 값' : session.hasGenerationOverrides ? '이 챗의 개별 값' : '전역값'}을 사용 중입니다. 메인 화면의 참고 자료 선택도 이 범위를 따릅니다. 바드위키와 참고 삽화는 현재 챗에만 저장됩니다.</p>
+                    <section aria-label="프롬프트 작성">
+                        <h3>프롬프트 작성</h3>
                         <label>프롬프트 작성 모델<select value={settings.modelSlot} onchange={event => { settings.modelSlot = event.currentTarget.value as typeof settings.modelSlot; save() }}><option value="model">메인 모델</option><option value="submodel">보조 모델</option></select></label>
+                        <p class="hint">AI에 보낼 참고 자료는 바드페인터 메인 화면의 참고 자료에서 고릅니다.</p>
                     </section>
                     <section aria-label="이미지 생성 설정">
                         <h3>이미지 생성</h3>

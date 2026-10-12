@@ -5,6 +5,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import pkg from './request-logs.cjs'
+import { requestPurposeLabels } from '../../src/ts/requestPurpose'
 
 const { createRequestLogs, truncateBody, truncateTail, dayKey } = pkg as {
     createRequestLogs: (opts: Record<string, unknown>) => any
@@ -102,6 +103,13 @@ describe('insert and query', () => {
     it('preserves the Grimoire analysis request purpose', () => {
         logs.addRequestLogBatch([entry({ source: 'other', purpose: 'bard-lore-analysis' })])
         expect(logs.queryRequestLogs({})[0].purpose).toBe('bard-lore-analysis')
+    })
+
+    it('preserves every purpose the client can send', () => {
+        const purposes = Object.keys(requestPurposeLabels)
+        logs.addRequestLogBatch(purposes.map((purpose) => entry({ source: 'other', purpose })))
+        const stored = logs.queryRequestLogs({ limit: purposes.length }).map((row: { purpose: string | null }) => row.purpose)
+        expect(stored.sort()).toEqual([...purposes].sort())
     })
 
     it('persists body-free chat evidence metadata in list rows', () => {

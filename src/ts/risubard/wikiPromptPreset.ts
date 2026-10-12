@@ -1,4 +1,12 @@
-export type WikiPromptStage = 'analysis' | 'canonical-rewrite' | 'both' | 'response'
+import {
+    assignCollectionItem,
+    assignItemsToFolder,
+    createCollectionFolder,
+    normalizeCollectionOrganizerState,
+    type CollectionOrganizerState,
+} from '../collectionOrganizer'
+
+export type WikiPromptStage ='analysis' | 'canonical-rewrite' | 'both' | 'response'
 export type WikiPromptBlockType = 'core-ref' | 'text' | 'injection'
 export type WikiPromptAnalysisMode = 'all' | 'normal' | 'historical'
 
@@ -26,6 +34,7 @@ export interface WikiPromptPreset {
 export interface WikiPromptPresetState {
     presets: WikiPromptPreset[]
     chatPresetId: string
+    officialRelease: string
 }
 
 export interface CompiledWikiPromptGuide {
@@ -119,6 +128,21 @@ export const OFFICIAL_WIKI_V2_BACKUP_ID = 'official-wiki-260922-v2'
 export const OFFICIAL_WIKI_V3_BACKUP_ID = 'official-wiki-260930'
 export const OFFICIAL_WIKI_V4_BACKUP_ID = 'official-wiki-261003'
 export const OFFICIAL_WIKI_V5_BACKUP_ID = 'official-wiki-261003-v5'
+export const OFFICIAL_WIKI_CURRENT_ID = 'official-wiki-current'
+export const OFFICIAL_WIKI_ARCHIVE_FOLDER_ID = 'official-wiki-archive'
+// Named like the official presets themselves; the UI language is not loaded yet when this folder is created.
+const OFFICIAL_WIKI_ARCHIVE_FOLDER_NAME = '과거 공식 프리셋'
+// Shipping a new official version: bump the release date, move the previous release to the front of
+// OFFICIAL_WIKI_ARCHIVES, and move archives beyond OFFICIAL_WIKI_ARCHIVE_LIMIT to RETIRED_OFFICIAL_IDS.
+export const OFFICIAL_WIKI_RELEASE = '2026-10-10'
+export const OFFICIAL_WIKI_ARCHIVE_LIMIT = 3
+const RETIRED_OFFICIAL_IDS: ReadonlySet<string> = new Set([
+    OFFICIAL_WIKI_BACKUP_ID, OFFICIAL_WIKI_V2_BACKUP_ID, OFFICIAL_WIKI_V4_BACKUP_ID,
+])
+
+export function officialWikiPresetName(date: string): string {
+    return `공식 기본 프리셋 (${date})`
+}
 const OPTIONAL_BLOCKS: WikiPromptBlock[] = [
     {
         id: 'default-character-equipment', type: 'text', name: '장비와 소지품',
@@ -481,9 +505,11 @@ export function createDefaultWikiPromptPreset(id: string): WikiPromptPreset {
     return normalizePreset({ ...previous, writingPolicyVersion: 6, revision: 5 }, () => id)
 }
 
-function createOfficialBackup(): WikiPromptPreset {
-    return { ...createLegacyWikiPromptPreset(OFFICIAL_WIKI_BACKUP_ID), name: '공식기본-260922' }
-}
+// Newest first; at most OFFICIAL_WIKI_ARCHIVE_LIMIT entries.
+const OFFICIAL_WIKI_ARCHIVES: readonly { id: string; date: string; create: (id: string) => WikiPromptPreset }[] = [
+    { id: OFFICIAL_WIKI_V5_BACKUP_ID, date: '2026-10-03', create: createLocalizedTransitionWikiPromptPreset },
+    { id: OFFICIAL_WIKI_V3_BACKUP_ID, date: '2026-09-30', create: createRecallWikiPromptPreset },
+]
 
 export function createWikiPromptPreset(id: string, name = 'Wiki Prompt'): WikiPromptPreset {
     const preset = duplicateWikiPromptPreset(createDefaultWikiPromptPreset(id), id)
@@ -501,62 +527,78 @@ export function normalizeWikiPromptPresetState(
     const rawPresets = Array.isArray(source.presets)
         ? source.presets.slice(0, MAX_PRESETS)
         : []
-    const presets = rawPresets.map((preset) => {
+    const storedRelease = boundedText(source.officialRelease, 40)
+    const upgrading = storedRelease !== OFFICIAL_WIKI_RELEASE
+    // An archive is added once, when its release is superseded; a deleted archive stays deleted.
+    const newArchives = upgrading
+        ? OFFICIAL_WIKI_ARCHIVES.filter(archive => !storedRelease || archive.date >= storedRelease)
+        : []
+    const replacedIds = new Set([...RETIRED_OFFICIAL_IDS, ...newArchives.map(archive => archive.id)])
+    const presets: WikiPromptPreset[] = []
+    let official: WikiPromptPreset | undefined
+    for (const preset of rawPresets) {
         const normalized = normalizePreset(preset, idFactory)
-        // Existing official selections retain their stable ID; personal copies retain their policy.
-        if (!normalized.builtin || normalized.id === OFFICIAL_WIKI_BACKUP_ID
-            || normalized.id === OFFICIAL_WIKI_V2_BACKUP_ID
-            || normalized.id === OFFICIAL_WIKI_V3_BACKUP_ID
-            || normalized.id === OFFICIAL_WIKI_V4_BACKUP_ID
-            || normalized.id === OFFICIAL_WIKI_V5_BACKUP_ID
-            || normalized.writingPolicyVersion === 6) return normalized
-        const current = createDefaultWikiPromptPreset(normalized.id)
-        for (const optional of OPTIONAL_BLOCKS) {
-            // Version 5 shipped compression on; later upgrades keep the user's choice.
-            if (optional.id === 'default-length-compression' && normalized.writingPolicyVersion < 5) continue
-            const stored = normalized.blocks.find(block => block.id === optional.id)
-            if (stored) current.blocks.find(block => block.id === optional.id)!.enabled = stored.enabled
+        if (upgrading && replacedIds.has(normalized.id)) continue
+        // Personal copies and unlocked archives retain their policy.
+        if (!normalized.builtin) {
+            presets.push(normalized)
+            continue
         }
-        return current
-    })
-    if (presets.length === 0) presets.push(createDefaultWikiPromptPreset(idFactory()))
-    if (!presets.some(preset => preset.builtin && preset.writingPolicyVersion === 6)) {
-        presets.push(createDefaultWikiPromptPreset('official-wiki-current'))
+        // Only one official preset stays locked; it keeps its stable ID and optional toggles.
+        if (official) continue
+        official = normalized.writingPolicyVersion === 6 ? normalized : upgradeOfficialPreset(normalized)
+        presets.push(official)
     }
-    if (!presets.some(preset => preset.id === OFFICIAL_WIKI_BACKUP_ID)) {
-        presets.push(createOfficialBackup())
+    if (!official) {
+        official = createDefaultWikiPromptPreset(OFFICIAL_WIKI_CURRENT_ID)
+        presets.push(official)
     }
-    if (!presets.some(preset => preset.id === OFFICIAL_WIKI_V2_BACKUP_ID)) {
-        presets.push({
-            ...createModularWikiPromptPreset(OFFICIAL_WIKI_V2_BACKUP_ID),
-            name: '공식기본-260922-v2',
-        })
-    }
-    if (!presets.some(preset => preset.id === OFFICIAL_WIKI_V3_BACKUP_ID)) {
-        presets.push({
-            ...createRecallWikiPromptPreset(OFFICIAL_WIKI_V3_BACKUP_ID),
-            name: '공식기본-260930',
-        })
-    }
-    if (!presets.some(preset => preset.id === OFFICIAL_WIKI_V4_BACKUP_ID)) {
-        presets.push({
-            ...createCurrentStateWikiPromptPreset(OFFICIAL_WIKI_V4_BACKUP_ID),
-            name: '공식기본-261003',
-        })
-    }
-    if (!presets.some(preset => preset.id === OFFICIAL_WIKI_V5_BACKUP_ID)) {
-        presets.push({
-            ...createLocalizedTransitionWikiPromptPreset(OFFICIAL_WIKI_V5_BACKUP_ID),
-            name: '공식기본-261003-v5',
-        })
+    official.name = officialWikiPresetName(OFFICIAL_WIKI_RELEASE)
+    for (const archive of newArchives) {
+        const preset = duplicateWikiPromptPreset(archive.create(archive.id), archive.id)
+        preset.name = officialWikiPresetName(archive.date)
+        presets.push(preset)
     }
     const ids = new Set(presets.map((preset) => preset.id))
-    const fallbackId = presets[0].id
     const chatPresetId = boundedText(source.chatPresetId, 120)
     return {
-        presets,
-        chatPresetId: ids.has(chatPresetId) ? chatPresetId : fallbackId,
+        presets: presets.slice(0, MAX_PRESETS),
+        chatPresetId: ids.has(chatPresetId) ? chatPresetId : official.id,
+        officialRelease: OFFICIAL_WIKI_RELEASE,
     }
+}
+
+function upgradeOfficialPreset(stored: WikiPromptPreset): WikiPromptPreset {
+    const current = createDefaultWikiPromptPreset(stored.id)
+    for (const optional of OPTIONAL_BLOCKS) {
+        // Version 5 shipped compression on; later upgrades keep the user's choice.
+        if (optional.id === 'default-length-compression' && stored.writingPolicyVersion! < 5) continue
+        const block = stored.blocks.find(candidate => candidate.id === optional.id)
+        if (block) current.blocks.find(candidate => candidate.id === optional.id)!.enabled = block.enabled
+    }
+    return current
+}
+
+/** Places the official archives in their folder after a release upgrade, and the official preset first. */
+export function organizeOfficialWikiArchives(
+    saved: Partial<CollectionOrganizerState> | null | undefined,
+    presets: readonly WikiPromptPreset[],
+    upgraded: boolean,
+): CollectionOrganizerState {
+    let state = normalizeCollectionOrganizerState(saved, presets.map(preset => preset.id))
+    if (!upgraded) return state
+    const archiveIds = OFFICIAL_WIKI_ARCHIVES.map(archive => archive.id)
+        .filter(id => presets.some(preset => preset.id === id))
+    if (archiveIds.length > 0) {
+        state = createCollectionFolder(state, OFFICIAL_WIKI_ARCHIVE_FOLDER_NAME, OFFICIAL_WIKI_ARCHIVE_FOLDER_ID, 0)
+        state = assignItemsToFolder(state, archiveIds, OFFICIAL_WIKI_ARCHIVE_FOLDER_ID)
+    }
+    const officialId = presets.find(preset => preset.builtin)?.id
+    if (officialId) state = assignCollectionItem(state, officialId, null)
+    const leading = officialId ? [officialId] : []
+    const pinned = new Set([...leading, ...archiveIds])
+    state.itemOrder = [...leading, ...state.itemOrder.filter(id => !pinned.has(id)), ...archiveIds]
+    return state
 }
 
 function targetIncludes(target: WikiPromptStage, stage: Exclude<WikiPromptStage, 'both'>): boolean {
@@ -626,7 +668,8 @@ export function resolveWikiPromptPreset(
     presetId: string | null | undefined
 ): WikiPromptPreset | undefined {
     if (!Array.isArray(presets) || presets.length === 0) return undefined
-    return presets.find((preset) => preset.id === presetId) ?? presets[0]
+    return presets.find((preset) => preset.id === presetId)
+        ?? presets.find((preset) => preset.builtin) ?? presets[0]
 }
 
 export function duplicateWikiPromptPreset(

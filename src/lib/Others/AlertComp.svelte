@@ -11,24 +11,19 @@
     import { ChevronRightIcon, User } from '@lucide/svelte';
     import { hubURL, isCharacterHasAssets } from 'src/ts/characterCards';
     import TextInput from '../UI/GUI/TextInput.svelte';
-    import { aiLawApplies, openURL, downloadFile } from 'src/ts/globalApi.svelte';
+    import { aiLawApplies, openURL } from 'src/ts/globalApi.svelte';
     import Button from '../UI/GUI/Button.svelte';
     import ShDialog from '../UI/GUI/ShDialog.svelte';
     import ShAlertDialog from '../UI/GUI/ShAlertDialog.svelte';
     import ShLoadingDialog from '../UI/GUI/ShLoadingDialog.svelte';
     import ShButton from '../UI/GUI/ShButton.svelte';
-    import { XIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon, CheckIcon, PencilIcon, TrashIcon, EllipsisVerticalIcon, RefreshCwIcon, PlusIcon, DownloadIcon, UploadIcon } from "@lucide/svelte";
+    import { XIcon, CopyIcon, CheckIcon } from "@lucide/svelte";
     import SelectInput from "../UI/GUI/SelectInput.svelte";
     import OptionInput from "../UI/GUI/OptionInput.svelte";
     import { language } from 'src/lang';
     import { fetchRequestLogs, type RequestLogEntry } from 'src/ts/requestLog';
     import { alertStore, selectedCharID, togglePresetsOpenStore } from "src/ts/stores.svelte";
-    import ShSwitch from "../UI/GUI/ShSwitch.svelte";
-    import ShDropdownMenu from '../UI/GUI/ShDropdownMenu.svelte';
-    import ShDropdownMenuTrigger from '../UI/GUI/ShDropdownMenuTrigger.svelte';
-    import ShDropdownMenuContent from '../UI/GUI/ShDropdownMenuContent.svelte';
-    import ShDropdownMenuItem from '../UI/GUI/ShDropdownMenuItem.svelte';
-    import ShDropdownMenuSeparator from '../UI/GUI/ShDropdownMenuSeparator.svelte';
+    import TogglePresetManager from '../SideBars/TogglePresetManager.svelte';
     import { nodeOnlyVer } from "src/ts/storage/database.svelte";
     import { tokenize } from "src/ts/tokenizer";
     import TextAreaInput from "../UI/GUI/TextAreaInput.svelte";
@@ -36,9 +31,8 @@
     import { ColorSchemeTypeStore } from "src/ts/gui/colorscheme";
     import Help from "./Help.svelte";
     import { getChatBranches } from "src/ts/gui/branches";
-    import { applyTogglePresetToChat, getCurrentCharacter, getCurrentChat, setPinnedTogglePresetBaseline, type TogglePreset, snapshotCurrentToggleValues } from "src/ts/storage/database.svelte";
-    import { alertInput, alertConfirm, alertError, alertNormalWait, notifySuccess } from "src/ts/alert";
-    import { selectSingleFile } from "src/ts/util";
+    import { getCurrentCharacter } from "src/ts/storage/database.svelte";
+    import { alertInput, alertConfirm, alertNormalWait } from "src/ts/alert";
     import { translateStackTrace } from "../../ts/sourcemap";
     import { getDetailedOSLabel, getFallbackOSLabel, getRisuEnvironmentLabel } from "src/ts/platform";
     import { getMessageSize } from 'src/ts/messageSize';
@@ -86,7 +80,6 @@
         content:string,
     } = $state(null)
     let copiedKey: string | null = $state(null)
-    let togglePresetShowAll = $state(false)
 
     function closeTogglePresets() {
         togglePresetsOpenStore.set(false)
@@ -959,216 +952,9 @@
     {/snippet}
 </ShAlertDialog>
 
-<!-- tier="base" puts this below default ShDialog/ShAlertDialog tier so
-     nested alertConfirm/alertInput (overwrite, rename, delete) paint on
-     top regardless of Portal mount order. See .agent/guide/ui.md. -->
-<ShDialog
-    open={$togglePresetsOpenStore}
-    onOpenChange={(v) => { if (!v) closeTogglePresets() }}
-    tier="base"
->
-    {#snippet title()}{language.togglePresetSelectTitle}{/snippet}
-
-    {#if $togglePresetsOpenStore}
-        {@const currentPromptPresetName = DBState.db.botPresets[DBState.db.botPresetsId]?.name}
-        <div class="flex flex-col gap-3">
-            <label class="flex items-center gap-2 text-sm text-textcolor2 self-start cursor-pointer select-none">
-                <ShSwitch bind:checked={togglePresetShowAll} />
-                {language.togglePresetFilterShowAll}
-            </label>
-
-            {#if !DBState.db.togglePresets?.length}
-                <p class="text-textcolor2 text-sm">{language.togglePresetEmpty}</p>
-            {:else}
-                {@const filteredPresets = togglePresetShowAll
-                    ? DBState.db.togglePresets.map((p, i) => ({preset: p, index: i}))
-                    : DBState.db.togglePresets.map((p, i) => ({preset: p, index: i})).filter(({preset}) => preset.promptPresetName === currentPromptPresetName)}
-                {#if filteredPresets.length === 0}
-                    <p class="text-textcolor2 text-sm">{language.togglePresetEmptyFiltered}</p>
-                {:else}
-                    <div class="flex flex-col gap-1">
-                        {#each filteredPresets as {preset, index: i}}
-                            <div class="flex items-center border border-darkborderc rounded-md hover:ring-1 hover:ring-borderc/50 transition-shadow">
-                                <button class="flex-1 min-w-0 p-2 text-left cursor-pointer text-textcolor truncate hover:bg-selected/30 rounded-l-md transition-colors" onclick={async () => {
-                                    const name = preset.name
-                                    const isMismatch = preset.promptPresetName !== currentPromptPresetName
-                                    const msg = isMismatch ? language.togglePresetMismatchConfirm : language.togglePresetApplyConfirm
-                                    const confirmed = await alertConfirm(msg)
-                                    if (!confirmed) return
-                                    applyTogglePresetToChat(preset)
-                                    notifySuccess((language.togglePresetApplied as any)(name))
-                                    closeTogglePresets()
-                                }}>
-                                    <div class="text-xs text-textcolor2 leading-tight">{preset.promptPresetName ?? language.togglePresetNoPromptPreset}</div>
-                                    {preset.name}
-                                </button>
-                                <div class="flex items-center shrink-0 pr-1 gap-0.5">
-                                    {#if togglePresetShowAll}
-                                        <ShButton variant="ghost" size="icon-xs" onclick={() => {
-                                            if (i > 0) {
-                                                const presets = DBState.db.togglePresets!;
-                                                [presets[i - 1], presets[i]] = [presets[i], presets[i - 1]];
-                                                DBState.db.togglePresets = [...presets];
-                                            }
-                                        }}>
-                                            <ChevronUpIcon size={14} />
-                                        </ShButton>
-                                        <ShButton variant="ghost" size="icon-xs" onclick={() => {
-                                            const presets = DBState.db.togglePresets!;
-                                            if (i < presets.length - 1) {
-                                                [presets[i], presets[i + 1]] = [presets[i + 1], presets[i]];
-                                                DBState.db.togglePresets = [...presets];
-                                            }
-                                        }}>
-                                            <ChevronDownIcon size={14} />
-                                        </ShButton>
-                                    {/if}
-                                    <ShDropdownMenu>
-                                        <ShDropdownMenuTrigger>
-                                            {#snippet child({ props })}
-                                                <ShButton {...props} variant="ghost" size="icon-xs">
-                                                    <EllipsisVerticalIcon size={14} />
-                                                </ShButton>
-                                            {/snippet}
-                                        </ShDropdownMenuTrigger>
-                                        <ShDropdownMenuContent class="min-w-40" align="end">
-                                            <ShDropdownMenuItem onSelect={async () => {
-                                                const idx = i
-                                                const presetName = DBState.db.togglePresets![idx].name
-                                                const confirmed = await alertConfirm((language.togglePresetOverwriteConfirm as any)(presetName))
-                                                if (confirmed) {
-                                                    const promptPreset = DBState.db.botPresets[DBState.db.botPresetsId]
-                                                    const values = snapshotCurrentToggleValues()
-                                                    DBState.db.togglePresets![idx].values = values
-                                                    DBState.db.togglePresets![idx].promptPresetName = promptPreset?.name
-                                                    DBState.db.togglePresets = [...DBState.db.togglePresets!]
-                                                    setPinnedTogglePresetBaseline(getCurrentChat(), values, presetName)
-                                                    notifySuccess((language.togglePresetOverwritten as any)(presetName))
-                                                }
-                                            }}>
-                                                <RefreshCwIcon size={14} />
-                                                {language.togglePresetMenuOverwrite}
-                                            </ShDropdownMenuItem>
-                                            <ShDropdownMenuItem onSelect={async () => {
-                                                const idx = i
-                                                const oldName = DBState.db.togglePresets![idx].name
-                                                const name = await alertInput(language.togglePresetRename, [], oldName)
-                                                if (name && name !== oldName) {
-                                                    DBState.db.togglePresets![idx].name = name
-                                                    DBState.db.togglePresets = [...DBState.db.togglePresets!]
-                                                    notifySuccess((language.togglePresetRenamed as any)(oldName, name))
-                                                }
-                                            }}>
-                                                <PencilIcon size={14} />
-                                                {language.togglePresetMenuRename}
-                                            </ShDropdownMenuItem>
-                                            <ShDropdownMenuItem onSelect={() => {
-                                                const copy = $state.snapshot(preset);
-                                                copy.name = preset.name + ' (Copy)';
-                                                DBState.db.togglePresets!.splice(i + 1, 0, copy);
-                                                DBState.db.togglePresets = [...DBState.db.togglePresets!];
-                                                notifySuccess((language.togglePresetDuplicated as any)(copy.name))
-                                            }}>
-                                                <CopyIcon size={14} />
-                                                {language.togglePresetMenuDuplicate}
-                                            </ShDropdownMenuItem>
-                                            <ShDropdownMenuItem onSelect={() => {
-                                                const exportData = { name: preset.name, values: preset.values, promptPresetName: preset.promptPresetName }
-                                                downloadFile(`${preset.name}_toggle.json`, Buffer.from(JSON.stringify(exportData, null, 2), 'utf-8'))
-                                                notifySuccess((language.togglePresetExported as any)(preset.name))
-                                            }}>
-                                                <DownloadIcon size={14} />
-                                                {language.togglePresetMenuExport}
-                                            </ShDropdownMenuItem>
-                                            <ShDropdownMenuSeparator />
-                                            <ShDropdownMenuItem variant="destructive" onSelect={async () => {
-                                                const idx = i
-                                                const presetName = DBState.db.togglePresets![idx].name
-                                                const confirmed = await alertConfirm((language.togglePresetDeleteConfirm as any)(presetName))
-                                                if (confirmed) {
-                                                    DBState.db.togglePresets!.splice(idx, 1)
-                                                    DBState.db.togglePresets = [...DBState.db.togglePresets!]
-                                                    notifySuccess((language.togglePresetDeleted as any)(presetName))
-                                                }
-                                            }}>
-                                                <TrashIcon size={14} />
-                                                {language.togglePresetMenuDelete}
-                                            </ShDropdownMenuItem>
-                                        </ShDropdownMenuContent>
-                                    </ShDropdownMenu>
-                                </div>
-                            </div>
-                        {/each}
-                    </div>
-                {/if}
-            {/if}
-
-            <!-- Add new / import: live alongside the list rather than as a
-                 dialog footer, since they create new entries instead of
-                 closing the dialog. Mobile stacks vertically so the long
-                 Korean labels don't wrap inside narrow flex-1 cells. -->
-            <div class="flex flex-col sm:flex-row gap-2 mt-1">
-                <ShButton
-                    variant="outline"
-                    className="w-full sm:flex-1 sm:w-auto"
-                    onclick={async () => {
-                        const name = await alertInput(language.togglePresetNamePrompt)
-                        if (!name) return
-                        DBState.db.togglePresets ??= []
-                        const promptPreset = DBState.db.botPresets[DBState.db.botPresetsId]
-                        DBState.db.togglePresets.push({
-                            name,
-                            values: snapshotCurrentToggleValues(),
-                            promptPresetName: promptPreset?.name
-                        })
-                        DBState.db.togglePresets = [...DBState.db.togglePresets]
-                        notifySuccess((language.togglePresetSaved as any)(name))
-                    }}
-                >
-                    <PlusIcon size={16} />
-                    {language.togglePresetSaveNew}
-                </ShButton>
-                <ShButton
-                    variant="outline"
-                    className="w-full sm:flex-1 sm:w-auto"
-                    onclick={async () => {
-                        let f: {name: string, data: Uint8Array} | undefined
-                        try {
-                            f = await selectSingleFile(['json'])
-                        } catch { return }
-                        if (!f) return
-                        try {
-                            const data = JSON.parse(Buffer.from(f.data).toString('utf-8'))
-                            if (typeof data.name !== 'string' || !data.values || typeof data.values !== 'object' || Array.isArray(data.values)) {
-                                alertError(language.togglePresetImportError)
-                                return
-                            }
-                            const sanitizedValues: Record<string, string> = {}
-                            for (const [k, v] of Object.entries(data.values)) {
-                                if (typeof k === 'string' && typeof v === 'string') {
-                                    sanitizedValues[k] = v
-                                }
-                            }
-                            DBState.db.togglePresets ??= []
-                            DBState.db.togglePresets.push({
-                                name: data.name,
-                                values: sanitizedValues,
-                                promptPresetName: typeof data.promptPresetName === 'string' ? data.promptPresetName : undefined
-                            })
-                            DBState.db.togglePresets = [...DBState.db.togglePresets]
-                            notifySuccess((language.togglePresetImported as any)(data.name))
-                        } catch {
-                            alertError(language.togglePresetImportError)
-                        }
-                    }}
-                >
-                    <UploadIcon size={16} />
-                    {language.togglePresetImport}
-                </ShButton>
-            </div>
-        </div>
-    {/if}
-</ShDialog>
+<!-- tier="base" keeps nested alertConfirm/alertInput (overwrite, rename,
+     delete) above the toggle preset window. See .agent/guide/ui.md. -->
+<TogglePresetManager open={$togglePresetsOpenStore} onOpenChange={(v) => { if (!v) closeTogglePresets() }} />
 
 <style>
     .break-any{

@@ -417,6 +417,12 @@ export const helpEn = {
             "Show folder names on folder icons in the character grid. Makes large folder collections easier to scan.",
         showRequestStatus:
             "Show a floating chat-request toast with the live phase, injected context items and their token counts, total input tokens, thinking/output tokens, and speed. Contents are never stored; turning it off hides the notification entirely.",
+        requestStatusPosition:
+            "Where the request status window appears. Other notifications such as confirmations and errors stay where they are. On mobile it always appears at the top center.",
+        requestStatusOpacity:
+            "Opacity of the request status window. 100% is fully opaque. Windows for failed requests are always shown fully opaque.",
+        requestStatusHoverOpaque:
+            "Show the window fully opaque while the mouse is over it, regardless of opacity. Has no effect on touch devices without a mouse.",
         risuBardAutosaveInterval:
             "Choose how many turns pass between autosaves. An interval of 5 saves turns 1, 6, 11, and so on.",
         chatUploadChunkSize: "Data sent per request when saving a chat. Default: 8 MiB; range: 1–64 MiB. Changes apply to both the app and server on the next chat save without restarting. Smaller chunks require more requests.",

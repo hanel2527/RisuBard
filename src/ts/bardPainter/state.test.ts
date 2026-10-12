@@ -3,48 +3,48 @@ import { reconcilePainterSubjects, capturePainterOutfit, promotePainterOutfit, a
 import type { PainterOutfit, PainterSubject } from './types'
 const subject = (patch: Partial<PainterSubject> = {}): PainterSubject => ({ id: '', name: '아리아', aliases: [], kind: 'character', appearance: 'black hair', clothing: 'white shirt', state: 'wet clothes', pose: 'sitting', negative: '', ...patch })
 it('resolves a known alias to the same identity without overwriting its stored appearance', () => {
-    const bot = { identities: [{ id: 'aria', name: '아리아', aliases: ['Aria'], appearance: 'blue eyes' }], outfits: [] }
-    const result = reconcilePainterSubjects([subject({ name: 'Aria' })], bot, [])
+    const identities = [{ id: 'aria', name: '아리아', aliases: ['Aria'], appearance: 'blue eyes' }]
+    const result = reconcilePainterSubjects([subject({ name: 'Aria' })], identities, [])
     expect(result[0].id).toBe('aria')
-    expect(bot.identities[0].appearance).toBe('blue eyes')
+    expect(identities[0].appearance).toBe('blue eyes')
 })
 it('keeps locked subject edits when a new prompt is prepared', () => {
     const locked = subject({ id: 'aria', clothing: 'red coat', locked: true })
-    const bot = { identities: [{ id: 'aria', name: '아리아', aliases: [], appearance: '' }], outfits: [] }
-    expect(reconcilePainterSubjects([subject({ id: 'aria' })], bot, [locked])[0]).toEqual(locked)
+    expect(reconcilePainterSubjects([subject({ id: 'aria' })], [{ id: 'aria', name: '아리아', aliases: [], appearance: '' }], [locked])[0]).toEqual(locked)
 })
 it('retains omitted locked blocks at their prior positions without retaining omitted unlocked blocks', () => {
     const locked = subject({ id: 'aria', clothing: 'red coat', locked: true })
     const omitted = subject({ id: 'luke', name: '루크' })
     const returned = subject({ id: 'mira', name: '미라' })
-    const bot = { identities: [locked, omitted, returned].map(({ id, name, aliases }) => ({ id, name, aliases, appearance: '' })), outfits: [] }
-    const result = reconcilePainterSubjects([returned], bot, [locked, omitted, returned])
+    const result = reconcilePainterSubjects([returned], [], [locked, omitted, returned])
     expect(result.map(item => item.id)).toEqual(['aria', 'mira'])
     expect(result[0]).toEqual(locked)
     result[0].aliases.push('changed')
     expect(locked.aliases).toEqual([])
 })
-it.each(['manual-aria', ''])('retains a manually added identity before allocating another ID (%s)', id => {
+it.each(['manual-aria', ''])('matches a block already in the draft before allocating another ID (%s)', id => {
     const previous = subject({ id: 'manual-aria', aliases: ['Aria'] })
-    const outfit = capturePainterOutfit(previous, '여행복', false)
-    const bot = { identities: [], outfits: [outfit] }
-    const [result] = reconcilePainterSubjects([subject({ id, name: 'Aria' })], bot, [previous])
+    const [result] = reconcilePainterSubjects([subject({ id, name: 'Aria' })], [], [previous])
     expect(result.id).toBe('manual-aria')
-    expect(bot.outfits[0].subjectId).toBe(result.id)
-    expect(bot.identities).toEqual([{ id: 'manual-aria', name: '아리아', aliases: ['Aria'], appearance: '' }])
 })
-it('does not replace registered identity appearance when a previous edited block is reconciled', () => {
-    const previous = subject({ id: 'aria', appearance: 'red hair' })
-    const bot = { identities: [{ id: 'aria', name: '아리아', aliases: [], appearance: 'blue hair' }], outfits: [] }
-    reconcilePainterSubjects([subject({ id: 'aria', appearance: 'green hair' })], bot, [previous])
-    expect(bot.identities).toEqual([{ id: 'aria', name: '아리아', aliases: [], appearance: 'blue hair' }])
+it('never registers saved identities for unrecognized subjects', () => {
+    const identities = [{ id: 'aria', name: '아리아', aliases: [], appearance: 'blue hair' }]
+    const [result] = reconcilePainterSubjects([subject({ name: '처음 보는 사람' })], identities, [])
+    expect(result.id).not.toBe('')
+    expect(identities).toEqual([{ id: 'aria', name: '아리아', aliases: [], appearance: 'blue hair' }])
 })
-it('rejects a merged draft above 22 subjects without dropping locks or changing stored identities', () => {
+it('prefers the identity with a saved look when a blank entry shares its name', () => {
+    const identities = [{ id: 'blank', name: '아리아', aliases: [], appearance: '' }, { id: 'real', name: 'Aria', aliases: ['아리아'], appearance: 'blue hair' }]
+    expect(reconcilePainterSubjects([subject({ name: '아리아' })], identities, [])[0].id).toBe('real')
+})
+it('ignores IDs the model invented', () => {
+    const [result] = reconcilePainterSubjects([subject({ id: 'made-up', name: '아리아' })], [{ id: 'aria', name: '아리아', aliases: [], appearance: 'x' }], [])
+    expect(result.id).toBe('aria')
+})
+it('rejects a merged draft above 22 subjects without dropping locks', () => {
     const locked = subject({ id: 'locked', name: '보존할 인물', locked: true })
-    const bot = { identities: [], outfits: [] }
     const generated = Array.from({ length: 22 }, (_, index) => subject({ name: `new-${index}` }))
-    expect(() => reconcilePainterSubjects(generated, bot, [locked])).toThrow()
-    expect(bot.identities).toEqual([])
+    expect(() => reconcilePainterSubjects(generated, [], [locked])).toThrow()
 })
 it('saves clothing without pose, appearance or transient state by default', () => {
     const outfit = capturePainterOutfit(subject({ id: 'aria' }), '여행복', false)
@@ -80,10 +80,17 @@ describe('applyPainterPresets', () => {
         expect(result.outfitId).toBeUndefined()
         expect(result.clothing).toBe('white shirt')
     })
-    it('keeps text already in the draft so manual edits survive a revision', () => {
-        const before = subject({ id: 'severa', appearance: 'edited hair', clothing: 'edited robe', state: '', outfitId: 'robe' })
-        const [result] = applyPainterPresets([subject({ id: 'severa', appearance: '', clothing: '', state: '', outfitId: 'robe' })], presets, outfitsFor, [before])
-        expect(result).toMatchObject({ appearance: 'edited hair', clothing: 'edited robe' })
+    it('replaces earlier model text with the saved preset but keeps text the user edited', () => {
+        const stale = subject({ id: 'severa', appearance: 'model guess', clothing: 'model coat', state: '', outfitId: 'robe' })
+        const [refreshed] = applyPainterPresets([subject({ id: 'severa', appearance: '', clothing: '', state: '', outfitId: 'robe' })], presets, outfitsFor, [stale])
+        expect(refreshed).toMatchObject({ appearance: 'black hair, grey eyes', clothing: 'black robe' })
+        const edited = { ...stale, appearance: 'edited hair', appearanceEdited: true, clothing: 'edited robe', outfitEdited: true }
+        const [kept] = applyPainterPresets([subject({ id: 'severa', appearance: '', clothing: '', state: '', outfitId: 'robe' })], presets, outfitsFor, [edited])
+        expect(kept).toMatchObject({ appearance: 'edited hair', appearanceEdited: true, clothing: 'edited robe', outfitEdited: true })
+    })
+    it('keeps the user-added mark across revisions', () => {
+        const [result] = applyPainterPresets([subject({ id: 'new' })], presets, outfitsFor, [subject({ id: 'new', manual: true })])
+        expect(result.manual).toBe(true)
     })
     it('leaves unmatched, preset-without-appearance and locked subjects to the model text', () => {
         const locked = subject({ id: 'severa', appearance: 'locked hair', locked: true })

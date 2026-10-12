@@ -4,7 +4,8 @@
     import { tooltip } from 'src/ts/gui/tooltip'
     import type { loreBook } from 'src/ts/storage/database.svelte'
     import ShDialog from 'src/lib/UI/GUI/ShDialog.svelte'
-    import { CircleQuestionMarkIcon } from '@lucide/svelte'
+    import { CircleQuestionMarkIcon, XIcon } from '@lucide/svelte'
+    import { DynamicGUI, MobileGUI } from 'src/ts/stores.svelte'
     import LoreBookWorkspace from './LoreBookWorkspace.svelte'
     import type { LorebookLocalActivation } from './loreBookWorkspaceConnections'
     import type { BardLoreAnalysisRun, BardLoreSettings } from 'src/ts/lorebook/bardLore'
@@ -16,9 +17,12 @@
         scopeLabel: string
         scopeKey?: string
         dragEnabled?: boolean
+        /** Desktop only: cover the chat column instead of a modal so the sidebars stay usable. */
+        dockable?: boolean
         bardMode?: boolean
         bardSettings?: BardLoreSettings
         bardAnalysisRun?: BardLoreAnalysisRun
+        bardCharacterId?: string
         onBardAnalysisRunChange?: (run: BardLoreAnalysisRun | undefined) => void
         legacyDisabledBackups?: Record<string, loreBook & { disabled?: boolean }>
         localActivation?: LorebookLocalActivation
@@ -35,9 +39,11 @@
         scopeLabel,
         scopeKey,
         dragEnabled = true,
+        dockable = false,
         bardMode = false,
         bardSettings,
         bardAnalysisRun,
+        bardCharacterId,
         onBardAnalysisRunChange,
         legacyDisabledBackups,
         localActivation,
@@ -50,6 +56,27 @@
     let contentElement: HTMLElement | null = $state(null)
     let guideOpen = $state(false)
     const edges = ['n', 'e', 's', 'w', 'ne', 'se', 'sw', 'nw'] as const
+    const docked = $derived(dockable && !$DynamicGUI && !$MobileGUI)
+
+    // Keep props/state in the owner, but render over the chat column (App's [data-lorebook-dock-host]).
+    function dockInChatArea(node: HTMLElement) {
+        const host = document.querySelector<HTMLElement>('[data-lorebook-dock-host]')
+        if (!host) return
+        host.appendChild(node)
+        return { destroy: () => node.remove() }
+    }
+
+    function closeDock() {
+        open = false
+        onOpenChange?.(false)
+    }
+
+    function closeDockOnEscape(event: KeyboardEvent) {
+        // The guide is modal; its own Escape handling closes it even if focus stayed in the dock.
+        if (event.key !== 'Escape' || event.defaultPrevented || guideOpen) return
+        event.preventDefault()
+        closeDock()
+    }
 
     function startWindowResize(edge: string) {
         const element = contentElement
@@ -69,6 +96,72 @@
     }
 </script>
 
+{#snippet workspace()}
+    <LoreBookWorkspace
+        {entries}
+        {scopeLabel}
+        {scopeKey}
+        active={open}
+        {dragEnabled}
+        {bardMode}
+        {bardSettings}
+        {bardAnalysisRun}
+        {bardCharacterId}
+        {onBardAnalysisRunChange}
+        {legacyDisabledBackups}
+        {localActivation}
+        {onChange}
+        {onImport}
+        {onExport}
+        {resolveChildLabel}
+    />
+{/snippet}
+
+{#snippet guideButton(className: string)}
+    {#if bardMode}
+        <button
+            type="button"
+            class={className}
+            data-bard-lore-guide-open
+            aria-label={language.lorebookWorkspace.bardGuideOpen}
+            title={language.lorebookWorkspace.bardGuideOpen}
+            onclick={() => guideOpen = true}
+        >
+            <CircleQuestionMarkIcon size={18} />
+        </button>
+    {/if}
+{/snippet}
+
+{#if docked && open}
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <section
+        use:dockInChatArea
+        class="lore-dock"
+        data-lorebook-dock
+        aria-label={language.lorebookWorkspace.workspaceLabel(scopeLabel)}
+        onkeydown={closeDockOnEscape}
+    >
+        <header class="lore-dock-header">
+            <h2>{scopeLabel}</h2>
+            <div class="lore-dock-actions">
+                {@render guideButton('lore-dock-button')}
+                <button
+                    type="button"
+                    class="lore-dock-button"
+                    data-lorebook-dock-close
+                    aria-label={language.lorebookWorkspace.close}
+                    title={language.lorebookWorkspace.close}
+                    onclick={closeDock}
+                >
+                    <XIcon size={18} />
+                </button>
+            </div>
+        </header>
+        <div class="lore-dock-body">
+            {@render workspace()}
+        </div>
+    </section>
+{:else if !docked}
 <ShDialog
     bind:open
     {onOpenChange}
@@ -83,37 +176,10 @@
     closeClass="lore-dialog-close"
 >
     {#snippet headerActions()}
-        {#if bardMode}
-            <button
-                type="button"
-                class="lore-dialog-help"
-                data-bard-lore-guide-open
-                aria-label={language.lorebookWorkspace.bardGuideOpen}
-                title={language.lorebookWorkspace.bardGuideOpen}
-                onclick={() => guideOpen = true}
-            >
-                <CircleQuestionMarkIcon size={18} />
-            </button>
-        {/if}
+        {@render guideButton('lore-dialog-help')}
     {/snippet}
     {#snippet title()}{scopeLabel}{/snippet}
-    <LoreBookWorkspace
-        {entries}
-        {scopeLabel}
-        {scopeKey}
-        active={open}
-        {dragEnabled}
-        {bardMode}
-        {bardSettings}
-        {bardAnalysisRun}
-        {onBardAnalysisRunChange}
-        {legacyDisabledBackups}
-        {localActivation}
-        {onChange}
-        {onImport}
-        {onExport}
-        {resolveChildLabel}
-    />
+    {@render workspace()}
     {#each edges as edge}
         <button type="button" class="window-resize" data-lorebook-window-resize={edge}
             aria-label={`${language.lorebookWorkspace.resizeWindow} · ${edge.toUpperCase()}`}
@@ -121,6 +187,7 @@
             use:resizeHandle={{ start: () => startWindowResize(edge), reset: resetWindowSize }}></button>
     {/each}
 </ShDialog>
+{/if}
 
 <ShDialog
     bind:open={guideOpen}
@@ -197,6 +264,53 @@
 </ShDialog>
 
 <style>
+    .lore-dock {
+        position: absolute;
+        inset: 0;
+        z-index: 35;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        min-height: 0;
+        background: var(--color-darkbg);
+        color: var(--color-textcolor);
+    }
+    .lore-dock-header {
+        display: flex;
+        align-items: center;
+        gap: .75rem;
+        min-height: 3.25rem;
+        padding: .55rem .7rem .55rem 1rem;
+        border-bottom: 1px solid var(--color-darkborderc);
+        background: color-mix(in srgb, var(--color-selected) 18%, var(--color-darkbg));
+    }
+    .lore-dock-header h2 {
+        flex: 1;
+        min-width: 0;
+        margin: 0;
+        overflow: hidden;
+        font-size: 1.125rem;
+        font-weight: 600;
+        line-height: 1.25;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .lore-dock-actions { display: flex; flex: none; gap: .4rem; }
+    :global(.lore-dock-button) {
+        display: grid;
+        width: 2.65rem;
+        height: 2.65rem;
+        padding: 0;
+        place-items: center;
+        border: 0;
+        border-radius: .72rem;
+        background: color-mix(in srgb, var(--color-selected) 58%, var(--color-darkbg));
+        color: var(--color-textcolor);
+        cursor: pointer;
+    }
+    :global(.lore-dock-button:hover), :global(.lore-dock-button:focus-visible) { background: var(--color-selected); outline: none; }
+    :global(.lore-dock-button svg) { width: 1.35rem; height: 1.35rem; }
+    .lore-dock-body { display: flex; flex-direction: column; flex: 1; min-height: 0; padding: .7rem; }
     :global(.lore-dialog) {
         width: var(--lore-dialog-width, min(96vw, 1700px));
         min-width: min(480px, calc(100vw - 1rem));

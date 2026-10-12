@@ -31,4 +31,51 @@ describe('first startup screen', () => {
         expect(error.textContent).toContain('<failed chunk>')
         expect(error.children).toHaveLength(0)
     })
+
+    describe('stylesheet preload failure', () => {
+        const cssError = () => new Error('Unable to preload CSS for /assets/ShButton-x.css')
+        const settings = (window as any).happyDOM.settings
+        const setRetryLoads = (loads: boolean) => { settings.handleDisabledFileLoadingAsSuccess = loads }
+
+        beforeEach(() => {
+            settings.disableCSSFileLoading = true
+            setRetryLoads(false)
+            document.head.innerHTML = '<link rel="stylesheet" href="/assets/ShButton-x.css">'
+            setRetryLoads(true)
+            return () => {
+                settings.disableCSSFileLoading = false
+                settings.handleDisabledFileLoadingAsSuccess = false
+            }
+        })
+
+        it('downloads the stylesheet again with a fresh URL and resumes the app import', async () => {
+            const loadApp = vi.fn(async () => { if (loadApp.mock.calls.length === 1) throw cssError() })
+            await startWithBranding(loadApp)
+            expect(loadApp).toHaveBeenCalledTimes(2)
+            const hrefs = [...document.head.querySelectorAll('link')].map(link => link.getAttribute('href'))
+            expect(hrefs).toHaveLength(1)
+            expect(hrefs[0]).toMatch(/\/assets\/ShButton-x\.css\?retry=\d+$/)
+            expect(document.getElementById('preloading-error')!.hidden).toBe(true)
+        })
+
+        it('shows the server response when the retry also fails', async () => {
+            setRetryLoads(false)
+            vi.stubGlobal('fetch', vi.fn(async () => new Response('missing', { status: 404, headers: { 'content-type': 'text/html' } })))
+            const loadApp = vi.fn(async () => { throw cssError() })
+            await startWithBranding(loadApp)
+            expect(loadApp).toHaveBeenCalledOnce()
+            const error = document.getElementById('preloading-error')!
+            expect(error.hidden).toBe(false)
+            expect(error.textContent).toContain('다시 받기 실패: /assets/ShButton-x.css HTTP 404, Content-Type: text/html')
+            vi.unstubAllGlobals()
+        })
+
+        it('reports a blocked request when the server cannot be reached', async () => {
+            setRetryLoads(false)
+            vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
+            await startWithBranding(async () => { throw cssError() })
+            expect(document.getElementById('preloading-error')!.textContent).toContain('요청 차단 또는 연결 실패 (Failed to fetch)')
+            vi.unstubAllGlobals()
+        })
+    })
 })

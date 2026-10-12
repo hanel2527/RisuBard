@@ -1,4 +1,4 @@
-export type CollectionKind = 'promptPresets' | 'modules' | 'plugins'
+export type CollectionKind = 'promptPresets' | 'modules' | 'plugins' | 'wikiPromptPresets'
 export type OrganizableCollection = CollectionKind
 
 export interface CollectionFolder {
@@ -99,7 +99,7 @@ export function normalizeCollectionOrganizers(
     itemIds: Record<CollectionKind, readonly string[]>,
 ): CollectionOrganizers {
     const organizers = {} as CollectionOrganizers
-    for (const collection of ['promptPresets', 'modules', 'plugins'] as const) {
+    for (const collection of ['promptPresets', 'modules', 'plugins', 'wikiPromptPresets'] as const) {
         organizers[collection] = normalizeCollectionOrganizerState(saved?.[collection], itemIds[collection])
     }
     return organizers
