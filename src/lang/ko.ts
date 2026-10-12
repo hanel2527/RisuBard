@@ -1477,6 +1477,7 @@ export const languageKorean = {
     personaManager: {
       close: "페르소나 관리자 닫기",
       help: "페르소나는 스토리 속 사용자 역할을 정합니다. 페르소나의 이름은 {{user}} 태그를 대체하며, 설명은 스토리 프롬프트에 주입됩니다.",
+      chatBindingNotice: "이 채팅에 바인딩된 페르소나를 보여 줍니다. 다른 페르소나를 고르면 이 채팅의 바인딩이 바뀝니다. 기본 페르소나는 환경설정의 페르소나에서 바꿉니다.",
       globalTab: "글로벌",
       characterTab: "캐릭터",
       create: "새 페르소나 생성",

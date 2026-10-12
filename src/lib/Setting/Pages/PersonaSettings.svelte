@@ -138,7 +138,7 @@
         if (scope === activeScope) return
         syncGlobalLegacyFields()
         activeScope = scope
-        selectPersona(scope === 'global' ? DBState.db.selectedPersona : characterSelectedIndex, false)
+        selectPersona(scope === 'global' ? (onSelect ? globalSelectedIndex : DBState.db.selectedPersona) : characterSelectedIndex, false)
         void resetSortable()
     }
 

@@ -1,11 +1,12 @@
 <script lang="ts">
-    import { onDestroy, onMount } from 'svelte'
+    import { onDestroy, onMount, untrack } from 'svelte'
     import { CircleQuestionMarkIcon, XIcon } from '@lucide/svelte'
     import { language } from 'src/lang'
     import { alertMd } from 'src/ts/alert'
     import { tooltip } from 'src/ts/gui/tooltip'
     import { DBState, openPersonaManager, personaSelectCallback, selectedCharID } from 'src/ts/stores.svelte'
-    import { getEffectivePersona, type PersonaSelection } from 'src/ts/personaScopes'
+    import { getEffectivePersona, resolvePersonaById, type PersonaSelection } from 'src/ts/personaScopes'
+    import { v4 } from 'uuid'
     import PersonaSettings from '../Setting/Pages/PersonaSettings.svelte'
 
     const PERSONA_MANAGER_WIDTH_KEY = 'risubard-persona-manager-width'
@@ -17,6 +18,14 @@
         const character = DBState.db.characters[$selectedCharID]
         const chat = character?.chats?.[character.chatPage]
         return getEffectivePersona(DBState.db, character, chat)
+    })
+    // Opened from the sidebar avatar while the chat has its own persona: the window
+    // shows that persona, and picking another one rebinds the chat. Changing the
+    // global persona here would leave the avatar unchanged.
+    const chatBindingMode = untrack(() => {
+        const character = DBState.db.characters[$selectedCharID]
+        const chat = character?.chats?.[character.chatPage]
+        return !$personaSelectCallback && !!resolvePersonaById(DBState.db, character, chat?.bindedPersona)
     })
 
     function close() {
@@ -32,6 +41,14 @@
 
     function selectPersona(selection: PersonaSelection): void {
         $personaSelectCallback?.(selection)
+    }
+
+    function bindCurrentChat(selection: PersonaSelection): void {
+        const character = DBState.db.characters[$selectedCharID]
+        const chat = character?.chats?.[character.chatPage]
+        if (!chat) return
+        selection.persona.id ??= v4()
+        chat.bindedPersona = selection.persona.id
     }
 
     function normalizeManagerWidth(value: number): number {
@@ -115,7 +132,10 @@
             </button>
         </header>
         <div class="persona-manager-content">
-            <PersonaSettings embedded initialSelection={currentSelection} onSelect={$personaSelectCallback ? selectPersona : undefined} />
+            {#if chatBindingMode}
+                <p class="persona-manager-notice">{language.settingsWorkspace.personaManager.chatBindingNotice}</p>
+            {/if}
+            <PersonaSettings embedded initialSelection={currentSelection} onSelect={$personaSelectCallback ? selectPersona : chatBindingMode ? bindCurrentChat : undefined} />
         </div>
         <button
             data-persona-manager-resizer
@@ -208,6 +228,17 @@
         flex: 1;
         overflow-y: auto;
         padding: 1.5rem;
+    }
+
+    .persona-manager-notice {
+        margin: 0 0 .75rem;
+        padding: .5rem .75rem;
+        border: 1px solid var(--color-binding-border);
+        border-radius: .5rem;
+        background: var(--color-binding);
+        color: var(--color-binding-text);
+        font-size: .85rem;
+        line-height: 1.45;
     }
 
     .persona-manager-resizer {

@@ -1400,6 +1400,7 @@ export const languageEnglish = {
         personaManager: {
             close: "Close persona manager",
             help: "A persona defines who you are in the story. Its name replaces the {{user}} tag, and its description is injected into the story prompt.",
+            chatBindingNotice: "Showing the persona bound to this chat. Picking another persona rebinds this chat. Change the default persona in Settings > Persona.",
             globalTab: "Global",
             characterTab: "Character",
             create: "Create a new persona",

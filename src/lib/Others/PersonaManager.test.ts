@@ -8,7 +8,7 @@ import { openPersonaManager } from 'src/ts/stores.svelte'
 vi.mock('../Setting/Pages/PersonaSettings.svelte', () => ({ default: () => {} }))
 vi.mock('src/ts/alert', () => ({ alertMd: vi.fn() }))
 vi.mock('src/ts/gui/tooltip', () => ({ tooltip: () => {} }))
-vi.mock('src/ts/personaScopes', () => ({ getEffectivePersona: () => null }))
+vi.mock('src/ts/personaScopes', () => ({ getEffectivePersona: () => null, resolvePersonaById: () => null }))
 vi.mock('src/ts/stores.svelte', async () => {
     const { writable } = await import('svelte/store')
     return {
