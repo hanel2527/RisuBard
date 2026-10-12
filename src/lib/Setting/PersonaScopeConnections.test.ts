@@ -14,7 +14,7 @@ describe('persona scope UI connections', () => {
         expect(dialog).toMatch(/\.persona-manager-backdrop\s*\{[^}]*justify-content:\s*center/s)
         expect(dialog).toMatch(/\.persona-manager-backdrop\s*\{[^}]*align-items:\s*center/s)
         expect(dialog).toContain('personaSelectCallback.set(null)')
-        expect(dialog).toContain('onSelect={$personaSelectCallback ? selectPersona : undefined}')
+        expect(dialog).toContain('onSelect={$personaSelectCallback ? selectPersona : chatBindingMode ? bindCurrentChat : undefined}')
         expect(dialog).toMatch(/function selectPersona\([^)]*\)[^{]*\{\s*\$personaSelectCallback\?\.\(selection\)\s*\}/)
         expect(dialog).not.toMatch(/function selectPersona\([^)]*\)[^{]*\{[^}]*close\(\)/s)
         expect(manager).toContain('onSelect?: (selection: PersonaSelection) => void')
