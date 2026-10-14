@@ -14,7 +14,7 @@ import {
     getRemainingChatContentPageOffsets,
     type ChatContentPageEnvelope,
 } from './chatContentPage'
-import { isCanonicalFilesChangedResponse } from './canonicalConflict'
+import { isCanonicalFilesChangedResponse, isExternalChangesPendingResponse } from './canonicalConflict'
 import { uploadChatContent } from './chatContentUpload'
 import { subscribeLiveFileEvents } from './liveFileEvents'
 
@@ -44,17 +44,20 @@ export class ConflictError extends Error {
     currentEtag: string | null
     canonicalFilesChanged: boolean
     externalEditMode: boolean
+    externalChangesPending: boolean
     constructor(
         message: string,
         currentEtag: string | null,
         canonicalFilesChanged = false,
         externalEditMode = false,
+        externalChangesPending = false,
     ) {
         super(message)
         this.name = 'ConflictError'
         this.currentEtag = currentEtag
         this.canonicalFilesChanged = canonicalFilesChanged
         this.externalEditMode = externalEditMode
+        this.externalChangesPending = externalChangesPending
     }
 }
 
@@ -77,6 +80,47 @@ export interface PatchItemResult {
     canonicalFilesChanged?: boolean
     /** Set while browser persistence is paused for external canonical-file editing. */
     externalEditMode?: boolean
+    /** Set when files edited outside RisuBard await the user's review. */
+    externalChangesPending?: boolean
+}
+
+export interface ExternalChangeText {
+    field: string
+    before: string
+    after: string
+}
+
+export interface ExternalLoreChange {
+    id: string
+    name: string
+    fields?: string[]
+    before?: string
+    after?: string
+}
+
+export interface ExternalEntityChange {
+    kind: 'character' | 'lorebook'
+    id: string
+    name: string
+    path: string
+    fields: ExternalChangeText[]
+    lore: { added: ExternalLoreChange[], removed: ExternalLoreChange[], changed: ExternalLoreChange[] } | null
+}
+
+export interface ExternalChangesPending {
+    revision: string
+    changes: ExternalEntityChange[]
+    errors: { path: string, error: string }[]
+    hasDetails: boolean
+}
+
+export interface ExternalChangesResolution {
+    decision: 'accept' | 'keep'
+    resolved: boolean
+    etag?: string
+    snapshot?: import('./liveFileSync').LiveFileSnapshot
+    backupPath?: string
+    reload?: boolean
 }
 
 export interface ExternalEditModeStatus {
@@ -402,6 +446,7 @@ export class NodeStorage{
                 data.currentEtag ?? null,
                 isCanonicalFilesChangedResponse(data),
                 data.code === 'EXTERNAL_EDIT_MODE' || data.externalEditMode === true,
+                isExternalChangesPendingResponse(data),
             )
         }
         if(da.status < 200 || da.status >= 300){
@@ -536,6 +581,7 @@ export class NodeStorage{
                 data.currentEtag ?? null,
                 isCanonicalFilesChangedResponse(data),
                 data.code === 'EXTERNAL_EDIT_MODE' || data.externalEditMode === true,
+                isExternalChangesPendingResponse(data),
             )
         }
         if(da.status < 200 || da.status >= 300){
@@ -684,6 +730,30 @@ export class NodeStorage{
         return this.cacheLiveFileMonitoring(data)
     }
 
+    async getExternalChanges(): Promise<ExternalChangesPending | null> {
+        const response = await this.authFetch('/api/external-changes', { method: 'GET' })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data?.error || `External change check failed (${response.status})`)
+        return data.pending ?? null
+    }
+
+    async resolveExternalChanges(decision: 'accept' | 'keep', revision: string): Promise<ExternalChangesResolution> {
+        const response = await this.saveRequest('/api/external-changes/resolve', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ decision, revision }),
+        })
+        const data = await response.json()
+        if (!response.ok) {
+            const error = new Error(data?.error || `External change review failed (${response.status})`) as Error & { code?: string, errors?: unknown }
+            error.code = data?.code
+            error.errors = data?.errors
+            throw error
+        }
+        if (data.etag) this._lastDbEtag = data.etag
+        return data
+    }
+
     async syncLiveFiles(revision?: string): Promise<import('./liveFileSync').LiveFileSyncResult> {
         if (!(await this.getLiveFileMonitoring()).enabled) {
             return { revision: revision ?? '', etag: null, enabled: false }
@@ -757,6 +827,7 @@ export class NodeStorage{
                 chatGuardRejected: rejectedByChatGuard,
                 canonicalFilesChanged: isCanonicalFilesChangedResponse(data),
                 externalEditMode: data.code === 'EXTERNAL_EDIT_MODE' || data.externalEditMode === true,
+                externalChangesPending: isExternalChangesPendingResponse(data),
             }
         }
         if (da.status < 200 || da.status >= 300) {
@@ -1200,6 +1271,7 @@ export class NodeStorage{
                 data.currentEtag ?? null,
                 isCanonicalFilesChangedResponse(data),
                 data.code === 'EXTERNAL_EDIT_MODE' || data.externalEditMode === true,
+                isExternalChangesPendingResponse(data),
             )
         }
         if (da.status < 200 || da.status >= 300) throw new Error(`saveChatContent error: ${da.status}`)

@@ -33,7 +33,7 @@ describe('canonical startup route', () => {
     it('flushes pending writes without materializing or decoding the compatibility database', async () => {
         const { context, read } = setup()
         const result = await read('hex', 'database/database.bin', { flush: true })
-        expect(context.flushPendingDbWithinQueue).toHaveBeenCalledWith({ materialize: false })
+        expect(context.flushPendingDbWithinQueue).toHaveBeenCalledWith({ materialize: false, adoptExternal: true })
         expect(context.readStorageItemPayload).not.toHaveBeenCalled()
         expect(context.initChatStore).not.toHaveBeenCalled()
         expect(JSON.parse(result.value.toString())).toEqual(context.dbCache.hex)

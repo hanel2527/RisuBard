@@ -94,8 +94,38 @@ test.each(['missing', 'stale'])('Termux can save after recovering a %s accepted 
         })
         const conflict = await write()
         expect(conflict.status).toBe(409)
-        expect(await conflict.json()).toMatchObject({ code: 'CANONICAL_FILES_CHANGED' })
+        expect(await conflict.json()).toMatchObject({ code: 'EXTERNAL_CHANGES_PENDING' })
         expect(JSON.parse(fs.readFileSync(metadataPath, 'utf8')).desc).toBe('External description')
+
+        // The user reviews the difference and accepts the external version.
+        const review = () => fetch(`${base}/api/external-changes`, { headers }).then(r => r.json())
+        const resolve = (decision: string, revision: string) => fetch(`${base}/api/external-changes/resolve`, {
+            method: 'POST', headers, body: JSON.stringify({ decision, revision }),
+        }).then(async r => ({ status: r.status, body: await r.json() }))
+        const first = await review()
+        expect(first.pending.changes[0].fields).toContainEqual(expect.objectContaining({
+            field: 'desc', before: 'Canonical description', after: 'External description',
+        }))
+        const acceptResult = await resolve('accept', first.pending.revision)
+        expect(acceptResult.status).toBe(200)
+        expect(acceptResult.body.snapshot.characters[0].desc).toBe('External description')
+        const afterAccept = createUserDataRepository({ dataRoot }).exportLegacyDatabase()
+        expect(afterAccept.characters[0].desc).toBe('External description')
+        expect(afterAccept.language).toBe('ko')
+        expect(afterAccept.characters[0].chats[0].message).toHaveLength(2)
+        expect((await review()).pending).toBeNull()
+
+        // A second external edit is discarded in favour of the app version and backed up.
+        // A plain editor save leaves the old checksum sidecar in place.
+        fs.writeFileSync(metadataPath, JSON.stringify({ ...metadata, desc: 'Second external description' }))
+        const second = await review()
+        expect((await resolve('accept', 'stale-revision')).status).toBe(409)
+        const kept = await resolve('keep', second.pending.revision)
+        expect(kept.status).toBe(200)
+        expect(JSON.parse(fs.readFileSync(metadataPath, 'utf8')).desc).toBe('External description')
+        expect(fs.readFileSync(path.join(dataRoot, kept.body.backupPath, 'characters/one/metadata.json'), 'utf8'))
+            .toContain('Second external description')
+        expect((await review()).pending).toBeNull()
 
         // Invalid editor bytes must neither be accepted nor overwritten by recovery.
         const acceptedPath = path.join(dataRoot, 'cache/canonical-projection-revision.json')

@@ -7,19 +7,47 @@ import {
     selectResponseScriptstateBefore,
     snapshotChatScriptstate,
 } from './chatScriptstateCheckpoint'
+import type { ChatScriptstateCheckpointMessage } from './chatScriptstateCheckpoint'
 
 describe('chat script-state checkpoints', () => {
     it('restores the state that existed before a response when rerolling', () => {
         const chat = { scriptstate: { '$Likeability': '109' } }
         const message = {}
         attachScriptstateCheckpoint(
-            message,
+            [message],
+            0,
             { '$Likeability': '100' },
             chat.scriptstate,
         )
 
         expect(restoreScriptstateBeforeReroll(chat, message)).toBe(true)
         expect(chat.scriptstate).toEqual({ '$Likeability': '100' })
+    })
+
+    it('keeps checkpoints only on the latest response', () => {
+        const old = { before: { '$Likeability': '90' }, after: { '$Likeability': '100' } }
+        const earlier = { data: 'earlier', scriptstateCheckpoint: old, scriptstateSwipeCheckpoints: [old, null] }
+        const user = { data: 'user' }
+        const latest = { data: 'latest' }
+        const messages: Array<ChatScriptstateCheckpointMessage & { data: string }> = [earlier, user, latest]
+
+        attachScriptstateCheckpoint(messages, 2, { '$Likeability': '100' }, { '$Likeability': '109' })
+
+        expect(earlier).toEqual({ data: 'earlier' })
+        expect(user).toEqual({ data: 'user' })
+        expect(latest).toEqual({
+            data: 'latest',
+            scriptstateCheckpoint: { before: { '$Likeability': '100' }, after: { '$Likeability': '109' } },
+        })
+    })
+
+    it('keeps the swipe checkpoints of the response being continued', () => {
+        const swipes = [{ before: null, after: { '$Likeability': '103' } }, null]
+        const latest = { swipeId: 1, scriptstateSwipeCheckpoints: swipes }
+
+        attachScriptstateCheckpoint([{}, latest], 1, null, { '$Likeability': '109' })
+
+        expect(latest.scriptstateSwipeCheckpoints).toBe(swipes)
     })
 
     it('restores the state saved for the selected swipe', () => {

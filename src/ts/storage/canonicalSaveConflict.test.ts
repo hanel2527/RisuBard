@@ -86,35 +86,54 @@ test('production rebase retains edits made during fetch and leaves unrelated ser
     expect(local.modules).toEqual(remote.modules)
 })
 
-test('chat endpoint rejects external changes before accepting a message into its cache', async () => {
+function chatContentHandler(awaitingReview: boolean, adopt: () => Promise<unknown>) {
     const server = readFileSync(resolve(process.cwd(), 'server/node/server.cjs'), 'utf8')
     const ast = ts.createSourceFile('server.cjs', server, ts.ScriptTarget.Latest, true)
     const route = ast.statements.find(s => ts.isFunctionDeclaration(s)
         && s.name?.text === 'saveChatContentHandler')!
     expect(route).toBeTruthy()
-    const next = vi.fn()
-    const res: any = { status: vi.fn(() => res), json: vi.fn(), send: vi.fn() }
-    const handler = new Function('checkAuth', 'checkActiveSession', 'queueStorageOperation', 'externalEditSession',
+    return new Function('checkAuth', 'checkActiveSession', 'queueStorageOperation', 'externalEditSession',
+        'externalChangesAwaitingReview', 'sendExternalChangesPending',
         'adoptSettledExternalProjection', 'sendCanonicalProjectionConflict', `${route.getText(ast)}; return saveChatContentHandler`)(
         async () => true, () => true,
-        async (fn: any) => fn(), { isActive: () => false }, async () => ({ etag: 'external' }),
+        async (fn: any) => fn(), { isActive: () => false },
+        () => awaitingReview, (response: any) => response.status(409).json({ code: 'EXTERNAL_CHANGES_PENDING' }),
+        adopt,
         (response: any) => response.status(409).json({ code: 'CANONICAL_FILES_CHANGED' }),
     )
+}
+
+test('chat endpoint rejects external changes before accepting a message into its cache', async () => {
+    const next = vi.fn()
+    const res: any = { status: vi.fn(() => res), json: vi.fn(), send: vi.fn() }
+    const handler = chatContentHandler(false, async () => ({ etag: 'external' }))
     await handler({}, res, next)
     expect(next).not.toHaveBeenCalled()
     expect(res.status).toHaveBeenCalledWith(409)
 })
 
-test.each(['CANONICAL_FILES_CHANGED', 'EXTERNAL_EDIT_MODE'])('chat transport retains the %s conflict reason', async (code) => {
+test('chat endpoint asks for review instead of adopting external edits', async () => {
+    const next = vi.fn()
+    const res: any = { status: vi.fn(() => res), json: vi.fn(), send: vi.fn() }
+    const adopt = vi.fn(async () => ({ etag: 'external' }))
+    const handler = chatContentHandler(true, adopt)
+    await handler({}, res, next)
+    expect(next).not.toHaveBeenCalled()
+    expect(adopt).not.toHaveBeenCalled()
+    expect(res.json).toHaveBeenCalledWith({ code: 'EXTERNAL_CHANGES_PENDING' })
+})
+
+test.each(['CANONICAL_FILES_CHANGED', 'EXTERNAL_EDIT_MODE', 'EXTERNAL_CHANGES_PENDING'])('chat transport retains the %s conflict reason', async (code) => {
     const text = readFileSync(resolve(process.cwd(), 'src/ts/storage/nodeStorage.ts'), 'utf8')
     const first = text.indexOf('    async saveChatContent(')
     const last = text.indexOf('// ── Save-folder migration', first)
     const method = ts.transpile(text.slice(first, last).replace('async saveChatContent(', 'async function saveChatContent('), { target: ts.ScriptTarget.ES2022 })
     class ConflictError extends Error {
-        constructor(message: string, public currentEtag: string, public canonicalFilesChanged: boolean, public externalEditMode: boolean) { super(message) }
+        constructor(message: string, public currentEtag: string, public canonicalFilesChanged: boolean, public externalEditMode: boolean, public externalChangesPending: boolean) { super(message) }
     }
-    const save = new Function('encodeRisuSaveLegacy', 'ConflictError', 'isCanonicalFilesChangedResponse', 'uploadChatContent', 'getDatabase', `${method}; return saveChatContent`)(
+    const save = new Function('encodeRisuSaveLegacy', 'ConflictError', 'isCanonicalFilesChangedResponse', 'isExternalChangesPendingResponse', 'uploadChatContent', 'getDatabase', `${method}; return saveChatContent`)(
         () => new Uint8Array(), ConflictError, (data: any) => data.code === 'CANONICAL_FILES_CHANGED',
+        (data: any) => data.code === 'EXTERNAL_CHANGES_PENDING',
         uploadChatContent,
         () => ({ chatUploadChunkMiB: 8 }),
     )
@@ -123,5 +142,6 @@ test.each(['CANONICAL_FILES_CHANGED', 'EXTERNAL_EDIT_MODE'])('chat transport ret
         currentEtag: 'new',
         canonicalFilesChanged: code === 'CANONICAL_FILES_CHANGED',
         externalEditMode: code === 'EXTERNAL_EDIT_MODE',
+        externalChangesPending: code === 'EXTERNAL_CHANGES_PENDING',
     })
 })

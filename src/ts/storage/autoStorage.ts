@@ -94,6 +94,16 @@ export class AutoStorage{
         return this.realStorage.syncLiveFiles(revision)
     }
 
+    async getExternalChanges() {
+        await this.Init()
+        return this.realStorage.getExternalChanges()
+    }
+
+    async resolveExternalChanges(decision: 'accept' | 'keep', revision: string) {
+        await this.Init()
+        return this.realStorage.resolveExternalChanges(decision, revision)
+    }
+
     async getLiveFileMonitoring(force = false) {
         await this.Init()
         return this.realStorage.getLiveFileMonitoring(force)

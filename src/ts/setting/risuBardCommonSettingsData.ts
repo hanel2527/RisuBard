@@ -439,6 +439,14 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
         keywords: ['chunk', 'upload', 'size', 'save', '청크', '업로드', '크기', '저장'],
     },
     {
+        id: 'risubard.common.externalChangeReview',
+        type: 'check',
+        labelKey: 'externalChangeReviewSettingTitle',
+        helpKey: 'externalChangeReview',
+        bindKey: 'externalChangeReview',
+        keywords: ['external', 'file', 'edit', 'review', 'metadata', '외부', '파일', '변경', '감지', '수정'],
+    },
+    {
         id: 'risubard.common.autosaveInterval',
         type: 'number',
         labelKey: 'risuBardAutosaveInterval',

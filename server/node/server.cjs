@@ -61,6 +61,7 @@ const { reportImportProgress } = importProgress;
 const { kvDelManyAndCollect } = require('./db.cjs');
 const { createExternalEditSession } = require('./external-edit-session.cjs');
 const { metadataSnapshot, mergePendingLiveDatabase, createLiveFileRecovery } = require('./live-character-files.cjs');
+const { createExternalChangeReview } = require('./external-change-review.cjs');
 const { createLiveFileMonitoring } = require('./live-file-monitoring.cjs');
 const { createLiveFileEvents } = require('./live-file-events.cjs');
 const {
@@ -279,6 +280,9 @@ function flushPendingDb() {
 // Call only from an operation that already owns the storage queue.
 async function flushPendingDbWithinQueue(options = {}) {
     reportImportProgress('flush');
+    // Keep acknowledged edits in memory until the user reviews external edits.
+    // A database read (page load) still adopts files edited while the app was closed.
+    if (options.adoptExternal !== true && externalChangesAwaitingReview()) return;
     if (await adoptSettledExternalProjection()) return;
     const trigger = options.deferCompatibility === true ? 'canonical-flush' : 'flush';
     if (saveTimers[DB_HEX_KEY]) {
@@ -891,6 +895,7 @@ async function persistDbCacheWithChats(filePath, decodedKey, trigger = 'unknown'
                 trigger,
                 directCollection: observationContext.directCollection,
                 deferCompatibility,
+                externalRevision: observationContext.externalRevision,
             });
             metrics.canonicalSyncMs = elapsedMs(phaseStartedAt);
             metrics.projectionDeferred = deferCompatibility;
@@ -1038,6 +1043,22 @@ let liveFilesChatPrevious = [];
 let liveFilesPendingWrites = false;
 let liveFilesAdoption = null;
 let liveFilesRecovery = null;
+const externalChangeReview = createExternalChangeReview({ repository: userDataRepository, dataRoot: savePath });
+
+// Files edited outside the app while it holds state. Resumed adoptions keep their old path.
+function externalChangesAwaitingReview() {
+    return canonicalProjectionReady && !liveFilesAdoption && !externalEditSession?.isActive()
+        && canonicalProjectionSync.hasExternalChanges();
+}
+
+function sendExternalChangesPending(res) {
+    res.status(409).send({
+        error: 'Files were edited outside RisuBard; review them before saving',
+        code: 'EXTERNAL_CHANGES_PENDING',
+        externalChangesPending: true,
+        currentEtag: dbEtag ?? undefined,
+    });
+}
 const liveFileRecovery = createLiveFileRecovery(savePath);
 const interruptedLiveAdoption = liveFileRecovery.load();
 if (interruptedLiveAdoption) {
@@ -3623,6 +3644,72 @@ app.post('/api/live-files/sync', async (req, res, next) => {
     } catch (error) { next(error) }
 })
 
+// Files edited outside the app while it is open: list the differences, then
+// accept the external version or keep the app version (backing up the files).
+app.get('/api/external-changes', async (req, res, next) => {
+    if (!await checkAuth(req, res)) return
+    try {
+        await queueStorageOperation(async () => {
+            if (!externalChangesAwaitingReview()) {
+                externalChangeReview.clear()
+                return res.json({ pending: null })
+            }
+            const revision = userDataRepository.getProjectionRevision()
+            res.json({ pending: externalChangeReview.publicReview(externalChangeReview.inspect(revision, dbCache[DB_HEX_KEY])) })
+        })
+    } catch (error) { next(error) }
+})
+
+app.post('/api/external-changes/resolve', async (req, res, next) => {
+    if (!await checkAuth(req, res)) return
+    if (!checkActiveSession(req, res)) return
+    const decision = req.body?.decision
+    if (decision !== 'accept' && decision !== 'keep') return res.status(400).json({ error: 'decision must be accept or keep' })
+    try {
+        await queueStorageOperation(async () => {
+            if (!externalChangesAwaitingReview()) return res.json({ decision, resolved: false, etag: dbEtag })
+            const revision = userDataRepository.getProjectionRevision()
+            if (req.body?.revision !== revision) {
+                return res.status(409).json({ code: 'EXTERNAL_CHANGES_CHANGED', error: 'The files changed again; review the latest changes' })
+            }
+            if (!dbCache[DB_HEX_KEY]) {
+                // No in-memory state to protect: load the files like a fresh page.
+                if (decision === 'keep') return res.status(409).json({ error: 'The app has no loaded state to keep; reload the page' })
+                const adopted = await adoptSettledExternalProjection()
+                externalChangeReview.clear()
+                return res.json({ decision, resolved: true, etag: adopted?.etag ?? dbEtag, reload: true })
+            }
+            const review = externalChangeReview.inspect(revision, dbCache[DB_HEX_KEY])
+            if (decision === 'accept' && review.errors.length) {
+                return res.status(422).json({ code: 'EXTERNAL_CHANGES_INVALID', error: 'Some edited files are not valid JSON', errors: review.errors })
+            }
+            let backupPath
+            if (decision === 'accept') dbCache[DB_HEX_KEY] = normalizeJSON(externalChangeReview.applyExternal(dbCache[DB_HEX_KEY], review))
+            else backupPath = externalChangeReview.backup(review)
+            externalChangeReview.acknowledge(review)
+            // Acknowledging rewrites checksum sidecars, which are part of the revision.
+            const reviewedRevision = userDataRepository.getProjectionRevision()
+            if (saveTimers[DB_HEX_KEY]) {
+                clearTimeout(saveTimers[DB_HEX_KEY])
+                delete saveTimers[DB_HEX_KEY]
+            }
+            directWriteTracker.clear(DB_HEX_KEY)
+            await persistDbCacheWithChats(DB_HEX_KEY, 'database/database.bin', 'external-review', { externalRevision: reviewedRevision })
+            dbEtag = computeBufferEtag(encodeRisuSaveLegacyBuffer(dbCache[DB_HEX_KEY]))
+            liveFilesPendingWrites = false
+            externalChangeReview.clear()
+            let snapshot
+            if (decision === 'accept') {
+                const changed = new Set(review.changes.filter(change => change.kind === 'character').map(change => change.id))
+                const full = metadataSnapshot(dbCache[DB_HEX_KEY])
+                snapshot = { characters: full.characters.filter(character => changed.has(character.chaId)), loreBook: full.loreBook, chatMetadata: [] }
+            }
+            logger.info(`[ExternalChanges] ${decision === 'accept' ? 'Accepted' : 'Kept app version over'} ${review.changes.length} externally edited file(s)`)
+            res.json({ decision, resolved: true, etag: dbEtag, snapshot, backupPath })
+        })
+    } catch (error) { next(error) }
+})
+
 app.post('/api/external-edit/start', async (req, res, next) => {
     if (!await checkAuth(req, res)) return
     if (!checkActiveSession(req, res)) return
@@ -3922,7 +4009,7 @@ async function readStorageItemPayload(key) {
 }
 
 async function prepareDatabaseRead(filePath, key, options = {}) {
-    if (options.flush === true) await flushPendingDbWithinQueue({ materialize: false });
+    if (options.flush === true) await flushPendingDbWithinQueue({ materialize: false, adoptExternal: true });
     // Preserve the legacy migration lane for imported or invalidated databases.
     // Writes still hydrate the complete chat store before any reassembly.
     if (canonicalProjectionReady && isRemoteMigrationDone() && !externalEditSession.isActive()) {
@@ -4378,6 +4465,10 @@ app.post('/api/write', async (req, res, next) => {
                     sendExternalEditModeLocked(res);
                     return;
                 }
+                if (externalChangesAwaitingReview()) {
+                    sendExternalChangesPending(res);
+                    return;
+                }
                 const adopted = await adoptSettledExternalProjection();
                 if (adopted) {
                     sendCanonicalProjectionConflict(res, adopted);
@@ -4614,6 +4705,10 @@ app.post('/api/patch', async (req, res, next) => {
             if (decodedKey === 'database/database.bin') {
                 if (externalEditSession.isActive()) {
                     sendExternalEditModeLocked(res);
+                    return;
+                }
+                if (externalChangesAwaitingReview()) {
+                    sendExternalChangesPending(res);
                     return;
                 }
                 const adopted = await adoptSettledExternalProjection();
@@ -5786,6 +5881,10 @@ async function saveChatContentHandler(req, res, next) {
         await queueStorageOperation(async () => {
             if (externalEditSession.isActive()) {
                 sendExternalEditModeLocked(res);
+                return;
+            }
+            if (externalChangesAwaitingReview()) {
+                sendExternalChangesPending(res);
                 return;
             }
             const adopted = await adoptSettledExternalProjection();
@@ -7053,14 +7152,13 @@ app.post('/api/self-update', async (req, res) => {
             send('replacing', null, 'Preparing update; files will be replaced after server shutdown...');
             stopTunnel();
             await flushPendingDb();
-            const helper = await stageWindowsUpdate(process.cwd(), sourceDir, process.pid);
+            // The helper removes the download after this process exits; deleting
+            // tens of thousands of files here would be cut short by the exit.
+            const helper = await stageWindowsUpdate(process.cwd(), sourceDir, process.pid, tmpDir);
             try { await flushPendingDb(); }
             catch (error) { helper.kill(); throw error; }
             send('restarting', null, 'Installing and checking the new server. See update.log if restart fails.');
             res.end();
-            // Staging is complete on the installation volume. Download cleanup
-            // is independent of the installer's backup and journal.
-            fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
             tmpDir = null;
             setTimeout(() => process.exit(0), 100);
             return;
@@ -7170,7 +7268,8 @@ app.post('/api/self-update', async (req, res) => {
         }
 
         // Cleanup temp download (not .update-tmp — that stays on Windows for bin/ post-step)
-        fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+        // Awaited so the restart exit cannot cut the deletion short.
+        await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
         tmpDir = null;
         if (!isWin) {
             fs.rm(updateTmp, { recursive: true, force: true }).catch(() => {});
@@ -7463,6 +7562,16 @@ async function startServer() {
                 .then((moved) => { if (moved > 0) console.log(`[BardWiki] Moved ${moved} vectors out of the KV`); })
                 .catch((error) => console.error('[BardWiki] Vector move failed:', error?.message ?? error));
         }, 10_000));
+        // Remove folders older self-updates left in the system temp folder. A
+        // separate low-priority process keeps the deletion off this server.
+        server.once('listening', () => setTimeout(() => {
+            try {
+                spawn(process.execPath, [path.join(__dirname, 'portable-update.cjs'), '--cleanup'], {
+                    detached: true, windowsHide: true, stdio: 'ignore',
+                    env: { ...process.env, NODE_OPTIONS: '' },
+                }).on('error', () => {}).unref();
+            } catch {}
+        }, 60_000).unref());
     } catch (error) {
         logger.error('[Server] Failed to start server :', error);
         process.exit(1);

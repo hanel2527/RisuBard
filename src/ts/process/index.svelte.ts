@@ -3269,7 +3269,8 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         const outputMessageIndex = findMessageIndexByChatId(currentChat, outputMessageId)
         if(outputMessageIndex >= 0){
             attachScriptstateCheckpoint(
-                currentChat.message[outputMessageIndex],
+                currentChat.message,
+                outputMessageIndex,
                 scriptstateBeforeResponse,
                 snapshotChatScriptstate(currentChat.scriptstate),
             )
@@ -3371,7 +3372,8 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         const outputMessageIndex = findMessageIndexByChatId(currentChat, outputMessageId)
         if(outputMessageIndex >= 0){
             attachScriptstateCheckpoint(
-                currentChat.message[outputMessageIndex],
+                currentChat.message,
+                outputMessageIndex,
                 scriptstateBeforeResponse,
                 snapshotChatScriptstate(currentChat.scriptstate),
             )

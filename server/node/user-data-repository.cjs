@@ -1168,6 +1168,8 @@ function createUserDataRepository(options = {}) {
         characterDirectoryStatus,
         loadAssistantDraft,
         loadCharacter,
+        characterDirectoryPath: characterId => directories.characterDirectory(stableId(characterId, 'character')),
+        collectionItemPath: (directory, id) => path.join(directory, `${stableId(id, directory.slice(0, -1))}.json`),
         loadChat,
         loadIndexedChat,
         loadStartupDatabase,

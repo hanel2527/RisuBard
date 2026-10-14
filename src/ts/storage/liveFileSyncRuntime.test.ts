@@ -17,6 +17,7 @@ test('an error with a newer revision cannot consume the unseen snapshot revision
     const create = new Function('forageStorage', `
         let liveRevision = 'old', lastLiveError = '', gotChannel = false;
         const supportsPatchSync = true, saveRuntime = { isActive: () => true }, notifyError = () => {};
+        const getDatabase = () => ({ externalChangeReview: false });
         ${handler}
         return { sync: syncLiveFilesNow, revision: () => liveRevision };
     `)

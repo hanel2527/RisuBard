@@ -48,12 +48,20 @@ function restoreChatScriptstate(chat: ChatScriptstateCarrier, snapshot: ChatScri
     chat.scriptstate = { ...snapshot }
 }
 
+// Only the latest response can be rerolled, so earlier messages drop their
+// copies. Each copy holds the whole chat state and would otherwise pile up.
 export function attachScriptstateCheckpoint(
-    message: ChatScriptstateCheckpointMessage,
+    messages: ChatScriptstateCheckpointMessage[],
+    index: number,
     before: ChatScriptstateSnapshot,
     after: ChatScriptstateSnapshot,
 ): void {
-    message.scriptstateCheckpoint = {
+    messages.forEach((message, i) => {
+        if(i === index) return
+        if('scriptstateCheckpoint' in message) delete message.scriptstateCheckpoint
+        if('scriptstateSwipeCheckpoints' in message) delete message.scriptstateSwipeCheckpoints
+    })
+    messages[index].scriptstateCheckpoint = {
         before: cloneSnapshot(before),
         after: cloneSnapshot(after),
     }

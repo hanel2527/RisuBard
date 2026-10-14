@@ -930,6 +930,7 @@ export function setDatabase(data:Database){
     data.showRisuBardSaveLoadShortcuts ??= true
     data.chatUploadChunkMiB = normalizeChatUploadChunkMiB(data.chatUploadChunkMiB)
     data.chatUploadChunkEnabled = data.chatUploadChunkEnabled === true
+    data.externalChangeReview = data.externalChangeReview === true
     data.risuBardAutosaveInterval = normalizeAutosaveInterval(
         data.risuBardAutosaveInterval
     )
@@ -1845,6 +1846,8 @@ export interface Database{
     risuBardAutosaveInterval?: number
     chatUploadChunkMiB?: number
     chatUploadChunkEnabled?: boolean
+    /** Poll for character/global lorebook files edited outside the app and ask before adopting them. */
+    externalChangeReview?: boolean
     risuBardAutosaveRetention?: number
     risuBardArcaChatImageWidthPercent?: number
     risuBardArcaChatFontSizePx?: number

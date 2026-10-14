@@ -39,7 +39,8 @@ import { claimSaveDbRuntime } from './storage/saveDbRuntime'
 import { createCanonicalSaveConflict } from './storage/canonicalSaveConflict'
 import { createSessionHandoff } from './storage/sessionHandoff'
 import { hasDisplayNameCollision } from './displayName'
-import { applyLiveFileSnapshot, createLiveFileRefresh, createLiveFileSignalRefresh, type LiveFileConflict, type LiveChatMetadataBaseline } from './storage/liveFileSync'
+import { applyLiveFileSnapshot, createLiveFileRefresh, createLiveFileSignalRefresh, type LiveFileConflict, type LiveChatMetadataBaseline, type LiveFileSnapshot } from './storage/liveFileSync'
+import { requestExternalChangeDecision, closeExternalChangeReview, dismissExternalChangeReview, externalChangeReview } from './storage/externalChangeReview.svelte'
 
 export const forageStorage = new AutoStorage()
 
@@ -584,6 +585,8 @@ export async function saveDb() {
     async function syncLiveFilesNow() {
         if (!supportsPatchSync || !saveRuntime.isActive()) return
         if (gotChannel) throw new Error(language.sessionSavePausedTitle)
+        if (getDatabase().externalChangeReview === true) await reviewExternalChanges()
+        if (!saveRuntime.isActive()) return
         const result = await forageStorage.syncLiveFiles(liveRevision)
         if (!saveRuntime.isActive()) return
         if (gotChannel) throw new Error(language.sessionSavePausedTitle)
@@ -596,32 +599,7 @@ export async function saveDb() {
             if (result.recovery?.conflicts) {
                 notifyInfo(`외부 파일 변경을 반영했습니다. 겹친 앱 편집 ${result.recovery.conflicts}건은 서버 데이터 폴더의 ${result.recovery.path}에 보관했습니다.`)
             }
-            // The acknowledged copy shares objects with the patcher until here.
-            acknowledgedDb = JSON.parse(JSON.stringify(acknowledgedDb))
-            const recovery = applyLiveFileSnapshot(getDatabase(), acknowledgedDb, result.snapshot, liveChatMetadataBaseline)
-            if (recovery.conflicts.length) {
-                const entry = { time: new Date().toISOString(), conflicts: recovery.conflicts }
-                liveFileConflictRecovery.push(entry)
-                try {
-                    const key = 'risubard-live-file-conflicts'
-                    const previous = JSON.parse(localStorage.getItem(key) || '[]')
-                    localStorage.setItem(key, JSON.stringify([...previous, entry]))
-                    notifyInfo('외부 파일 변경을 반영했습니다. 겹친 앱 편집 내용은 브라우저 복구 기록에 보관했습니다.')
-                } catch {
-                    await downloadFile(`risubard-local-edits-${Date.now()}.json`, JSON.stringify(entry, null, 2))
-                    notifyInfo('외부 파일 변경을 반영했습니다. 겹친 앱 편집 내용은 복구 파일로 내려받았습니다.')
-                }
-            }
-            await patcher.init(acknowledgedDb)
-            forceFullWriteOnRetry = false
-            for (const characterId of recovery.characterIds) {
-                if (!changeTracker.character.includes(characterId)) changeTracker.character.push(characterId)
-            }
-            changeTracker.root = true
-            changed = true
-            forageStorage.setDbEtag(result.etag)
-            await tick()
-            ReloadGUIPointer.update(value => value + 1)
+            await applyRemoteSnapshot(result.snapshot, result.etag)
         }
         if (result.error && result.error !== lastLiveError) {
             notifyError(`외부 파일을 아직 반영하지 못했습니다: ${result.error}`)
@@ -630,6 +608,86 @@ export async function saveDb() {
         // Do not allow an autosave to replace an incomplete external edit.
         if (result.error) throw new Error(result.error)
         liveRevision = result.revision
+    }
+
+    // Merge a server metadata snapshot into this tab, keeping unsent local edits
+    // and recording overlapping ones for recovery.
+    async function applyRemoteSnapshot(snapshot: LiveFileSnapshot, etag: string | null | undefined) {
+        // The acknowledged copy shares objects with the patcher until here.
+        acknowledgedDb = JSON.parse(JSON.stringify(acknowledgedDb))
+        const recovery = applyLiveFileSnapshot(getDatabase(), acknowledgedDb, snapshot, liveChatMetadataBaseline)
+        if (recovery.conflicts.length) {
+            const entry = { time: new Date().toISOString(), conflicts: recovery.conflicts }
+            liveFileConflictRecovery.push(entry)
+            try {
+                const key = 'risubard-live-file-conflicts'
+                const previous = JSON.parse(localStorage.getItem(key) || '[]')
+                localStorage.setItem(key, JSON.stringify([...previous, entry]))
+                notifyInfo('외부 파일 변경을 반영했습니다. 겹친 앱 편집 내용은 브라우저 복구 기록에 보관했습니다.')
+            } catch {
+                await downloadFile(`risubard-local-edits-${Date.now()}.json`, JSON.stringify(entry, null, 2))
+                notifyInfo('외부 파일 변경을 반영했습니다. 겹친 앱 편집 내용은 복구 파일로 내려받았습니다.')
+            }
+        }
+        await patcher.init(acknowledgedDb)
+        forceFullWriteOnRetry = false
+        for (const characterId of recovery.characterIds) {
+            if (!changeTracker.character.includes(characterId)) changeTracker.character.push(characterId)
+        }
+        changeTracker.root = true
+        changed = true
+        forageStorage.setDbEtag(etag ?? null)
+        await tick()
+        ReloadGUIPointer.update(value => value + 1)
+    }
+
+    // Files edited outside RisuBard while this tab holds state: show the
+    // differences and apply the user's decision before any save continues.
+    // Called while owning saveInFlight.
+    async function reviewExternalChanges() {
+        let pending = await forageStorage.getExternalChanges()
+        while (pending) {
+            const waiting = requestExternalChangeDecision(pending)
+            // Keep the dialog current while the user fixes or reverts the files.
+            const refresh = setInterval(() => {
+                if (externalChangeReview.busy) return
+                void forageStorage.getExternalChanges().then(latest => {
+                    if (externalChangeReview.busy) return
+                    if (!latest) dismissExternalChangeReview()
+                    else if (latest.revision !== externalChangeReview.pending?.revision) externalChangeReview.pending = latest
+                }).catch(() => {})
+            }, 3000)
+            let decision: Awaited<typeof waiting>
+            try { decision = await waiting } finally { clearInterval(refresh) }
+            if (decision === 'dismissed') {
+                closeExternalChangeReview()
+                return
+            }
+            pending = externalChangeReview.pending ?? pending
+            try {
+                const result = await forageStorage.resolveExternalChanges(decision, pending.revision)
+                if (result.reload) {
+                    try { sessionStorage.setItem('risu-canonical-files-reload', '1') } catch {}
+                    location.reload()
+                    return
+                }
+                if (result.snapshot) await applyRemoteSnapshot(result.snapshot, result.etag)
+                else if (result.etag) forageStorage.setDbEtag(result.etag)
+                closeExternalChangeReview()
+                notifyInfo(decision === 'accept'
+                    ? language.externalChangeAccepted
+                    : language.externalChangeKept(result.backupPath ?? 'trash'))
+                return
+            } catch (error) {
+                if ((error as { code?: string })?.code === 'EXTERNAL_CHANGES_CHANGED') {
+                    pending = await forageStorage.getExternalChanges()
+                    if (!pending) closeExternalChangeReview()
+                    continue
+                }
+                externalChangeReview.busy = false
+                externalChangeReview.error = error instanceof Error ? error.message : String(error)
+            }
+        }
     }
 
     const refreshThisRuntime = createLiveFileRefresh({
@@ -646,6 +704,12 @@ export async function saveDb() {
         if (gotChannel) throw new Error(language.sessionSavePausedTitle)
     }
     refreshLiveFilesImpl = refreshWithSessionCheck
+    // With the review option on, look for external edits every few seconds while visible.
+    const externalReviewTimer = setInterval(() => {
+        if (getDatabase()?.externalChangeReview !== true || document.hidden || saveInFlight || gotChannel) return
+        void refreshThisRuntime().catch(error => console.warn('[External changes]', error))
+    }, 3000)
+    saveRuntime.addCleanup(() => clearInterval(externalReviewTimer))
     let lastSignalError = ''
     const liveSignals = createLiveFileSignalRefresh({
         isActive: () => supportsPatchSync && saveRuntime.isActive() && !gotChannel,
@@ -1134,6 +1198,12 @@ export async function saveDb() {
                         externalEditMode.active = true
                         return 'noop'
                     }
+                    if (e.externalChangesPending) {
+                        requeueTrackedChanges(toSave)
+                        await reviewExternalChanges()
+                        changed = true
+                        return 'retry'
+                    }
                     if (e.canonicalFilesChanged) {
                         requeueTrackedChanges(toSave)
                         await syncLiveFilesNow()
@@ -1324,6 +1394,12 @@ export async function saveDb() {
                     externalEditMode.active = true
                     return 'noop'
                 }
+                if (patchResult.externalChangesPending) {
+                    requeueTrackedChanges(toSave)
+                    await reviewExternalChanges()
+                    changed = true
+                    return 'retry'
+                }
                 if (patchResult.canonicalFilesChanged) {
                     requeueTrackedChanges(toSave)
                     await syncLiveFilesNow()
@@ -1380,6 +1456,12 @@ export async function saveDb() {
                     if (conflictErr.externalEditMode) {
                         externalEditMode.active = true
                         return 'noop'
+                    }
+                    if (conflictErr.externalChangesPending) {
+                        requeueTrackedChanges(toSave)
+                        await reviewExternalChanges()
+                        changed = true
+                        return 'retry'
                     }
                     if (conflictErr.canonicalFilesChanged) {
                         requeueTrackedChanges(toSave)

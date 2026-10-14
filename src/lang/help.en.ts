@@ -427,6 +427,7 @@ export const helpEn = {
             "Choose how many turns pass between autosaves. An interval of 5 saves turns 1, 6, 11, and so on.",
         chatUploadChunkSize: "Data sent per request when saving a chat. Default: 8 MiB; range: 1–64 MiB. Changes apply to both the app and server on the next chat save without restarting. Smaller chunks require more requests.",
         chatUploadChunkEnabled: "Disabled by default to preserve existing save behavior. When enabled, splits chats larger than the configured size into multiple uploads. When disabled, the entire chat is sent in one request and may exceed server or proxy request limits. Changes apply to the next save.",
+        externalChangeReview: "Off by default. While RisuBard is open, it checks every few seconds whether character metadata.json or global lorebook files were edited by another program (for example an editor or a bot authoring tool). It then shows which fields and lore entries changed and lets you accept the external version or keep the app version. Kept files are backed up to trash/external-changes-* in the data folder. Even when this is off, a save that finds external edits pauses and shows the same review instead of overwriting them.",
         risuBardAutosaveRetention:
             "Maximum rotating autosave files kept per chat. After the limit, the oldest autosave slot is overwritten.",
         risuBardArcaChatImageWidthPercent:

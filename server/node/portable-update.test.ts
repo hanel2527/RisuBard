@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -5,7 +6,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
 const require = createRequire(import.meta.url)
-const { validatePackage, waitForExit, restoreEntries, installStaged, stageWindowsUpdate } = require('./portable-update.cjs')
+const { validatePackage, waitForExit, restoreEntries, installStaged, stageWindowsUpdate, cleanupUpdateLeftovers } = require('./portable-update.cjs')
 const temporaryRoots: string[] = []
 
 function temporaryRoot() {
@@ -199,6 +200,67 @@ describe('Windows update staging failures', () => {
         write(root, '.update-tmp/backup/precious.txt', 'only recovery copy')
         await expect(stageWindowsUpdate(root, root, process.pid)).rejects.toThrow()
         expect(fs.readFileSync(path.join(root, '.update-tmp/backup/precious.txt'), 'utf8')).toBe('only recovery copy')
+    })
+})
+
+describe('update temp folder cleanup', () => {
+    const DAY = 24 * 60 * 60 * 1000
+
+    function leftovers() {
+        const tmp = temporaryRoot()
+        write(tmp, 'risu-update-1700000000000/extracted/app/file.js', 'x')
+        write(tmp, 'risubard-updater-Ab12Cd/node.exe', 'x')
+        write(tmp, 'risu-update-backup/keep.txt', 'not ours')
+        write(tmp, 'risubard-updater-toolong/keep.txt', 'not ours')
+        write(tmp, 'risu-update-1700000000001', 'a file, not a folder')
+        return tmp
+    }
+
+    test('keeps folders that may belong to an update still in progress', () => {
+        const tmp = leftovers()
+        expect(cleanupUpdateLeftovers(tmp, Date.now())).toEqual([])
+        expect(fs.existsSync(path.join(tmp, 'risu-update-1700000000000/extracted/app/file.js'))).toBe(true)
+    })
+
+    test('removes only day-old self-update folders', () => {
+        const tmp = leftovers()
+        expect(cleanupUpdateLeftovers(tmp, Date.now() + 2 * DAY).sort())
+            .toEqual(['risu-update-1700000000000', 'risubard-updater-Ab12Cd'])
+        expect(fs.readdirSync(tmp).sort())
+            .toEqual(['risu-update-1700000000001', 'risu-update-backup', 'risubard-updater-toolong'])
+    })
+
+    test('treats a recently written download as active even in an old folder', () => {
+        const tmp = temporaryRoot()
+        const dir = path.join(tmp, 'risu-update-1')
+        write(dir, 'RisuBard.zip', 'partial')
+        const old = new Date(Date.now() - 2 * DAY)
+        fs.utimesSync(dir, old, old)
+        expect(cleanupUpdateLeftovers(tmp, Date.now())).toEqual([])
+        expect(fs.existsSync(path.join(dir, 'RisuBard.zip'))).toBe(true)
+    })
+
+    test('leaves a running helper folder whole when its node.exe is locked', () => {
+        const tmp = leftovers()
+        const rm = fs.rmSync
+        vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
+            if (path.basename(String(target)) === 'node.exe') throw new Error('EBUSY: locked')
+            return rm(target, options)
+        })
+        expect(cleanupUpdateLeftovers(tmp, Date.now() + 2 * DAY)).toEqual(['risu-update-1700000000000'])
+        expect(fs.existsSync(path.join(tmp, 'risubard-updater-Ab12Cd/node.exe'))).toBe(true)
+    })
+
+    test('the install helper removes the download after the server exits, even when installation stops', async () => {
+        const root = temporaryRoot()
+        const download = path.join(root, 'risu-update-1')
+        write(download, 'extracted/app/file.js', 'x')
+        const exited = spawn(process.execPath, ['-e', ''])
+        await new Promise(resolve => exited.once('exit', resolve))
+        const helper = spawn(process.execPath, [require.resolve('./portable-update.cjs'), '--install', root, String(exited.pid), download])
+        expect(await new Promise(resolve => helper.once('exit', resolve))).toBe(1)
+        expect(fs.existsSync(download)).toBe(false)
+        expect(fs.readFileSync(path.join(root, 'update.log'), 'utf8')).toContain('Update stopped')
     })
 })
 

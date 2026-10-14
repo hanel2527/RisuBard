@@ -163,12 +163,55 @@ async function installStaged(root, options = {}) {
     return child;
 }
 
-async function runHelper(root, pid) {
+// Temp folder names created by the self-update. Nothing else is ever removed.
+const DOWNLOAD_DIR = /^risu-update-\d+$/;
+const RUNNER_DIR = /^risubard-updater-[A-Za-z0-9]{6}$/;
+const LEFTOVER_AGE_MS = 24 * 60 * 60 * 1000;
+
+async function removeDownload(dir, log) {
+    if (!dir || !DOWNLOAD_DIR.test(path.basename(dir))) return;
+    try { await fs.promises.rm(dir, { recursive: true, force: true }); }
+    catch (error) { log('Download cleanup deferred: ' + error.message); }
+}
+
+function newestChange(dir) {
+    let newest = fs.statSync(dir).mtimeMs;
+    for (const name of fs.readdirSync(dir)) {
+        try { newest = Math.max(newest, fs.lstatSync(path.join(dir, name)).mtimeMs); } catch {}
+    }
+    return newest;
+}
+
+// Other installations may be updating through the same temp folder, so only
+// folders untouched for a day count as leftovers.
+function cleanupUpdateLeftovers(tmp = require('node:os').tmpdir(), now = Date.now()) {
+    const removed = [];
+    let names;
+    try { names = fs.readdirSync(tmp); } catch { return removed; }
+    for (const name of names) {
+        const runner = RUNNER_DIR.test(name);
+        if (!runner && !DOWNLOAD_DIR.test(name)) continue;
+        const dir = path.join(tmp, name);
+        try {
+            if (!fs.lstatSync(dir).isDirectory()) continue;
+            if (now - newestChange(dir) < LEFTOVER_AGE_MS) continue;
+            // A helper still running from this folder locks node.exe; keep the folder whole.
+            if (runner) fs.rmSync(path.join(dir, 'node.exe'), { force: true });
+            fs.rmSync(dir, { recursive: true, force: true });
+            removed.push(name);
+        } catch {}
+    }
+    return removed;
+}
+
+async function runHelper(root, pid, download) {
     const log = message => fs.appendFileSync(path.join(root, 'update.log'), `${new Date().toISOString()} ${message}\n`);
+    let exited = false;
     try {
         log('Waiting for server to exit');
         if (process.send) { process.send({ ready: true }); process.disconnect(); }
         await waitForExit(pid);
+        exited = true;
         const child = await installStaged(root, { log });
         // Keep consuming the server's output. This helper exits with that server.
         child.once('exit', code => process.exit(code || 0));
@@ -176,9 +219,12 @@ async function runHelper(root, pid) {
         log('Update stopped: ' + error.message);
         process.exitCode = 1;
     }
+    // The stopped server no longer reads its download. Removing it after the
+    // installation keeps the deletion from slowing the readiness check.
+    if (exited) await removeDownload(download, log);
 }
 
-async function stageWindowsUpdate(root, source, parentPid) {
+async function stageWindowsUpdate(root, source, parentPid, download) {
     const tmp = path.join(root, '.update-tmp');
     // Never discard an interrupted installation or its only recoverable backup.
     await fs.promises.mkdir(tmp);
@@ -196,7 +242,7 @@ async function stageWindowsUpdate(root, source, parentPid) {
     await fs.promises.copyFile(__filename, helper);
     await fs.promises.copyFile(process.execPath, node);
     return await new Promise((resolve, reject) => {
-        const child = spawn(node, [helper, '--install', root, String(parentPid)], {
+        const child = spawn(node, [helper, '--install', root, String(parentPid), ...(download ? [download] : [])], {
             cwd: runner, detached: true, windowsHide: true,
             stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
         });
@@ -215,10 +261,14 @@ async function stageWindowsUpdate(root, source, parentPid) {
     }
 }
 
-module.exports = { validatePackage, waitForExit, restoreEntries, installStaged, startAndVerify, stageWindowsUpdate };
+module.exports = { validatePackage, waitForExit, restoreEntries, installStaged, startAndVerify, stageWindowsUpdate, cleanupUpdateLeftovers };
 if (require.main === module) {
-    const [mode, root, pid] = process.argv.slice(2);
+    const [mode, root, pid, download] = process.argv.slice(2);
     if (mode === '--validate') console.log(validatePackage(root));
-    else if (mode === '--install') runHelper(path.resolve(root), Number(pid));
-    else throw new Error('Expected --validate ROOT or --install ROOT PID');
+    else if (mode === '--install') runHelper(path.resolve(root), Number(pid), download);
+    else if (mode === '--cleanup') {
+        try { require('node:os').setPriority(require('node:os').constants.priority.PRIORITY_LOW); } catch {}
+        cleanupUpdateLeftovers();
+    }
+    else throw new Error('Expected --validate ROOT, --install ROOT PID [DOWNLOAD] or --cleanup');
 }
