@@ -16,6 +16,23 @@
         opened = first ? { [first.fields[0] ? `${first.id}:f:${first.fields[0].field}` : `${first.id}:l:0`]: true } : {}
     })
 
+    const kindLabels = $derived<Record<string, string>>({
+        character: language.externalChangeCharacter,
+        lorebook: language.externalChangeLorebook,
+        settings: language.externalChangeSettings,
+        secrets: language.externalChangeSecrets,
+        preset: language.externalChangePreset,
+        module: language.externalChangeModule,
+        persona: language.externalChangePersona,
+        chat: language.externalChangeChat,
+        file: language.externalChangeFile,
+    })
+    const statusLabels = $derived<Record<string, string>>({
+        added: language.externalChangeAdded,
+        removed: language.externalChangeRemoved,
+        changed: language.externalChangeModified,
+    })
+
     function toggle(key: string) {
         opened = { ...opened, [key]: !opened[key] }
     }
@@ -72,10 +89,13 @@
             {#each pending.changes as change (change.kind + change.id)}
                 <section class="entity">
                     <header>
-                        <span class="badge">{change.kind === 'character' ? language.externalChangeCharacter : language.externalChangeLorebook}</span>
-                        <strong>{change.name || change.id}</strong>
+                        <span class="badge">{kindLabels[change.kind] ?? change.kind}</span>
+                        {#if change.name}<strong>{change.name}</strong>{/if}
                         <code>{change.path}</code>
                     </header>
+                    {#if change.status && !change.fields.length && !change.lore}
+                        <p class="note {change.status === 'removed' ? 'danger' : ''}">{statusLabels[change.status]}</p>
+                    {/if}
                     {#if change.fields.length}
                         <h3>{language.externalChangeFields}</h3>
                         <ul>
@@ -119,7 +139,7 @@
 
             <div class="choices">
                 <p>{language.externalChangeKeepHint}</p>
-                <p>{language.externalChangeAcceptHint}</p>
+                <p>{pending.reloadOnAccept ? language.externalChangeAcceptReloadHint : language.externalChangeAcceptHint}</p>
             </div>
             {#if externalChangeReview.error}
                 <p class="note danger" role="alert">{language.externalChangeFailed}: {externalChangeReview.error}</p>

@@ -3655,7 +3655,7 @@ app.get('/api/external-changes', async (req, res, next) => {
                 return res.json({ pending: null })
             }
             const revision = userDataRepository.getProjectionRevision()
-            res.json({ pending: externalChangeReview.publicReview(externalChangeReview.inspect(revision, dbCache[DB_HEX_KEY])) })
+            res.json({ pending: externalChangeReview.publicReview(externalChangeReview.inspect(revision, dbCache[DB_HEX_KEY], canonicalProjectionSync.changedFiles())) })
         })
     } catch (error) { next(error) }
 })
@@ -3679,9 +3679,19 @@ app.post('/api/external-changes/resolve', async (req, res, next) => {
                 externalChangeReview.clear()
                 return res.json({ decision, resolved: true, etag: adopted?.etag ?? dbEtag, reload: true })
             }
-            const review = externalChangeReview.inspect(revision, dbCache[DB_HEX_KEY])
+            const review = externalChangeReview.inspect(revision, dbCache[DB_HEX_KEY], canonicalProjectionSync.changedFiles())
             if (decision === 'accept' && review.errors.length) {
                 return res.status(422).json({ code: 'EXTERNAL_CHANGES_INVALID', error: 'Some edited files are not valid JSON', errors: review.errors })
+            }
+            if (decision === 'accept' && review.reload) {
+                // Files beyond characters and lorebooks changed: load every
+                // external file like a fresh page, then reload the tab. The user
+                // chose these bytes, so their checksums are refreshed first.
+                externalChangeReview.acknowledge(review)
+                const adopted = await adoptSettledExternalProjection()
+                externalChangeReview.clear()
+                logger.info(`[ExternalChanges] Accepted ${review.changes.length} externally edited file(s); reloading`)
+                return res.json({ decision, resolved: true, etag: adopted?.etag ?? dbEtag, reload: true })
             }
             let backupPath
             if (decision === 'accept') dbCache[DB_HEX_KEY] = normalizeJSON(externalChangeReview.applyExternal(dbCache[DB_HEX_KEY], review))
@@ -4659,6 +4669,12 @@ app.post('/api/db/flush', async (req, res, next) => {
         await queueStorageOperation(async () => {
             if (externalEditSession.isActive()) {
                 res.send({ success: true, paused: true, etag: dbEtag ?? undefined });
+                return;
+            }
+            // Nothing is written until the user reviews the external edits. Say
+            // so instead of reporting a flush that did not happen.
+            if (externalChangesAwaitingReview()) {
+                res.send({ success: true, paused: true, externalChangesPending: true, etag: dbEtag ?? undefined });
                 return;
             }
             // Interactive saves acknowledge durable canonical files. Legacy

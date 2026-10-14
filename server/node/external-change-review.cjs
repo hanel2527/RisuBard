@@ -9,9 +9,14 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { refreshChecksum } = require('./file-store.cjs');
+const { splitSecrets, COLLECTIONS } = require('./user-data-repository.cjs');
 
 const TEXT_LIMIT = 200_000;
 const IGNORED_FIELDS = new Set(['chats', 'chatPage']);
+const COLLECTION_KINDS = { botPresets: 'preset', modules: 'module', personas: 'persona', loreBook: 'lorebook' };
+const SETTINGS_EXCLUDED = new Set(['characters', ...COLLECTIONS.map(([legacyName]) => legacyName)]);
+const SECRET_MASK = '••••••';
+const toPosix = value => String(value).split(path.sep).join('/');
 
 const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const isPlainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -75,6 +80,16 @@ function diffLore(before = [], after = []) {
     return { added, removed, changed };
 }
 
+function diffFields(app = {}, external = {}) {
+    return [...new Set([...Object.keys(app), ...Object.keys(external)])]
+        .filter(field => !same(app[field], external[field]))
+        .map(field => ({ field, before: textOf(app[field]), after: textOf(external[field]) }));
+}
+
+function settingsOf(appDb) {
+    return splitSecrets(Object.fromEntries(Object.entries(appDb || {}).filter(([key]) => !SETTINGS_EXCLUDED.has(key))));
+}
+
 function diffCharacter(app, external) {
     const fields = [];
     let lore = null;
@@ -93,32 +108,119 @@ function createExternalChangeReview({ repository, dataRoot }) {
     let cache = null;
 
     // Externally edited character and global lorebook files, with their parsed values.
-    function collect(options) {
+    // `paths` lists files known to have changed even if their checksum was rewritten.
+    function collect({ all = false, paths = null } = {}) {
         const index = repository.loadSidebarIndex();
+        const read = relativePath => readEdited(dataRoot, relativePath, { all: all || Boolean(paths?.has(relativePath)) });
         const characters = [];
         for (const summary of index.characters || []) {
             const directory = repository.characterDirectoryPath(summary.id);
             if (!directory) continue;
-            const edited = readEdited(dataRoot, path.join(directory, 'metadata.json').split(path.sep).join('/'), options);
+            const edited = read(toPosix(path.join(directory, 'metadata.json')));
             if (edited) characters.push({ id: summary.id, ...edited });
         }
         const lorebooks = [];
         for (const id of index.collections?.loreBook || []) {
-            const edited = readEdited(dataRoot, repository.collectionItemPath('lorebooks', id).split(path.sep).join('/'), options);
+            const edited = read(toPosix(repository.collectionItemPath('lorebooks', id)));
             if (edited) lorebooks.push({ id, ...edited });
         }
         return { characters, lorebooks };
     }
 
     // Summarize differences between the app database and the edited files.
-    function inspect(revision, appDb) {
+    // `changed` lists every file changed since the app last accepted the files;
+    // without it only characters and global lorebooks can be compared.
+    function inspect(revision, appDb, changed = null) {
         if (cache && cache.revision === revision) return cache.review;
-        let review = compare(revision, appDb, collect());
+        const paths = changed ? new Set(changed.map(file => file.path)) : null;
+        let review = compare(revision, appDb, collect({ paths }));
         // A tool may rewrite the checksum together with the file. Compare every
         // character and lorebook with the app state when no sidecar mismatches.
-        if (!review.changes.length && !review.errors.length) review = compare(revision, appDb, collect({ all: true }));
+        if (!changed && !review.changes.length && !review.errors.length) review = compare(revision, appDb, collect({ all: true }));
+        if (changed) review = withOtherFiles(review, appDb, changed);
+        // Unknown files changed: accepting must load them all rather than overwrite them.
+        else if (!review.changes.length && !review.errors.length) review = { ...review, reload: true };
         cache = { revision, review };
         return review;
+    }
+
+    // Add every other changed file: settings, credentials, presets, modules,
+    // personas, chats and anything else in the canonical data folder.
+    function withOtherFiles(review, appDb, changed) {
+        const index = repository.loadSidebarIndex();
+        const owners = (index.characters || []).map(summary => {
+            const directory = repository.characterDirectoryPath(summary.id);
+            return directory ? { id: summary.id, directory: toPosix(directory) } : null;
+        }).filter(Boolean);
+        const reviewed = new Set([...review.files.characters, ...review.files.lorebooks].map(file => file.path));
+        const compared = new Set([
+            ...owners.map(owner => `${owner.directory}/metadata.json`),
+            ...(index.collections?.loreBook || []).map(id => toPosix(repository.collectionItemPath('lorebooks', id))),
+        ]);
+        const changes = [...review.changes];
+        const errors = [...review.errors];
+        const seen = new Set();
+        for (const file of changed) {
+            // Characters and lorebooks were compared above; identical ones need nothing.
+            // Without app state nothing was compared, so every file is listed.
+            if (reviewed.has(file.path) || (appDb && file.status === 'changed' && compared.has(file.path))) continue;
+            const described = describeFile(file, appDb, index, owners);
+            if (described.error) errors.push(described.error);
+            else if (!seen.has(described.id)) {
+                seen.add(described.id);
+                changes.push(described);
+            }
+        }
+        const reload = changes.some(change => change.status || (change.kind !== 'character' && change.kind !== 'lorebook'));
+        return { ...review, changes, errors, paths: changed.map(file => file.path), reload };
+    }
+
+    function describeFile(file, appDb, index, owners) {
+        const relativePath = file.path;
+        const status = file.status;
+        const edited = status !== 'removed' && relativePath.endsWith('.json') ? readEdited(dataRoot, relativePath, { all: true }) : null;
+        if (edited?.error) return { error: { path: relativePath, error: edited.error } };
+        const external = edited?.value;
+        const base = { id: relativePath, path: relativePath, name: '', status, fields: [], lore: null };
+        if (relativePath === 'settings/app.json') {
+            const { schemaVersion: _schema, ...settings } = external || {};
+            return { ...base, kind: 'settings', fields: external && appDb ? diffFields(settingsOf(appDb).settings, settings) : [] };
+        }
+        if (relativePath === 'secrets/credentials.json') {
+            // Show which credentials changed, never their values.
+            const { schemaVersion: _schema, ...secrets } = external || {};
+            const app = settingsOf(appDb).secrets;
+            const fields = external && appDb ? [...new Set([...Object.keys(app), ...Object.keys(secrets)])]
+                .filter(field => !same(app[field], secrets[field]))
+                .map(field => ({ field, before: field in app ? SECRET_MASK : '', after: field in secrets ? SECRET_MASK : '' })) : [];
+            return { ...base, kind: 'secrets', fields };
+        }
+        const collection = COLLECTIONS.find(([, directory]) => relativePath.startsWith(`${directory}/`));
+        if (collection) {
+            const [legacyName, directory] = collection;
+            const appIndex = (index.collections?.[legacyName] || [])
+                .findIndex(id => toPosix(repository.collectionItemPath(directory, id)) === relativePath);
+            const app = appIndex >= 0 ? appDb?.[legacyName]?.[appIndex] : undefined;
+            return {
+                ...base, kind: COLLECTION_KINDS[legacyName],
+                name: external?.name || app?.name || path.posix.basename(relativePath, '.json'),
+                fields: app && external ? diffFields(app, external) : [],
+            };
+        }
+        const owner = owners.find(candidate => relativePath.startsWith(`${candidate.directory}/`));
+        if (owner) {
+            const character = appDb?.characters?.find(item => item.chaId === owner.id);
+            const characterName = character?.name || owner.id;
+            if (relativePath === `${owner.directory}/metadata.json` || relativePath === `${owner.directory}/package.json`) {
+                return { ...base, kind: 'character', name: characterName };
+            }
+            // A chat is its metadata plus messages; list the chat once.
+            const chatDirectory = path.posix.dirname(relativePath);
+            const metadata = readEdited(dataRoot, `${chatDirectory}/metadata.json`, { all: true });
+            const chatName = metadata?.value?.name || path.posix.basename(chatDirectory);
+            return { ...base, id: chatDirectory, kind: 'chat', name: `${characterName} / ${chatName}` };
+        }
+        return { ...base, kind: 'file' };
     }
 
     function compare(revision, appDb, files) {
@@ -175,10 +277,17 @@ function createExternalChangeReview({ repository, dataRoot }) {
     }
 
     // Keep a copy of discarded external files before the app version replaces them.
+    const reviewedPaths = review => [...new Set([
+        ...review.files.characters.map(file => file.path),
+        ...review.files.lorebooks.map(file => file.path),
+        ...(review.paths || []),
+    ])];
+
     function backup(review) {
         const stamp = new Date().toISOString().replace(/[:.]/g, '-');
         const target = path.join(dataRoot, 'trash', `external-changes-${stamp}`);
-        for (const file of [...review.files.characters, ...review.files.lorebooks]) {
+        for (const relativePath of reviewedPaths(review)) {
+            const file = { path: relativePath };
             const source = path.join(dataRoot, file.path);
             if (!fs.existsSync(source)) continue;
             const destination = path.join(target, file.path);
@@ -191,8 +300,10 @@ function createExternalChangeReview({ repository, dataRoot }) {
     // The reviewed bytes become the transaction baseline, so the decided
     // version can replace them (the commit refuses to overwrite unseen edits).
     function acknowledge(review) {
-        for (const file of [...review.files.characters, ...review.files.lorebooks]) {
-            if (fs.existsSync(path.join(dataRoot, file.path))) refreshChecksum(dataRoot, file.path);
+        for (const relativePath of reviewedPaths(review)) {
+            const target = path.join(dataRoot, relativePath);
+            // Files without a sidecar (chat messages) have no checksum to refresh.
+            if (fs.existsSync(target) && fs.existsSync(`${target}.sha256`)) refreshChecksum(dataRoot, relativePath);
         }
     }
 
@@ -202,6 +313,7 @@ function createExternalChangeReview({ repository, dataRoot }) {
         changes: review.changes,
         errors: review.errors,
         hasDetails: review.changes.length > 0 || review.errors.length > 0,
+        reloadOnAccept: Boolean(review.reload),
     };
 
     return { inspect, applyExternal, backup, acknowledge, publicReview, clear: () => { cache = null; } };

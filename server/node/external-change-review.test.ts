@@ -134,3 +134,45 @@ test('acknowledging reviewed files lets the decided version replace them', () =>
         expect(fs.readFileSync(`${metadataFile}.sha256`, 'utf8').trim()).toBe(digest)
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
+
+test('every changed file is reviewed, with credentials masked', () => {
+    const { root, repository, review, db } = setup()
+    try {
+        const settingsFile = path.join(root, 'settings/app.json')
+        const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
+        fs.writeFileSync(settingsFile, JSON.stringify({ ...settings, customCSS: 'body {}' }))
+        fs.mkdirSync(path.join(root, 'secrets'), { recursive: true })
+        fs.writeFileSync(path.join(root, 'secrets/credentials.json'), JSON.stringify({ openAIKey: 'sk-new' }))
+        const chatDirectory = path.posix.join(repository.characterDirectoryPath('one').split(path.sep).join('/'), 'chats/chat-1')
+        const result = review.inspect('r6', db, [
+            { path: 'secrets/credentials.json', status: 'added' },
+            { path: 'settings/app.json', status: 'changed' },
+            { path: `${chatDirectory}/messages.jsonl`, status: 'changed' },
+            { path: `${chatDirectory}/metadata.json`, status: 'changed' },
+            { path: 'presets/new.json', status: 'removed' },
+        ])
+        expect(result.errors).toEqual([])
+        expect(result.changes.map((change: any) => change.kind)).toEqual(['secrets', 'settings', 'chat', 'preset'])
+        expect(result.changes[0].fields).toEqual([{ field: 'openAIKey', before: '', after: '••••••' }])
+        expect(JSON.stringify(result.changes)).not.toContain('sk-new')
+        expect(result.changes[1].fields.map((field: any) => field.field)).toEqual(['customCSS'])
+        expect(result.reload).toBe(true)
+        const backup = review.backup(result)
+        expect(fs.readFileSync(path.join(root, backup, 'settings/app.json'), 'utf8')).toContain('body {}')
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+})
+
+test('a checksum-consistent character rewrite listed as changed is still compared', () => {
+    const { root, review, db, metadataFile } = setup()
+    try {
+        const edited = JSON.parse(fs.readFileSync(metadataFile, 'utf8'))
+        edited.desc = 'tool edit'
+        const bytes = JSON.stringify(edited)
+        fs.writeFileSync(metadataFile, bytes)
+        fs.writeFileSync(`${metadataFile}.sha256`, require('node:crypto').createHash('sha256').update(bytes).digest('hex'))
+        const relative = path.relative(root, metadataFile).split(path.sep).join('/')
+        const result = review.inspect('r7', db, [{ path: relative, status: 'changed' }])
+        expect(result.changes.map((change: any) => change.kind)).toEqual(['character'])
+        expect(result.reload).toBe(false)
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+})

@@ -60,6 +60,8 @@ describe('canonical projection sync', () => {
         replaceCanonicalJson(dataRoot, 'presets/preset-1.json', preset)
 
         expect(sync.hasExternalChanges()).toBe(true)
+        // The rewrite refreshed its checksum, yet the review still sees which file changed.
+        expect(sync.changedFiles()).toEqual([{ path: 'presets/preset-1.json', status: 'changed' }])
         const changed = sync.loadExternalChanges()
         expect(changed?.database.botPresets[0].name).toBe('Externally edited')
         expect(acceptedRevision).toBe(initial.revision)

@@ -667,6 +667,10 @@ export async function saveDb() {
             try {
                 const result = await forageStorage.resolveExternalChanges(decision, pending.revision)
                 if (result.reload) {
+                    // The server now holds the external files. Stop every save
+                    // (the retry and the page-hide flush) so this tab's older
+                    // state cannot overwrite them before the page reloads.
+                    gotChannel = true
                     try { sessionStorage.setItem('risu-canonical-files-reload', '1') } catch {}
                     location.reload()
                     return

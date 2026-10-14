@@ -99,10 +99,12 @@ export interface ExternalLoreChange {
 }
 
 export interface ExternalEntityChange {
-    kind: 'character' | 'lorebook'
+    kind: 'character' | 'lorebook' | 'settings' | 'secrets' | 'preset' | 'module' | 'persona' | 'chat' | 'file'
     id: string
     name: string
     path: string
+    /** Set for files listed without a content comparison. */
+    status?: 'added' | 'removed' | 'changed'
     fields: ExternalChangeText[]
     lore: { added: ExternalLoreChange[], removed: ExternalLoreChange[], changed: ExternalLoreChange[] } | null
 }
@@ -112,6 +114,8 @@ export interface ExternalChangesPending {
     changes: ExternalEntityChange[]
     errors: { path: string, error: string }[]
     hasDetails: boolean
+    /** Accepting reloads every file and the page. */
+    reloadOnAccept?: boolean
 }
 
 export interface ExternalChangesResolution {

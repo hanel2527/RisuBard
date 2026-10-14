@@ -230,7 +230,8 @@ function createUserDataRepository(options = {}) {
         return relativePaths.map(value => value.split(path.sep).join('/')).sort();
     }
 
-    function sourceRevision(relativePaths = collectCanonicalSourcePaths()) {
+    // `files`, when given, collects each source's fingerprint by path.
+    function sourceRevision(relativePaths = collectCanonicalSourcePaths(), files = null) {
         const revision = crypto.createHash('sha256');
         for (const relativePath of relativePaths) {
             const target = resolveInside(dataRoot, relativePath);
@@ -239,7 +240,9 @@ function createUserDataRepository(options = {}) {
             const sidecar = fs.existsSync(checksumPath)
                 ? fs.readFileSync(checksumPath, 'utf8').trim()
                 : 'missing';
-            revision.update(`${relativePath}\0${stat.size}\0${stat.mtimeNs}\0${sidecar}\n`);
+            const line = `${relativePath}\0${stat.size}\0${stat.mtimeNs}\0${sidecar}`;
+            if (files) files[relativePath] = line;
+            revision.update(`${line}\n`);
         }
         return revision.digest('hex');
     }
@@ -267,11 +270,11 @@ function createUserDataRepository(options = {}) {
         });
     }
 
-    function getProjectionRevision() {
+    function getProjectionRevision(files = null) {
         const sources = collectCanonicalSourcePaths();
         if (sources.length === 0) return null;
         const revision = crypto.createHash('sha256');
-        revision.update(`sources\0${sourceRevision(sources)}\n`);
+        revision.update(`sources\0${sourceRevision(sources, files)}\n`);
         for (const relativePath of ['index/sidebar.json', 'index/sidebar.json.sha256']) {
             const target = resolveInside(dataRoot, relativePath);
             try {
@@ -1162,7 +1165,12 @@ function createUserDataRepository(options = {}) {
         commitUserMessage,
         exportLegacyDatabase,
         finalizeAssistantDraft,
-        getProjectionRevision,
+        getProjectionRevision: () => getProjectionRevision(),
+        // The revision plus a fingerprint for every canonical source file.
+        getProjectionFingerprints: () => {
+            const files = {};
+            return { revision: getProjectionRevision(files), files };
+        },
         importLegacyDatabase,
         inspectCharacterPackageOwnership: characterId => inspectCharacterPackageOwnership(exportLegacyDatabase(), stableId(characterId, 'character')),
         characterDirectoryStatus,
@@ -1187,4 +1195,4 @@ function createUserDataRepository(options = {}) {
     };
 }
 
-module.exports = { createUserDataRepository, stableId };
+module.exports = { createUserDataRepository, stableId, splitSecrets, COLLECTIONS };
