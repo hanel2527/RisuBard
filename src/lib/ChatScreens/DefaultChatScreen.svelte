@@ -62,6 +62,7 @@ import { isMobile } from 'src/ts/platform'
     import { observeChatScroll } from './observeChatScroll';
     import {
         captureChatScrollAnchor,
+        createChatScrollEndAnchor,
         restoreChatScrollAnchor,
         type ChatScrollAnchor,
     } from './chatScrollAnchor';
@@ -268,7 +269,8 @@ import { isMobile } from 'src/ts/platform'
     })
 
     function captureCurrentScrollAnchor() {
-        if (!DBState.db.preserveChatScrollPosition || !chatScrollContainer) return
+        // A chat being fetched again has no messages; keep the anchor for its return.
+        if (!DBState.db.preserveChatScrollPosition || !chatScrollContainer || !currentChatReady) return
         currentScrollAnchor = captureChatScrollAnchor(chatScrollContainer, paginationKey, currentChat.length)
     }
 
@@ -276,17 +278,23 @@ import { isMobile } from 'src/ts/platform'
         const container = chatScrollContainer
         const enabled = DBState.db.preserveChatScrollPosition
         const contextKey = paginationKey
-        void chatBounds.page
+        void chatPage
         if (!container || !enabled || !contextKey) return
 
         // Keep streaming changes out of this effect's dependencies.
         const observer = untrack(() => observeChatScroll(container, captureCurrentScrollAnchor, () => {
+            if (!currentChatReady) return
             if (!currentScrollAnchor) {
                 captureCurrentScrollAnchor()
                 return
             }
             const result = restoreChatScrollAnchor(container, currentScrollAnchor, paginationKey, currentChat.length)
-            if (result === 'context-changed' || result === 'missing' || result === 'new-message') {
+            if (result === 'new-message') {
+                // New messages re-render while empty. Capturing now would pin an
+                // older message and drag the view up once they fill in.
+                currentScrollAnchor = createChatScrollEndAnchor(paginationKey, currentChat.length)
+                restoreChatScrollAnchor(container, currentScrollAnchor, paginationKey, currentChat.length)
+            } else if (result === 'context-changed' || result === 'missing') {
                 captureCurrentScrollAnchor()
             }
         }))
@@ -329,6 +337,8 @@ import { isMobile } from 'src/ts/platform'
     }
 
     $effect(() => {
+        // While a chat is fetched its message list is empty. Keep the page until it returns.
+        if (currentChatSlot && !currentChatReady) return
         const nextKey = `${currentCharacter?.chaId ?? ''}/${currentChatSlot?.id ?? ''}`
         const messageCount = currentChat.length
         const nextPageCount = getChatPageCount(messageCount, chatPageSize)

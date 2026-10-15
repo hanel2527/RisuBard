@@ -7,6 +7,9 @@ export interface ChatScrollAnchor {
     messageCount: number
     offsetTop: number
     atLatest: boolean
+    // Keep the scroll end in view instead of a message. Used after a new
+    // message arrives at the latest position, while its layout is still settling.
+    followEnd?: boolean
     readingBlock?: {
         element: HTMLElement
         path: number[]
@@ -111,6 +114,17 @@ export function captureChatScrollAnchor(
     }
 }
 
+export function createChatScrollEndAnchor(contextKey: string, messageCount: number): ChatScrollAnchor {
+    return {
+        contextKey,
+        messageIndex: Math.max(0, messageCount - 1),
+        messageCount,
+        offsetTop: 0,
+        atLatest: true,
+        followEnd: true,
+    }
+}
+
 export function restoreChatScrollAnchor(
     container: HTMLElement,
     anchor: ChatScrollAnchor,
@@ -118,6 +132,15 @@ export function restoreChatScrollAnchor(
     messageCount: number,
 ): ChatScrollRestoreResult {
     if (anchor.contextKey !== contextKey) return 'context-changed'
+    if (anchor.followEnd) {
+        // A column-reverse chat ends at scrollTop 0.
+        const end = getComputedStyle(container).flexDirection === 'column-reverse'
+            ? 0
+            : container.scrollHeight - container.clientHeight
+        if (Math.abs(container.scrollTop - end) < MIN_CORRECTION_PX) return 'stable'
+        container.scrollTo({ top: end, behavior: 'instant' })
+        return 'restored'
+    }
     if (anchor.messageIndex >= messageCount) return 'missing'
     if (anchor.atLatest && messageCount > anchor.messageCount) return 'new-message'
 

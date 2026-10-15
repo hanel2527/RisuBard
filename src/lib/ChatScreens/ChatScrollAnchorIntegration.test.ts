@@ -13,6 +13,14 @@ describe('chat scroll anchor integration', () => {
         expect(source).toContain('DBState.db.preserveChatScrollPosition')
     })
 
+    test('follows the end after a new message and keeps the anchor while a chat is fetched', () => {
+        const source = read('src/lib/ChatScreens/DefaultChatScreen.svelte')
+
+        expect(source).toMatch(/result === 'new-message'\)[\s\S]{0,300}createChatScrollEndAnchor\(/)
+        expect(source).toMatch(/function captureCurrentScrollAnchor\(\) \{[\s\S]{0,200}!currentChatReady\) return/)
+        expect(source).toContain('if (currentChatSlot && !currentChatReady) return')
+    })
+
     test('exposes a default-on toggle in Accessibility > Scroll', () => {
         const database = read('src/ts/storage/database.svelte.ts')
         const settings = read('src/ts/setting/accessibilitySettingsData.ts')

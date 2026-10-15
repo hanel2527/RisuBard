@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest'
 import {
     captureChatScrollAnchor,
+    createChatScrollEndAnchor,
     restoreChatScrollAnchor,
 } from './chatScrollAnchor'
 
@@ -172,5 +173,17 @@ describe('chat scroll anchor', () => {
         expect(anchor?.atLatest).toBe(true)
         expect(restoreChatScrollAnchor(container, anchor!, 'character/chat', 11)).toBe('new-message')
         expect(container.scrollTo).not.toHaveBeenCalled()
+    })
+
+    test('keeps a reverse chat at its end while a new message lays out', () => {
+        const { container } = createChatLayout([{ index: 9, top: -400, bottom: 40 }], -855)
+        container.style.flexDirection = 'column-reverse'
+        const anchor = createChatScrollEndAnchor('character/chat', 11)
+
+        expect(restoreChatScrollAnchor(container, anchor, 'character/chat', 11)).toBe('restored')
+        expect(container.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: 'instant' })
+        container.scrollTop = 0
+        expect(restoreChatScrollAnchor(container, anchor, 'character/chat', 12)).toBe('stable')
+        expect(restoreChatScrollAnchor(container, anchor, 'character/other', 12)).toBe('context-changed')
     })
 })
