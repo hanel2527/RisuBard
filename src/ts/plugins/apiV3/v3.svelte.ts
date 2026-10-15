@@ -9,7 +9,8 @@ import { additionalChatMenu, additionalFloatingActionButtons, additionalHamburge
 import { findOwnedMenuIndex, makeFabLayoutKey } from "../floatingActionButtonLayout";
 import { v4 } from "uuid";
 import { sleep } from "src/ts/util";
-import { alertConfirm, alertError, alertNormal } from "src/ts/alert";
+import { alertConfirm, alertError, alertNormal, waitAlert } from "src/ts/alert";
+import { registerFullscreenPluginFrame, unregisterFullscreenPluginFrame, withPluginFramesBehindDialog } from "./pluginFrameLayer";
 import { language } from "src/lang";
 import { checkCharOrder, forageStorage, getFetchLogs } from "src/ts/globalApi.svelte";
 import { changeColorScheme, updateColorScheme, updateTextThemeAndCSS, type ColorScheme } from "src/ts/gui/colorscheme";
@@ -747,7 +748,7 @@ const getPluginPermission = async (pluginName: string, permissionDesc: PluginPer
             return false;
         }
         const permissionKey = permissionKeyOf(pluginName, permissionDesc);
-        const conf = await alertConfirm(alertTitle)
+        const conf = await withPluginFramesBehindDialog(() => alertConfirm(alertTitle))
         if(conf && pluginHash){
             permissionGivenPlugins.add(permissionKey);
             permissionDeniedPlugins.delete(permissionKey);
@@ -1249,7 +1250,7 @@ const makeRisuaiAPIV3 = (iframe:HTMLIFrameElement,plugin:RisuPlugin) => {
                     iframe.style.width = "100%";
                     iframe.style.height = "100%";
                     iframe.style.border = "none";
-                    iframe.style.zIndex = "1000";
+                    registerFullscreenPluginFrame(iframe);
                     break;
                 }
                 default: {
@@ -1259,6 +1260,7 @@ const makeRisuaiAPIV3 = (iframe:HTMLIFrameElement,plugin:RisuPlugin) => {
         },
         hideContainer: () => {
             iframe.style.setProperty('display', 'none', 'important');
+            unregisterFullscreenPluginFrame(iframe);
         },
         getRootDocument: async () => {
             const conf = await getPluginPermission(plugin.name, 'mainDom');
@@ -1502,13 +1504,15 @@ const makeRisuaiAPIV3 = (iframe:HTMLIFrameElement,plugin:RisuPlugin) => {
         },
 
         alert: (msg:string) => {
-            return alertNormal(msg)
+            alertNormal(msg)
+            void withPluginFramesBehindDialog(waitAlert)
         },
         alertConfirm: (msg:string) => {
-            return alertConfirm(msg)
+            return withPluginFramesBehindDialog(() => alertConfirm(msg))
         },
         alertError: (msg:string) => {
-            return alertError(msg)
+            alertError(msg)
+            void withPluginFramesBehindDialog(waitAlert)
         },
         getRuntimeInfo: () => {
             return {

@@ -39,7 +39,9 @@ describe('application overlay layering', () => {
         expect(personaBuilder).toContain('contentClass="persona-builder-dialog z-[45]"')
         expect(loreBuilder).toContain('tier="alert"')
         expect(loreBuilder).not.toContain('tier="base"')
-        expect(pluginApi).toContain('iframe.style.zIndex = "1000"')
+        expect(pluginApi).toContain('registerFullscreenPluginFrame(iframe)')
+        expect(source('src/ts/plugins/apiV3/pluginFrameLayer.ts'))
+            .toContain("PLUGIN_FULLSCREEN_Z_INDEX = '1000'")
         expect(pluginApi).not.toContain('iframe.dataset.risuModalTier')
     })
 
