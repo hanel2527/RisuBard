@@ -178,8 +178,8 @@
     }
 
     function cloneGlobalPersonaToCharacter(): void {
-        const source = DBState.db.personas[DBState.db.selectedPersona]
-        if (!source || !currentCharacter) return
+        const source = editingPersona
+        if (activeScope !== 'global' || !source || !currentCharacter) return
         saveUserPersona()
         const characterPersonas = ensureCharacterPersonas(currentCharacter)
         const clone = clonePersonaToStore(source, characterPersonas, v4)
