@@ -100,6 +100,14 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
         keywords: ['response user messages', '응답 사용자 메시지'],
     },
     {
+        id: 'risubard.chat.cacheFriendlyContext',
+        type: 'check',
+        labelKey: 'risuBardCacheFriendlyContext',
+        helpKey: 'risuBardCacheFriendlyContext',
+        bindKey: 'risuBardCacheFriendlyContext',
+        keywords: ['cache', 'prompt caching', 'wiki memory', '캐시', '캐싱', '위키 기억', '프롬프트 순서'],
+    },
+    {
         id: 'risubard.common.wikiAnalysis',
         type: 'header',
         labelKey: 'risuBardWikiAnalysisSettings',

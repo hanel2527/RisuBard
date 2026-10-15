@@ -50,6 +50,7 @@ import {
     isNarrativeContextOptedIn,
     loadNarrativeInquiry,
     mergeNarrativeContextWithStaticPrompt,
+    insertBeforeLatestUserMessage,
     ensureNarrativeSessionChatId,
     normalizeNarrativeWorkingMessageLimit,
     selectPromptedNarrativeSources,
@@ -1659,6 +1660,8 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         selectedSourceIds: [],
         inquiryDurationMs: 0,
     }
+    const cacheFriendlyContext = DBState.db.risuBardCacheFriendlyContext === true
+    let cacheFriendlyNarrativeMessage: OpenAIChat | null = null
     if (isNarrativeContextOptedIn()) {
         narrativeContextObservation.mode = 'legacy'
         narrativeContextObservation.reason = 'current-state-unavailable'
@@ -1829,31 +1832,40 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                         performance.now() - inquiryStartedAt
                 }
             }
+            // Cache-friendly mode keeps the slow-changing baseline in the
+            // description slot and moves per-turn sources next to the latest
+            // user message, after the stable prompt prefix.
             const currentPrompt = narrativeContext.sourceChanged
                 ? null
                 : createNarrativeSourcesPrompt(
                     sources,
-                    narrativeContext.baseline ?? '',
+                    cacheFriendlyContext ? '' : narrativeContext.baseline ?? '',
                     undefined,
                     requiredWikiSources.length ? '' : responseWikiPromptGuide
                 )
-            if (currentPrompt) {
+            const baselinePrompt = cacheFriendlyContext
+                && !narrativeContext.sourceChanged
+                ? createNarrativeSourcesPrompt([], narrativeContext.baseline ?? '')
+                : null
+            if (currentPrompt || baselinePrompt) {
                 narrativeContextObservation.mode = 'current'
                 narrativeContextObservation.reason =
                     narrativeContextObservation.promptMode === 'v2-current'
                         ? 'v2-inquiry-injected'
                         : 'bounded-fallback-injected'
                 const baseline = narrativeContext.baseline?.trim() ?? ''
-                const requestStatusSources: RequestInjectionSource[] = []
-                if (baseline && currentPrompt.includes(baseline)) {
-                    requestStatusSources.push({
+                const baselineStatusSources: RequestInjectionSource[] = []
+                if (baseline && (baselinePrompt ?? currentPrompt ?? '').includes(baseline)) {
+                    baselineStatusSources.push({
                         kind: 'character',
                         name: currentChar.name,
                         role: 'system',
                         content: baseline,
                     })
                 }
-                if (responseWikiPromptGuide
+                const requestStatusSources: RequestInjectionSource[] =
+                    cacheFriendlyContext ? [] : baselineStatusSources
+                if (currentPrompt && responseWikiPromptGuide
                     && currentPrompt.includes(responseWikiPromptGuide)) {
                     requestStatusSources.push({
                         kind: 'wiki',
@@ -1864,7 +1876,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                 }
                 for (const source of selectPromptedNarrativeSources(
                     sources,
-                    currentPrompt
+                    currentPrompt ?? ''
                 )) {
                     requestStatusSources.push({
                         kind: source.id.includes(':wiki:') ? 'wiki' : 'memory',
@@ -1876,16 +1888,23 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                         content: source.content,
                     })
                 }
-                const currentContextMessage: OpenAIChat = {
-                    role: 'system',
-                    content: currentPrompt,
-                    requestStatusSources,
-                }
-                if (requestStatusSources.length === 0) {
+                const currentContextMessage: OpenAIChat | null = currentPrompt
+                    ? { role: 'system', content: currentPrompt, requestStatusSources }
+                    : null
+                if (currentContextMessage && requestStatusSources.length === 0) {
                     setRequestStatusSource(currentContextMessage, 'memory')
                 }
+                if (cacheFriendlyContext) {
+                    cacheFriendlyNarrativeMessage = currentContextMessage
+                }
+                const staticContextMessage: OpenAIChat | null = cacheFriendlyContext
+                    ? baselinePrompt
+                        ? { role: 'system', content: baselinePrompt, requestStatusSources: baselineStatusSources }
+                        : null
+                    : currentContextMessage
+                if (staticContextMessage) {
                 const mergedContext = mergeNarrativeContextWithStaticPrompt({
-                    currentContext: currentContextMessage,
+                    currentContext: staticContextMessage,
                     baseline,
                     baseDescription: baseDescriptionPrompt,
                     descriptionPrompts: unformated.description,
@@ -1896,6 +1915,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                 unformated.description = mergedContext.descriptionPrompts
                 afterDescriptionPrompts = mergedContext.afterDescriptionPrompts
                 lorepmt.actives = mergedContext.activeLorePrompts
+                }
             }
             }
         }
@@ -2024,6 +2044,10 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     let currentTokens = maxResponseTokens
     const requiredWikiMessage = createRequiredWikiMessage(requiredWikiSources, responseWikiPromptGuide)
     if (requiredWikiMessage) currentTokens += await tokenizer.tokenizeChat(requiredWikiMessage)
+    if (cacheFriendlyNarrativeMessage) currentTokens += await tokenizer.tokenizeChat(cacheFriendlyNarrativeMessage)
+    const cacheFriendlyWikiMessages = cacheFriendlyContext
+        ? [requiredWikiMessage, cacheFriendlyNarrativeMessage].filter((message) => message !== null)
+        : []
     let supaMemoryCardUsed = false
     
     //for unexpected error
@@ -2885,8 +2909,11 @@ export async function sendChat(chatProcessIndex = -1,arg:{
 
     // Inject after preset/script assembly, before the model's token check. This
     // survives optional retrieval failure and presets without a description block.
+    if (cacheFriendlyWikiMessages.length) {
+        formated = insertBeforeLatestUserMessage(formated, cacheFriendlyWikiMessages)
+    }
+    else if (requiredWikiMessage) formated.unshift(requiredWikiMessage)
     if (requiredWikiMessage) {
-        formated.unshift(requiredWikiMessage)
         if (narrativeContextObservation.mode !== 'current') narrativeContextObservation.reason = 'required-wiki-injected'
         narrativeContextObservation.mode = 'current'
         narrativeContextObservation.promptMode = 'v2-current'
@@ -2899,7 +2926,10 @@ export async function sendChat(chatProcessIndex = -1,arg:{
 
     if(requestSettings.promptInfoInsideChat && requestSettings.promptTextInfoInsideChat){
         promptBodyformatedForChatStore = await runLuaEditTrigger(currentChar, 'editRequest', promptBodyformatedForChatStore)
-        if (requiredWikiMessage) promptBodyformatedForChatStore.unshift(requiredWikiMessage)
+        if (cacheFriendlyWikiMessages.length) {
+            promptBodyformatedForChatStore = insertBeforeLatestUserMessage(promptBodyformatedForChatStore, cacheFriendlyWikiMessages)
+        }
+        else if (requiredWikiMessage) promptBodyformatedForChatStore.unshift(requiredWikiMessage)
         promptInfo.promptText = promptBodyformatedForChatStore
     }
 

@@ -3,6 +3,7 @@ import {
     createNarrativeSourcesPrompt,
     createNarrativeContextPrompt,
     mergeNarrativeContextWithStaticPrompt,
+    insertBeforeLatestUserMessage,
     isNarrativeContextOptedIn,
     loadNarrativeInquiry,
     ensureNarrativeSessionChatId,
@@ -12,6 +13,31 @@ import {
     selectNarrativeWorkingMessages,
     shouldIncludeNarrativeFirstMessage,
 } from './narrativeContext'
+
+describe('cache-friendly narrative placement', () => {
+    const memory = { role: 'system', content: 'memory' }
+    it('puts per-turn memory right before the latest user message', () => {
+        const messages = [
+            { role: 'system', content: 'preset' },
+            { role: 'user', content: 'old input' },
+            { role: 'assistant', content: 'old reply' },
+            { role: 'user', content: 'latest input' },
+            { role: 'system', content: 'post history' },
+        ]
+        expect(insertBeforeLatestUserMessage(messages, [memory]).map((message) => message.content))
+            .toEqual(['preset', 'old input', 'old reply', 'memory', 'latest input', 'post history'])
+        expect(messages).toHaveLength(5)
+    })
+    it('appends before a trailing prefill when chat history has no user role', () => {
+        const messages = [
+            { role: 'system', content: 'preset' },
+            { role: 'system', content: 'chat as system' },
+            { role: 'assistant', content: 'prefill' },
+        ]
+        expect(insertBeforeLatestUserMessage(messages, [memory]).map((message) => message.content))
+            .toEqual(['preset', 'chat as system', 'memory', 'prefill'])
+    })
+})
 
 describe('narrative context prompt composition', () => {
     it('keeps static character and active lore prompts beside native BardWiki context', () => {

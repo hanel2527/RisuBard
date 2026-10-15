@@ -971,6 +971,7 @@ export function setDatabase(data:Database){
             ? data.risuBardResponseExcludeUserMessages
             : data.risuBardResponseIncludeUserMessages === false
     data.risuBardHideOocTurns = data.risuBardHideOocTurns === true
+    data.risuBardCacheFriendlyContext = data.risuBardCacheFriendlyContext === true
     data.risuBardOocMarkdown = data.risuBardOocMarkdown !== false
     data.risuBardOocFontSize = typeof data.risuBardOocFontSize === 'number' && Number.isFinite(data.risuBardOocFontSize)
         ? Math.min(48, Math.max(8, data.risuBardOocFontSize)) : 14
@@ -1873,6 +1874,7 @@ export interface Database{
     risuBardResponseIncludeUserMessages?: boolean
     risuBardResponseExcludeUserMessages?: boolean
     risuBardHideOocTurns?: boolean
+    risuBardCacheFriendlyContext?: boolean
     risuBardOocMarkdown?: boolean
     risuBardOocFontSize?: number
     risuBardAnalysisExcludeUserMessages?: boolean

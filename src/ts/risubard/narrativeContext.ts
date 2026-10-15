@@ -551,6 +551,24 @@ export function createNarrativeSourcesPrompt(
     )
 }
 
+// Cache-friendly placement: the latest user turn is the first message that
+// changes every turn anyway, so per-turn memory placed just before it keeps
+// the preset, description, lorebook and earlier chat as a stable prefix.
+export function insertBeforeLatestUserMessage<Message extends { role: string }>(
+    messages: readonly Message[],
+    inserted: readonly Message[]
+): Message[] {
+    if (inserted.length === 0) return [...messages]
+    let at = messages.findLastIndex((message) => message.role === 'user')
+    // Chat sent as system has no user turn: append, but keep a trailing
+    // assistant prefill last.
+    if (at < 0) {
+        at = messages.length
+        while (at > 0 && messages[at - 1].role === 'assistant') at--
+    }
+    return [...messages.slice(0, at), ...inserted, ...messages.slice(at)]
+}
+
 export function mergeNarrativeContextWithStaticPrompt<
     DescriptionPrompt,
     LorePrompt,
