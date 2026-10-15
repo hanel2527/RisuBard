@@ -8,16 +8,19 @@ import {
     buildAssistantScopes,
     buildCharacterAssistantMessages,
     CHARACTER_ASSISTANT_MAX_PINS,
+    CHARACTER_ASSISTANT_FINAL_ROUND_NOTE,
     CHARACTER_ASSISTANT_SYSTEM_PROMPT,
     collectMentionNames,
     findSection,
     findSectionMentions,
     formatMaterial,
     formatScopeIndex,
+    isPinCovered,
     normalizeCharacterAssistantProject,
     parseAssistantLookups,
     resolveSectionRef,
     searchSections,
+    sectionLineCounter,
     stripAssistantLookups,
     type AssistantCharacterSource,
 } from './characterAssistant'
@@ -107,9 +110,26 @@ describe('lookups', () => {
         expect(stripAssistantLookups(text)).toBe('자료가 필요하다.')
     })
 
-    it('replaces pins of the same ref and keeps the newest within the cap', () => {
-        const pins = addPins([{ ref: 'a' }, { ref: 'b' }], [{ ref: 'a', lines: [1, 2] }])
-        expect(pins).toEqual([{ ref: 'b' }, { ref: 'a', lines: [1, 2] }])
+    it('merges ranges of the same ref instead of dropping what was read', () => {
+        const scopes = buildAssistantScopes({ bot })
+        const count = sectionLineCounter(scopes)
+        expect(addPins([{ ref: 'a' }, { ref: 'b' }], [{ ref: 'a', lines: [1, 2] }])).toEqual([{ ref: 'b' }, { ref: 'a' }])
+        const lua = addPins([{ ref: 'bot:field:lua' }], [{ ref: 'bot:field:lua', lines: [301, 999] }], count)
+        expect(lua).toEqual([{ ref: 'bot:field:lua', lines: [1, 400] }])
+        const apart = addPins([{ ref: 'bot:field:lua', lines: [320, 370] }], [{ ref: 'bot:field:lua', lines: [10, 20] }], count)
+        expect(apart).toEqual([{ ref: 'bot:field:lua', lines: [10, 20] }, { ref: 'bot:field:lua', lines: [320, 370] }])
+        expect(addPins([], [{ ref: 'bot:field:lua', lines: [1, 5000] }], count)).toEqual([{ ref: 'bot:field:lua' }])
+    })
+
+    it('knows when a read is already covered', () => {
+        const count = sectionLineCounter(buildAssistantScopes({ bot }))
+        expect(isPinCovered([{ ref: 'bot:field:lua' }], { ref: 'bot:field:lua', lines: [10, 20] }, count)).toBe(true)
+        expect(isPinCovered([{ ref: 'bot:field:lua' }], { ref: 'bot:field:lua', lines: [290, 310] }, count)).toBe(false)
+        expect(isPinCovered([{ ref: 'bot:lore:3' }], { ref: 'bot:lore:3' }, count)).toBe(true)
+        expect(isPinCovered([], { ref: 'bot:lore:3' }, count)).toBe(false)
+    })
+
+    it('keeps the newest pins within the cap', () => {
         const many = addPins([], Array.from({ length: CHARACTER_ASSISTANT_MAX_PINS + 5 }, (_, i) => ({ ref: `r${i}` })))
         expect(many).toHaveLength(CHARACTER_ASSISTANT_MAX_PINS)
         expect(many[0].ref).toBe('r5')
@@ -156,6 +176,13 @@ describe('request', () => {
             { role: 'user', content: '질문' },
             { role: 'user', content: '다음 질문' },
         ])
+    })
+
+    it('tells the model to answer on the final round', () => {
+        const messages = buildCharacterAssistantMessages({ indexes: [], materials: [], lookups: [], history: [], userText: '질문', finalRound: true })
+        expect(messages.at(-1)).toEqual({ role: 'user', content: `질문
+
+${CHARACTER_ASSISTANT_FINAL_ROUND_NOTE}` })
     })
 })
 

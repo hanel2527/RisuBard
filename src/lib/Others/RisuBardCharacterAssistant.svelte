@@ -7,6 +7,7 @@
         ArrowLeftIcon,
         BotIcon,
         CheckIcon,
+        DownloadIcon,
         ExternalLinkIcon,
         ListPlusIcon,
         LoaderCircleIcon,
@@ -23,6 +24,9 @@
         XIcon,
     } from '@lucide/svelte'
     import ShButton from 'src/lib/UI/GUI/ShButton.svelte'
+    import AssistantMessageActions from 'src/lib/Others/AssistantMessageActions.svelte'
+    import { copyAssistantText } from 'src/ts/risubard/assistantChat'
+    import { downloadFile } from 'src/ts/globalApi.svelte'
     import {
         botMakerMode,
         CharConfigSubMenu,
@@ -39,13 +43,28 @@
     import { alertConfirm } from 'src/ts/alert'
     import { tokenize } from 'src/ts/tokenizer'
     import { changeChar } from 'src/ts/characters'
+    import { requestImmediateSave } from 'src/ts/globalApi.svelte'
+    import {
+        applyAssistantEdit,
+        EDIT_STATUS_NAMES,
+        isRevertConflict,
+        prepareAssistantEdits,
+        readAssistantEditSlot,
+        revertAssistantEdit,
+        stripAssistantEdits,
+        type AssistantEdit,
+    } from 'src/ts/risubard/characterAssistantEdits'
+    import { v4 } from 'uuid'
     import { markStrongForCjk, STRONG_CLOSE_MARK, STRONG_OPEN_MARK } from 'src/ts/risubard/promptAssistant'
     import {
         addPins,
+        sectionLineCounter,
         buildAssistantScopes,
         clampAssistantChatCount,
         CHARACTER_ASSISTANT_MAX_CHAT_MESSAGES,
         CHARACTER_FIELDS,
+        characterAssistantExportFileName,
+        formatCharacterAssistantMarkdown,
         collectMentionNames,
         findSection,
         findSectionMentions,
@@ -55,6 +74,7 @@
         type AssistantScope,
         type AssistantSection,
         type CharacterAssistantIndex,
+        type CharacterAssistantMessage,
         type CharacterAssistantModel,
         type CharacterAssistantProject,
     } from 'src/ts/risubard/characterAssistant'
@@ -65,6 +85,7 @@
         deleteCharacterAssistantProject,
         describeCharacterAssistantMaterial,
         findAssistantCharacter,
+        forkCharacterAssistantProject,
         listAssistantCharacters,
         loadCharacterAssistantIndex,
         loadCharacterAssistantProject,
@@ -380,7 +401,7 @@
     function togglePin(ref: string) {
         if (!project) return
         if (project.pins.some((pin) => pin.ref === ref)) project.pins = project.pins.filter((pin) => pin.ref !== ref)
-        else project.pins = addPins(project.pins, [{ ref }])
+        else project.pins = addPins(project.pins, [{ ref }], sectionLineCounter(scopes))
         void persist()
     }
 
@@ -474,26 +495,10 @@
         stopFollowingAnchor = stop
     }
 
-    async function copyText(text: string) {
-        if (navigator.clipboard && window.isSecureContext) {
-            await navigator.clipboard.writeText(text)
-            return
-        }
-        const area = document.createElement('textarea')
-        area.value = text
-        area.style.position = 'fixed'
-        area.style.opacity = '0'
-        document.body.appendChild(area)
-        area.select()
-        const copied = document.execCommand('copy')
-        area.remove()
-        if (!copied) throw new Error('copy failed')
-    }
-
     async function copyWithFeedback(button: HTMLButtonElement, text: string) {
         const original = button.textContent
         let label = '복사됨'
-        try { await copyText(text) }
+        try { await copyAssistantText(text) }
         catch { label = '복사 실패' }
         button.textContent = label
         button.dataset.state = label === '복사됨' ? 'done' : 'failed'
@@ -624,6 +629,46 @@
         void persist()
     }
 
+    async function forkFrom(message: CharacterAssistantMessage) {
+        if (!project || running) return
+        const fork = forkCharacterAssistantProject($state.snapshot(project) as CharacterAssistantProject, message.id)
+        if (!fork) return
+        saveScrollNow()
+        try {
+            index = await saveCharacterAssistantProject(fork.project, index)
+            project = fork.project
+            formMode = 'none'
+            closePanel()
+            draft = fork.draft
+            notice = `'${fork.project.name}' 프로젝트를 만들었습니다.`
+            await restoreScroll()
+            if (fork.draft) inputElement?.focus()
+        }
+        catch (cause) {
+            notice = `포크하지 못했습니다. ${errorText(cause)}`
+        }
+    }
+
+    async function deleteMessage(message: CharacterAssistantMessage) {
+        if (!project || running) return
+        const label = message.role === 'user' ? '질문' : '답변'
+        if (!await alertConfirm(`이 ${label}을 삭제할까요? 되돌릴 수 없습니다.`)) return
+        project.messages = project.messages.filter((item) => item.id !== message.id)
+        await persist()
+    }
+
+    async function exportConversation() {
+        if (!project || project.messages.length === 0) return
+        const savedAt = new Date()
+        const snapshot = $state.snapshot(project) as CharacterAssistantProject
+        try {
+            await downloadFile(characterAssistantExportFileName(snapshot.name, savedAt), formatCharacterAssistantMarkdown(snapshot, target?.name ?? snapshot.characterName, savedAt))
+        }
+        catch (cause) {
+            notice = `저장하지 못했습니다. ${errorText(cause)}`
+        }
+    }
+
     async function scrollToEnd() {
         await tick()
         logElement?.scrollTo({ top: logElement.scrollHeight })
@@ -671,12 +716,13 @@
             })
             current.pins = result.pins
             const refNames = collectMentionNames(buildAssistantScopes(source), result.reply, current.includePreset)
-            const extra = { refNames, lookups: result.lookups.length > 0 ? result.lookups : undefined }
+            const edits = prepareAssistantEdits(source.bot, result.edits, v4)
+            const extra = { refNames, lookups: result.lookups.length > 0 ? result.lookups : undefined, edits: edits.length > 0 ? edits : undefined }
             if (signal.aborted) {
                 if (result.reply.trim()) current.messages.push(createCharacterAssistantMessage('assistant', result.reply, extra))
                 notice = '응답을 중단했습니다.'
             }
-            else if (!result.reply.trim()) {
+            else if (!result.reply.trim() && edits.length === 0) {
                 current.messages.push(createCharacterAssistantMessage('assistant', result.stalled
                     ? '비서가 자료만 요청하고 답하지 못했습니다. 목차에 없는 자료를 찾았거나 요청 횟수를 넘었을 수 있습니다. 질문을 좁혀 다시 보내 주세요.'
                     : '빈 응답을 받았습니다.', { failed: true }))
@@ -699,6 +745,50 @@
                 await scrollToEnd()
             }
         }
+    }
+
+    function editTarget() {
+        return project ? findAssistantCharacter(project.characterId)?.character : undefined
+    }
+
+    function replaceEdit(message: CharacterAssistantMessage, next: AssistantEdit) {
+        message.edits = message.edits?.map((edit) => edit.id === next.id ? next : edit)
+    }
+
+    async function applyEdits(message: CharacterAssistantMessage, edits: AssistantEdit[]) {
+        const bot = editTarget()
+        if (running) return
+        if (!bot) {
+            notice = '이 프로젝트의 봇을 찾지 못했습니다.'
+            return
+        }
+        for (const edit of edits) replaceEdit(message, applyAssistantEdit(bot, $state.snapshot(edit) as AssistantEdit))
+        void requestImmediateSave()
+        await persist()
+    }
+
+    async function skipEdit(message: CharacterAssistantMessage, edit: AssistantEdit) {
+        replaceEdit(message, { ...($state.snapshot(edit) as AssistantEdit), status: 'skipped', error: undefined })
+        await persist()
+    }
+
+    async function revertEdit(message: CharacterAssistantMessage, edit: AssistantEdit) {
+        const bot = editTarget()
+        if (!bot || running) return
+        let next = revertAssistantEdit(bot, $state.snapshot(edit) as AssistantEdit)
+        if (isRevertConflict(next) && await alertConfirm('적용한 뒤 이 칸이 다시 바뀌었습니다. 그 뒤의 변경을 버리고 적용하기 전으로 되돌릴까요?')) {
+            next = revertAssistantEdit(bot, $state.snapshot(edit) as AssistantEdit, true)
+        }
+        replaceEdit(message, next)
+        void requestImmediateSave()
+        await persist()
+    }
+
+    /** The slot as it is now, for whole-slot edits that show before and after. */
+    function editNow(edit: AssistantEdit): string | null {
+        void DBState.db.characters
+        const bot = editTarget()
+        return bot ? readAssistantEditSlot(bot, edit) : null
     }
 
     function retry() {
@@ -824,6 +914,7 @@
                     </select>
                     <button class="icon-button" type="button" aria-label="새 프로젝트" title="새 프로젝트" disabled={running} onclick={startCreate}><PlusIcon size={16} /></button>
                     <button class="icon-button" type="button" aria-label="프로젝트 이름 바꾸기" title="이름 바꾸기" disabled={running} onclick={startRename}><PencilIcon size={15} /></button>
+                    <button class="icon-button" type="button" aria-label="전체 챗 저장" title="전체 챗을 Markdown 파일로 저장" disabled={project.messages.length === 0} onclick={() => void exportConversation()} data-character-assistant-export><DownloadIcon size={15} /></button>
                     <button class="icon-button danger" type="button" aria-label="프로젝트 삭제" title="프로젝트 삭제" disabled={running} onclick={() => void removeProject()}><TrashIcon size={15} /></button>
                 </div>
 
@@ -1022,7 +1113,7 @@
         {:else if project.messages.length === 0 && !running}
             <div class="empty">
                 <p class="empty-lead">봇에서 다듬고 싶은 부분을 말해 주세요.</p>
-                <p>비서는 <b>{target?.name ?? '대상 봇'}</b>의 목차만 먼저 보고, 질문에 필요한 필드와 로어북, 정규식, 트리거만 골라 읽습니다. 읽은 자료는 위의 재료에 남고, 직접 넣거나 뺄 수도 있습니다. 봇의 내용은 비서의 지시로 쓰이지 않으며, 수정은 직접 반영합니다.</p>
+                <p>비서는 <b>{target?.name ?? '대상 봇'}</b>의 목차만 먼저 보고, 질문에 필요한 필드와 로어북, 정규식, 트리거만 골라 읽습니다. 읽은 자료는 위의 재료에 남고, 직접 넣거나 뺄 수도 있습니다. 봇의 내용은 비서의 지시로 쓰이지 않습니다. 비서가 고칠 곳을 찾으면 수정 카드로 보여 주고, 적용 여부는 카드에서 직접 정합니다. 적용한 수정은 되돌릴 수 있습니다.</p>
                 <div class="examples">
                     {#each examples as example}
                         <button type="button" onclick={() => void useExample(example)}>{example}</button>
@@ -1039,12 +1130,79 @@
                         {/if}
                     </header>
                     {#if message.role === 'assistant' && !message.failed}
-                        <div class="markdown">{@html renderMarkdown(message.text)}</div>
+                        {#if message.text.trim()}
+                            <div class="markdown">{@html renderMarkdown(message.text)}</div>
+                        {/if}
+                        {#if message.edits?.length}
+                            {@const open = message.edits.filter((edit) => edit.status === 'pending')}
+                            <section class="edit-cards" aria-label="수정 제안" data-character-assistant-edits>
+                                <header class="edit-cards-head">
+                                    <span>수정 제안 {message.edits.length}개</span>
+                                    {#if open.length > 1}
+                                        <button type="button" class="edit-button primary" disabled={running} onclick={() => void applyEdits(message, open)} data-edit-apply-all>
+                                            <CheckIcon size={13} /> 남은 {open.length}개 모두 적용
+                                        </button>
+                                    {/if}
+                                </header>
+                                {#each message.edits as edit (edit.id)}
+                                    {@const whole = edit.find === undefined}
+                                    {@const now = whole && edit.status !== 'applied' && edit.status !== 'failed' ? editNow(edit) : null}
+                                    <div class="edit-card" data-status={edit.status} data-edit-id={edit.id}>
+                                        <div class="edit-card-head">
+                                            <button type="button" class="edit-target" data-section-ref={edit.ref} title={OPEN_TITLE}>{edit.label.replaceAll('`', '')}</button>
+                                            <span class="edit-status">{EDIT_STATUS_NAMES[edit.status]}</span>
+                                        </div>
+                                        <div class="edit-diff">
+                                            {#if whole}
+                                                {#if now !== null}
+                                                    <span class="edit-caption">지금</span>
+                                                    <pre class="before">{now || '(비어 있음)'}</pre>
+                                                {/if}
+                                                <span class="edit-caption">{now !== null ? '바꾼 뒤' : '칸 전체를 이 내용으로'}</span>
+                                            {:else}
+                                                <span class="edit-caption">찾을 부분</span>
+                                                <pre class="before">{edit.find}</pre>
+                                                <span class="edit-caption">바꿀 내용</span>
+                                            {/if}
+                                            <pre class="after">{edit.replace || '(비움)'}</pre>
+                                        </div>
+                                        {#if edit.error}
+                                            <p class="edit-error">{edit.error}</p>
+                                        {/if}
+                                        {#if edit.status !== 'failed'}
+                                            <div class="edit-actions">
+                                                {#if edit.status === 'applied'}
+                                                    <button type="button" class="edit-button" disabled={running} onclick={() => void revertEdit(message, edit)} data-edit-revert>
+                                                        <RotateCcwIcon size={13} /> 되돌리기
+                                                    </button>
+                                                {:else}
+                                                    <button type="button" class="edit-button primary" disabled={running} onclick={() => void applyEdits(message, [edit])} data-edit-apply>
+                                                        <CheckIcon size={13} /> {edit.status === 'pending' ? '적용' : '다시 적용'}
+                                                    </button>
+                                                    {#if edit.status === 'pending'}
+                                                        <button type="button" class="edit-button" disabled={running} onclick={() => void skipEdit(message, edit)} data-edit-skip>
+                                                            <XIcon size={13} /> 건너뛰기
+                                                        </button>
+                                                    {/if}
+                                                {/if}
+                                            </div>
+                                        {/if}
+                                    </div>
+                                {/each}
+                            </section>
+                        {/if}
                     {:else if message.failed}
                         <p class="body">응답 실패: {message.text}</p>
                     {:else}
                         <p class="body">{message.text}</p>
                     {/if}
+                    <AssistantMessageActions
+                        {message}
+                        busy={running}
+                        onFork={(item) => void forkFrom(item as CharacterAssistantMessage)}
+                        onDelete={(item) => void deleteMessage(item as CharacterAssistantMessage)}
+                        onCopyFailed={() => { notice = '복사하지 못했습니다.' }}
+                    />
                 </article>
             {/each}
             {#if running}
@@ -1058,7 +1216,10 @@
                         </ul>
                     {/if}
                     {#if streamingText && !/^\s*<(read|search)\b/i.test(streamingText)}
-                        <div class="markdown">{@html renderMarkdown(streamingText)}</div>
+                        <div class="markdown">{@html renderMarkdown(stripAssistantEdits(streamingText))}</div>
+                        {#if /<edit\b/i.test(streamingText)}
+                            <p class="body waiting"><LoaderCircleIcon class="animate-spin" size={14} /> 수정 제안을 쓰는 중입니다.</p>
+                        {/if}
                     {:else}
                         <p class="body waiting"><LoaderCircleIcon class="animate-spin" size={14} /> {lookupStatus.length > 0 ? '읽은 자료로 다시 생각하는 중입니다.' : '목차를 살펴보는 중입니다.'}</p>
                     {/if}
@@ -1501,6 +1662,91 @@
     .markdown :global(a) { color: var(--risu-theme-primary); text-decoration: underline; text-underline-offset: .15em; }
     .markdown :global(table) { border-collapse: collapse; font-size: .76rem; }
     .markdown :global(:where(th, td)) { padding: .3rem .5rem; border: 1px solid var(--risu-theme-darkborderc); }
+
+    .edit-cards { display: grid; gap: .5rem; min-width: 0; }
+    .edit-cards-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: .4rem;
+        color: var(--risu-theme-textcolor2);
+        font-size: .7rem;
+        font-weight: 700;
+    }
+    .edit-card {
+        display: grid;
+        gap: .45rem;
+        min-width: 0;
+        padding: .6rem .65rem;
+        border: 1px solid var(--pa-line);
+        border-radius: .5rem;
+        background: color-mix(in srgb, var(--risu-theme-darkbg) 86%, var(--color-bgcolor));
+    }
+    .edit-card[data-status='applied'] { border-color: color-mix(in srgb, var(--risu-theme-primary) 60%, var(--risu-theme-darkborderc)); }
+    .edit-card[data-status='failed'] { border-color: color-mix(in srgb, var(--risu-theme-draculared) 55%, var(--risu-theme-darkborderc)); }
+    .edit-card:is([data-status='skipped'], [data-status='reverted']) .edit-diff { opacity: .6; }
+    .edit-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; min-width: 0; }
+    .edit-target {
+        min-width: 0;
+        padding: 0;
+        border: 0;
+        color: var(--risu-theme-primary);
+        background: none;
+        font-size: .76rem;
+        font-weight: 700;
+        text-align: left;
+        overflow-wrap: anywhere;
+        cursor: pointer;
+    }
+    .edit-target:hover, .edit-target:focus-visible { text-decoration: underline; outline: 0; }
+    .edit-status { flex: none; color: var(--risu-theme-textcolor2); font-size: .66rem; }
+    .edit-card[data-status='applied'] .edit-status { color: var(--risu-theme-primary); font-weight: 700; }
+    .edit-card[data-status='failed'] .edit-status { color: var(--risu-theme-draculared); font-weight: 700; }
+    .edit-diff { display: grid; gap: .25rem; min-width: 0; }
+    .edit-caption { color: var(--risu-theme-textcolor2); font-size: .64rem; font-weight: 600; }
+    .edit-diff pre {
+        max-height: 14rem;
+        margin: 0;
+        overflow: auto;
+        padding: .45rem .55rem;
+        border-left: 3px solid;
+        border-radius: .3rem;
+        font: .72rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+    }
+    .edit-diff .before {
+        border-color: color-mix(in srgb, var(--risu-theme-draculared) 70%, transparent);
+        background: color-mix(in srgb, var(--risu-theme-draculared) 8%, transparent);
+    }
+    .edit-diff .after {
+        border-color: var(--risu-theme-primary);
+        background: color-mix(in srgb, var(--risu-theme-primary) 9%, transparent);
+    }
+    .edit-error { margin: 0; color: var(--risu-theme-draculared); font-size: .7rem; line-height: 1.45; }
+    .edit-actions { display: flex; flex-wrap: wrap; gap: .35rem; }
+    .edit-button {
+        display: inline-flex;
+        align-items: center;
+        gap: .3rem;
+        min-height: 1.85rem;
+        padding: 0 .65rem;
+        border: 1px solid var(--pa-line);
+        border-radius: .35rem;
+        color: var(--risu-theme-textcolor);
+        background: transparent;
+        font-size: .72rem;
+        font-weight: 600;
+        cursor: pointer;
+    }
+    .edit-button.primary {
+        border-color: var(--risu-theme-primary);
+        color: var(--risu-theme-primary);
+        background: color-mix(in srgb, var(--risu-theme-primary) 10%, transparent);
+    }
+    .edit-button:hover:not(:disabled), .edit-button:focus-visible { border-color: var(--risu-theme-primary); color: var(--risu-theme-primary); outline: 0; }
+    .edit-button:disabled { opacity: .5; cursor: default; }
 
     .composer {
         display: grid;

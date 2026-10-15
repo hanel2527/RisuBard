@@ -6,6 +6,8 @@
 
 import type { PromptItem } from '../process/prompt'
 import { BLOCK_REFERENCE_PATTERN, serializeBlock, type PromptAssistantModel } from './promptAssistant'
+import { assistantExportFileName, formatAssistantMarkdown, formatAssistantTimestamp } from './assistantChat'
+import { characterAssistantEditGuide, EDIT_STATUS_NAMES, formatEditResults, normalizeAssistantEdits, type AssistantEdit } from './characterAssistantEdits'
 
 export type CharacterAssistantModel = PromptAssistantModel
 
@@ -433,6 +435,7 @@ export function pinKey(pin: AssistantPin): string {
     return pin.lines ? `${pin.ref}#${pin.lines[0]}-${pin.lines[1]}` : pin.ref
 }
 
+/** A pin's explicit range is honored in full: addPins already capped each read it merged. */
 export function formatMaterial(section: AssistantSection, lines?: [number, number]): string {
     const all = section.text.split('\n')
     const numbered = all.length > NUMBERED_LINES_FROM
@@ -442,7 +445,7 @@ export function formatMaterial(section: AssistantSection, lines?: [number, numbe
         start = Math.max(1, Math.min(lines[0], all.length))
         end = Math.max(start, Math.min(lines[1], all.length))
     }
-    if (end - start + 1 > MATERIAL_MAX_LINES) end = start + MATERIAL_MAX_LINES - 1
+    else if (end > MATERIAL_MAX_LINES) end = MATERIAL_MAX_LINES
     const body = all.slice(start - 1, end).map((line, index) => numbered ? `${start + index}| ${line}` : line).join('\n')
     const range = numbered ? ` lines="${start}-${end}" total_lines="${all.length}"` : ''
     const more = end < all.length ? `\n[${end + 1}줄부터 ${all.length}줄까지 남음. <read ref="${section.ref}" lines="${end + 1}-${Math.min(all.length, end + MATERIAL_MAX_LINES)}" />로 이어 읽는다.]` : ''
@@ -570,6 +573,8 @@ export interface CharacterAssistantMessage {
     lookups?: string[]
     /** Item names by ref for sections this reply mentions. */
     refNames?: Record<string, string>
+    /** Changes this reply proposed with <edit> tags, and what the user did with them. */
+    edits?: AssistantEdit[]
 }
 
 export interface CharacterAssistantProject {
@@ -605,7 +610,7 @@ export interface CharacterAssistantIndex {
 
 export const CHARACTER_ASSISTANT_MAX_PINS = 40
 export const CHARACTER_ASSISTANT_MAX_CHAT_MESSAGES = 200
-export const CHARACTER_ASSISTANT_MAX_LOOKUP_ROUNDS = 4
+export const CHARACTER_ASSISTANT_MAX_LOOKUP_ROUNDS = 6
 
 export function clampAssistantChatCount(value: unknown): number {
     const number = Math.floor(Number(value))
@@ -658,6 +663,9 @@ export function normalizeCharacterAssistantProject(value: unknown): CharacterAss
     for (const message of messages) {
         if (message.refNames && typeof message.refNames !== 'object') delete message.refNames
         if (message.lookups && !Array.isArray(message.lookups)) delete message.lookups
+        const edits = normalizeAssistantEdits(message.edits)
+        if (edits) message.edits = edits
+        else delete message.edits
     }
     return {
         version: 1,
@@ -692,12 +700,74 @@ export function summarizeCharacterAssistantProject(project: CharacterAssistantPr
     return { id: project.id, name: project.name, characterId: project.characterId, updatedAt: project.updatedAt }
 }
 
-/** Adds pins, replacing an existing pin of the same ref, and drops the oldest past the cap. */
-export function addPins(pins: AssistantPin[], added: AssistantPin[]): AssistantPin[] {
+export function characterAssistantExportFileName(projectName: string, date: Date): string {
+    return assistantExportFileName('캐릭터 비서', projectName, date)
+}
+
+/** The whole conversation as Markdown, noting the material each reply read. */
+export function formatCharacterAssistantMarkdown(project: CharacterAssistantProject, botName: string, savedAt: Date): string {
+    return formatAssistantMarkdown({
+        title: project.name,
+        facts: [`- 봇: ${botName}`, `- 저장: ${formatAssistantTimestamp(savedAt)}`, `- 메시지: ${project.messages.length}개`],
+        messages: project.messages,
+        note: (message) => [
+            message.lookups?.length ? `읽은 자료: ${message.lookups.join(', ').replaceAll('`', '')}` : '',
+            message.edits?.length ? `수정 제안: ${message.edits.map((edit) => `${edit.label.replaceAll('`', '')} (${EDIT_STATUS_NAMES[edit.status]})`).join(', ')}` : '',
+        ].filter(Boolean).join('\n'),
+    })
+}
+
+/** Line count of a section by ref, so pins can tell what a range-less pin shows. */
+export type SectionLineCount = (ref: string) => number
+
+const UNKNOWN_LINES: SectionLineCount = () => Number.MAX_SAFE_INTEGER
+
+export function sectionLineCounter(scopes: AssistantScope[]): SectionLineCount {
+    return (ref) => findSection(scopes, ref)?.text.split('\n').length ?? Number.MAX_SAFE_INTEGER
+}
+
+/** The lines a pin puts in front of the model; a range-less pin shows the first page. */
+function pinRange(pin: AssistantPin, total: number): [number, number] {
+    if (!pin.lines) return [1, Math.min(total, MATERIAL_MAX_LINES)]
+    const start = Math.max(1, Math.min(pin.lines[0], total))
+    return [start, Math.max(start, Math.min(pin.lines[1], total))]
+}
+
+/** True when the pins already show every line the pin asks for. */
+export function isPinCovered(pins: AssistantPin[], pin: AssistantPin, lineCount: SectionLineCount = UNKNOWN_LINES): boolean {
+    const total = lineCount(pin.ref)
+    const [start, end] = pinRange(pin, total)
+    return pins.some((item) => {
+        if (item.ref !== pin.ref) return false
+        const range = pinRange(item, total)
+        return range[0] <= start && range[1] >= end
+    })
+}
+
+/**
+ * Adds pins and merges ranges of the same ref, so reading another part of a
+ * long section keeps the part already read. Each new read is capped at one
+ * page; the oldest pins drop past the cap.
+ */
+export function addPins(pins: AssistantPin[], added: AssistantPin[], lineCount: SectionLineCount = UNKNOWN_LINES): AssistantPin[] {
     let next = [...pins]
     for (const pin of added) {
+        const total = lineCount(pin.ref)
+        const read = pinRange(pin, total)
+        read[1] = Math.min(read[1], read[0] + MATERIAL_MAX_LINES - 1)
+        const ranges = [...next.filter((item) => item.ref === pin.ref).map((item) => pinRange(item, total)), read]
+            .sort((a, b) => a[0] - b[0])
+        const merged: [number, number][] = []
+        for (const range of ranges) {
+            const last = merged.at(-1)
+            if (last && range[0] <= last[1] + 1) last[1] = Math.max(last[1], range[1])
+            else merged.push([...range])
+        }
+        const firstPage = Math.min(total, MATERIAL_MAX_LINES)
         next = next.filter((item) => item.ref !== pin.ref)
-        next.push(pin)
+        for (const range of merged) {
+            next.push(range[0] === 1 && range[1] === firstPage ? { ref: pin.ref } : { ref: pin.ref, lines: range })
+        }
     }
     return next.slice(-CHARACTER_ASSISTANT_MAX_PINS)
 }
@@ -714,21 +784,22 @@ export const CHARACTER_ASSISTANT_SYSTEM_PROMPT = `너는 RisuBard의 "캐릭터 
 - {{char}} 같은 CBS 매크로와 Lua 코드는 문법으로 다룬다. 줄 앞의 "12| "는 자료 표기일 뿐 본문이 아니다.
 
 자료가 더 필요할 때:
-- 답하지 말고 아래 태그만 출력한다. 앱이 자료를 붙여 같은 질문을 다시 보낸다. 한 번에 여러 개를 요청할 수 있다.
+- 답하지 말고 아래 태그만 출력한다. 태그 앞뒤에 다른 말을 쓰지 않는다. 앱이 자료를 붙여 같은 질문을 다시 보낸다.
   <read ref="bot:lore:12" />
-  <read ref="bot:field:lua" lines="200-400" />  긴 본문은 줄 범위로 나눠 읽는다.
+  <read ref="bot:field:lua" lines="301-600" />  줄 범위 없이 읽으면 첫 300줄을 받는다. 그 뒤는 300줄 단위로 이어 읽는다.
   <search query="호감도" />  변수 이름이나 특정 문구처럼 목차에 보이지 않는 내용의 위치를 찾는다.
-- ref는 목차에 있는 값만 쓴다. 이미 <material>로 받은 자료는 다시 요청하지 않는다. 질문에 필요한 자료만 요청한다.
+- 요청 횟수는 한 질문에 몇 번으로 제한된다. 필요한 자료는 첫 요청에 한꺼번에 모두 요청한다. 한 줄씩, 수십 줄씩 쪼개 요청하지 않는다.
+- ref는 목차에 있는 값만 쓴다. 이미 <material>로 받은 자료는 다시 요청하지 않는다. 받은 자료로 답할 수 있으면 바로 답한다.
 
 답하는 방식:
 - 한국어로 답한다.
 - 항목은 "로어북 12번 \`이름\`", "정규식 3번 \`이름\`", "트리거 2번", "추가 인사말 2번"처럼 부른다. 참고 봇은 "참고 봇 로어북 3번", 모듈은 "모듈 2 로어북 3번", 프리셋 블록은 "프리셋 114번 블록"처럼 쓴다. 필드는 \`설명\` 필드처럼 필드 이름을 인라인 코드로 쓴다. 앱이 이 표기를 편집기 링크로 바꾼다. 답변 본문에 ref 문자열을 쓰지 않는다.
 - 사용자가 지적한 문제의 원인을 항목으로 짚고, 근거가 된 문장을 인용한다.
-- 수정 제안은 칸 하나 단위로 한다. 어느 항목의 어느 칸(본문, 키, IN, OUT 등)인지 코드 블록 앞 문장에 적고, 코드 블록에는 그 칸에 그대로 붙여 넣을 내용만 담는다.
-- Lua나 긴 필드는 전체를 다시 쓰지 않는다. "찾을 부분"과 "바꿀 내용"을 각각 코드 블록으로 보여 준다.
-- 수정은 사용자가 직접 반영한다. 반영했다고 말하지 않는다.
+- 수정 제안은 칸 하나 단위로 한다.
 - 다른 항목, 토글, 모듈, 프리셋과 충돌하거나 부작용이 예상되면 함께 알린다.
-- 자료만으로 판단할 수 없으면 무엇이 더 필요한지 묻는다.`
+- 자료만으로 판단할 수 없으면 무엇이 더 필요한지 묻는다.
+
+${characterAssistantEditGuide()}`
 
 export interface CharacterAssistantRequestInput {
     indexes: string[]
@@ -737,7 +808,11 @@ export interface CharacterAssistantRequestInput {
     chatLog?: string
     history: CharacterAssistantMessage[]
     userText: string
+    /** No lookups left: the model must answer from the material it has. */
+    finalRound?: boolean
 }
+
+export const CHARACTER_ASSISTANT_FINAL_ROUND_NOTE = '[앱 안내: 자료 요청 횟수를 모두 썼다. <read>와 <search> 없이 지금 받은 자료만으로 바로 답한다. 확인하지 못한 부분은 확인하지 못했다고 밝힌다.]'
 
 export interface CharacterAssistantChatMessage {
     role: 'system' | 'user' | 'assistant'
@@ -754,9 +829,12 @@ export function buildCharacterAssistantMessages(input: CharacterAssistantRequest
         { role: 'system', content: `${CHARACTER_ASSISTANT_SYSTEM_PROMPT}\n\n${material.join('\n\n')}` },
     ]
     for (const message of input.history) {
-        if (message.failed || !message.text.trim()) continue
-        messages.push({ role: message.role, content: message.text })
+        const results = formatEditResults(message.edits ?? [])
+        if (message.failed || (!message.text.trim() && !results)) continue
+        messages.push({ role: message.role, content: results ? `${message.text}\n\n${results}`.trim() : message.text })
     }
-    messages.push({ role: 'user', content: input.userText })
+    messages.push({ role: 'user', content: input.finalRound ? `${input.userText}
+
+${CHARACTER_ASSISTANT_FINAL_ROUND_NOTE}` : input.userText })
     return messages
 }

@@ -4,6 +4,7 @@
 
 import type { PromptItem } from '../process/prompt'
 import { parsePromptV2Text, type PromptV2Activation } from '../promptV2'
+import { assistantExportFileName, forkAssistantMessages, formatAssistantMarkdown, formatAssistantTimestamp, type AssistantFork } from './assistantChat'
 
 export type PromptAssistantModel = 'model' | 'otherAx'
 
@@ -153,35 +154,14 @@ export function normalizePromptAssistantIndex(value: unknown): PromptAssistantIn
     }
 }
 
-export interface PromptAssistantFork {
-    messages: PromptAssistantMessage[]
-    /** A forked question goes back to the input box so it can be edited and resent. */
-    draft: string
-}
+export type PromptAssistantFork = AssistantFork<PromptAssistantMessage>
 
-/**
- * Messages a fork keeps. From a reply: everything up to and including it.
- * From a question: everything before it, with the question returned as a draft.
- */
 export function forkPromptAssistantMessages(messages: PromptAssistantMessage[], messageId: string): PromptAssistantFork | null {
-    const index = messages.findIndex((message) => message.id === messageId)
-    if (index < 0) return null
-    const target = messages[index]
-    const kept = target.role === 'user' ? messages.slice(0, index) : messages.slice(0, index + 1)
-    return {
-        messages: kept.map((message) => structuredClone(message)),
-        draft: target.role === 'user' ? target.text : '',
-    }
-}
-
-function formatTimestamp(date: Date): string {
-    const pad = (value: number) => String(value).padStart(2, '0')
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+    return forkAssistantMessages(messages, messageId)
 }
 
 export function promptAssistantExportFileName(projectName: string, date: Date): string {
-    const safe = projectName.replace(/[\\/:*?"<>|\r\n]+/g, ' ').trim() || '프로젝트'
-    return `프롬프트 비서 - ${safe} - ${formatTimestamp(date).replace(' ', '_').replace(':', '')}.md`
+    return assistantExportFileName('프롬프트 비서', projectName, date)
 }
 
 /** "프리셋 블록 4개, 최근 챗 3개, 실제 요청" style summary of what a question carried. */
@@ -194,19 +174,16 @@ export function describeAttachment(attached: PromptAssistantAttachment | undefin
     ].filter(Boolean).join(', ')
 }
 
-/** The whole conversation as Markdown, with a rule between messages for reading. */
 export function formatPromptAssistantMarkdown(project: PromptAssistantProject, presetName: string, savedAt: Date): string {
-    const parts = [
-        `# ${project.name}`,
-        `- 프리셋: ${presetName}\n- 저장: ${formatTimestamp(savedAt)}\n- 메시지: ${project.messages.length}개`,
-    ]
-    for (const message of project.messages) {
-        const heading = message.role === 'user' ? '## 나' : message.failed ? '## 비서 (응답 실패)' : '## 비서'
-        const label = describeAttachment(message.attached)
-        const attached = label ? `\n\n_첨부: ${label}_` : ''
-        parts.push(`---\n\n${heading}${attached}\n\n${message.text.trim()}`)
-    }
-    return parts.join('\n\n') + '\n'
+    return formatAssistantMarkdown({
+        title: project.name,
+        facts: [`- 프리셋: ${presetName}`, `- 저장: ${formatAssistantTimestamp(savedAt)}`, `- 메시지: ${project.messages.length}개`],
+        messages: project.messages,
+        note: (message) => {
+            const label = describeAttachment(message.attached)
+            return label ? `첨부: ${label}` : ''
+        },
+    })
 }
 
 export function summarizePromptAssistantProject(project: PromptAssistantProject): PromptAssistantProjectSummary {

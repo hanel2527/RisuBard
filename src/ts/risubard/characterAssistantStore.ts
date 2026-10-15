@@ -12,9 +12,11 @@ import {
 } from '../storage/database.svelte'
 import { readPersistentJson, removePersistentKey, writePersistentJson } from '../storage/persistentKv'
 import { requestChatData } from '../process/request/request'
+import { parseAssistantEdits, stripAssistantEdits, type ParsedAssistantEdit } from './characterAssistantEdits'
 import { getModules } from '../process/modules'
 import { parseToggleSyntax } from '../util'
 import { formatChatLogForAssistant, type PromptAssistantChatLine } from './promptAssistant'
+import { forkAssistantMessages } from './assistantChat'
 import { collectPromptAssistantChatLines } from './promptAssistantStore'
 import {
     addPins,
@@ -26,11 +28,12 @@ import {
     formatMaterial,
     formatScopeIndex,
     formatSearchResult,
+    isPinCovered,
     normalizeCharacterAssistantIndex,
     normalizeCharacterAssistantProject,
     parseAssistantLookups,
-    pinKey,
     searchSections,
+    sectionLineCounter,
     stripAssistantLookups,
     summarizeCharacterAssistantProject,
     type AssistantPin,
@@ -90,6 +93,24 @@ export async function deleteCharacterAssistantProject(
     await writePersistentJson(INDEX_KEY, next)
     await removePersistentKey(projectKey(id))
     return next
+}
+
+/** A new project with the source's settings, materials and the conversation up to the chosen message. */
+export function forkCharacterAssistantProject(
+    source: CharacterAssistantProject,
+    messageId: string,
+): { project: CharacterAssistantProject; draft: string } | null {
+    const fork = forkAssistantMessages(source.messages, messageId)
+    if (!fork) return null
+    const project = createCharacterAssistantProject(v4(), `${source.name} (포크)`, source.characterId, source.characterName)
+    project.referenceId = source.referenceId
+    project.includeModules = source.includeModules
+    project.includePreset = source.includePreset
+    project.model = source.model
+    project.chatMessages = source.chatMessages
+    project.pins = structuredClone(source.pins)
+    project.messages = fork.messages
+    return { project, draft: fork.draft }
 }
 
 export function newCharacterAssistantProject(name: string, target: character): CharacterAssistantProject {
@@ -204,6 +225,8 @@ export interface CharacterAssistantSendResult {
     reply: string
     pins: AssistantPin[]
     lookups: string[]
+    /** <edit> tags of the final reply, removed from `reply`. */
+    edits: ParsedAssistantEdit[]
     /** The last reply only asked for material it could not get. */
     stalled?: boolean
 }
@@ -250,12 +273,14 @@ async function requestOnce(
 
 /**
  * Sends one user turn. When the assistant answers with <read>/<search> tags,
- * the runtime pins the sections, runs the searches, and asks again, up to
- * CHARACTER_ASSISTANT_MAX_LOOKUP_ROUNDS times.
+ * the runtime pins the sections, runs the searches, and asks again. The last
+ * of CHARACTER_ASSISTANT_MAX_LOOKUP_ROUNDS + 1 requests tells the model that
+ * no lookups are left, so a turn ends in an answer instead of a lookup.
  */
 export async function sendCharacterAssistant(input: CharacterAssistantSendInput): Promise<CharacterAssistantSendResult> {
     const scopes = buildAssistantScopes(input.source)
     const indexes = scopes.map(formatScopeIndex)
+    const lineCount = sectionLineCounter(scopes)
     const chatLog = formatChatLogForAssistant(input.chatLines)
     let pins = [...input.project.pins]
     const lookups: string[] = []
@@ -263,6 +288,7 @@ export async function sendCharacterAssistant(input: CharacterAssistantSendInput)
     const searched = new Set<string>()
     const reported = new Set<string>()
     for (let round = 0; ; round++) {
+        const finalRound = round >= CHARACTER_ASSISTANT_MAX_LOOKUP_ROUNDS
         const { materials } = describeCharacterAssistantMaterial(scopes, pins)
         const formated = buildCharacterAssistantMessages({
             indexes,
@@ -271,23 +297,26 @@ export async function sendCharacterAssistant(input: CharacterAssistantSendInput)
             chatLog,
             history: input.project.messages,
             userText: input.userText,
+            finalRound,
         })
         const text = await requestOnce(input.project, formated, input.signal, input.onText)
-        if (input.signal.aborted) return { reply: stripAssistantLookups(text), pins, lookups: lookupLabels }
+        // A stopped reply keeps its prose but not half-written edits.
+        if (input.signal.aborted) return { reply: stripAssistantEdits(stripAssistantLookups(text)), pins, lookups: lookupLabels, edits: [] }
         const requested = parseAssistantLookups(text)
-        const pinned = new Set(pins.map(pinKey))
-        const reads = requested.reads.filter((pin) => findSection(scopes, pin.ref) && !pinned.has(pinKey(pin)))
+        const reply = stripAssistantEdits(stripAssistantLookups(text))
+        const asked = requested.reads.length + requested.searches.length > 0
+        if (finalRound || !asked) {
+            const edits = parseAssistantEdits(text)
+            return { reply, pins, lookups: lookupLabels, edits, stalled: !reply && asked && edits.length === 0 }
+        }
+        const found = requested.reads.filter((pin) => findSection(scopes, pin.ref))
+        const reads = found.filter((pin) => !isPinCovered(pins, pin, lineCount))
+        const repeated = found.length - reads.length
         const missing = requested.reads.filter((pin) => !findSection(scopes, pin.ref) && !reported.has(pin.ref))
         const searches = requested.searches.filter((query) => !searched.has(query))
-        const lastRound = round >= CHARACTER_ASSISTANT_MAX_LOOKUP_ROUNDS
-        if (lastRound || (reads.length === 0 && searches.length === 0 && missing.length === 0)) {
-            const reply = stripAssistantLookups(text)
-            const asked = requested.reads.length + requested.searches.length > 0
-            return { reply, pins, lookups: lookupLabels, stalled: !reply && asked }
-        }
         const labels: string[] = []
         if (reads.length > 0) {
-            pins = addPins(pins, reads)
+            pins = addPins(pins, reads, lineCount)
             for (const pin of reads) {
                 const label = findSection(scopes, pin.ref)!.label
                 labels.push(pin.lines ? `${label} ${pin.lines[0]}-${pin.lines[1]}줄` : label)
@@ -301,6 +330,10 @@ export async function sendCharacterAssistant(input: CharacterAssistantSendInput)
         for (const pin of missing) {
             reported.add(pin.ref)
             lookups.push(`<missing ref="${pin.ref.replaceAll('"', "'")}">목차에 없는 ref다. 목차의 ref만 쓴다.</missing>`)
+        }
+        // Asking again for what is already in <material> would loop; say so once.
+        if (repeated > 0 && reads.length === 0 && searches.length === 0 && missing.length === 0) {
+            lookups.push('<already_read>요청한 자료는 이미 위 <material>에 있다. 다시 요청하지 말고 그 자료로 답한다.</already_read>')
         }
         lookupLabels.push(...labels)
         input.onLookup(labels, pins)

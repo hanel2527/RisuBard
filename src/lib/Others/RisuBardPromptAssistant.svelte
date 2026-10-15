@@ -4,9 +4,7 @@
     import DOMPurify from 'dompurify'
     import {
         CheckIcon,
-        CopyIcon,
         DownloadIcon,
-        GitBranchIcon,
         LoaderCircleIcon,
         MessageSquareTextIcon,
         PanelRightCloseIcon,
@@ -20,6 +18,8 @@
         XIcon,
     } from '@lucide/svelte'
     import ShButton from 'src/lib/UI/GUI/ShButton.svelte'
+    import AssistantMessageActions from 'src/lib/Others/AssistantMessageActions.svelte'
+    import { copyAssistantText } from 'src/ts/risubard/assistantChat'
     import { DBState, PromptPresetSubmenuIndex, promptV2JumpRequest, selectedCharID } from 'src/ts/stores.svelte'
     import { getActiveBotPresetId, getBotPresetIndexById, selectChatPromptPreset } from 'src/ts/storage/database.svelte'
     import { openSettings, SettingsRoute } from 'src/ts/routing'
@@ -91,8 +91,6 @@
     ]
 
     let index = $state<PromptAssistantIndex>({ version: 1, projects: [], model: 'model' })
-    let copiedMessageId = $state('')
-    let copiedTimer: ReturnType<typeof setTimeout> | undefined
     let project = $state<PromptAssistantProject | null>(null)
     let loading = $state(true)
     let loadError = $state('')
@@ -351,22 +349,6 @@
         stopFollowingAnchor = stop
     }
 
-    async function copyText(text: string) {
-        if (navigator.clipboard && window.isSecureContext) {
-            await navigator.clipboard.writeText(text)
-            return
-        }
-        const area = document.createElement('textarea')
-        area.value = text
-        area.style.position = 'fixed'
-        area.style.opacity = '0'
-        document.body.appendChild(area)
-        area.select()
-        const copied = document.execCommand('copy')
-        area.remove()
-        if (!copied) throw new Error('copy failed')
-    }
-
     async function handleLogClick(event: MouseEvent) {
         const target = event.target as HTMLElement | null
         const reference = target?.closest<HTMLElement>('[data-block-ref]')
@@ -384,7 +366,7 @@
         if (!button) return
         const code = button.closest('[data-code-block]')?.querySelector('pre')?.textContent ?? ''
         let label = '복사됨'
-        try { await copyText(stripBlockWrapper(code)) }
+        try { await copyAssistantText(stripBlockWrapper(code)) }
         catch { label = '복사 실패' }
         button.textContent = label
         button.dataset.state = label === '복사됨' ? 'done' : 'failed'
@@ -523,18 +505,6 @@
         }
         catch (cause) {
             notice = `포크하지 못했습니다. ${errorText(cause)}`
-        }
-    }
-
-    async function copyMessage(message: PromptAssistantMessage) {
-        try {
-            await copyText(message.text)
-            copiedMessageId = message.id
-            clearTimeout(copiedTimer)
-            copiedTimer = setTimeout(() => { copiedMessageId = '' }, 1600)
-        }
-        catch {
-            notice = '복사하지 못했습니다.'
         }
     }
 
@@ -715,7 +685,6 @@
     })
 
     onDestroy(() => {
-        clearTimeout(copiedTimer)
         controller?.abort()
         stopFollowingAnchor?.()
         saveScrollNow()
@@ -929,19 +898,13 @@
                     {:else}
                         <p class="body">{message.text}</p>
                     {/if}
-                    <div class="message-actions" data-message-actions>
-                        <button type="button" disabled={running} title={message.role === 'user' ? '이 질문 직전까지 새 프로젝트로 복사하고, 질문은 입력창에 넣습니다' : '이 답변까지 새 프로젝트로 복사합니다'} onclick={() => void forkFrom(message)} data-message-fork>
-                            <GitBranchIcon size={13} /> 여기서 포크하기
-                        </button>
-                        {#if message.role === 'assistant' && !message.failed}
-                            <button type="button" class:done={copiedMessageId === message.id} onclick={() => void copyMessage(message)} data-message-copy>
-                                {#if copiedMessageId === message.id}<CheckIcon size={13} /> 복사됨{:else}<CopyIcon size={13} /> 답변 복사{/if}
-                            </button>
-                        {/if}
-                        <button type="button" class="danger" disabled={running} onclick={() => void deleteMessage(message)} data-message-delete>
-                            <TrashIcon size={13} /> 삭제
-                        </button>
-                    </div>
+                    <AssistantMessageActions
+                        {message}
+                        busy={running}
+                        onFork={(item) => void forkFrom(item as PromptAssistantMessage)}
+                        onDelete={(item) => void deleteMessage(item as PromptAssistantMessage)}
+                        onCopyFailed={() => { notice = '복사하지 못했습니다.' }}
+                    />
                 </article>
             {/each}
             {#if running}
@@ -1308,37 +1271,6 @@
         overflow-wrap: anywhere;
     }
     .message.failed .body { color: var(--risu-theme-draculared); }
-    .message-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: .15rem .35rem;
-        margin-left: -.35rem;
-    }
-    .message.user .message-actions { margin-top: .1rem; }
-    .message-actions button {
-        display: inline-flex;
-        align-items: center;
-        gap: .28rem;
-        min-height: 1.7rem;
-        padding: 0 .4rem;
-        border: 0;
-        border-radius: .3rem;
-        color: var(--risu-theme-textcolor2);
-        background: transparent;
-        font-size: .68rem;
-        font-weight: 600;
-        cursor: pointer;
-    }
-    .message-actions button:hover:not(:disabled),
-    .message-actions button:focus-visible {
-        color: var(--risu-theme-textcolor);
-        background: color-mix(in srgb, var(--risu-theme-primary) 8%, transparent);
-        outline: 0;
-    }
-    .message-actions button.done { color: var(--risu-theme-primary); }
-    .message-actions button.danger:hover:not(:disabled),
-    .message-actions button.danger:focus-visible { color: var(--risu-theme-draculared); }
-    .message-actions button:disabled { cursor: not-allowed; opacity: .42; }
     .waiting { display: inline-flex; align-items: center; gap: .4rem; color: var(--risu-theme-textcolor2); }
     .retry { display: flex; }
     .markdown {
