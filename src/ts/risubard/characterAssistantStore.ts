@@ -71,6 +71,19 @@ export async function saveCharacterAssistantProject(
     return next
 }
 
+/**
+ * Adds one message to a stored project without touching the index. Play mode
+ * writes turns this way, so it does not depend on the dock being open.
+ */
+export async function appendCharacterAssistantMessage(projectId: string, message: CharacterAssistantMessage): Promise<void> {
+    const project = await loadCharacterAssistantProject(projectId)
+    if (!project) throw new Error('프로젝트 파일을 찾지 못했습니다.')
+    if (project.messages.some((item) => item.id === message.id)) return
+    project.messages.push(message)
+    project.updatedAt = Date.now()
+    await writePersistentJson(projectKey(project.id), project)
+}
+
 export async function rememberCharacterAssistantProject(
     id: string,
     index: CharacterAssistantIndex,
@@ -231,8 +244,8 @@ export interface CharacterAssistantSendResult {
     stalled?: boolean
 }
 
-async function requestOnce(
-    project: CharacterAssistantProject,
+export async function requestOnce(
+    project: Pick<CharacterAssistantProject, 'model'>,
     formated: ReturnType<typeof buildCharacterAssistantMessages>,
     signal: AbortSignal,
     onText: (text: string) => void,

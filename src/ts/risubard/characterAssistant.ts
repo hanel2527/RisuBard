@@ -575,6 +575,31 @@ export interface CharacterAssistantMessage {
     refNames?: Record<string, string>
     /** Changes this reply proposed with <edit> tags, and what the user did with them. */
     edits?: AssistantEdit[]
+    /** Play mode: the settings on the instruction that started a run. */
+    playStart?: CharacterAssistantPlayStart
+    /** Play mode: one turn the assistant played in the test chat. */
+    play?: CharacterAssistantPlayTurn
+}
+
+export type CharacterAssistantPlayMode = 'auto' | 'semi'
+export type CharacterAssistantPlayContext = 'chat' | 'wiki'
+
+export interface CharacterAssistantPlayStart {
+    turns: number
+    mode: CharacterAssistantPlayMode
+    context: CharacterAssistantPlayContext
+    chatName: string
+}
+
+export interface CharacterAssistantPlayTurn {
+    turn: number
+    total: number
+    reaction: string
+    input: string
+    /** Lorebook entries the bot's reply request used. */
+    lorebook?: string[]
+    outcome: 'done' | 'stopped' | 'failed'
+    note?: string
 }
 
 export interface CharacterAssistantProject {
@@ -653,6 +678,21 @@ function normalizePin(value: unknown): AssistantPin | null {
     return lines ? { ref: raw.ref, lines } : { ref: raw.ref }
 }
 
+function isPlayStart(value: unknown): value is CharacterAssistantPlayStart {
+    const raw = value as Partial<CharacterAssistantPlayStart> | undefined
+    return !!raw && typeof raw === 'object' && Number.isInteger(raw.turns)
+        && (raw.mode === 'auto' || raw.mode === 'semi') && (raw.context === 'chat' || raw.context === 'wiki')
+        && typeof raw.chatName === 'string'
+}
+
+function isPlayTurn(value: unknown): value is CharacterAssistantPlayTurn {
+    const raw = value as Partial<CharacterAssistantPlayTurn> | undefined
+    return !!raw && typeof raw === 'object' && Number.isInteger(raw.turn) && Number.isInteger(raw.total)
+        && typeof raw.reaction === 'string' && typeof raw.input === 'string'
+        && (raw.outcome === 'done' || raw.outcome === 'stopped' || raw.outcome === 'failed')
+        && (raw.lorebook === undefined || (Array.isArray(raw.lorebook) && raw.lorebook.every((name) => typeof name === 'string')))
+}
+
 export function normalizeCharacterAssistantProject(value: unknown): CharacterAssistantProject | null {
     if (!value || typeof value !== 'object') return null
     const raw = value as Partial<CharacterAssistantProject>
@@ -666,6 +706,8 @@ export function normalizeCharacterAssistantProject(value: unknown): CharacterAss
         const edits = normalizeAssistantEdits(message.edits)
         if (edits) message.edits = edits
         else delete message.edits
+        if (!isPlayStart(message.playStart)) delete message.playStart
+        if (!isPlayTurn(message.play)) delete message.play
     }
     return {
         version: 1,

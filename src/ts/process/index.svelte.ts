@@ -1,5 +1,6 @@
 import { captureGenerationTarget, createGenerationScope, type GenerationTarget } from "./generationTarget";
 import { isOocAssistantTurn, isOocToggleActive } from '../risubard/oocTurns'
+import { captureChatContext } from '../risubard/chatContextCapture'
 import { createRequiredWikiMessage, reserveRequiredWikiBudget } from '../risubard/requiredWikiContext'
 import { createWikiInquiryDiagnostic, formatWikiInquiryDiagnostic, wikiInquiryFailure, type WikiInquiryFailure } from '../risubard/wikiInquiryDiagnostics'
 import { get } from "svelte/store";
@@ -3052,6 +3053,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         wikiPaths: generationInfo.risuBardContext?.wikiPaths,
     })
 
+    if (!arg.previewPrompt) captureChatContext(realChatId, formated)
     const req = await requestChatData({
         formated: formated,
         biasString: biases,

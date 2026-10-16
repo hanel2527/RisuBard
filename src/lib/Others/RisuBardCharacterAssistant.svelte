@@ -9,6 +9,7 @@
         CheckIcon,
         DownloadIcon,
         ExternalLinkIcon,
+        Gamepad2Icon,
         ListPlusIcon,
         LoaderCircleIcon,
         PanelRightCloseIcon,
@@ -16,6 +17,7 @@
         PencilIcon,
         PinIcon,
         PinOffIcon,
+        PlayIcon,
         PlusIcon,
         RotateCcwIcon,
         SendHorizontalIcon,
@@ -76,8 +78,18 @@
         type CharacterAssistantIndex,
         type CharacterAssistantMessage,
         type CharacterAssistantModel,
+        type CharacterAssistantPlayContext,
+        type CharacterAssistantPlayMode,
         type CharacterAssistantProject,
     } from 'src/ts/risubard/characterAssistant'
+    import { clampPlayTurns, PLAY_CONTEXT_NAMES, PLAY_DEFAULT_CHAT_MESSAGES, PLAY_DEFAULT_TURNS, PLAY_MAX_TURNS } from 'src/ts/risubard/characterAssistantPlay'
+    import {
+        characterAssistantPlay,
+        characterAssistantPlayMessages,
+        startPlay,
+        stopPlay,
+        submitPlayInput,
+    } from 'src/ts/risubard/characterAssistantPlayRuntime'
     import {
         collectCharacterAssistantChatLines,
         collectCharacterAssistantSource,
@@ -146,6 +158,17 @@
     let ratio = $state(readRatio())
     let collapsed = $state(readCollapsed())
     let estimate = $state<number | null>(null)
+
+    /** Play mode: the settings row under the input, and the semi-automatic input being edited. */
+    let playOpen = $state(false)
+    let playTurns = $state(PLAY_DEFAULT_TURNS)
+    let playMode = $state<CharacterAssistantPlayMode>('auto')
+    let playContext = $state<CharacterAssistantPlayContext>('chat')
+    let playEdit = $state('')
+    const play = $derived($characterAssistantPlay)
+    const playHere = $derived(!!play && play.projectId === project?.id)
+    const busy = $derived(running || playHere)
+    const PLAY_PHASE_NAMES = { player: '비서가 다음 입력을 쓰는 중', waiting: '입력 확인을 기다리는 중', chat: '봇이 응답하는 중' } as const
 
     /** Side panel over the log: the section picker or one section's text. */
     let panel = $state<'none' | 'picker' | 'viewer'>('none')
@@ -676,7 +699,7 @@
 
     async function send(text = draft) {
         const userText = text.trim()
-        if (!project || running || !userText) return
+        if (!project || busy || !userText) return
         const source = collectCharacterAssistantSource($state.snapshot(project) as CharacterAssistantProject)
         if (!source) {
             notice = '이 프로젝트의 봇을 찾지 못했습니다. 삭제됐거나 비공개 라이선스 봇일 수 있습니다.'
@@ -746,6 +769,51 @@
             }
         }
     }
+
+    async function startPlayTest() {
+        const instruction = draft.trim()
+        if (!project || busy || play || !instruction) return
+        notice = ''
+        closePanel()
+        draft = ''
+        playOpen = false
+        try {
+            const result = await startPlay({
+                projectId: project.id,
+                characterId: project.characterId,
+                model: project.model,
+                chatMessages: project.chatMessages,
+                instruction,
+                turns: playTurns,
+                mode: playMode,
+                context: playContext,
+            })
+            notice = result.reason
+                ? `플레이 테스트를 ${result.completedTurns}/${result.total}턴에서 멈췄습니다. ${result.reason}`
+                : `플레이 테스트 ${result.total}턴을 마쳤습니다.`
+        }
+        catch (cause) {
+            notice = errorText(cause)
+            draft = instruction
+            playOpen = true
+        }
+    }
+
+    const unsubscribePlayMessages = characterAssistantPlayMessages.subscribe((event) => {
+        if (!event || !project || event.projectId !== project.id) return
+        if (project.messages.some((message) => message.id === event.message.id)) return
+        project.messages.push(event.message)
+        void scrollToEnd()
+    })
+    onDestroy(unsubscribePlayMessages)
+
+    $effect(() => {
+        const pending = play?.pending
+        untrack(() => {
+            playEdit = pending?.input ?? ''
+            if (pending) void scrollToEnd()
+        })
+    })
 
     function editTarget() {
         return project ? findAssistantCharacter(project.characterId)?.character : undefined
@@ -904,7 +972,7 @@
                         class="field project-select"
                         aria-label="프로젝트"
                         value={project.id}
-                        disabled={running}
+                        disabled={busy}
                         onchange={(event) => void switchProject(event.currentTarget.value)}
                         data-character-assistant-project
                     >
@@ -912,10 +980,10 @@
                             <option value={item.id}>{item.name}</option>
                         {/each}
                     </select>
-                    <button class="icon-button" type="button" aria-label="새 프로젝트" title="새 프로젝트" disabled={running} onclick={startCreate}><PlusIcon size={16} /></button>
-                    <button class="icon-button" type="button" aria-label="프로젝트 이름 바꾸기" title="이름 바꾸기" disabled={running} onclick={startRename}><PencilIcon size={15} /></button>
+                    <button class="icon-button" type="button" aria-label="새 프로젝트" title="새 프로젝트" disabled={busy} onclick={startCreate}><PlusIcon size={16} /></button>
+                    <button class="icon-button" type="button" aria-label="프로젝트 이름 바꾸기" title="이름 바꾸기" disabled={busy} onclick={startRename}><PencilIcon size={15} /></button>
                     <button class="icon-button" type="button" aria-label="전체 챗 저장" title="전체 챗을 Markdown 파일로 저장" disabled={project.messages.length === 0} onclick={() => void exportConversation()} data-character-assistant-export><DownloadIcon size={15} /></button>
-                    <button class="icon-button danger" type="button" aria-label="프로젝트 삭제" title="프로젝트 삭제" disabled={running} onclick={() => void removeProject()}><TrashIcon size={15} /></button>
+                    <button class="icon-button danger" type="button" aria-label="프로젝트 삭제" title="프로젝트 삭제" disabled={busy} onclick={() => void removeProject()}><TrashIcon size={15} /></button>
                 </div>
 
                 <p class="target-line" data-character-assistant-target>
@@ -933,7 +1001,7 @@
                         <select
                             class="field"
                             bind:value={project.referenceId}
-                            disabled={running}
+                            disabled={busy}
                             onchange={() => void persist()}
                             data-character-assistant-reference
                         >
@@ -949,8 +1017,8 @@
                     <div class="setting">
                         <span>모델</span>
                         <div class="segmented" role="radiogroup" aria-label="모델">
-                            <button type="button" role="radio" aria-checked={project.model === 'model'} class:active={project.model === 'model'} disabled={running} onclick={() => setModel('model')}>메인</button>
-                            <button type="button" role="radio" aria-checked={project.model === 'otherAx'} class:active={project.model === 'otherAx'} disabled={running} onclick={() => setModel('otherAx')}>보조</button>
+                            <button type="button" role="radio" aria-checked={project.model === 'model'} class:active={project.model === 'model'} disabled={busy} onclick={() => setModel('model')}>메인</button>
+                            <button type="button" role="radio" aria-checked={project.model === 'otherAx'} class:active={project.model === 'otherAx'} disabled={busy} onclick={() => setModel('otherAx')}>보조</button>
                         </div>
                     </div>
                     <label class="setting">
@@ -963,7 +1031,7 @@
                                 max={CHARACTER_ASSISTANT_MAX_CHAT_MESSAGES}
                                 step="1"
                                 value={project.chatMessages}
-                                disabled={running}
+                                disabled={busy}
                                 onchange={(event) => {
                                     if (!project) return
                                     project.chatMessages = clampAssistantChatCount(event.currentTarget.value)
@@ -978,11 +1046,11 @@
                     </label>
                     <div class="scope-checks">
                         <label class="setting check" title="이 봇에 켜진 모듈의 로어북, 정규식, 트리거를 목차에 넣습니다.">
-                            <input type="checkbox" bind:checked={project.includeModules} disabled={running} onchange={() => void persist()} data-character-assistant-modules />
+                            <input type="checkbox" bind:checked={project.includeModules} disabled={busy} onchange={() => void persist()} data-character-assistant-modules />
                             <span>연결된 모듈</span>
                         </label>
                         <label class="setting check" title="지금 사용 중인 프롬프트 프리셋의 블록 목록과 토글 정의, 현재 토글 값을 목차에 넣습니다.">
-                            <input type="checkbox" bind:checked={project.includePreset} disabled={running} onchange={() => void persist()} data-character-assistant-preset />
+                            <input type="checkbox" bind:checked={project.includePreset} disabled={busy} onchange={() => void persist()} data-character-assistant-preset />
                             <span>현재 프리셋과 토글</span>
                         </label>
                     </div>
@@ -994,18 +1062,18 @@
                         {#each project.pins as pin (pinKey(pin))}
                             <span class="pin-chip" class:missing={!findSection(scopes, pin.ref)}>
                                 <button type="button" class="pin-open" title={VIEW_TITLE} onclick={() => openViewer(pin.ref)}>{pinLabel(pin)}</button>
-                                <button type="button" class="pin-remove" aria-label={`${pinLabel(pin)} 재료에서 빼기`} title="재료에서 빼기" disabled={running} onclick={() => removePin(pin)}><XIcon size={12} /></button>
+                                <button type="button" class="pin-remove" aria-label={`${pinLabel(pin)} 재료에서 빼기`} title="재료에서 빼기" disabled={busy} onclick={() => removePin(pin)}><XIcon size={12} /></button>
                             </span>
                         {:else}
                             <span class="pin-empty">아직 없음. 비서가 필요한 자료를 직접 읽어 옵니다.</span>
                         {/each}
                     </div>
                     <div class="pin-actions">
-                        <button type="button" class="text-button" disabled={running} onclick={() => { panel = panel === 'picker' ? 'none' : 'picker'; pickerQuery = '' }} aria-pressed={panel === 'picker'} data-character-assistant-picker-open>
+                        <button type="button" class="text-button" disabled={busy} onclick={() => { panel = panel === 'picker' ? 'none' : 'picker'; pickerQuery = '' }} aria-pressed={panel === 'picker'} data-character-assistant-picker-open>
                             <ListPlusIcon size={14} /> 자료 추가
                         </button>
                         {#if project.pins.length > 0}
-                            <button type="button" class="text-button" disabled={running} onclick={clearPins}>모두 빼기</button>
+                            <button type="button" class="text-button" disabled={busy} onclick={clearPins}>모두 빼기</button>
                         {/if}
                     </div>
                 </div>
@@ -1084,7 +1152,7 @@
                     {#if viewerSection.scope === 'bot' && (viewerSection.kind !== 'field' || FIELD_TABS[viewerSection.id] !== undefined) || viewerSection.kind === 'block'}
                         <ShButton variant="outline" size="sm" onclick={() => void openSection(viewerSection.ref)}><ExternalLinkIcon size={13} /> 편집기에서 열기</ShButton>
                     {/if}
-                    <ShButton variant="outline" size="sm" disabled={running} onclick={() => togglePin(viewerSection.ref)}>
+                    <ShButton variant="outline" size="sm" disabled={busy} onclick={() => togglePin(viewerSection.ref)}>
                         {#if project.pins.some((pin) => pin.ref === viewerSection.ref)}<PinOffIcon size={13} /> 재료에서 빼기{:else}<PinIcon size={13} /> 재료에 넣기{/if}
                     </ShButton>
                     <button type="button" class="text-button" onclick={(event) => void copyWithFeedback(event.currentTarget, viewerSection.text)}>복사</button>
@@ -1124,12 +1192,38 @@
             {#each project.messages as message (message.id)}
                 <article class="message {message.role}" class:failed={message.failed} data-message-id={message.id}>
                     <header>
-                        <span class="role">{message.role === 'user' ? '나' : '비서'}</span>
+                        <span class="role">{message.role === 'user' ? '나' : message.play ? '플레이 테스터' : '비서'}</span>
                         {#if message.lookups?.length}
                             <span class="attached" title={message.lookups.join('\n').replaceAll('`', '')}>읽은 자료 {message.lookups.length}개</span>
                         {/if}
                     </header>
-                    {#if message.role === 'assistant' && !message.failed}
+                    {#if message.play}
+                        {@const turn = message.play}
+                        <section class="play-turn" data-outcome={turn.outcome} data-character-assistant-play-turn>
+                            <div class="edit-card-head">
+                                <strong class="play-turn-title">턴 {turn.turn}/{turn.total}</strong>
+                                {#if turn.outcome !== 'done'}<span class="edit-status">{turn.outcome === 'stopped' ? '중단' : '실패'}</span>{/if}
+                            </div>
+                            {#if turn.reaction}<p class="play-reaction">{turn.reaction}</p>{/if}
+                            {#if turn.input}
+                                <div class="edit-diff">
+                                    <span class="edit-caption">보낸 입력</span>
+                                    <pre class="after">{turn.input}</pre>
+                                </div>
+                            {/if}
+                            {#if turn.lorebook}
+                                <div class="play-lore">
+                                    <span class="edit-caption">봇 응답에 들어간 로어북 {turn.lorebook.length}개</span>
+                                    {#if turn.lorebook.length > 0}
+                                        <div class="pin-list">
+                                            {#each turn.lorebook as name}<span class="play-lore-chip">{name}</span>{/each}
+                                        </div>
+                                    {/if}
+                                </div>
+                            {/if}
+                            {#if turn.note}<p class="edit-error">{turn.note}</p>{/if}
+                        </section>
+                    {:else if message.role === 'assistant' && !message.failed}
                         {#if message.text.trim()}
                             <div class="markdown">{@html renderMarkdown(message.text)}</div>
                         {/if}
@@ -1139,7 +1233,7 @@
                                 <header class="edit-cards-head">
                                     <span>수정 제안 {message.edits.length}개</span>
                                     {#if open.length > 1}
-                                        <button type="button" class="edit-button primary" disabled={running} onclick={() => void applyEdits(message, open)} data-edit-apply-all>
+                                        <button type="button" class="edit-button primary" disabled={busy} onclick={() => void applyEdits(message, open)} data-edit-apply-all>
                                             <CheckIcon size={13} /> 남은 {open.length}개 모두 적용
                                         </button>
                                     {/if}
@@ -1172,15 +1266,15 @@
                                         {#if edit.status !== 'failed'}
                                             <div class="edit-actions">
                                                 {#if edit.status === 'applied'}
-                                                    <button type="button" class="edit-button" disabled={running} onclick={() => void revertEdit(message, edit)} data-edit-revert>
+                                                    <button type="button" class="edit-button" disabled={busy} onclick={() => void revertEdit(message, edit)} data-edit-revert>
                                                         <RotateCcwIcon size={13} /> 되돌리기
                                                     </button>
                                                 {:else}
-                                                    <button type="button" class="edit-button primary" disabled={running} onclick={() => void applyEdits(message, [edit])} data-edit-apply>
+                                                    <button type="button" class="edit-button primary" disabled={busy} onclick={() => void applyEdits(message, [edit])} data-edit-apply>
                                                         <CheckIcon size={13} /> {edit.status === 'pending' ? '적용' : '다시 적용'}
                                                     </button>
                                                     {#if edit.status === 'pending'}
-                                                        <button type="button" class="edit-button" disabled={running} onclick={() => void skipEdit(message, edit)} data-edit-skip>
+                                                        <button type="button" class="edit-button" disabled={busy} onclick={() => void skipEdit(message, edit)} data-edit-skip>
                                                             <XIcon size={13} /> 건너뛰기
                                                         </button>
                                                     {/if}
@@ -1198,7 +1292,7 @@
                     {/if}
                     <AssistantMessageActions
                         {message}
-                        busy={running}
+                        busy={busy}
                         onFork={(item) => void forkFrom(item as CharacterAssistantMessage)}
                         onDelete={(item) => void deleteMessage(item as CharacterAssistantMessage)}
                         onCopyFailed={() => { notice = '복사하지 못했습니다.' }}
@@ -1237,38 +1331,137 @@
             {#if notice || saveError}
                 <p class="notice" class:failure={!!saveError}>{saveError || notice}</p>
             {/if}
-            <textarea
-                bind:this={inputElement}
-                bind:value={draft}
-                rows="3"
-                maxlength="12000"
-                placeholder="예: 첫 메시지가 너무 길어. 어디를 줄이면 좋을까?"
-                aria-label="캐릭터 비서에게 보낼 메시지"
-                onkeydown={(event) => {
-                    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-                        event.preventDefault()
-                        void send()
-                    }
-                }}
-                data-character-assistant-input
-            ></textarea>
-            <div class="composer-actions">
-                <button
-                    class="text-button"
-                    type="button"
-                    disabled={running || project.messages.length === 0}
-                    onclick={() => void resetConversation()}
-                    data-character-assistant-reset
-                ><RotateCcwIcon size={14} /> 대화 초기화</button>
-                <span class="hint">Ctrl+Enter로 보내기</span>
-                {#if running}
-                    <ShButton variant="outline" size="sm" onclick={stop} data-character-assistant-stop><SquareIcon size={13} /> 중단</ShButton>
-                {:else}
-                    <ShButton variant="primary" size="sm" disabled={!draft.trim() || !target} onclick={() => void send()} data-character-assistant-send>
-                        <SendHorizontalIcon size={14} /> 보내기
-                    </ShButton>
+            {#if playHere && play}
+                <div class="play-status" data-character-assistant-play-status>
+                    <LoaderCircleIcon class="animate-spin" size={14} />
+                    <span><b>플레이 테스트 {play.turn}/{play.total}턴</b>, {PLAY_PHASE_NAMES[play.phase]}</span>
+                </div>
+                <p class="notice">'{play.chatName}' 채팅에서 진행합니다. 그 채팅에 직접 입력하거나 다른 채팅으로 옮기면 멈춥니다.</p>
+                {#if play.pending}
+                    <div class="play-pending" data-character-assistant-play-pending>
+                        {#if play.pending.reaction}
+                            <span class="edit-caption">지난 응답 관찰</span>
+                            <p class="play-reaction">{play.pending.reaction}</p>
+                        {/if}
+                        <span class="edit-caption">보낼 입력 (고쳐서 보낼 수 있습니다)</span>
+                        <textarea
+                            bind:value={playEdit}
+                            rows="4"
+                            aria-label="테스트 채팅에 보낼 입력"
+                            onkeydown={(event) => {
+                                if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+                                    event.preventDefault()
+                                    submitPlayInput(playEdit)
+                                }
+                            }}
+                            data-character-assistant-play-input
+                        ></textarea>
+                    </div>
                 {/if}
-            </div>
+                <div class="composer-actions">
+                    <span class="hint">{play.pending ? 'Ctrl+Enter로 보내기' : ''}</span>
+                    <ShButton variant="outline" size="sm" onclick={stopPlay} data-character-assistant-play-stop><SquareIcon size={13} /> 중지</ShButton>
+                    {#if play.pending}
+                        <ShButton variant="primary" size="sm" disabled={!playEdit.trim()} onclick={() => submitPlayInput(playEdit)} data-character-assistant-play-send>
+                            <SendHorizontalIcon size={14} /> 보내기
+                        </ShButton>
+                    {/if}
+                </div>
+            {:else}
+                {#if playOpen}
+                    <div class="play-settings" data-character-assistant-play-settings>
+                        <label class="setting">
+                            <span>턴 수</span>
+                            <span class="number-field">
+                                <input
+                                    class="field"
+                                    type="number"
+                                    min="1"
+                                    max={PLAY_MAX_TURNS}
+                                    step="1"
+                                    value={playTurns}
+                                    onchange={(event) => {
+                                        playTurns = clampPlayTurns(event.currentTarget.value)
+                                        event.currentTarget.value = String(playTurns)
+                                    }}
+                                    aria-label="진행할 턴 수"
+                                    data-character-assistant-play-turns
+                                />
+                                <small>턴</small>
+                            </span>
+                        </label>
+                        <div class="setting">
+                            <span>진행</span>
+                            <div class="segmented" role="radiogroup" aria-label="진행 방식">
+                                <button type="button" role="radio" aria-checked={playMode === 'auto'} class:active={playMode === 'auto'} onclick={() => playMode = 'auto'}>자동</button>
+                                <button type="button" role="radio" aria-checked={playMode === 'semi'} class:active={playMode === 'semi'} onclick={() => playMode = 'semi'} data-character-assistant-play-semi>반자동</button>
+                            </div>
+                        </div>
+                        <div class="setting">
+                            <span>채팅 맥락</span>
+                            <div class="segmented" role="radiogroup" aria-label="비서가 볼 채팅 맥락">
+                                <button type="button" role="radio" aria-checked={playContext === 'chat'} class:active={playContext === 'chat'} onclick={() => playContext = 'chat'}>{PLAY_CONTEXT_NAMES.chat}</button>
+                                <button type="button" role="radio" aria-checked={playContext === 'wiki'} class:active={playContext === 'wiki'} onclick={() => playContext = 'wiki'}>바드위키</button>
+                            </div>
+                        </div>
+                        <p class="notice play-note">
+                            새 채팅을 만들고 {project.model === 'model' ? '메인' : '보조'} 모델이 유저 역할을 맡습니다. 페르소나와 지시문으로 찾은 로어북,
+                            {playContext === 'chat' ? `최근 채팅 ${project.chatMessages > 0 ? project.chatMessages : PLAY_DEFAULT_CHAT_MESSAGES}개를` : '지난 응답에 들어간 바드위키와 최근 응답을'} 함께 보냅니다.
+                            {playMode === 'semi' ? '턴마다 만든 입력을 확인한 뒤 보냅니다.' : ''}
+                        </p>
+                    </div>
+                {/if}
+                <textarea
+                    bind:this={inputElement}
+                    bind:value={draft}
+                    rows="3"
+                    maxlength="12000"
+                    placeholder={playOpen
+                        ? '예: 로어북 성능을 보려고 해. 주인공이 1-A 반 학생들 모두와 지하층에서 작전을 펼치는 챗을 진행해.'
+                        : '예: 첫 메시지가 너무 길어. 어디를 줄이면 좋을까?'}
+                    aria-label={playOpen ? '플레이 테스트 지시문' : '캐릭터 비서에게 보낼 메시지'}
+                    onkeydown={(event) => {
+                        if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+                            event.preventDefault()
+                            void (playOpen ? startPlayTest() : send())
+                        }
+                    }}
+                    data-character-assistant-input
+                ></textarea>
+                {#if play && !playHere}
+                    <p class="notice">다른 프로젝트에서 플레이 테스트가 진행 중입니다.</p>
+                {/if}
+                <div class="composer-actions">
+                    <button
+                        class="text-button"
+                        type="button"
+                        disabled={busy || project.messages.length === 0}
+                        onclick={() => void resetConversation()}
+                        data-character-assistant-reset
+                    ><RotateCcwIcon size={14} /> 대화 초기화</button>
+                    <button
+                        class="text-button"
+                        type="button"
+                        aria-pressed={playOpen}
+                        class:active={playOpen}
+                        disabled={running}
+                        onclick={() => playOpen = !playOpen}
+                        data-character-assistant-play-toggle
+                    ><Gamepad2Icon size={14} /> 플레이 테스트</button>
+                    <span class="hint">Ctrl+Enter로 {playOpen ? '시작' : '보내기'}</span>
+                    {#if running}
+                        <ShButton variant="outline" size="sm" onclick={stop} data-character-assistant-stop><SquareIcon size={13} /> 중단</ShButton>
+                    {:else if playOpen}
+                        <ShButton variant="primary" size="sm" disabled={!draft.trim() || !target || !!play} onclick={() => void startPlayTest()} data-character-assistant-play-start>
+                            <PlayIcon size={14} /> 플레이 시작
+                        </ShButton>
+                    {:else}
+                        <ShButton variant="primary" size="sm" disabled={!draft.trim() || !target} onclick={() => void send()} data-character-assistant-send>
+                            <SendHorizontalIcon size={14} /> 보내기
+                        </ShButton>
+                    {/if}
+                </div>
+            {/if}
         </footer>
     {/if}
 </aside>
@@ -1777,7 +1970,39 @@
         outline: 0;
         box-shadow: 0 0 0 2px color-mix(in srgb, var(--risu-theme-primary) 20%, transparent);
     }
-    .composer-actions { display: flex; align-items: center; gap: .5rem; }
+    .composer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+    .text-button.active { color: var(--risu-theme-primary); }
+
+    .play-turn {
+        display: grid;
+        gap: .45rem;
+        min-width: 0;
+        padding: .6rem .65rem;
+        border: 1px solid var(--pa-line);
+        border-left: 3px solid var(--risu-theme-primary);
+        border-radius: .5rem;
+        background: color-mix(in srgb, var(--risu-theme-darkbg) 86%, var(--color-bgcolor));
+    }
+    .play-turn:is([data-outcome='stopped'], [data-outcome='failed']) { border-left-color: var(--risu-theme-draculared); }
+    .play-turn:is([data-outcome='stopped'], [data-outcome='failed']) .edit-status { color: var(--risu-theme-draculared); font-weight: 700; }
+    .play-turn-title { color: var(--risu-theme-primary); font-size: .76rem; }
+    .play-reaction { margin: 0; color: var(--risu-theme-textcolor); font-size: .78rem; line-height: 1.55; overflow-wrap: anywhere; }
+    .play-lore { display: grid; gap: .3rem; min-width: 0; }
+    .play-lore-chip {
+        padding: .1rem .45rem;
+        border: 1px solid var(--pa-line);
+        border-radius: 999px;
+        color: var(--risu-theme-textcolor);
+        font-size: .68rem;
+        overflow-wrap: anywhere;
+    }
+    .play-settings { display: grid; gap: .4rem; }
+    .play-settings .setting { grid-template-columns: 4.5rem minmax(0, 1fr); align-items: center; gap: .5rem; }
+    .play-settings .segmented { justify-self: start; }
+    .play-settings .segmented button { white-space: nowrap; }
+    .play-status { display: flex; align-items: center; gap: .4rem; color: var(--risu-theme-textcolor); font-size: .76rem; }
+    .play-status b { color: var(--risu-theme-primary); }
+    .play-pending { display: grid; gap: .3rem; min-width: 0; }
     .hint { flex: 1 1 auto; color: var(--risu-theme-textcolor2); font-size: .66rem; text-align: right; }
     .text-button {
         display: inline-flex;
