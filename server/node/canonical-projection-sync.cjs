@@ -1,5 +1,8 @@
 'use strict';
 
+const crypto = require('crypto');
+const path = require('path');
+
 function createCanonicalProjectionSync(options = {}) {
     const repository = options.repository;
     const readAcceptedRevision = options.readAcceptedRevision;
@@ -69,7 +72,68 @@ function createCanonicalProjectionSync(options = {}) {
         return revision;
     }
 
-    return { accept, changedFiles, hasExternalChanges, loadExternalChanges };
+    // One save's view of the files: their fingerprints when it began and the
+    // files it wrote. A file another program changes meanwhile is neither
+    // replaced by the save nor accepted with it, so the review still lists it.
+    function beginSave() {
+        const before = typeof repository.getFileFingerprint === 'function' ? fingerprints() : null;
+        const dataRoot = path.resolve(repository.dataRoot || '.');
+        const written = new Map();
+        const trees = [];
+        const relative = (root, target) => path.resolve(root) === dataRoot
+            ? path.relative(dataRoot, target).split(path.sep).join('/') : null;
+        const insideTree = file => trees.some(tree => file === tree || file.startsWith(`${tree}/`));
+        const revision = before ? before.revision : repository.getProjectionRevision();
+        const acceptedRevision = readAcceptedRevision();
+        if (!acceptedFiles && before && revision && revision === acceptedRevision) acceptedFiles = before.files;
+        return {
+            revision,
+            // Same answer as hasExternalChanges() at the start of the save.
+            externalChanges: Boolean(revision && revision !== acceptedRevision),
+            wrote(root, target) {
+                const file = relative(root, target);
+                if (before && file) written.set(file, repository.getFileFingerprint(file));
+            },
+            cleared(root, target) {
+                const file = relative(root, target);
+                if (file) trees.push(file);
+            },
+            unchanged(root, target) {
+                const file = relative(root, target);
+                if (!before || !file || insideTree(file)) return true;
+                const expected = written.has(file) ? written.get(file) : before.files[file];
+                return expected === undefined || repository.getFileFingerprint(file) === expected;
+            },
+            // Accepts the save's own writes. Returns the accepted revision, or
+            // null when another program's change was left for review.
+            settle() {
+                const after = before && fingerprints();
+                if (!after) return accept();
+                const merged = {};
+                let external = false;
+                for (const file of new Set([...Object.keys(before.files), ...Object.keys(after.files)])) {
+                    const was = before.files[file];
+                    const now = after.files[file];
+                    const own = now === was || insideTree(file)
+                        || (written.has(file) && written.get(file) === (now ?? null));
+                    if (!own) external = true;
+                    const kept = own ? now : was;
+                    if (kept !== undefined) merged[file] = kept;
+                }
+                if (!external) {
+                    writeAcceptedRevision(after.revision);
+                    acceptedFiles = after.files;
+                    return after.revision;
+                }
+                // A record no real revision can match keeps the change pending.
+                writeAcceptedRevision(crypto.createHash('sha256').update(`partial\0${after.revision}`).digest('hex'));
+                acceptedFiles = merged;
+                return null;
+            },
+        };
+    }
+
+    return { accept, beginSave, changedFiles, hasExternalChanges, loadExternalChanges };
 }
 
 module.exports = { createCanonicalProjectionSync };

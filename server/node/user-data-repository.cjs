@@ -230,17 +230,22 @@ function createUserDataRepository(options = {}) {
         return relativePaths.map(value => value.split(path.sep).join('/')).sort();
     }
 
+    // A source file's fingerprint: size, modification time and checksum sidecar.
+    function sourceFingerprint(relativePath) {
+        const target = resolveInside(dataRoot, relativePath);
+        const stat = fs.statSync(target, { bigint: true });
+        const checksumPath = `${target}.sha256`;
+        const sidecar = fs.existsSync(checksumPath)
+            ? fs.readFileSync(checksumPath, 'utf8').trim()
+            : 'missing';
+        return `${relativePath}\0${stat.size}\0${stat.mtimeNs}\0${sidecar}`;
+    }
+
     // `files`, when given, collects each source's fingerprint by path.
     function sourceRevision(relativePaths = collectCanonicalSourcePaths(), files = null) {
         const revision = crypto.createHash('sha256');
         for (const relativePath of relativePaths) {
-            const target = resolveInside(dataRoot, relativePath);
-            const stat = fs.statSync(target, { bigint: true });
-            const checksumPath = `${target}.sha256`;
-            const sidecar = fs.existsSync(checksumPath)
-                ? fs.readFileSync(checksumPath, 'utf8').trim()
-                : 'missing';
-            const line = `${relativePath}\0${stat.size}\0${stat.mtimeNs}\0${sidecar}`;
+            const line = sourceFingerprint(relativePath);
             if (files) files[relativePath] = line;
             revision.update(`${line}\n`);
         }
@@ -1170,6 +1175,15 @@ function createUserDataRepository(options = {}) {
         getProjectionFingerprints: () => {
             const files = {};
             return { revision: getProjectionRevision(files), files };
+        },
+        // One file's fingerprint in the format above; null when it is missing.
+        getFileFingerprint: relativePath => {
+            try {
+                return sourceFingerprint(relativePath);
+            } catch (error) {
+                if (error?.code === 'ENOENT') return null;
+                throw error;
+            }
         },
         importLegacyDatabase,
         inspectCharacterPackageOwnership: characterId => inspectCharacterPackageOwnership(exportLegacyDatabase(), stableId(characterId, 'character')),

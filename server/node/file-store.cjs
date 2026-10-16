@@ -5,6 +5,34 @@ const fs = require('fs');
 const path = require('path');
 const { reportImportProgress } = require('./import-progress.cjs');
 
+// While a save runs, the server observes its canonical writes so it can tell
+// them apart from files another program changes at the same time.
+let writeObserver = null;
+
+function observeWrites(observer, operation) {
+    const previous = writeObserver;
+    writeObserver = observer;
+    try {
+        return operation();
+    } finally {
+        writeObserver = previous;
+    }
+}
+
+function noteWrite(root, target) {
+    writeObserver?.wrote(root, target);
+}
+
+function noteTree(root, target) {
+    writeObserver?.cleared(root, target);
+}
+
+function canonicalChangedError(relativePath) {
+    const error = new Error(`Canonical file changed during transaction: ${relativePath}`);
+    error.code = 'CANONICAL_FILES_CHANGED';
+    return error;
+}
+
 function checksum(data) {
     return crypto.createHash('sha256').update(data).digest('hex');
 }
@@ -146,6 +174,7 @@ function atomicWriteFile(root, relativePath, value, options = {}) {
         fs.renameSync(temp, target);
         replaceAtomic(`${target}.sha256`, Buffer.from(`${digest}\n`, 'utf8'));
         fsyncDirectory(directory);
+        noteWrite(root, target);
     } catch (error) {
         try { fs.unlinkSync(temp); } catch {}
         throw error;
@@ -198,6 +227,7 @@ function publishTransaction(root, journal, journalPath, options = {}) {
             const target = characterDeletionPath(root, entry.path);
             fs.rmSync(target, { recursive: true, force: true });
             fsyncDirectory(path.dirname(target));
+            noteTree(root, target);
             published += 1;
             if (options.failAfterPublish === published) throw new Error('simulated crash during transaction publish');
             continue;
@@ -232,6 +262,8 @@ function publishTransaction(root, journal, journalPath, options = {}) {
             fs.renameSync(source, destination);
             fsyncDirectory(path.dirname(source));
             fsyncDirectory(path.dirname(destination));
+            noteTree(root, source);
+            noteTree(root, destination);
             // Persist before later writes can recreate the source directory.
             entry.completed = true;
             writeJournal(journalPath, journal);
@@ -245,6 +277,7 @@ function publishTransaction(root, journal, journalPath, options = {}) {
             // occurred between publishing the file and its checksum sidecar.
             if (!matchesStoredChecksum(target, entry.checksum)) {
                 replaceAtomic(`${target}.sha256`, Buffer.from(`${entry.checksum}\n`, 'utf8'));
+                noteWrite(root, target);
             }
             skipped += 1;
             continue;
@@ -257,6 +290,7 @@ function publishTransaction(root, journal, journalPath, options = {}) {
         fs.renameSync(entry.staged, target);
         replaceAtomic(`${target}.sha256`, Buffer.from(`${entry.checksum}\n`, 'utf8'));
         fsyncDirectory(path.dirname(target));
+        noteWrite(root, target);
         published += 1;
         if (options.failAfterPublish === published) throw new Error('simulated crash during transaction publish');
     }
@@ -294,6 +328,7 @@ function refreshChecksum(root, relativePath) {
     const target = resolveInside(root, relativePath);
     const digest = checksumFile(target);
     replaceAtomic(`${target}.sha256`, Buffer.from(`${digest}\n`, 'utf8'));
+    noteWrite(root, target);
     return digest;
 }
 
@@ -301,9 +336,16 @@ function assertUnchangedPreconditions(root, entries) {
     for (const entry of entries) {
         const target = resolveInside(root, entry.path);
         if (matchesChecksum(target, entry.checksum)) continue;
-        const error = new Error(`Canonical file changed during transaction: ${entry.path}`);
-        error.code = 'CANONICAL_FILES_CHANGED';
-        throw error;
+        throw canonicalChangedError(entry.path);
+    }
+}
+
+// A file another program rewrote after the save began must not be replaced.
+function assertTargetsUnobserved(root, entries) {
+    if (!writeObserver) return;
+    for (const entry of entries) {
+        if (entry.action !== 'replace') continue;
+        if (!writeObserver.unchanged(root, resolveInside(root, entry.path))) throw canonicalChangedError(entry.path);
     }
 }
 
@@ -436,6 +478,7 @@ function commitTransaction(root, operations, options = {}) {
     fsyncDirectory(stageDir);
     try {
         assertUnchangedPreconditions(root, unchanged.filter(entry => entry.action !== 'move'));
+        assertTargetsUnobserved(root, entries);
     } catch (error) {
         fs.rmSync(stageDir, { recursive: true, force: true });
         fsyncDirectory(journalDir);
@@ -483,6 +526,7 @@ function moveToTrash(root, relativePath) {
     for (const suffix of ['.sha256', '.bak']) {
         if (fs.existsSync(`${source}${suffix}`)) fs.renameSync(`${source}${suffix}`, `${destination}${suffix}`);
     }
+    noteTree(root, source);
     fsyncDirectory(path.dirname(source));
     fsyncDirectory(path.dirname(destination));
     return destination;
@@ -494,6 +538,7 @@ module.exports = {
     checksum,
     commitTransaction,
     moveToTrash,
+    observeWrites,
     readVerifiedJson,
     refreshChecksum,
     recoverTransactions,

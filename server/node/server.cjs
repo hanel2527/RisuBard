@@ -40,7 +40,7 @@ const { createRequestLogs } = require('./request-logs.cjs');
 const { createSaveObservation } = require('./save-observation.cjs');
 const { createProjectionShadow } = require('./projection-shadow.cjs');
 const { generateStorageDiagnosticReport } = require('./storage-diagnostic-report.cjs');
-const { commitTransaction, moveToTrash } = require('./file-store.cjs');
+const { commitTransaction, moveToTrash, observeWrites } = require('./file-store.cjs');
 const { createRuntimeMemoryService } = require('./risubard-memory-runtime.cjs');
 const { openServerBrowser } = require('./open-server-browser.cjs');
 const { releaseToUpdateInfo } = require('./release-update.cjs');
@@ -1085,6 +1085,7 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
     let fallbackCode
     let errorStage = 'external-change-check'
     const phaseMetrics = {}
+    let save = null
     try {
         reportImportProgress('check-files');
         if (externalEditSession?.isActive()) {
@@ -1092,9 +1093,10 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
             error.code = 'EXTERNAL_EDIT_MODE'
             throw error
         }
+        save = canonicalProjectionSync.beginSave()
         if (observationContext.externalRevision
-            ? userDataRepository.getProjectionRevision() !== observationContext.externalRevision
-            : canonicalProjectionSync.hasExternalChanges()) {
+            ? save.revision !== observationContext.externalRevision
+            : save.externalChanges) {
             const error = new Error('Canonical entity files changed outside RisuBard before projection save')
             error.code = 'CANONICAL_FILES_CHANGED'
             throw error
@@ -1112,12 +1114,12 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
         phaseMetrics.compatibilityInvalidateMs = elapsedMs(phaseStartedAt)
         phaseStartedAt = performance.now()
         reportImportProgress('canonical-files');
-        const write = writeCanonicalProjection({
+        const write = observeWrites(save, () => writeCanonicalProjection({
             repository: userDataRepository,
             database: databaseObject,
             directCollection: observationContext.directCollection,
             preserveCharacterLayout: observationContext.preserveCharacterLayout || !canonicalProjectionReady,
-        })
+        }))
         const result = write.result
         strategy = write.strategy
         fallbackUsed = write.fallbackUsed
@@ -1126,14 +1128,15 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
         phaseStartedAt = performance.now()
         errorStage = 'character-assets'
         reportImportProgress('character-assets');
-        characterAssets.sync(databaseObject)
+        observeWrites(save, () => characterAssets.sync(databaseObject))
         // Module folders follow saved module assets in the background; never fails a save.
         try { characterAssets.scheduleModuleSync(databaseObject) } catch {}
         phaseMetrics.assetSyncMs = elapsedMs(phaseStartedAt)
         phaseStartedAt = performance.now()
         errorStage = 'revision-accept'
         reportImportProgress('verify-save');
-        const acceptedRevision = canonicalProjectionSync.accept()
+        // Another program's edit made during the save stays pending for review.
+        const acceptedRevision = save.settle()
         if (!observationContext.adoptingLiveFiles) {
             liveCharacterFiles.accept(databaseObject, acceptedRevision)
             liveFilesPendingWrites = false
@@ -1173,6 +1176,11 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
         })
         return result
     } catch (error) {
+        // A file changed by another program stopped the save. Accept what this
+        // save already wrote and leave that file pending, so the review opens.
+        if (error?.code === 'CANONICAL_FILES_CHANGED' && errorStage === 'transaction' && save) {
+            try { save.settle() } catch {}
+        }
         const writeMeta = error?.canonicalWriteMeta
         if (writeMeta) {
             strategy = writeMeta.strategy || strategy

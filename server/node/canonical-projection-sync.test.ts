@@ -146,3 +146,82 @@ describe('canonical projection sync', () => {
         })
     })
 })
+
+describe('canonical save racing an external edit', () => {
+    const { observeWrites } = require('./file-store.cjs')
+    const chat = (id: string) => ({ id, name: id, message: [{ role: 'user', data: 'hi', chatId: `${id}-m1` }], note: '', localLore: [] })
+    const character = (chaId: string, desc: string) => ({
+        type: 'character', chaId, name: chaId, desc, firstMessage: '', chats: [chat(`${chaId}-chat`)], chatPage: 0, additionalAssets: [],
+    })
+
+    function fixture() {
+        const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'risubard-save-race-'))
+        roots.push(dataRoot)
+        const repository = createUserDataRepository({ dataRoot })
+        const database = { characters: [character('bot', 'app'), character('other', 'o')], botPresets: [], modules: [], personas: [], loreBook: [] }
+        const save = (db = database) => repository.importLegacyDatabase(structuredClone(db), { mode: 'sync' })
+        save()
+        let acceptedRevision: string | null = null
+        const sync = createCanonicalProjectionSync({
+            repository,
+            readAcceptedRevision: () => acceptedRevision,
+            writeAcceptedRevision: (revision: string) => { acceptedRevision = revision },
+        })
+        sync.accept()
+        const metadata = fs.readdirSync(path.join(dataRoot, 'characters'))
+            .map(name => `characters/${name}/metadata.json`)
+            .find(file => fs.existsSync(path.join(dataRoot, file)) && JSON.parse(fs.readFileSync(path.join(dataRoot, file), 'utf8')).chaId === 'bot')!
+        const desc = () => JSON.parse(fs.readFileSync(path.join(dataRoot, metadata), 'utf8')).desc
+        // Like the bot factory installer: rename a new file in, leave the old checksum.
+        const editExternally = () => {
+            const target = path.join(dataRoot, metadata)
+            const value = JSON.parse(fs.readFileSync(target, 'utf8'))
+            value.desc = 'external'
+            fs.writeFileSync(`${target}.tmp`, JSON.stringify(value, null, 2))
+            fs.renameSync(`${target}.tmp`, target)
+        }
+        return { repository, database, save, sync, metadata, desc, editExternally }
+    }
+
+    it('accepts a save that no other program interrupted', () => {
+        const f = fixture()
+        f.database.characters[1].chats[0].message.push({ role: 'char', data: 'yo', chatId: 'other-m2' })
+        const save = f.sync.beginSave()
+        observeWrites(save, () => f.save())
+        expect(save.settle()).toBeTypeOf('string')
+        expect(f.sync.hasExternalChanges()).toBe(false)
+    })
+
+    it('leaves a file edited during an unrelated save pending for review', () => {
+        const f = fixture()
+        f.database.characters[1].chats[0].message.push({ role: 'char', data: 'yo', chatId: 'other-m2' })
+        const save = f.sync.beginSave()
+        observeWrites(save, () => f.save())
+        f.editExternally()
+        expect(save.settle()).toBeNull()
+        expect(f.sync.hasExternalChanges()).toBe(true)
+        expect(f.sync.changedFiles()).toEqual([{ path: f.metadata, status: 'changed' }])
+    })
+
+    it('refuses to replace a file another program rewrote after the save began', () => {
+        const f = fixture()
+        f.database.characters[0].desc = 'app edit'
+        const save = f.sync.beginSave()
+        f.editExternally()
+        expect(() => observeWrites(save, () => f.save())).toThrow(expect.objectContaining({ code: 'CANONICAL_FILES_CHANGED' }))
+        expect(f.desc()).toBe('external')
+        expect(save.settle()).toBeNull()
+        expect(f.sync.hasExternalChanges()).toBe(true)
+        expect(f.sync.changedFiles()).toEqual([{ path: f.metadata, status: 'changed' }])
+    })
+
+    it('reports a file the app left unchanged as pending after the transaction stops', () => {
+        const f = fixture()
+        const save = f.sync.beginSave()
+        f.editExternally()
+        expect(() => observeWrites(save, () => f.save())).toThrow(expect.objectContaining({ code: 'CANONICAL_FILES_CHANGED' }))
+        save.settle()
+        expect(f.sync.hasExternalChanges()).toBe(true)
+        expect(f.desc()).toBe('external')
+    })
+})
