@@ -182,6 +182,51 @@ function atomicWriteFile(root, relativePath, value, options = {}) {
     return { path: target, checksum: digest, bytes: data.length };
 }
 
+// atomicWriteFile for content too large to hold in one Buffer: produce(write)
+// hands over the content piece by piece and the staged file is verified by
+// streaming it back. options.backup === false skips the .bak copy.
+function atomicWriteFileChunks(root, relativePath, produce, options = {}) {
+    const target = resolveInside(root, relativePath);
+    const directory = path.dirname(target);
+    fs.mkdirSync(directory, { recursive: true });
+    const temp = path.join(directory, `.${path.basename(target)}.${crypto.randomUUID()}.tmp`);
+    const hash = crypto.createHash('sha256');
+    let bytes = 0;
+    const fd = fs.openSync(temp, 'wx', 0o600);
+    try {
+        produce((chunk) => {
+            const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            hash.update(data);
+            bytes += data.length;
+            let offset = 0;
+            while (offset < data.length) offset += fs.writeSync(fd, data, offset, data.length - offset);
+        });
+        fs.fsyncSync(fd);
+    } catch (error) {
+        fs.closeSync(fd);
+        try { fs.unlinkSync(temp); } catch {}
+        throw error;
+    }
+    fs.closeSync(fd);
+    const digest = hash.digest('hex');
+    if (checksumFile(temp) !== digest) {
+        fs.unlinkSync(temp);
+        throw new Error(`Canonical file checksum verification failed: ${relativePath}`);
+    }
+
+    try {
+        if (options.backup !== false) preserveBackup(target);
+        fs.renameSync(temp, target);
+        replaceAtomic(`${target}.sha256`, Buffer.from(`${digest}\n`, 'utf8'));
+        fsyncDirectory(directory);
+        noteWrite(root, target);
+    } catch (error) {
+        try { fs.unlinkSync(temp); } catch {}
+        throw error;
+    }
+    return { path: target, checksum: digest, bytes };
+}
+
 function atomicWriteJson(root, relativePath, value, options = {}) {
     const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
     return atomicWriteFile(root, relativePath, bytes, {
@@ -534,6 +579,7 @@ function moveToTrash(root, relativePath) {
 
 module.exports = {
     atomicWriteFile,
+    atomicWriteFileChunks,
     atomicWriteJson,
     checksum,
     commitTransaction,

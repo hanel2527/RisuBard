@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { atomicWriteFile, atomicWriteJson, readVerifiedJson } = require('./file-store.cjs');
+const { atomicWriteFileChunks, atomicWriteJson, readVerifiedJson } = require('./file-store.cjs');
 const { maskSensitive } = require('./logs.cjs');
 
 const MAX_TOTAL_BYTES = 256 * 1024 * 1024;
@@ -29,7 +29,10 @@ const PURPOSES = [
     'prompt-assistant',
     'character-assistant',
 ];
-const INJECTION_KINDS = new Set(['systemPrompt', 'jailbreak', 'globalNote', 'authorNote', 'character', 'persona', 'lorebook', 'wiki', 'memory', 'exampleDialogue', 'chatHistory', 'instruction', 'tool', 'other']);
+const READ_CHUNK_BYTES = 1024 * 1024;
+const BODY_FIELDS = ['requestHeaders', 'requestBody', 'responseBody'];
+const USAGE_FIELDS = ['id', 'timestamp', 'category', 'source', 'purpose', 'chatId', 'sessionChatId', 'generationId', 'model', 'provider', 'status', 'success', 'aborted', 'route', 'streaming', 'durationMs', 'firstTokenMs', 'inputTokens', 'outputTokens', 'cachedTokens', 'reasoningTokens', 'clientId'];
+const INJECTION_KINDS =new Set(['systemPrompt', 'jailbreak', 'globalNote', 'authorNote', 'character', 'persona', 'lorebook', 'wiki', 'memory', 'exampleDialogue', 'chatHistory', 'instruction', 'tool', 'other']);
 
 function truncateBody(value, maxBytes) {
     if (typeof value !== 'string') return { text: value, truncated: false };
@@ -86,19 +89,72 @@ function normalizeEntry(entry) {
     };
 }
 
-function readJsonl(file) {
-    if (!fs.existsSync(file)) return [];
-    return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map((line, index) => {
-        try { return JSON.parse(line); } catch { throw new Error(`Invalid JSONL at ${file}:${index + 1}`); }
-    });
+// Both files can reach hundreds of MB, so they are read in fixed chunks and
+// parsed one line at a time; only what each caller keeps stays in memory.
+function forEachJsonl(file, onRow) {
+    if (!fs.existsSync(file)) return;
+    const fd = fs.openSync(file, 'r');
+    const buffer = Buffer.allocUnsafe(READ_CHUNK_BYTES);
+    let parts = []; let lineStart = 0; let lineNumber = 0; let position = 0;
+    const emit = (bytes, end) => {
+        lineNumber++;
+        const text = bytes.toString('utf8').replace(/\r$/, '');
+        if (text) {
+            let row;
+            try { row = JSON.parse(text); } catch { throw new Error(`Invalid JSONL at ${file}:${lineNumber}`); }
+            onRow(row, lineStart, end - lineStart);
+        }
+        lineStart = end;
+    };
+    try {
+        for (let read; (read = fs.readSync(fd, buffer, 0, buffer.length, position)) > 0; position += read) {
+            const chunk = buffer.subarray(0, read);
+            let from = 0;
+            for (let nl = chunk.indexOf(10); nl !== -1; nl = chunk.indexOf(10, from)) {
+                parts.push(chunk.subarray(from, nl));
+                emit(Buffer.concat(parts), position + nl + 1);
+                parts = []; from = nl + 1;
+            }
+            if (from < read) parts.push(Buffer.from(chunk.subarray(from)));
+        }
+        if (parts.length) emit(Buffer.concat(parts), position);
+    } finally { fs.closeSync(fd); }
 }
 
-function appendJsonl(file, rows) {
-    if (!rows.length) return;
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    const fd = fs.openSync(file, 'a', 0o600);
-    try { fs.writeSync(fd, rows.map(row => JSON.stringify(row)).join('\n') + '\n', null, 'utf8'); fs.fsyncSync(fd); }
+function readJsonlRange(file, offset, length) {
+    const buffer = Buffer.allocUnsafe(length);
+    const fd = fs.openSync(file, 'r');
+    try { let done = 0; while (done < length) { const read = fs.readSync(fd, buffer, done, length - done, offset + done); if (!read) break; done += read; } }
     finally { fs.closeSync(fd); }
+    return JSON.parse(buffer.toString('utf8').trim());
+}
+
+// Returns where each row landed so the bodies can be read back later.
+function appendJsonl(file, rows) {
+    if (!rows.length) return [];
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const lines = rows.map(row => Buffer.from(JSON.stringify(row) + '\n', 'utf8'));
+    const fd = fs.openSync(file, 'a', 0o600);
+    try {
+        let offset = fs.fstatSync(fd).size;
+        const spans = lines.map(line => { const span = { offset, length: line.length }; offset += line.length; return span; });
+        fs.writeSync(fd, Buffer.concat(lines)); fs.fsyncSync(fd);
+        return spans;
+    } finally { fs.closeSync(fd); }
+}
+
+function withoutBodies(row) {
+    const result = { ...row };
+    for (const field of BODY_FIELDS) delete result[field];
+    return result;
+}
+
+// Statistics only need these fields. Older usage rows also carried the full
+// request and response bodies, so they are projected on read.
+function toUsageRow(row) {
+    const result = {};
+    for (const field of USAGE_FIELDS) if (row[field] !== undefined) result[field] = row[field];
+    return result;
 }
 
 function summarize(rows) {
@@ -124,25 +180,55 @@ function createRequestLogs(opts = {}) {
     const minRows = opts.minRows ?? MIN_ROWS;
     const rotateEvery = opts.rotateEveryNRows ?? ROTATE_EVERY_N_ROWS;
     fs.mkdirSync(root, { recursive: true });
+    // Body-free request rows with the byte span of each full row in requests.jsonl;
+    // bodies are read back from disk only when asked for.
     let requests = null;
     let usage = null;
     let state = fs.existsSync(stateFile) ? readVerifiedJson(root, 'state.json') : { schemaVersion: 1, nextId: 1 };
     let insertedSinceRotate = 0;
-    const getRequests = () => requests ??= readJsonl(requestsFile);
-    const getUsage = () => usage ??= readJsonl(usageFile);
     const saveState = () => atomicWriteJson(root, 'state.json', state);
-    const rewrite = (relative, rows) => atomicWriteFile(root, relative, Buffer.from(rows.map(row => JSON.stringify(row)).join('\n') + (rows.length ? '\n' : ''), 'utf8'));
+    const rewrite = (relative, rows, options) => atomicWriteFileChunks(root, relative, write => {
+        for (let index = 0; index < rows.length; index += 500) write(rows.slice(index, index + 500).map(row => JSON.stringify(row) + '\n').join(''));
+    }, options);
+    const readFullRow = entry => readJsonlRange(requestsFile, entry.offset, entry.length);
+
+    function loadRequests() {
+        const entries = [];
+        forEachJsonl(requestsFile, (row, offset, length) => entries.push({ row: withoutBodies(row), offset, length }));
+        return entries;
+    }
+
+    function loadUsage() {
+        const rows = []; let legacy = false;
+        forEachJsonl(usageFile, row => { const compact = toUsageRow(row); if (Object.keys(row).length !== Object.keys(compact).length) legacy = true; rows.push(compact); });
+        // Rewrite once without the bodies older versions stored here. Reading
+        // already succeeded, so a failed rewrite only retries on the next start.
+        if (legacy) { try { rewrite('usage.jsonl', rows, { backup: false }); } catch {} }
+        return rows;
+    }
+
+    const getRequests = () => requests ??= loadRequests();
+    const getUsage = () => usage ??= loadUsage();
 
     function rotateNow() {
         insertedSinceRotate = 0;
-        const rows = getRequests();
-        let bytes = 0; let keepFrom = rows.length;
-        for (let index = rows.length - 1; index >= 0; index--) {
-            bytes += rows[index].sizeBytes || 0;
-            const count = rows.length - index;
+        const entries = getRequests();
+        let bytes = 0; let keepFrom = entries.length;
+        for (let index = entries.length - 1; index >= 0; index--) {
+            bytes += entries[index].row.sizeBytes || 0;
+            const count = entries.length - index;
             if (bytes <= maxTotalBytes || count <= minRows) keepFrom = index; else break;
         }
-        if (keepFrom > 0) { requests = rows.slice(keepFrom); rewrite('requests.jsonl', requests); }
+        if (keepFrom > 0) {
+            // Copy the kept tail of the file as bytes instead of re-serializing rows.
+            const start = entries[keepFrom]?.offset ?? fs.statSync(requestsFile).size;
+            atomicWriteFileChunks(root, 'requests.jsonl', write => {
+                const fd = fs.openSync(requestsFile, 'r'); const buffer = Buffer.allocUnsafe(READ_CHUNK_BYTES);
+                try { for (let read, position = start; (read = fs.readSync(fd, buffer, 0, buffer.length, position)) > 0; position += read) write(buffer.subarray(0, read)); }
+                finally { fs.closeSync(fd); }
+            });
+            requests = entries.slice(keepFrom).map(entry => ({ ...entry, offset: entry.offset - start }));
+        }
     }
 
     function addRequestLogBatch(entries) {
@@ -150,9 +236,9 @@ function createRequestLogs(opts = {}) {
         const rows = entries.slice(-MAX_BATCH_SIZE).filter(entry => entry && typeof entry === 'object' && typeof entry.url === 'string').map(entry => ({ id: state.nextId++, ...normalizeEntry(entry) }));
         if (!rows.length) return 0;
         const requestCache = getRequests();
-        const usageRows = rows.filter(row => row.category === 'llm');
+        const usageRows = rows.filter(row => row.category === 'llm').map(toUsageRow);
         const usageCache = getUsage();
-        appendJsonl(requestsFile, rows); requestCache.push(...rows);
+        const spans = appendJsonl(requestsFile, rows); rows.forEach((row, index) => requestCache.push({ row: withoutBodies(row), ...spans[index] }));
         appendJsonl(usageFile, usageRows); usageCache.push(...usageRows);
         saveState(); insertedSinceRotate += rows.length;
         if (insertedSinceRotate >= rotateEvery) rotateNow();
@@ -174,15 +260,12 @@ function createRequestLogs(opts = {}) {
 
     function queryRequestLogs(query = {}) {
         const limit = Math.min(Math.max(Number(query.limit) || 50, 1), 500);
-        return getRequests().filter(row => matches(row, query) && !(typeof query.beforeId === 'number' && row.id >= query.beforeId)).slice().sort((a, b) => b.id - a.id).slice(0, limit).map(row => {
-            const result = { ...row };
-            if (!query.withBodies) { delete result.requestHeaders; delete result.requestBody; delete result.responseBody; }
-            return result;
-        });
+        return getRequests().filter(({ row }) => matches(row, query) && !(typeof query.beforeId === 'number' && row.id >= query.beforeId)).sort((a, b) => b.row.id - a.row.id).slice(0, limit)
+            .map(entry => query.withBodies ? readFullRow(entry) : { ...entry.row });
     }
 
-    const countRequestLogs = (query = {}) => getRequests().filter(row => matches(row, query)).length;
-    const getRequestLog = id => getRequests().find(row => row.id === id) || null;
+    const countRequestLogs = (query = {}) => getRequests().filter(({ row }) => matches(row, query)).length;
+    const getRequestLog = id => { const entry = getRequests().find(({ row }) => row.id === id); return entry ? readFullRow(entry) : null; };
     function clearRequestLogs() { requests = []; rewrite('requests.jsonl', []); insertedSinceRotate = 0; }
 
     function queryUsage(query = {}) {
@@ -203,7 +286,7 @@ function createRequestLogs(opts = {}) {
         return { models: distinct('model'), categories: distinct('category'), sources: distinct('source') };
     }
     function clearUsage() { usage = []; rewrite('usage.jsonl', []); }
-    function storageStats() { const rows = getRequests(); return { requestCount: rows.length, requestBytes: rows.reduce((n, row) => n + (row.sizeBytes || 0), 0), usageCount: getUsage().length, maxTotalBytes }; }
+    function storageStats() { const rows = getRequests(); return { requestCount: rows.length, requestBytes: rows.reduce((n, { row }) => n + (row.sizeBytes || 0), 0), usageCount: getUsage().length, maxTotalBytes }; }
 
     function registerRoutes(app, { auth, activeSession } = {}) {
         const guard = auth ?? (async () => true); const sessionGuard = activeSession ?? (() => true);

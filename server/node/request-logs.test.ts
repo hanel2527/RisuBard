@@ -451,6 +451,95 @@ describe('usage table scope', () => {
     })
 })
 
+describe('large files', () => {
+    const storedRow = (id: number, overrides: Record<string, unknown> = {}) => ({
+        id, timestamp: Date.now(), category: 'llm', source: 'main', purpose: 'chat-response', chatId: `gen-${id}`, sessionChatId: 'chat-1',
+        generationId: `gen-${id}`, model: 'gpt-test', provider: 'openai', url: 'https://api.example.com', method: 'POST', status: 200,
+        success: true, aborted: false, route: 'proxy', streaming: true, durationMs: 1000, firstTokenMs: 100, inputTokens: 10, outputTokens: 5,
+        cachedTokens: 0, reasoningTokens: 0, injectionManifest: null, requestHeaders: '{}', requestBody: `body-${id}`, responseBody: `reply-${id}`,
+        responseType: 'text', errorMessage: null, truncated: false, sizeBytes: 20, clientId: null, ...overrides,
+    })
+    const seed = (dir: string, file: string, text: string) => {
+        fs.mkdirSync(path.join(dir, 'request-logs'), { recursive: true })
+        fs.writeFileSync(path.join(dir, 'request-logs', file), text)
+    }
+
+    it('reads existing files with CRLF, blank lines and rows longer than one read chunk', () => {
+        const dir = path.join(tmpDir, 'legacy-lines')
+        const long = '가'.repeat(700_000) // ~2 MB as UTF-8, spans several 1 MB chunks
+        seed(dir, 'requests.jsonl', [storedRow(1), storedRow(2, { requestBody: long }), storedRow(3)].map(row => JSON.stringify(row)).join('\r\n\r\n') + '\r\n')
+        const inst = createRequestLogs({ saveDir: dir })
+        try {
+            expect(inst.countRequestLogs({})).toBe(3)
+            expect(inst.getRequestLog(2).requestBody).toBe(long)
+            expect(inst.getRequestLog(3).responseBody).toBe('reply-3')
+            const withBodies = inst.queryRequestLogs({ withBodies: true })
+            expect(withBodies.map((row: { requestBody: string }) => row.requestBody)).toEqual(['body-3', long, 'body-1'])
+            expect(inst.addRequestLogBatch([entry({ requestBody: 'after-legacy' })])).toBe(1)
+            const bodies = inst.queryRequestLogs({ limit: 10, withBodies: true }).map((row: { requestBody: string }) => row.requestBody)
+            expect(bodies).toContain('after-legacy')
+            expect(bodies).toContain(long)
+        } finally {
+            inst.close()
+        }
+    })
+
+    it('still reads a usage file that carries request bodies, then drops them from it', () => {
+        const dir = path.join(tmpDir, 'legacy-usage')
+        seed(dir, 'usage.jsonl', [storedRow(1, { inputTokens: 7 }), storedRow(2, { inputTokens: 8, success: false })].map(row => JSON.stringify(row) + '\n').join(''))
+        const inst = createRequestLogs({ saveDir: dir })
+        try {
+            const usage = inst.queryUsage({})
+            expect(usage.total).toMatchObject({ requests: 2, failed: 1, inputTokens: 15, outputTokens: 10 })
+            expect(usage.byModel[0].model).toBe('gpt-test')
+            const usageFile = path.join(dir, 'request-logs', 'usage.jsonl')
+            const onDisk = fs.readFileSync(usageFile, 'utf8')
+            expect(onDisk).not.toContain('requestBody')
+            expect(onDisk).not.toContain('body-1')
+            expect(fs.existsSync(`${usageFile}.bak`)).toBe(false)
+        } finally {
+            inst.close()
+        }
+        const reopened = createRequestLogs({ saveDir: dir })
+        try {
+            expect(reopened.queryUsage({}).total.inputTokens).toBe(15)
+        } finally {
+            reopened.close()
+        }
+    })
+
+    it('writes usage rows without request or response bodies', () => {
+        logs.addRequestLogBatch([entry({ requestHeaders: '{"x":"header-text"}', requestBody: 'secret-prompt', responseBody: 'secret-reply' })])
+        const onDisk = fs.readFileSync(path.join(tmpDir, 'request-logs', 'usage.jsonl'), 'utf8')
+        expect(onDisk).not.toContain('secret-prompt')
+        expect(onDisk).not.toContain('secret-reply')
+        expect(onDisk).not.toContain('header-text')
+        expect(JSON.parse(onDisk.trim())).toMatchObject({ model: 'gpt-test', inputTokens: 100, outputTokens: 50, success: true })
+    })
+
+    it('serves the right bodies after rotation shifts the file and after a restart', () => {
+        const dir = path.join(tmpDir, 'rot-bodies')
+        const open = () => createRequestLogs({ saveDir: dir, maxTotalBytes: 10_000, minRows: 2, rotateEveryNRows: 1 })
+        const inst = open()
+        for (let i = 0; i < 10; i++) inst.addRequestLogBatch([entry({ requestBody: `${i}:`.padEnd(2000, 'X'), responseBody: `reply-${i}` })])
+        const ids = inst.queryRequestLogs({ limit: 100 }).map((row: { id: number }) => row.id)
+        expect(ids.length).toBeLessThan(10)
+        for (const id of ids) {
+            expect(inst.getRequestLog(id).requestBody.startsWith(`${id - 1}:`)).toBe(true)
+            expect(inst.getRequestLog(id).responseBody).toBe(`reply-${id - 1}`)
+        }
+        inst.close()
+        const reopened = open()
+        try {
+            const rows = reopened.queryRequestLogs({ limit: 100, withBodies: true })
+            expect(rows.map((row: { id: number }) => row.id)).toEqual(ids)
+            for (const row of rows) expect(row.responseBody).toBe(`reply-${row.id - 1}`)
+        } finally {
+            reopened.close()
+        }
+    })
+})
+
 // ─── HTTP routes ─────────────────────────────────────────────────────────────
 // Exercises the same wiring server.cjs uses (registerRoutes + auth guard), so
 // the query-string parsing and route ordering are covered end to end rather
