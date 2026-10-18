@@ -5,6 +5,7 @@ import { base64url, simplifySchema } from "src/ts/util"
 import { v4 } from "uuid"
 import { saveInlayedSignature, setInlayAsset, writeInlayImage, type InlaySignature } from "../files/inlays"
 import { extractJSON, getGeneralJSONSchema } from "../templates/jsonSchema"
+import { toGeminiResponseSchema } from "../../preset/adapter/geminiResponseSchema"
 import { callTool, decodeToolCall, encodeToolCall } from "../mcp/mcp"
 import { notifyError } from "src/ts/alert";
 import type { RequestDataArgumentExtended, requestDataResponse, StreamResponseChunk } from './request'
@@ -528,7 +529,7 @@ export async function requestGoogleCloudVertex(arg:RequestDataArgumentExtended):
     
     if(db.jsonSchemaEnabled || arg.schema){
         body.generation_config.response_mime_type = "application/json"
-        body.generation_config.response_schema = getGeneralJSONSchema(arg.schema, ['$schema','additionalProperties'])
+        body.generation_config.response_schema = toGeminiResponseSchema(getGeneralJSONSchema(arg.schema))
         console.log(body.generation_config.response_schema)
     }    
     
