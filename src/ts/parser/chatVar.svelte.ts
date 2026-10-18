@@ -65,3 +65,19 @@ export function setGlobalChatVar(key:string, value:string): void {
     }
     DBState.db.globalChatVariables[key] = value
 }
+
+// Script-side global write: always persists to the database so the value carries
+// over to other chats; a pinned copy in the target chat is kept in sync so reads
+// through getGlobalChatVar return the new value there too.
+export function setScriptGlobalChatVar(key:string, value:string, targetChat?:Chat): void {
+    const chat = targetChat ?? getSelectedChat()
+    DBState.db.globalChatVariables[key] = value
+    if(
+        !DBState.db.disableToggleBinding
+        && chat?.useLocallySetGlobalVariables
+        && chat.GLGlobalVariables
+        && Object.hasOwn(chat.GLGlobalVariables, key)
+    ){
+        chat.GLGlobalVariables[key] = value
+    }
+}

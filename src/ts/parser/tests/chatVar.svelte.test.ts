@@ -2,7 +2,7 @@ import fc from 'fast-check'
 import { writable } from 'svelte/store'
 import { beforeEach, expect, test, vi } from 'vitest'
 import { DBState } from '../../stores.svelte'
-import { getChatVar, getGlobalChatVar, setChatVar, setGlobalChatVar } from '../chatVar.svelte'
+import { getChatVar, getGlobalChatVar, setChatVar, setGlobalChatVar, setScriptGlobalChatVar } from '../chatVar.svelte'
 import { resetChatVariables } from './cbs/lib'
 import { risuChatParser } from '../parser.svelte'
 import type { Chat } from '../../storage/database.svelte'
@@ -254,6 +254,24 @@ test('ignores per-chat overrides while toggle binding is globally disabled', () 
   expect(chat.GLGlobalVariables.toggle_weather).toBe('local')
 
   DBState.db.disableToggleBinding = false
+})
+
+test('script global writes persist to the database even in a chat with pinned toggles', () => {
+  const chat = DBState.db.characters[0].chats[0] as typeof DBState.db.characters[0]['chats'][0] & {
+    useLocallySetGlobalVariables?: boolean
+    GLGlobalVariables?: Record<string, string>
+  }
+  chat.useLocallySetGlobalVariables = true
+  chat.GLGlobalVariables = { toggle_weather: 'local' }
+
+  setScriptGlobalChatVar('mha_img_scale', '70', chat)
+
+  expect(DBState.db.globalChatVariables.mha_img_scale).toBe('70')
+  expect(chat.GLGlobalVariables).toEqual({ toggle_weather: 'local' })
+  expect(getGlobalChatVar('mha_img_scale', chat)).toBe('70')
+
+  chat.useLocallySetGlobalVariables = false
+  chat.GLGlobalVariables = undefined
 })
 
 test('returns "null" for undefined variables', () => {

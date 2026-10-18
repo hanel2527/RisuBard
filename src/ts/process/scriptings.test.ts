@@ -8,6 +8,8 @@ const wasm = vi.hoisted(() => ({
   workers: [] as FakeWorker[],
 }))
 
+const globalVars = vi.hoisted(() => new Map<string, string>())
+
 class FakeLuaGlobal {
   values = new Map<string, unknown>()
   closed = false
@@ -38,6 +40,17 @@ class FakeLuaEngine {
           | undefined
         if (!setter) return 'missing'
         return [setter(id, '__scene', '"rain"'), setter(id, '__scene', '"rain"')]
+      })
+    }
+    if (source.includes('GLOBAL_VAR_PROBE')) {
+      this.global.set('globalVarProbe', (id: string) => {
+        const set = this.global.get('setGlobalVar') as (id: string, key: string, value: unknown) => void
+        const getGlobal = this.global.get('getGlobalVar') as (id: string, key: string) => string
+        set(id, 'mha_img_scale', 70)
+        set(id, 'toggle_detail', '1')
+        set(id, '', 'empty')
+        set('forged-id', 'mha_hagakure', 'visible')
+        return [getGlobal(id, 'mha_img_scale'), getGlobal(id, 'toggle_detail'), getGlobal(id, 'mha_hagakure')]
       })
     }
     if (source.includes('CONTEXT_REUSE_PROBE')) {
@@ -96,8 +109,9 @@ vi.mock('wasmoon', () => ({
 
 vi.mock(import('../parser/chatVar.svelte'), () => ({
   getChatVar: vi.fn(() => 'null'),
-  getGlobalChatVar: vi.fn(() => 'null'),
+  getGlobalChatVar: vi.fn((key: string) => globalVars.get(key) ?? 'null'),
   setChatVar: vi.fn(() => true),
+  setScriptGlobalChatVar: vi.fn((key: string, value: string) => { globalVars.set(key, value) }),
 }))
 
 vi.mock(import('../parser/parser.svelte'), () => ({
@@ -186,6 +200,21 @@ describe('lightweight chat scripting APIs', () => {
     ;(globals.get('getGlobalVar') as Function)('id', 'mode')
     expect(getChatVar).toHaveBeenCalledWith('owner', character, chats[0])
     expect(getGlobalChatVar).toHaveBeenCalledWith('mode', chats[0])
+  })
+
+  test('setGlobalVar writes a string global that getGlobalVar reads back, refusing toggle_ and empty keys', async () => {
+    globalVars.clear()
+    const { runScripted } = await loadScriptings()
+    const { setScriptGlobalChatVar } = await import('../parser/chatVar.svelte')
+    vi.mocked(setScriptGlobalChatVar).mockClear()
+    const chat = { id: 'A', message: [] }
+    const result = await runScripted('-- GLOBAL_VAR_PROBE', { mode: 'globalVarProbe', chat: chat as never })
+
+    expect(result.res).toEqual(['70', 'null', 'null'])
+    expect(setScriptGlobalChatVar).toHaveBeenCalledTimes(1)
+    expect(setScriptGlobalChatVar).toHaveBeenCalledWith('mha_img_scale', '70', chat)
+    expect(globalVars.has('toggle_detail')).toBe(false)
+    expect(globalVars.has('')).toBe(false)
   })
 
   test('exposes direct message fields without copying unrelated message data', async () => {

@@ -1,5 +1,5 @@
 import { asBuffer } from 'src/ts/util';
-import { getChatVar, getGlobalChatVar, setChatVar } from "../parser/chatVar.svelte";
+import { getChatVar, getGlobalChatVar, setChatVar, setScriptGlobalChatVar } from "../parser/chatVar.svelte";
 import { hasher, type simpleCharacterArgument, risuChatParser } from "../parser/parser.svelte";
 import { LuaEngine, LuaFactory } from "wasmoon";
 import { getCurrentCharacter, getCurrentChat, getDatabase, setDatabase, type Chat, type character, type triggerscript } from "../storage/database.svelte";
@@ -149,6 +149,16 @@ export async function runScripted(code:string, arg:{
             })
             declareAPI('getGlobalVar', (id:string, key:string) => {
                 return getGlobalChatVar(key, ScriptingEngineState.chat)
+            })
+            declareAPI('setGlobalVar', (id:string, key:string, value:string) => {
+                if(!ScriptingSafeIds.has(id) && !ScriptingEditDisplayIds.has(id)){
+                    return
+                }
+                // toggle_ keys belong to preset and module toggles; scripts must not flip them.
+                if(typeof key !== 'string' || key === '' || key.startsWith('toggle_')){
+                    return
+                }
+                setScriptGlobalChatVar(key, String(value ?? ''), ScriptingEngineState.chat)
             })
             declareAPI('stopChat', (id:string) => {
                 if(!ScriptingSafeIds.has(id)){
