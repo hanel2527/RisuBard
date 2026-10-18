@@ -734,6 +734,18 @@ export class NodeStorage{
         return this.cacheLiveFileMonitoring(data)
     }
 
+    // One read of a character's assets folder: files added or replaced there become its assets.
+    async scanCharacterAssets(characterId: string): Promise<{ changed: boolean, etag?: string | null, snapshot?: import('./liveFileSync').LiveFileSnapshot }> {
+        const response = await this.authFetch('/api/live-files/scan-assets', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ characterId }),
+        })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data?.error || `Asset folder scan failed (${response.status})`)
+        return { changed: data?.changed === true, etag: data?.etag ?? null, snapshot: data?.snapshot }
+    }
+
     async getExternalChanges(): Promise<ExternalChangesPending | null> {
         const response = await this.authFetch('/api/external-changes', { method: 'GET' })
         const data = await response.json()

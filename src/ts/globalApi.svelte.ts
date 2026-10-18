@@ -48,6 +48,8 @@ let refreshLiveFilesImpl: (() => Promise<void>) | null = null
 export async function refreshLiveFiles() {
     await refreshLiveFilesImpl?.()
 }
+// Merges a server metadata snapshot into the open tab; set while the save runtime runs.
+let applyLiveSnapshotImpl: ((snapshot: LiveFileSnapshot, etag: string | null | undefined) => Promise<void>) | null = null
 
 // Keep recovery available even when browser storage is full or unavailable.
 export const liveFileConflictRecovery: { time: string, conflicts: LiveFileConflict[] }[] = []
@@ -389,6 +391,36 @@ export function setPatchSyncBaseline(data: Database | null) {
     patchSyncBaseline = data ? safeStructuredClone(data) as Database : null
 }
 
+// Reads the character's assets folder once (the server no longer watches it):
+// files added or replaced there become its assets, merged into the open tab.
+export const assetFolderScan = $state({ busy: false })
+export async function scanCharacterAssetFolder(characterId: string) {
+    if (assetFolderScan.busy) return
+    assetFolderScan.busy = true
+    try {
+        await requestImmediateSave({ flushServer: true, rejectOnFailure: true })
+        const result = await forageStorage.scanCharacterAssets(characterId)
+        if (!result.changed) {
+            notifyInfo(language.assetFolderScanNone)
+            return
+        }
+        if (result.snapshot && applyLiveSnapshotImpl) {
+            await applyLiveSnapshotImpl(result.snapshot, result.etag)
+            notifyInfo(language.assetFolderScanDone)
+            return
+        }
+        try { sessionStorage.setItem('risu-asset-folder-reload', '1') } catch {}
+        location.reload()
+    } catch (error) {
+        notifyError(language.assetFolderScanFailed, {
+            description: error instanceof Error ? error.message : String(error),
+            source: 'asset-folder-scan',
+        })
+    } finally {
+        assetFolderScan.busy = false
+    }
+}
+
 export async function toggleExternalEditMode() {
     if (externalEditMode.busy) return
     const starting = !externalEditMode.active
@@ -543,6 +575,10 @@ export async function saveDb() {
         if (sessionStorage.getItem('risu-external-edit-reload')) {
             sessionStorage.removeItem('risu-external-edit-reload')
             setTimeout(() => notifyInfo(language.externalEditModeReloaded), 1500)
+        }
+        if (sessionStorage.getItem('risu-asset-folder-reload')) {
+            sessionStorage.removeItem('risu-asset-folder-reload')
+            setTimeout(() => notifyInfo(language.assetFolderScanDone), 1500)
         }
     } catch { /* storage unavailable — skip the notice */ }
 
@@ -708,6 +744,14 @@ export async function saveDb() {
         if (gotChannel) throw new Error(language.sessionSavePausedTitle)
     }
     refreshLiveFilesImpl = refreshWithSessionCheck
+    const applySnapshotInPlace = (snapshot: LiveFileSnapshot, etag: string | null | undefined) => createLiveFileRefresh({
+        isActive: () => saveRuntime.isActive() && !gotChannel,
+        getInFlight: () => saveInFlight,
+        setInFlight: operation => { saveInFlight = operation },
+        sync: () => applyRemoteSnapshot(snapshot, etag),
+    })()
+    // The in-place merge needs the patch-sync baseline; without it the scan reloads the page.
+    if (supportsPatchSync) applyLiveSnapshotImpl = applySnapshotInPlace
     // With the review option on, look for external edits every few seconds while visible.
     const externalReviewTimer = setInterval(() => {
         if (getDatabase()?.externalChangeReview !== true || document.hidden || saveInFlight || gotChannel) return
@@ -750,6 +794,7 @@ export async function saveDb() {
         liveSignals.close()
         document.removeEventListener('visibilitychange', catchUpLiveFiles)
         if (refreshLiveFilesImpl === refreshWithSessionCheck) refreshLiveFilesImpl = null
+        if (applyLiveSnapshotImpl === applySnapshotInPlace) applyLiveSnapshotImpl = null
     })
 
     function hasTrackedChanges(toSave: toSaveType) {

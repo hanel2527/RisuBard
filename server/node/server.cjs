@@ -1197,14 +1197,15 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
     }
 }
 
-function adoptExternallyChangedCanonicalProjection(liveOnly = false) {
+// scanned: a reconcile result already produced by an explicit asset-folder scan.
+function adoptExternallyChangedCanonicalProjection(liveOnly = false, scanned = null) {
     if (!canonicalProjectionReady) return null
     // Disabling watchers/polls must not disable mandatory revision reconciliation
     // on ordinary reads and saves (including a missing/stale acceptance record).
     // An interrupted adoption still resumes regardless of the monitoring setting.
     if (liveOnly && !liveCharacterFiles.isEnabled() && !liveFilesAdoption) return null
     try {
-    const fresh = (liveCharacterFiles.isEnabled()
+    const fresh = scanned || (liveCharacterFiles.isEnabled()
         ? liveCharacterFiles.reconcile({ verifyMetadata: liveOnly }) : null)
         || (!liveOnly && canonicalProjectionSync.loadExternalChanges())
     if (!fresh && !liveFilesAdoption) return null
@@ -3585,6 +3586,41 @@ app.get('/api/external-edit/status', async (req, res) => {
 })
 
 app.get('/api/live-files/events', sessionAuthMiddleware, (req, res) => liveFileEvents.connect(req, res))
+
+// Reads one character's assets folder once (external monitoring is retired): files
+// added or replaced there become that character's assets. The client reloads after a change.
+app.post('/api/live-files/scan-assets', async (req, res, next) => {
+    if (!await checkAuth(req, res)) return
+    const characterId = req.body?.characterId
+    if (typeof characterId !== 'string' || !characterId) return res.status(400).json({ error: 'characterId is required' })
+    if (!checkActiveSession(req, res)) return
+    try {
+        await queueStorageOperation(async () => {
+            if (externalEditSession.isActive() || liveFilesAdoption) {
+                return res.status(409).json({ code: 'LIVE_FILES_BUSY', error: 'Finish external editing or pending recovery before scanning assets' })
+            }
+            // Persist acknowledged writes first so the scan's baseline is the saved state.
+            await flushPendingDbWithinQueue({ materialize: false })
+            if (liveFilesPendingWrites) {
+                return res.status(409).json({ code: 'LIVE_FILES_PENDING', error: 'Finish pending saves before scanning assets' })
+            }
+            let scanned
+            try { scanned = liveCharacterFiles.scanCharacterAssets(characterId) }
+            catch (error) {
+                if (error?.code === 'CHARACTER_NOT_FOUND') return res.status(404).json({ code: error.code, error: error.message })
+                throw error
+            }
+            if (!scanned) return res.json({ changed: false })
+            const adopted = adoptExternallyChangedCanonicalProjection(false, scanned)
+            liveFileEvents.notify()
+            // The open tab merges this character's metadata in place instead of reloading.
+            const snapshot = metadataSnapshot(dbCache[DB_HEX_KEY] || userDataRepository.exportLegacyDatabase({ metadataOnly: true }))
+            snapshot.characters = snapshot.characters.filter(character => character.chaId === characterId)
+            delete snapshot.chatMetadata
+            res.json({ changed: true, etag: adopted?.etag ?? dbEtag, snapshot })
+        })
+    } catch (error) { next(error) }
+})
 
 app.get('/api/live-files/monitoring', async (req, res) => {
     if (!await checkAuth(req, res)) return

@@ -99,6 +99,11 @@ export class AutoStorage{
         return this.realStorage.getExternalChanges()
     }
 
+    async scanCharacterAssets(characterId: string) {
+        await this.Init()
+        return this.realStorage.scanCharacterAssets(characterId)
+    }
+
     async resolveExternalChanges(decision: 'accept' | 'keep', revision: string) {
         await this.Init()
         return this.realStorage.resolveExternalChanges(decision, revision)

@@ -89,6 +89,28 @@ test.each(['legacy', 'v3'])('running server adopts metadata edited while the app
         expect(await decodeRisuSave(Buffer.from(await legacyChat.arrayBuffer()))).toMatchObject({
             id: legacyId, name: 'Legacy chat', message: [{ role: 'user', data: 'Preserved legacy message' }],
         })
+        // An explicit asset-folder read adopts an image dropped in by hand; monitoring stays off.
+        const assetsDir = path.join(dataRoot, characterPath, 'assets')
+        fs.mkdirSync(assetsDir, { recursive: true })
+        fs.writeFileSync(path.join(assetsDir, 'dropped.webp'), 'image bytes')
+        const scanUrl = `${base}/api/live-files/scan-assets`
+        const scanBody = (characterId: string) => ({ method: 'POST', headers, body: JSON.stringify({ characterId }) })
+        expect((await fetch(scanUrl, scanBody('missing'))).status).toBe(404)
+        const scan = await fetch(scanUrl, scanBody('one'))
+        expect(scan.status, await scan.clone().text()).toBe(200)
+        const scanned = await scan.json()
+        expect(scanned).toMatchObject({ changed: true })
+        // The open tab merges this snapshot instead of reloading the page.
+        expect(scanned.snapshot.characters.map((character: { chaId: string }) => character.chaId)).toEqual(['one'])
+        expect(scanned.snapshot.characters[0].additionalAssets).toEqual([['dropped', expect.stringMatching(/^assets\/live-.*\.webp$/), 'webp']])
+        expect(scanned.snapshot.chatMetadata).toBeUndefined()
+        const scannedRead = await fetch(`${base}/api/read`, { headers: { ...headers, 'file-path': Buffer.from('database/database.bin').toString('hex') } })
+        const scannedDb = await decodeRisuSave(Buffer.from(await scannedRead.arrayBuffer()))
+        expect(scannedDb.characters[0].additionalAssets).toEqual([['dropped', expect.stringMatching(/^assets\/live-.*\.webp$/), 'webp']])
+        const assetRead = await fetch(`${base}/api/read`, { headers: { ...headers, 'file-path': Buffer.from(scannedDb.characters[0].additionalAssets[0][1]).toString('hex') } })
+        expect(Buffer.from(await assetRead.arrayBuffer()).toString()).toBe('image bytes')
+        expect(await (await fetch(scanUrl, scanBody('one'))).json()).toEqual({ changed: false })
+        expect((await (await fetch(monitoringUrl, { headers })).json()).enabled).toBe(false)
     } finally {
         child.kill()
         if (child.exitCode === null) await new Promise(resolve => child.once('exit', resolve))
