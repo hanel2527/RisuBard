@@ -49,6 +49,8 @@ export const modelProfileReplaceTarget = writable<string | null>(null)
 // for editing immediately. Consumed (cleared) by ModelPresetSettings.
 export const openModelPresetEditId = writable<string | null>(null)
 export const openModuleListStore = writable(false)
+// Set to a module id so the Module settings page opens its editor. Consumed (cleared) by ModuleSettings.
+export const openModuleEditId = writable<string | null>(null)
 export const risuBardGalleryOpen = writable(false)
 export const promptAssistantOpen = writable(false)
 // Asks the Prompt V2 editor to select and focus a block of the active preset.
