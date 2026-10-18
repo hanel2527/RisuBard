@@ -65,6 +65,10 @@
         health?: NarrativeMemoryWikiMarkdown['health']
         locked?: boolean
         mobileLayout?: boolean
+        /** Desktop focus view: fold the type, name and alias fields into the action row. */
+        compact?: boolean
+        fieldsExpanded?: boolean
+        onFieldsExpandedChange?: (expanded: boolean) => void
         selectedId?: string
         onChanged?: () => void | Promise<void>
         onSelected?: (documentId: string) => void
@@ -87,6 +91,9 @@
         },
         locked = false,
         mobileLayout = false,
+        compact = false,
+        fieldsExpanded = false,
+        onFieldsExpandedChange,
         selectedId = $bindable(''),
         onChanged,
         onSelected,
@@ -97,6 +104,8 @@
         onSearch,
     }: Props = $props()
     let creating = $state(false)
+    // 새 문서는 이름을 입력해야 하므로 집중 보기에서도 입력 줄을 보여 준다.
+    let showFields = $derived(!compact || fieldsExpanded || creating)
     let type = $state<MarkdownWikiDocumentType>('character')
     let title = $state('')
     let aliasesText = $state('')
@@ -723,6 +732,7 @@
     class:editor-collapsed={!editorExpanded}
     class:editor-focus={editorFocus}
     class:mobile-layout={mobileLayout}
+    class:compact
     data-wiki-editor
     data-tree-expanded={treeExpanded}
     data-editor-expanded={editorExpanded}
@@ -925,6 +935,7 @@
 
     <div id="risubard-wiki-editor-pane" class="editor-pane">
         <header class="editor-header">
+            {#if showFields}
             <div class="editor-title-row" data-wiki-title-row>
                 <label>
                     <span>타입</span>
@@ -949,7 +960,8 @@
                     <input aria-label="별칭" bind:value={aliasesText} maxlength="3000" readonly={readOnly} placeholder="쉼표로 구분" />
                 </label>
             </div>
-            {#if selected?.retrievalMetadata}
+            {/if}
+            {#if showFields && selected?.retrievalMetadata}
                 <div class="retrieval-metadata" data-wiki-retrieval-metadata>
                     {#if selected.retrievalMetadata.keywords.length}
                         <span>검색어: {selected.retrievalMetadata.keywords.join(', ')}</span>
@@ -961,6 +973,21 @@
                 </div>
             {/if}
             <div class="editor-actions" data-wiki-action-toolbar>
+                {#if compact}
+                    <button
+                        type="button"
+                        class="fields-toggle"
+                        data-wiki-fields-toggle
+                        aria-expanded={showFields}
+                        aria-controls="risubard-wiki-editor-pane"
+                        title={showFields ? '타입, 이름, 별칭 접기' : '타입, 이름, 별칭 펼치기'}
+                        disabled={creating}
+                        onclick={() => onFieldsExpandedChange?.(!fieldsExpanded)}
+                    >
+                        <ChevronDownIcon size={15} class={showFields ? '' : 'collapsed'} />
+                        <span>{title || (creating ? '새 문서' : '문서를 선택하세요')}</span>
+                    </button>
+                {/if}
                 {#if selected && selected.sourceMessageIds.length > 0 && onNavigateSource}
                     {@const localSourceIds = selected.sourceMessageIds.filter(id => !id.startsWith('inherited:'))}
                     <span class="editor-source-action" data-wiki-source-action>
@@ -1146,6 +1173,32 @@
     .title-field { flex: 1 1 12rem; }
     .aliases-field { flex: 1 1 12rem; }
     .retrieval-metadata { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; font-size: 0.75rem; color: var(--risu-theme-textcolor2); overflow-wrap: anywhere; }
+    .fields-toggle {
+        display: inline-flex;
+        flex: 0 1 auto;
+        min-width: 0;
+        min-height: 2rem;
+        align-items: center;
+        gap: .35rem;
+        margin-right: auto;
+        padding: .25rem .5rem .25rem .3rem;
+        border: 1px solid transparent;
+        border-radius: .32rem;
+        color: var(--risu-theme-textcolor);
+        background: transparent;
+        font-size: .78rem;
+        font-weight: 700;
+        cursor: pointer;
+    }
+    .fields-toggle span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fields-toggle :global(svg) { flex: 0 0 auto; color: var(--risu-theme-textcolor2); transition: transform .15s ease-out; }
+    .fields-toggle :global(svg.collapsed) { transform: rotate(-90deg); }
+    .fields-toggle:hover:not(:disabled) { border-color: var(--risu-theme-darkborderc); background: color-mix(in srgb, var(--risu-theme-primary) 9%, transparent); }
+    .fields-toggle:focus-visible { outline: 2px solid color-mix(in srgb, var(--risu-theme-primary) 70%, transparent); outline-offset: 1px; }
+    .fields-toggle:disabled { cursor: default; }
+    .wiki-editor.compact .editor-actions { border-top: 0; padding-block: .3rem; }
+    .wiki-editor.compact .editor-title-row + .editor-actions,
+    .wiki-editor.compact .retrieval-metadata + .editor-actions { border-top: 1px solid color-mix(in srgb, var(--risu-theme-darkborderc) 60%, transparent); }
     .editor-actions { display: flex; min-width: 0; flex-wrap: nowrap; align-items: center; justify-content: flex-end; gap: .25rem; overflow-x: auto; padding: .45rem .75rem; border-top: 1px solid color-mix(in srgb, var(--risu-theme-darkborderc) 60%, transparent); }
     .editor-source-action { display: inline-flex; flex: 0 0 auto; margin-right: auto; }
     .markdown-preview-toggle { display: inline-flex; flex: 0 0 auto; min-height: 2rem; align-items: center; gap: .32rem; padding: 0 .45rem; border: 1px solid var(--risu-theme-darkborderc); border-radius: .34rem; color: var(--risu-theme-textcolor2); font: 700 .67rem/1 ui-monospace, monospace; cursor: pointer; user-select: none; }
@@ -1219,6 +1272,7 @@
     @container wiki-editor-pane (max-width: 32rem) {
         .editor-actions :global(button) { width: 2rem; padding-inline: .35rem; }
         .editor-actions .editor-source-action :global(button) { width: auto; padding-inline: .55rem; }
+        .editor-actions .fields-toggle { width: auto; padding-inline: .3rem .5rem; }
         .editor-actions [data-wiki-action-label] { display: none; }
     }
     .wiki-editor.mobile-layout {
@@ -1363,6 +1417,7 @@
 
     @media (prefers-reduced-motion: reduce) {
         .tree-panel-header :global(svg:last-child),
+        .fields-toggle :global(svg),
         .file-tree { transition: none; }
     }
 </style>

@@ -18,6 +18,8 @@
         MonitorIcon,
         SmartphoneIcon,
         XCircleIcon,
+        Maximize2Icon,
+        Minimize2Icon,
     } from '@lucide/svelte'
     import ShButton from 'src/lib/UI/GUI/ShButton.svelte'
     import ShDialog from 'src/lib/UI/GUI/ShDialog.svelte'
@@ -242,7 +244,11 @@
     let workspaceHeight = $state(normalizeMemoryWikiWorkspaceHeight(
         DBState.db.risuBardMemoryWorkspaceHeight
     ))
-    let commandExpanded = $state(false)
+    let commandExpanded = $state(DBState.db.risuBardMemoryCommandExpanded === true)
+    let compactView = $state(DBState.db.risuBardMemoryCompactView === true)
+    let editorFieldsExpanded = $state(DBState.db.risuBardMemoryEditorFieldsExpanded === true)
+    // 집중 보기는 데스크톱 전용이다. 모바일은 자체 접기 레이아웃을 쓴다.
+    let compactActive = $derived(compactView && layoutMode === 'desktop')
     let editorFocus = $state(false)
     let helpOpen = $state(false)
     let selectedMarkdownId = $state('')
@@ -364,6 +370,24 @@
         media?.addEventListener('change', syncLayout)
         return () => media?.removeEventListener('change', syncLayout)
     })
+
+    function setCommandExpanded(value: boolean) {
+        commandExpanded = value
+        DBState.db.risuBardMemoryCommandExpanded = value
+    }
+
+    function setEditorFieldsExpanded(value: boolean) {
+        editorFieldsExpanded = value
+        DBState.db.risuBardMemoryEditorFieldsExpanded = value
+    }
+
+    function toggleCompactView() {
+        compactView = !compactView
+        DBState.db.risuBardMemoryCompactView = compactView
+        if (!compactView) return
+        setCommandExpanded(false)
+        setEditorFieldsExpanded(false)
+    }
 
     function toggleLayout() {
         layoutManuallySelected = true
@@ -835,6 +859,7 @@
     class="memory-wiki-dock"
     class:closed={!open}
     class:editor-focus={editorFocus}
+    class:compact-view={compactActive}
     class:settings-open={settingsOpen}
     class:mobile-layout={layoutMode === 'mobile'}
     class:desktop-layout={layoutMode === 'desktop'}
@@ -842,6 +867,7 @@
     data-memory-layout={layoutMode}
     data-open={open}
     data-editor-focus={editorFocus}
+    data-memory-compact-view={compactActive}
     bind:this={dockElement}
     style:flex-basis={`${dockRatio * 100}%`}
     aria-label={language.risuBardMemoryWiki}
@@ -889,9 +915,7 @@
                 </button>
             </div>
             </div>
-            <button class="dock-close" type="button" aria-label="BardWiki 닫기" onclick={() => open = false}>
-                <PanelRightCloseIcon size={18} />
-            </button>
+            {#if !compactActive}{@render dockWindowActions()}{/if}
         </div>
         <div class="dock-views-shell">
         <nav class="dock-views" aria-label="BardWiki 보기" bind:this={dockViewsElement} onscroll={updateDockViewsOverflow}>
@@ -1048,6 +1072,9 @@
                 </button>
             {/if}
         </div>
+        {#if compactActive}
+            <div class="dock-compact-actions">{@render dockWindowActions()}</div>
+        {/if}
         {#if wiki?.mode === 'markdown'}
             <section
                 class="settings-popover"
@@ -1225,6 +1252,9 @@
                             onNavigateSource={onNavigateStorySource}
                             highlightedDocumentIds={bardChatUpdatedIds}
                             mobileLayout={layoutMode === 'mobile'}
+                            compact={compactActive}
+                            fieldsExpanded={editorFieldsExpanded}
+                            onFieldsExpandedChange={setEditorFieldsExpanded}
                         />
                     </div>
                     {#if onExecuteWikiCommand && !rebootJob}
@@ -1249,7 +1279,7 @@
                                     data-wiki-toggle-command
                                     aria-expanded={commandExpanded}
                                     aria-controls="risubard-wiki-command-terminal"
-                                    onclick={() => commandExpanded = !commandExpanded}
+                                    onclick={() => setCommandExpanded(!commandExpanded)}
                                 >
                                     <SquareTerminalIcon size={17} />
                                     <strong>BARDCHAT</strong>
@@ -1457,6 +1487,25 @@
             {language.cancel}
         </ShButton>
     </div>
+{/snippet}
+
+{#snippet dockWindowActions()}
+    {#if layoutMode === 'desktop'}
+        <button
+            type="button"
+            class="dock-close dock-compact-toggle"
+            data-memory-compact-toggle
+            aria-pressed={compactActive}
+            aria-label={compactActive ? '집중 보기 끄기' : '집중 보기'}
+            title={compactActive ? '집중 보기 끄기: 헤더, 편집 바, BardChat 펼치기' : '집중 보기: 헤더, 편집 바, BardChat을 한 줄로 접기'}
+            onclick={toggleCompactView}
+        >
+            {#if compactActive}<Minimize2Icon size={17} />{:else}<Maximize2Icon size={17} />{/if}
+        </button>
+    {/if}
+    <button class="dock-close" type="button" aria-label="BardWiki 닫기" onclick={() => open = false}>
+        <PanelRightCloseIcon size={18} />
+    </button>
 {/snippet}
 
 <RisuBardMemoryWikiHelp bind:open={helpOpen} />
@@ -1759,6 +1808,17 @@
         box-shadow: 0 1rem 2.8rem color-mix(in srgb, var(--color-shadow) 38%, transparent);
     }
     .dock-close { flex: 0 0 auto; padding-inline: .38rem; }
+    .dock-compact-toggle[aria-pressed='true'] { color: var(--risu-theme-textcolor); }
+    .memory-wiki-dock.compact-view .dock-header {
+        flex-direction: row;
+        align-items: center;
+        gap: .35rem;
+        padding: .3rem .5rem .3rem .55rem;
+    }
+    .memory-wiki-dock.compact-view .dock-titlebar { display: none; }
+    .memory-wiki-dock.compact-view .dock-views-shell { flex: 1 1 auto; }
+    .memory-wiki-dock.compact-view .dock-views { min-height: 2.5rem; padding-block: .15rem; }
+    .dock-compact-actions { display: flex; flex: 0 0 auto; align-items: center; gap: .15rem; }
     .reboot-choice-intro {
         margin: 0 0 .65rem;
         color: var(--risu-theme-textcolor2);
@@ -2057,11 +2117,13 @@
         background: color-mix(in srgb, var(--risu-theme-darkbg) 94%, var(--color-bgcolor));
         box-shadow: 0 -.6rem 1.8rem color-mix(in srgb, var(--color-shadow) 16%, transparent);
     }
+    .memory-wiki-dock.compact-view .portrait-command-header,
     .memory-wiki-dock.mobile-layout .portrait-command-header {
         display: block;
         min-width: 0;
         border-bottom: 1px solid var(--risu-theme-darkborderc);
     }
+    .memory-wiki-dock.compact-view .portrait-command-header > button,
     .memory-wiki-dock.mobile-layout .portrait-command-header > button {
         display: flex;
         width: 100%;
@@ -2078,23 +2140,45 @@
     .memory-wiki-dock.mobile-layout .portrait-command-header > button:active {
         background: color-mix(in srgb, var(--risu-theme-primary) 13%, transparent);
     }
+    .memory-wiki-dock.compact-view .portrait-command-header > button:focus-visible,
     .memory-wiki-dock.mobile-layout .portrait-command-header > button:focus-visible {
         outline: 2px solid var(--risu-theme-primary);
         outline-offset: -2px;
     }
+    .memory-wiki-dock.compact-view .portrait-command-header strong,
     .memory-wiki-dock.mobile-layout .portrait-command-header strong {
         flex: 1;
         min-width: 0;
         font-size: .78rem;
     }
+    .memory-wiki-dock.compact-view .portrait-command-header :global(svg:last-child),
     .memory-wiki-dock.mobile-layout .portrait-command-header :global(svg:last-child) {
         flex: 0 0 auto;
         transition: transform .18s ease-out;
     }
+    .memory-wiki-dock.compact-view .portrait-command-header :global(svg:last-child.collapsed),
     .memory-wiki-dock.mobile-layout .portrait-command-header :global(svg:last-child.collapsed) {
         transform: rotate(-90deg);
     }
     .memory-wiki-dock.mobile-layout .command-terminal-region { padding: .45rem .55rem .55rem; }
+    .memory-wiki-dock.compact-view .markdown-wiki.workspace-split.command-collapsed {
+        grid-template-rows: minmax(0, 1fr) 0 2.5rem;
+    }
+    .memory-wiki-dock.compact-view .command-collapsed > .workspace-resizer { display: none; }
+    .memory-wiki-dock.compact-view .markdown-command-pane {
+        display: grid;
+        grid-template-rows: 2.5rem minmax(0, 1fr);
+        padding: 0;
+        border-top: 1px solid var(--risu-theme-darkborderc);
+    }
+    .memory-wiki-dock.compact-view .markdown-command-pane.collapsed .portrait-command-header { border-bottom: 0; }
+    .memory-wiki-dock.compact-view .portrait-command-header > button { min-height: 2.5rem; padding-block: .25rem; cursor: pointer; }
+    .memory-wiki-dock.compact-view .portrait-command-header > button:hover {
+        background: color-mix(in srgb, var(--risu-theme-primary) 9%, transparent);
+    }
+    .memory-wiki-dock.compact-view .command-terminal-region { padding: .4rem .75rem .65rem; }
+    .memory-wiki-dock.compact-view .markdown-command-pane.collapsed .command-terminal-region { display: none; }
+    .memory-wiki-dock.compact-view .markdown-command-pane :global(.terminal-title) { display: none; }
     .memory-wiki-dock.mobile-layout .markdown-command-pane.collapsed .command-terminal-region { display: none; }
     .memory-wiki-dock.mobile-layout .markdown-wiki.workspace-split.editor-focus {
         grid-template-rows: minmax(0, 1fr);

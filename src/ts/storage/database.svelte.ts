@@ -1843,6 +1843,10 @@ export interface Database{
     }
     risuBardMemoryDockRatio?: number
     risuBardMemoryWorkspaceHeight?: number
+    /** Desktop BardWiki focus view: one-line header, editor bar and BardChat. */
+    risuBardMemoryCompactView?: boolean
+    risuBardMemoryCommandExpanded?: boolean
+    risuBardMemoryEditorFieldsExpanded?: boolean
     showRisuBardSaveLoadShortcuts?: boolean
     risuBardAutosaveInterval?: number
     chatUploadChunkMiB?: number
