@@ -15,6 +15,7 @@ import { savePainterGalleryRecord } from './gallery'
 import { migrateLegacyDraft } from './subjectPrompt'
 import { painterSelection, painterInsertionRequest } from './selectionState'
 import { get } from 'svelte/store'
+import { untrack } from 'svelte'
 import { ensureChatHydrated } from '../storage/chatStorage'
 import { resolvePersonaById } from '../personaScopes'
 import { createPainterSettings, painterGenerationSettings, painterImageSize, painterSizeMode, type PainterSettings } from './types'
@@ -87,8 +88,23 @@ export class PainterSession {
         if (!chat || chat._placeholder || !Array.isArray(chat.message)) throw new Error('이 챗을 먼저 열어 주세요.')
         return chat
     }
-    get data() { return this.chat.bardPainter ??= createPainterChatData(this.defaultStyle.id) }
-    get bot() { return this.character.bardPainter ??= { identities: [], outfits: [] } }
+    // The screen reads these inside $derived, where writing state throws
+    // state_unsafe_mutation. A reloaded chat or bot can arrive without painter data
+    // after this session was cached, so create it untracked and return the live proxy.
+    get data() {
+        const chat = this.chat
+        return chat.bardPainter ?? untrack(() => {
+            chat.bardPainter ??= createPainterChatData(this.defaultStyle.id)
+            return chat.bardPainter
+        })
+    }
+    get bot() {
+        const character = this.character
+        return character.bardPainter ?? untrack(() => {
+            character.bardPainter ??= { identities: [], outfits: [] }
+            return character.bardPainter
+        })
+    }
     get globalLibrary(): PainterLibraryData { return DBState.db.bardPainterLibrary ?? { identities: [], outfits: [] } }
     /** Bot-only outfits plus the global outfits selected for this bot. */
     get botCatalog(): PainterLibraryData { return botOutfitCatalog(this.bot, this.globalLibrary) }
