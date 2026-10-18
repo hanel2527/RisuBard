@@ -251,8 +251,9 @@ function createFileKv(options = {}) {
         saveManifest();
     }
 
+    // Accepts any iterable so a generator can stream values one at a time.
     function prepareEntries(entries) {
-        return entries.map(({ key, value }) => {
+        return Array.from(entries, ({ key, value }) => {
             const data = Buffer.isBuffer(value) ? value : Buffer.from(value);
             const hash = digest(data);
             writeObject(dataRoot, hash, data);
@@ -277,8 +278,9 @@ function createFileKv(options = {}) {
     }
 
     function kvSetMany(entries) {
-        for (const [key, entry] of prepareEntries(entries)) manifest.entries[key] = entry;
-        if (entries.length) saveManifest();
+        const prepared = prepareEntries(entries);
+        for (const [key, entry] of prepared) manifest.entries[key] = entry;
+        if (prepared.length) saveManifest();
     }
 
     async function kvSetManyAsync(entries) {
