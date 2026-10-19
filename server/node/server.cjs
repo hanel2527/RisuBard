@@ -1043,6 +1043,7 @@ let liveFilesChatPrevious = [];
 let liveFilesPendingWrites = false;
 let liveFilesAdoption = null;
 let liveFilesRecovery = null;
+let liveFilesRecoveryNotice = null;
 const externalChangeReview = createExternalChangeReview({ repository: userDataRepository, dataRoot: savePath });
 
 // Files edited outside the app while it holds state. Resumed adoptions keep their old path.
@@ -1067,6 +1068,7 @@ if (interruptedLiveAdoption) {
         baseline: interruptedLiveAdoption.record.baseline,
         recovery: interruptedLiveAdoption.info,
         recoverySaved: true,
+        withoutBaseline: Boolean(interruptedLiveAdoption.record.pending && !interruptedLiveAdoption.record.baseline),
     };
     liveCharacterFiles.invalidate();
 }
@@ -1209,20 +1211,25 @@ function adoptExternallyChangedCanonicalProjection(liveOnly = false, scanned = n
         ? liveCharacterFiles.reconcile({ verifyMetadata: liveOnly }) : null)
         || (!liveOnly && canonicalProjectionSync.loadExternalChanges())
     if (!fresh && !liveFilesAdoption) return null
-    // The checksum-validated fallback has no old metadata baseline. It cannot
-    // safely merge acknowledged writes: leave them queued instead of replacing
-    // the cache and cancelling their save during adoption.
-    if (fresh && !liveFilesAdoption && liveFilesPendingWrites && !fresh.previous) {
-        const error = new Error('Canonical files changed while acknowledged saves are pending; a merge baseline is unavailable')
-        error.code = 'CANONICAL_FILES_CHANGED'
-        throw error
-    }
     if (!liveFilesAdoption) {
         liveFilesAdoption = {
             changed: fresh,
             pending: liveFilesPendingWrites
                 ? normalizeJSON(reassembleFullDb(dbCache[DB_HEX_KEY] || stripChatsFromDb(fresh.database))) : null,
             baseline: fresh.previous,
+        }
+        // The checksum-validated fallback has no old metadata baseline. Keep the
+        // acknowledged app state in a recovery file first, then keep it wherever
+        // only character or lorebook files changed (the review's accept).
+        // Otherwise the edited files win and the recovery file holds the rest.
+        const { pending } = liveFilesAdoption
+        if (pending && !fresh.previous) {
+            liveFilesAdoption.recovery = preserveLiveFileRecovery({ pending, baseline: null, conflicts: [], externalRevision: fresh.revision })
+            liveFilesAdoption.recoverySaved = true
+            liveFilesAdoption.withoutBaseline = true
+            const review = externalChangeReview.inspect(userDataRepository.getProjectionRevision(), dbCache[DB_HEX_KEY], canonicalProjectionSync.changedFiles())
+            externalChangeReview.clear()
+            if (!review.reload && !review.errors.length) liveFilesAdoption.reviewMerge = normalizeJSON(externalChangeReview.applyExternal(pending, review))
         }
     } else if (fresh) {
         liveFilesAdoption.changed = fresh
@@ -1240,6 +1247,9 @@ function adoptExternallyChangedCanonicalProjection(liveOnly = false, scanned = n
             liveFilesAdoption.recovery = preserveLiveFileRecovery({ pending, baseline, conflicts, externalRevision: changed.revision })
             liveFilesAdoption.recoverySaved = true
         }
+        persistCanonicalProjection(fullDb, { trigger: 'live-files-merge', externalRevision: changed.revision, adoptingLiveFiles: true })
+    } else if (!liveFilesAdoption.readyDb && liveFilesAdoption.reviewMerge) {
+        fullDb = liveFilesAdoption.reviewMerge
         persistCanonicalProjection(fullDb, { trigger: 'live-files-merge', externalRevision: changed.revision, adoptingLiveFiles: true })
     }
     liveFilesAdoption.readyDb = fullDb
@@ -1259,6 +1269,8 @@ function adoptExternallyChangedCanonicalProjection(liveOnly = false, scanned = n
     liveCharacterFiles.accept(fullDb)
     liveFileRecovery.complete()
     liveFilesRecovery = liveFilesAdoption.recovery || null
+    // The next page load tells the user where the app state was kept.
+    if (liveFilesAdoption.withoutBaseline) liveFilesRecoveryNotice = liveFilesRecovery?.path || null
     liveFilesPendingWrites = false
     liveFilesAdoption = null
     liveFilesRevision = nodeCrypto.randomUUID()
@@ -4163,6 +4175,10 @@ app.get('/api/read', async (req, res, next) => {
                     return res.status(304).end();
                 }
                 res.setHeader('x-db-etag', prepared.etag);
+                if (liveFilesRecoveryNotice) {
+                    res.setHeader('x-live-files-recovery', liveFilesRecoveryNotice);
+                    liveFilesRecoveryNotice = null;
+                }
             }
             if (value.length > 0) {
                 res.setHeader('x-item-etag', computeBufferEtag(Buffer.from(value)));

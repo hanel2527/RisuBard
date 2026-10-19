@@ -217,6 +217,8 @@ export class NodeStorage{
     })()
 
     _lastDbEtag: string | null = null
+    // Set when the server kept unsaved app state in a recovery file on load.
+    liveFilesRecoveryPath: string | null = null
     authChecked = false
     private cachedJwt: { token: string; expiresAt: number } | null = null
     private static sessionInitialized = false
@@ -489,6 +491,8 @@ export class NodeStorage{
         if (dbEtag) {
             this._lastDbEtag = dbEtag
         }
+        const recoveryPath = da.headers.get('x-live-files-recovery')
+        if (recoveryPath) this.liveFilesRecoveryPath = recoveryPath
 
         const data = Buffer.from(await da.arrayBuffer())
         if (data.length === 0){

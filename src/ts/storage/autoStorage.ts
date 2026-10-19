@@ -94,6 +94,12 @@ export class AutoStorage{
         return this.realStorage.syncLiveFiles(revision)
     }
 
+    takeLiveFilesRecoveryPath() {
+        const recoveryPath = this.realStorage?.liveFilesRecoveryPath ?? null
+        if (this.realStorage) this.realStorage.liveFilesRecoveryPath = null
+        return recoveryPath
+    }
+
     async getExternalChanges() {
         await this.Init()
         return this.realStorage.getExternalChanges()

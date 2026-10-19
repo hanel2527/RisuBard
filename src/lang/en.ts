@@ -2028,6 +2028,7 @@ export const languageEnglish = {
     externalChangeInvalid: "These files are not valid JSON. Fix them, or keep the app version.",
     externalChangeNoDetails: "Files in the data folder changed, but which ones is unknown because they changed before RisuBard first checked them after the server started.",
     externalChangeAccepted: "Accepted the external changes.",
+    externalChangePendingRecovered: (path: string) => `Loaded the files edited outside RisuBard. App changes that were waiting to save were kept in ${path} in the server data folder.`,
     externalChangeKept: (path: string) => `Kept the app version. The external files were backed up to ${path}.`,
     externalChangeFailed: "Could not apply the decision on external changes",
     externalChangeReviewSettingTitle: "Review external file changes",

@@ -572,6 +572,8 @@ export async function saveDb() {
             sessionStorage.removeItem('risu-canonical-files-reload')
             setTimeout(() => notifyInfo(language.canonicalFilesChangedReload), 1500)
         }
+        const recoveryPath = forageStorage.takeLiveFilesRecoveryPath()
+        if (recoveryPath) setTimeout(() => notifyInfo(language.externalChangePendingRecovered(recoveryPath)), 1500)
         if (sessionStorage.getItem('risu-external-edit-reload')) {
             sessionStorage.removeItem('risu-external-edit-reload')
             setTimeout(() => notifyInfo(language.externalEditModeReloaded), 1500)

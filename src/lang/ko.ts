@@ -2127,6 +2127,7 @@ export const languageKorean = {
   externalChangeInvalid: "형식이 잘못된 파일이 있습니다. 파일을 고치거나 앱 내용을 유지하세요.",
   externalChangeNoDetails: "데이터 폴더의 파일이 바뀌었지만 어느 파일인지 알 수 없습니다. 서버를 시작한 뒤 아직 파일을 확인하기 전에 바뀐 경우입니다.",
   externalChangeAccepted: "외부 변경을 받아들였습니다.",
+  externalChangePendingRecovered: (path: string) => `외부에서 바뀐 파일을 불러왔습니다. 저장을 기다리던 앱 내용은 서버 데이터 폴더의 ${path}에 보관했습니다.`,
   externalChangeKept: (path: string) => `앱 내용을 유지했습니다. 외부 파일은 ${path}에 백업했습니다.`,
   externalChangeFailed: "외부 변경을 처리하지 못했습니다",
   externalChangeReviewSettingTitle: "외부 파일 변경 확인",
