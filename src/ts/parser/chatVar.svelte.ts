@@ -66,15 +66,21 @@ export function setGlobalChatVar(key:string, value:string): void {
     DBState.db.globalChatVariables[key] = value
 }
 
-// Script-side global write: always persists to the database so the value carries
-// over to other chats; a pinned copy in the target chat is kept in sync so reads
-// through getGlobalChatVar return the new value there too.
+// Script-side global write: persists to the database so the value carries over to
+// other chats; a pinned copy in the target chat is kept in sync so reads through
+// getGlobalChatVar return the new value there too. Toggle values belong to the
+// chat that owns them, so toggle_ writes stay in that chat.
 export function setScriptGlobalChatVar(key:string, value:string, targetChat?:Chat): void {
     const chat = targetChat ?? getSelectedChat()
+    const owned = !DBState.db.disableToggleBinding && chat?.useLocallySetGlobalVariables
+    if(owned && key.startsWith('toggle_')){
+        chat.GLGlobalVariables ??= {}
+        chat.GLGlobalVariables[key] = value
+        return
+    }
     DBState.db.globalChatVariables[key] = value
     if(
-        !DBState.db.disableToggleBinding
-        && chat?.useLocallySetGlobalVariables
+        owned
         && chat.GLGlobalVariables
         && Object.hasOwn(chat.GLGlobalVariables, key)
     ){

@@ -165,6 +165,83 @@ describe('exportArcaHtml', () => {
         expect(html).not.toContain('class="status"');
     });
 
+    it('snapshots a flex-row status board even without a background image', async () => {
+        const root = document.createElement('div');
+        root.innerHTML = '<p>prose</p><div class="board"><div class="floor"><b>5F</b><b>A-501</b></div></div>';
+        const board = root.children[1] as HTMLElement;
+        const floor = board.firstElementChild as HTMLElement;
+        const styles = new Map<Element, CSSStyleDeclaration>([
+            [board, cssStyle('display: block; background-color: rgb(16, 18, 24);')],
+            [floor, cssStyle('display: flex;')],
+        ]);
+        const renderComplexBlock = vi.fn(async () => 'data:image/png;base64,board');
+
+        const html = await exportArcaHtml(root, {
+            readStyle: element => styles.get(element) ?? cssStyle(''),
+            renderComplexBlock,
+        });
+
+        expect(renderComplexBlock).toHaveBeenCalledWith(board);
+        expect(html).toContain('data:image/png;base64,board');
+        expect(html).toContain('<p');
+        expect(html).not.toContain('5F');
+    });
+
+    it('keeps column flex layouts and closed details as HTML', async () => {
+        const root = document.createElement('div');
+        root.innerHTML = '<div class="stack"><b>one</b><b>two</b></div>'
+            + '<details><summary>open</summary><div class="row"><b>a</b><b>b</b></div></details>';
+        const stack = root.children[0] as HTMLElement;
+        const row = root.querySelector('.row') as HTMLElement;
+        const styles = new Map<Element, CSSStyleDeclaration>([
+            [stack, cssStyle('display: flex; flex-direction: column;')],
+            [row, cssStyle('display: flex;')],
+        ]);
+        const renderComplexBlock = vi.fn(async () => 'data:image/png;base64,unused');
+
+        const html = await exportArcaHtml(root, {
+            readStyle: element => styles.get(element) ?? cssStyle(''),
+            renderComplexBlock,
+        });
+
+        expect(renderComplexBlock).not.toHaveBeenCalled();
+        expect(html).toContain('one');
+        expect(html).toContain('<details');
+    });
+
+    it('descends into a prose wrapper and snapshots only the layout block inside it', async () => {
+        const root = document.createElement('div');
+        root.innerHTML = '<div class="message"><p>first line</p><div class="overlay"><img src="/bg.png"><img src="/sprite.png"></div><p>last line</p></div>';
+        const wrapper = root.firstElementChild as HTMLElement;
+        const overlay = wrapper.querySelector('.overlay') as HTMLElement;
+        const sprite = overlay.lastElementChild as HTMLElement;
+        const styles = new Map<Element, CSSStyleDeclaration>([
+            [wrapper, cssStyle('display: block; border: 1px solid rgb(255, 0, 0);')],
+            [overlay, cssStyle('position: relative;')],
+            [sprite, cssStyle('position: absolute;')],
+        ]);
+        const renderComplexBlock = vi.fn(async () => 'data:image/png;base64,overlay');
+        root.getBoundingClientRect = () => domRect(750, 400);
+        overlay.getBoundingClientRect = () => domRect(300, 160);
+
+        const html = await exportArcaHtml(root, {
+            readStyle: element => styles.get(element) ?? cssStyle(''),
+            renderComplexBlock,
+        });
+        const output = document.createElement('div');
+        output.innerHTML = html;
+        const exportedWrapper = output.firstElementChild as HTMLElement;
+
+        expect(renderComplexBlock).toHaveBeenCalledOnce();
+        expect(renderComplexBlock).toHaveBeenCalledWith(overlay);
+        expect(exportedWrapper.tagName).toBe('DIV');
+        expect(exportedWrapper.style.border).toContain('1px solid');
+        expect(Array.from(exportedWrapper.children).map(child => child.textContent)).toEqual(['first line', '', 'last line']);
+        const snapshot = exportedWrapper.querySelector('img[data-arca-complex-snapshot]') as HTMLImageElement;
+        expect(snapshot.getAttribute('src')).toBe('data:image/png;base64,overlay');
+        expect(snapshot.style.width).toBe('40%');
+    });
+
     it('replaces a CSS background asset with a real image without changing message order', async () => {
         const root = document.createElement('div');
         root.innerHTML = `

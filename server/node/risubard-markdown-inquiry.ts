@@ -23,6 +23,18 @@ const TRIMMED_CANON_MARKER = '[Partial canon excerpt trimmed to fit the memory b
 const DEFAULT_SELECTED_SOURCE_MESSAGES = 8
 const MAX_MAP_ANCHORS_BEFORE_EVENTS = 4
 const ROUTED_SOURCE_SCORE_BONUS = 12
+// Lexical matches that no selected event routed to still reach the answer
+// model when they are the strongest few and carry at least one rare term
+// (BM25-style weights: a term in roughly an eighth of history scores ~2).
+const MAX_UNROUTED_LEXICAL_SOURCES = 2
+const MIN_UNROUTED_LEXICAL_SCORE = 2
+// Events whose source sits within this many assistant turns before the recent
+// transcript are the story's immediate past. They always enter the candidate
+// pool, score higher the closer they are, and a current-state question that
+// matches no event still receives the newest few of them.
+const RECENT_EVENT_WINDOW_TURNS = 6
+const RECENT_EVENT_SCORE_BONUS = 4
+const RECENT_EVENT_GUARANTEE = 2
 const SEMANTIC_RRF_K = 60
 const SEMANTIC_RRF_SCALE = 480
 const ENTITY_HINT_SCORE = 10_000
@@ -164,6 +176,15 @@ interface Candidate {
     directScore: number
     hop: number
     linkScore: number
+    recencyBonus?: number
+}
+
+/** A recent event the query neither matched nor linked to: only the guarantee may select it. */
+function isRecencyOnly(candidate: Pick<Candidate, 'document' | 'directScore' | 'linkScore' | 'recencyBonus'>): boolean {
+    return candidate.document.type === 'event'
+        && (candidate.recencyBonus ?? 0) > 0
+        && candidate.directScore <= 0
+        && candidate.linkScore <= 0
 }
 
 interface NormalizedDocument {
@@ -372,9 +393,15 @@ function candidateScore(
     currentIntent: boolean
 ): number {
     let score = candidate.directScore + candidate.linkScore
-    if (candidate.document.type === 'event') score += pastIntent ? 3 : 0
+    if (candidate.document.type === 'event') score += (pastIntent ? 3 : 0) + (candidate.recencyBonus ?? 0)
     else score += currentIntent ? 3 : 1
     return score
+}
+
+/** Full bonus one turn before the recent transcript, fading to nothing past the window. */
+function recentEventBonus(turnsBefore: number | undefined): number {
+    if (turnsBefore === undefined || turnsBefore > RECENT_EVENT_WINDOW_TURNS) return 0
+    return RECENT_EVENT_SCORE_BONUS * (RECENT_EVENT_WINDOW_TURNS - turnsBefore + 1) / RECENT_EVENT_WINDOW_TURNS
 }
 
 function arcRouteTargets(
@@ -454,6 +481,11 @@ export function inquireMarkdownDocuments(
     const requiredDocuments = eligibleDocuments.filter((document) =>
         document.contextMode === 'always'
             || document.type === 'scene')
+    const timeline = createInquiryTimeline(input.timeline)
+    const recencyBonusOf = (document: MarkdownWikiDocument): number =>
+        document.type === 'event' && input.timeline
+            ? recentEventBonus(timeline.turnsBefore(document))
+            : 0
 
     const base = catalogBase(input.documents)
     const byId = new Map(eligibleDocuments.map((document) =>
@@ -538,8 +570,9 @@ export function inquireMarkdownDocuments(
             directScore: (existing?.directScore ?? 0) + ENTITY_HINT_SCORE,
         })
     }
+    // Required pages (the pinned scene among them) are read separately, so
+    // they never decide whether a short input falls back to recent dialogue.
     if (directById.size === 0
-        && requiredDocuments.length === 0
         && input.currentInput.trim().length
             <= MAX_FALLBACK_CURRENT_INPUT_CHARACTERS
         && input.fallbackInput?.trim()) {
@@ -601,12 +634,27 @@ export function inquireMarkdownDocuments(
             linkScore: 0,
         })
     }
+    // The immediate past is always in the pool, however the query is worded.
+    for (const document of eligibleDocuments) {
+        const recencyBonus = recencyBonusOf(document)
+        if (recencyBonus <= 0 || candidates.has(document.id)) continue
+        if (candidates.size >= candidateLimit) break
+        candidates.set(document.id, {
+            document,
+            directScore: directById.get(document.id)?.directScore
+                ?? lexicalScore(document, normalizedQuery, terms, characterAnchorTerms, termWeights),
+            hop: 0,
+            linkScore: 0,
+            recencyBonus,
+        })
+    }
     for (const item of hybridDirect) {
         if (candidates.size >= candidateLimit) break
         candidates.set(item.document.id, {
             ...item,
             hop: 0,
             linkScore: 0,
+            recencyBonus: recencyBonusOf(item.document),
         })
     }
 
@@ -656,6 +704,7 @@ export function inquireMarkdownDocuments(
                     ),
                     hop: hop + 1,
                     linkScore,
+                    recencyBonus: recencyBonusOf(neighbor),
                 })
             }
             if (inspectedEdgeCount >= MAX_INSPECTED_EDGES) break
@@ -706,12 +755,14 @@ export function inquireMarkdownDocuments(
         input.tokenBudget?.events,
         input.tokenBudget?.perSource,
     )
-    const timeline = createInquiryTimeline(input.timeline)
     const prepared = [
         ...(input.contextSelection === 'auto' ? [] : requiredDocuments).map((document) => ({
             document,
             score: 100,
             hop: candidates.get(document.id)?.hop ?? 0,
+            directScore: candidates.get(document.id)?.directScore ?? 0,
+            linkScore: 0,
+            recencyBonus: 0,
         })),
         ...automatic,
     ].map((candidate) => {
@@ -854,6 +905,7 @@ export function inquireMarkdownDocuments(
         for (const candidate of prepared.filter((item) =>
             !requiredIds.has(item.document.id)
             && item.document.type === 'event'
+            && !isRecencyOnly(item)
         )) {
             addOptionalIfFits(candidate, 'event')
         }
@@ -862,9 +914,22 @@ export function inquireMarkdownDocuments(
         for (const candidate of prepared.filter((item) =>
             !requiredIds.has(item.document.id)
             && item.document.type === 'event'
+            && !isRecencyOnly(item)
         )) {
             addOptionalIfFits(candidate, 'map')
         }
+    }
+    if (currentStateIntent) {
+        // "Where are we now" is answered by what just happened, so the newest
+        // events before the transcript come along even without a word in common.
+        const newest = prepared
+            .filter((item) => !requiredIds.has(item.document.id)
+                && item.document.type === 'event' && (item.recencyBonus ?? 0) > 0)
+            .sort((left, right) => (right.recencyBonus ?? 0) - (left.recencyBonus ?? 0)
+                || right.score - left.score
+                || left.document.id.localeCompare(right.document.id))
+            .slice(0, RECENT_EVENT_GUARANTEE)
+        for (const candidate of newest) addOptionalIfFits(candidate, 'event')
     }
     const sourceLimit = Number.isSafeInteger(input.sourceLimit)
         ? Math.max(0, Math.min(MAX_SOURCE_MATCHES, input.sourceLimit as number))
@@ -888,6 +953,15 @@ export function inquireMarkdownDocuments(
             ...(semanticEventSourceDocuments.has(messageId)
                 ? { documentId: semanticEventSourceDocuments.get(messageId)! } : {}),
         }))
+    const strongLexicalSourceIds = new Set((input.sourceMatches ?? [])
+        .filter((match) => match.retrieval !== 'semantic'
+            && !selectedEventSources.has(match.messageId)
+            && match.score >= MIN_UNROUTED_LEXICAL_SCORE)
+        .sort((left, right) => right.score - left.score
+            || right.occurredAt - left.occurredAt
+            || left.messageId.localeCompare(right.messageId))
+        .slice(0, MAX_UNROUTED_LEXICAL_SOURCES)
+        .map((match) => match.messageId))
     const preparedSourceMatches = (input.sourceMatches ?? [])
         .slice(0, MAX_SOURCE_MATCHES)
         .map((match) => {
@@ -924,7 +998,8 @@ export function inquireMarkdownDocuments(
                 tokens: countInquiryTokens(content),
             }
         })
-        .filter((match) => historicalEvidenceIntent || match.routed || match.retrieval === 'semantic')
+        .filter((match) => historicalEvidenceIntent || match.routed
+            || match.retrieval === 'semantic' || strongLexicalSourceIds.has(match.messageId))
         .sort((left, right) =>
             Number(right.routed) - Number(left.routed)
             || right.effectiveScore - left.effectiveScore

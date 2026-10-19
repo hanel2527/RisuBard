@@ -10,12 +10,8 @@
     } from '@lucide/svelte'
     import { mount, tick, unmount } from 'svelte'
     import { language } from 'src/lang'
-    import {
-        exportArcaHtml,
-        planArcaComplexSnapshots,
-        resolveArcaImageSource,
-        shouldIncludeArcaSnapshotNode,
-    } from 'src/ts/arcaExport'
+    import { exportArcaHtml, resolveArcaImageSource } from 'src/ts/arcaExport'
+    import { renderArcaComplexBlock } from 'src/ts/arcaSnapshot'
     import {
         normalizeArcaChatFontSizePx,
         normalizeArcaChatDialogSize,
@@ -190,44 +186,6 @@
         return body
     }
 
-    async function renderComplexArcaBlock(element: HTMLElement): Promise<readonly string[]> {
-        const { toPng } = await import('html-to-image')
-        const snapshotPlan = planArcaComplexSnapshots(element)
-        const pixelRatio = Math.min(2, Math.max(1, window.devicePixelRatio || 1))
-        const images: string[] = []
-        const failures: unknown[] = []
-
-        for (const target of snapshotPlan) {
-            const rect = target.element.getBoundingClientRect()
-            try {
-                images.push(await toPng(target.element, {
-                    cacheBust: false,
-                    pixelRatio,
-                    skipFonts: true,
-                    width: target.kind === 'panel' ? Math.min(760, Math.max(220, rect.width)) : undefined,
-                    filter: node => shouldIncludeArcaSnapshotNode(node, target.excludeElements),
-                    style: target.kind === 'panel' ? {
-                        position: 'relative',
-                        inset: 'auto',
-                        top: 'auto',
-                        right: 'auto',
-                        bottom: 'auto',
-                        left: 'auto',
-                        transform: 'none',
-                        opacity: '1',
-                        visibility: 'visible',
-                        pointerEvents: 'auto',
-                    } : undefined,
-                }))
-            }
-            catch (cause) {
-                failures.push(cause)
-            }
-        }
-        if (images.length === 0 && failures.length > 0) throw failures[0]
-        return images
-    }
-
     function resetAppearanceDraft(): void {
         draftFontSizePx = normalizeArcaChatFontSizePx(DBState.db.risuBardArcaChatFontSizePx)
         draftParagraphSpacingPercent = normalizeArcaChatParagraphSpacingPercent(
@@ -347,7 +305,7 @@
                         imageWidthPercent: DBState.db.risuBardArcaChatImageWidthPercent,
                         paragraphSpacingPercent: DBState.db.risuBardArcaChatParagraphSpacingPercent,
                         semanticPalette: $ColorSchemeTypeStore,
-                        renderComplexBlock: renderComplexArcaBlock,
+                        renderComplexBlock: renderArcaComplexBlock,
                     })
                     const plainText = body.innerText.trim() || body.textContent?.trim() || source.data
                     const isUser = source.role === 'user'

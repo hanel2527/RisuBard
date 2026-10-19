@@ -39,6 +39,19 @@ export function describeWikiLinkTarget(
     return { status: 'resolved', document: owners[0] }
 }
 
+/** Counts other documents linking to the target by its title or any alias. */
+export function countWikiBacklinks(
+    target: { id: string; title: string; aliases?: readonly string[] },
+    documents: readonly { id: string; links?: readonly string[] }[]
+): number {
+    const keys = new Set([target.title, ...(target.aliases ?? [])]
+        .map(normalizeWikiLinkKey).filter(Boolean))
+    return documents.filter((document) => document.id !== target.id
+        && (document.links ?? []).some((link) => keys.has(
+            normalizeWikiLinkKey(link.split('|')[0]?.split('#')[0] ?? '')
+        ))).length
+}
+
 /** Resolves a `[[target]]` only when one loaded document owns the identifier. */
 export function resolveWikiLinkTarget(
     target: string,

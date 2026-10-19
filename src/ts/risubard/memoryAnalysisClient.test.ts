@@ -128,6 +128,31 @@ describe('stored response memory analysis', () => {
         ])).toBeNull()
     })
 
+    test('lists earlier unconfirmed turns inside the retry window, oldest first', async () => {
+        const { projectUnconfirmedMemoryTurns } = await import('./memoryAnalysisClient')
+        const turn = (index: number, confirmed?: boolean) => [
+            { role: 'user', data: `ask ${index}`, chatId: `user-${index}` },
+            { role: 'char', data: `reply ${index}`, chatId: `assistant-${index}`,
+                ...(confirmed === undefined ? {} : { risubardMemoryConfirmed: confirmed }) },
+        ]
+        const messages = [
+            ...turn(1),            // outside the window: never retried
+            ...turn(2, true),
+            ...turn(3),            // failed earlier: retried
+            ...turn(4, false),     // canonical save failed: retried
+            ...turn(5, true),
+            ...turn(6),            // the turn being confirmed now
+            { role: 'user', data: 'ask 7', chatId: 'user-7' },
+        ]
+
+        const pending = projectUnconfirmedMemoryTurns(messages, 'assistant-6', { limit: 4 })
+
+        expect(pending.map((item) => item.targetMessageId)).toEqual(['assistant-3', 'assistant-4'])
+        expect(pending[0].messages.map((message) => message.messageId)).toEqual(['user-3', 'assistant-3'])
+        expect(projectUnconfirmedMemoryTurns(messages, 'assistant-6', { limit: 0 })).toEqual([])
+        expect(projectUnconfirmedMemoryTurns(messages, 'missing', { limit: 4 })).toEqual([])
+    })
+
     test('reselects an already confirmed response only for an explicit force update', async () => {
         const module = await import('./memoryAnalysisClient')
         const project = (

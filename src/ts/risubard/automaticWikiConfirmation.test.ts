@@ -45,6 +45,20 @@ describe('automatic BardWiki confirmation', () => {
         expect(screenSource).toContain('onReanalyzeMemory={reanalyzeNarrativeMessage}')
     })
 
+    test('serializes confirmations per chat and retries recent unconfirmed turns first', () => {
+        const processSource = readFileSync('src/ts/process/index.svelte.ts', 'utf8')
+
+        expect(processSource).toContain('enqueueNarrativeConfirmation(')
+        expect(processSource).toContain('projectUnconfirmedMemoryTurns(')
+        const trigger = processSource.search(/shouldAutomaticallyConfirmNarrativeTurn\(\s*requestSettings\.risuBardAutoWikiEnabled/)
+        expect(trigger).toBeGreaterThan(0)
+        const block = processSource.slice(trigger, trigger + 1500)
+        const retry = block.indexOf('projectUnconfirmedMemoryTurns(')
+        expect(retry).toBeGreaterThan(0)
+        expect(retry).toBeLessThan(block.indexOf('confirmProjectedNarrativeTurn({'))
+        expect(block).toContain('[...pendingTurns, narrativeTurnToConfirm]')
+    })
+
     test('keeps configurable confirmation delay out of the product path', () => {
         const processSource = readFileSync('src/ts/process/index.svelte.ts', 'utf8')
         const currentChatSettings = readFileSync(

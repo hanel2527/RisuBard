@@ -116,7 +116,6 @@ function emptyNarrativeInquiry(): Awaited<ReturnType<typeof loadNarrativeInquiry
         cacheStatus: 'missing-or-stale',
         sources: [],
         evidenceRequests: [],
-        rerankCandidates: [],
         entityCandidates: [],
         metrics: {
             candidateCount: 0,
@@ -733,6 +732,40 @@ export function projectConfirmedMemoryTurn(
         targetMessageId: assistant.chatId,
         messages,
     }
+}
+
+/**
+ * Earlier assistant turns, within `limit` turns before the target, whose
+ * analysis never completed: a failed run or a canonical save that was
+ * rejected leaves the turn unconfirmed. Oldest first so retries land in
+ * story order ahead of the target turn.
+ */
+export function projectUnconfirmedMemoryTurns(
+    storedMessages: readonly StoredMessage[],
+    targetMessageId: string,
+    options: { limit?: number; ignoreOocTurns?: boolean } = {}
+): { targetMessageId: string; messages: MemoryAnalysisMessage[] }[] {
+    const limit = Number.isSafeInteger(options.limit)
+        ? Math.max(0, options.limit as number)
+        : 2
+    if (limit === 0) return []
+    const isActive = (message: StoredMessage) =>
+        !message.isComment && !message.disabled
+    const targetIndex = storedMessages.findIndex((message) =>
+        message.role === 'char' && message.chatId === targetMessageId && isActive(message))
+    if (targetIndex < 0) return []
+    const excluded = oocTurnIndices(storedMessages, options.ignoreOocTurns !== false)
+    const pending: { targetMessageId: string; messages: MemoryAnalysisMessage[] }[] = []
+    let inspected = 0
+    for (let index = targetIndex - 1; index >= 0 && inspected < limit; index -= 1) {
+        const message = storedMessages[index]
+        if (message.role !== 'char' || !isActive(message) || excluded.has(index)) continue
+        inspected += 1
+        if (message.risubardMemoryConfirmed === true || typeof message.chatId !== 'string') continue
+        const projected = projectConfirmedMemoryTurn(storedMessages, message.chatId, options)
+        if (projected) pending.unshift(projected)
+    }
+    return pending
 }
 
 export function createStoredResponseMemoryAnalysis(

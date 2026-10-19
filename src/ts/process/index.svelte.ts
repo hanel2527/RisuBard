@@ -4,7 +4,7 @@ import { captureChatContext } from '../risubard/chatContextCapture'
 import { createRequiredWikiMessage, reserveRequiredWikiBudget } from '../risubard/requiredWikiContext'
 import { createWikiInquiryDiagnostic, formatWikiInquiryDiagnostic, wikiInquiryFailure, type WikiInquiryFailure } from '../risubard/wikiInquiryDiagnostics'
 import { get } from "svelte/store";
-import { type Database, type character, type MessageGenerationInfo, type Chat, type MessagePresetInfo, changeToPreset, getActivePromptOverlayToggleTemplate, type Message, normalizeChat, type StreamingDisplayOptimizationMode } from "../storage/database.svelte";
+import { type Database, type character, type MessageGenerationInfo, type Chat, type MessagePresetInfo, changeToPreset, getActivePromptOverlayToggleTemplate, getChatToggleScope, type Message, normalizeChat, type StreamingDisplayOptimizationMode } from "../storage/database.svelte";
 import { DBState } from '../stores.svelte';
 import { CharEmotion, selectedCharID } from "../stores.svelte";
 import { ChatTokenizer, tokenize, tokenizeNum } from "../tokenizer";
@@ -41,10 +41,12 @@ import {
     buildBoundedNarrativeInquiryFallback,
     createStoredResponseMemoryAnalysis,
     projectConfirmedMemoryTurn,
+    projectUnconfirmedMemoryTurns,
     projectMemoryAnalysisEvidence,
     projectRecentMemoryMessages,
     type MemoryAnalysisMessage,
 } from "../risubard/memoryAnalysisClient";
+import { enqueueNarrativeConfirmation } from '../risubard/narrativeConfirmationQueue';
 import { projectActiveNarrativeSources } from "../risubard/sourceProjection";
 import {
     createNarrativeSourcesPrompt,
@@ -101,10 +103,9 @@ import {
     findHistoricalSourceMatches,
     resolveHistoricalSourceMatchesById,
 } from '../risubard/historicalSourceRecall';
-import { rerankWithBardChan } from '../risubard/bardChanReranker';
 import { activateWikiEmbeddings, refreshHistoricalSourceEmbeddings, searchHistoricalSourceEmbeddings, stopHistoricalSourceEmbeddings, wikiEmbeddingRuntime } from '../risubard/wikiEmbeddingService';
 import { mergeHistoricalSourceMatches } from '../risubard/historicalSourceEmbedding';
-import { mergeWikiSemanticMatches, type WikiSemanticMatch } from '../risubard/wikiEmbeddingIndex';
+import type { WikiSemanticMatch } from '../risubard/wikiEmbeddingIndex';
 import { normalizeArcPlotterRuntimeSettings } from '../risubard/arcPlotterSettings';
 import {
     canonicalTurnNeedsRetry,
@@ -129,6 +130,7 @@ import { completeMemoryWikiFork } from '../risubard/memoryWikiFork';
 import {
     beginWikiGeneration,
     endWikiGeneration,
+    wikiCancellationEpoch,
 } from '../risubard/wikiGenerationState';
 import { composePromptBlockOverlay } from '../promptBlockOverlay';
 import {
@@ -243,6 +245,27 @@ async function confirmProjectedNarrativeTurn(input: {
     ])
     if (narrativeConfirmations.has(key)) return false
     narrativeConfirmations.add(key)
+    try {
+        // Analyses of one chat run one at a time; a parallel run would save
+        // canon against a stale content hash and lose that turn's update.
+        // A cancel while this one waits in the queue drops it as well.
+        const epoch = wikiCancellationEpoch()
+        return await enqueueNarrativeConfirmation(
+            JSON.stringify([input.characterId, input.chatId]),
+            () => wikiCancellationEpoch() === epoch
+                ? runNarrativeConfirmation(input, key)
+                : Promise.resolve(false),
+        )
+    }
+    finally {
+        narrativeConfirmations.delete(key)
+    }
+}
+
+async function runNarrativeConfirmation(
+    input: Parameters<typeof confirmProjectedNarrativeTurn>[0],
+    key: string,
+): Promise<boolean> {
     const generationOperation = `analysis:${key}`
     const generationSignal = beginWikiGeneration(generationOperation)
     try {
@@ -274,7 +297,7 @@ async function confirmProjectedNarrativeTurn(input: {
                 analysisMode: input.historicalReanalysis
                     ? 'historical'
                     : 'normal',
-            }), character)
+            }), character, chat)
             : undefined
         const firstMessageEvidence = character && chat
             ? await resolveNarrativeFirstMessageEvidence(
@@ -388,7 +411,6 @@ async function confirmProjectedNarrativeTurn(input: {
     }
     finally {
         endWikiGeneration(generationOperation)
-        narrativeConfirmations.delete(key)
     }
 }
 
@@ -413,10 +435,14 @@ export async function confirmCurrentNarrativeMessage(
 function renderWikiPromptGuide(
     guide: CompiledWikiPromptGuide,
     currentCharacter?: character,
+    chat?: Chat,
 ): CompiledWikiPromptGuide {
+    // Toggles read from the chat that owns them, falling back to the globals.
+    const globalChatVariables = getChatToggleScope(chat)
     const render = (source: string) => risuChatParser(source, {
         chara: currentCharacter,
-        globalChatVariables: DBState.db.globalChatVariables ?? {},
+        chat,
+        globalChatVariables,
     })
     return {
         analysis: render(guide.analysis),
@@ -687,7 +713,7 @@ async function runWikiReboot(
                         chatGuide: risuChatParser(chat.risuBardWikiGuide ?? '', {
                             chara: character,
                         }),
-                    }), character)
+                    }), character, chat)
                     : undefined
                 const firstMessageEvidence = await resolveNarrativeFirstMessageEvidence(
                     character,
@@ -1602,7 +1628,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         requestSettings.risuBardChatWikiPromptPresetId
     )
     const responseWikiPromptGuide = responseWikiPromptPreset
-        ? renderWikiPromptGuide(compileWikiPromptGuide(responseWikiPromptPreset), currentChar).response
+        ? renderWikiPromptGuide(compileWikiPromptGuide(responseWikiPromptPreset), currentChar, currentChat).response
         : ''
     const wikiSettings = resolvedRisuBardSettings(currentChat, true)
     let optionalWikiBudget: ReturnType<typeof reserveRequiredWikiBudget> = {
@@ -1785,35 +1811,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                         timeoutMs: inquirySettings.risuBardInquiryTimeoutMs,
                         ...(semanticMatches ? { semanticMatches } : {}),
                     })
-                    const initialInquiry = await loadInquiry(embedded.matches)
-                    const semanticMatches = await rerankWithBardChan({
-                        enabled: inquirySettings.risuBardBardChanEnabled,
-                        modelMode: inquirySettings.risuBardBardChanModelMode,
-                        currentInput,
-                        recentContext: retrievalRecentContext,
-                        candidates: initialInquiry.rerankCandidates,
-                        realChatId: narrativeSessionChatId,
-                        requestModel: (request, mode) =>
-                            requestChatData(request, mode),
-                    })
-                    // The rerank refines an inquiry that already succeeded; keep it on failure.
-                    const rerankedInquiry = semanticMatches.length > 0
-                        ? await loadInquiry(mergeWikiSemanticMatches(embedded.matches, semanticMatches))
-                            .catch((error: unknown) => {
-                                if (arg.signal?.aborted) throw error
-                                console.warn('RisuBard reranked inquiry skipped', error)
-                                return undefined
-                            })
-                        : undefined
-                    const inquiry = rerankedInquiry
-                        ? {
-                            ...rerankedInquiry,
-                            metrics: {
-                                ...rerankedInquiry.metrics,
-                                auxiliaryModelCalls: 1,
-                            },
-                        }
-                        : initialInquiry
+                    const inquiry = await loadInquiry(embedded.matches)
                     sources = inquiry.sources
                     wikiInquirySources = [...requiredWikiSources, ...sources]
                     narrativeContextObservation.promptMode = inquiry.mode
@@ -3753,13 +3751,22 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         && shouldAutomaticallyConfirmNarrativeTurn(
             requestSettings.risuBardAutoWikiEnabled
         )) {
-        void confirmProjectedNarrativeTurn({
-            characterId: currentChar.chaId,
-            chatId: narrativeSessionChatId,
-            ...narrativeTurnToConfirm,
-        }).catch((error) => {
-            console.warn('[RisuBard memory confirmation]', error)
-        })
+        // A turn whose analysis failed or whose canon save was rejected stays
+        // unconfirmed; retry the most recent ones before this turn, in order.
+        const pendingTurns = projectUnconfirmedMemoryTurns(
+            generationScope.chat.message,
+            narrativeTurnToConfirm.targetMessageId,
+            { limit: 2 },
+        )
+        for (const turn of [...pendingTurns, narrativeTurnToConfirm]) {
+            void confirmProjectedNarrativeTurn({
+                characterId: currentChar.chaId,
+                chatId: narrativeSessionChatId,
+                ...turn,
+            }).catch((error) => {
+                console.warn('[RisuBard memory confirmation]', error)
+            })
+        }
     }
 
     return true

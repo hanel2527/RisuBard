@@ -1,7 +1,8 @@
 <script lang="ts">
 
     import Suggestion from './Suggestion.svelte';
-    import { CameraIcon, ChevronUpIcon, ChevronDownIcon, ChevronsUpIcon, ChevronsDownIcon, DatabaseIcon, FileTextIcon, GlobeIcon, ImagePlusIcon, LanguagesIcon, Laugh, MenuIcon, MicOffIcon, PackageIcon, Plus, RefreshCcwIcon, ReplyIcon, Send, StepForwardIcon, XIcon, BrainIcon, ArrowDown, ZapIcon, Maximize2, Minimize2, BookOpenIcon } from "@lucide/svelte";
+    import { CameraIcon, ChevronUpIcon, ChevronDownIcon, ChevronsUpIcon, ChevronsDownIcon, DatabaseIcon, FileTextIcon, GlobeIcon, ImagePlusIcon, LanguagesIcon, Laugh, MenuIcon, MicOffIcon, PackageIcon, Plus, RefreshCcwIcon, ReplyIcon, Send, StepForwardIcon, XIcon, BrainIcon, ArrowDown, ZapIcon, Maximize2, Minimize2, BookOpenIcon, WandSparklesIcon, Undo2Icon, LoaderCircleIcon } from "@lucide/svelte";
+    import { runInputAssistant } from "src/ts/risubard/inputAssistantRunner";
     import ShDropdownMenu from 'src/lib/UI/GUI/ShDropdownMenu.svelte';
     import ShDropdownMenuTrigger from 'src/lib/UI/GUI/ShDropdownMenuTrigger.svelte';
     import ShDropdownMenuContent from 'src/lib/UI/GUI/ShDropdownMenuContent.svelte';
@@ -44,7 +45,7 @@
     import { sleep } from "../../ts/util";
     import { language } from "../../lang";
     import { isExpTranslator, translate } from "../../ts/translator/translator";
-    import { alertConfirm, alertError, alertWait, notifySuccess, notifyError } from "../../ts/alert";
+    import { alertConfirm, alertError, alertWait, notifySuccess, notifyError, notifyInfo } from "../../ts/alert";
     import { playNotificationSound } from '../../ts/notificationSound'
 import { isMobile } from 'src/ts/platform'
     import { processScript } from "src/ts/process/scripts";
@@ -384,6 +385,87 @@ import { isMobile } from 'src/ts/platform'
         flushChatDraft(draftChaId, draftChatId, { m: messageInput, t: messageInputTranslate })
     }
 
+    // Input assistant: the configured model rewrites the draft; the original
+    // stays restorable until the input is sent, cleared or the chat changes.
+    let inputAssistBusy = $state(false)
+    let inputAssistOriginal = $state<string | null>(null)
+    let inputAssistResult = ''
+    let inputAssistController: AbortController | null = null
+    let inputAssistEnabled = $derived(DBState.db.risuBardInputAssistantSettings?.enabled === true)
+
+    $effect(() => {
+        draftChatId
+        inputAssistEnabled
+        untrack(() => {
+            inputAssistController?.abort()
+            inputAssistController = null
+            inputAssistBusy = false
+            inputAssistOriginal = null
+        })
+    })
+
+    $effect(() => {
+        if (messageInput === '') untrack(() => { inputAssistOriginal = null })
+    })
+
+    function cancelInputAssist() {
+        if (!inputAssistController) return
+        inputAssistController.abort()
+        inputAssistController = null
+        inputAssistBusy = false
+        notifyInfo(language.risuBardInputAssistant.cancelled)
+        inputEle?.focus()
+    }
+
+    async function runInputAssist() {
+        if (inputAssistBusy) {
+            cancelInputAssist()
+            return
+        }
+        const character = currentCharacter
+        const chat = currentChatSlot
+        if (!inputAssistEnabled || inputAssistBlocked || !character || !chat) return
+        const original = messageInput
+        // Running again on an untouched result keeps the first input restorable;
+        // a new draft drops the old restore point.
+        if (inputAssistOriginal !== null && original !== inputAssistResult) inputAssistOriginal = null
+        const controller = new AbortController()
+        inputAssistController = controller
+        inputAssistBusy = true
+        try {
+            const result = await runInputAssistant({ character, chat, userInput: original, signal: controller.signal })
+            if (controller.signal.aborted || messageInput !== original) return
+            inputAssistOriginal ??= original
+            inputAssistResult = result
+            messageInput = result
+            await tick()
+            updateInputSizeAll()
+            persistDraftNow()
+            inputEle?.focus()
+        }
+        catch (error) {
+            if (!controller.signal.aborted) {
+                notifyError(`${language.risuBardInputAssistant.failed} ${error instanceof Error ? error.message : String(error)}`)
+            }
+        }
+        finally {
+            if (inputAssistController === controller) {
+                inputAssistController = null
+                inputAssistBusy = false
+            }
+        }
+    }
+
+    async function undoInputAssist() {
+        if (inputAssistOriginal === null) return
+        messageInput = inputAssistOriginal
+        inputAssistOriginal = null
+        await tick()
+        updateInputSizeAll()
+        persistDraftNow()
+        inputEle?.focus()
+    }
+
     // Load on chat enter (keyed by id, so no wait for hydration); flush the
     // latest text for the chat being left on switch / unmount.
     $effect(() => {
@@ -654,6 +736,10 @@ import { isMobile } from 'src/ts/platform'
         if($doingChat || preparingInput || sendingChat || currentChatGenerating){
             return
         }
+        if (inputAssistBusy) {
+            notifyInfo(language.risuBardInputAssistant.sendBlocked)
+            return
+        }
         if (wikiRebootBlocksGeneration) {
             alertError(language.risuBardWikiRebootChatLocked)
             return
@@ -796,6 +882,10 @@ import { isMobile } from 'src/ts/platform'
 
     async function reroll() {
         if($doingChat || preparingInput || sendingChat || currentChatGenerating) return
+        if (inputAssistBusy) {
+            notifyInfo(language.risuBardInputAssistant.sendBlocked)
+            return
+        }
         if (wikiRebootBlocksGeneration) {
             alertError(language.risuBardWikiRebootChatLocked)
             return
@@ -942,6 +1032,8 @@ import { isMobile } from 'src/ts/platform'
     // Send while A (revisited) still shows a working Stop. Recomputes on chat
     // switch because currentChatGenKey reads the selected char/chatPage.
     let currentChatGenerating = $derived($generationStates.has(currentChatGenKey()))
+    // Chat generation and the input assistant never run at the same time.
+    let inputAssistBlocked = $derived(Boolean(currentChatGenerating || sendingChat || preparingInput || $doingChat))
 
     async function sendChatMain(continued:boolean = false, target?: GenerationTarget, requestSettings?: Database) {
         if (sendingChat) return false
@@ -1495,7 +1587,20 @@ import { isMobile } from 'src/ts/platform'
                           placeholder={willResend ? language.resendLastMessage : language.enterMessageToPersona(activePersonaName)}
                           bind:value={messageInput}
                           bind:this={inputEle}
+                          readonly={inputAssistBusy}
+                          aria-busy={inputAssistBusy}
                           onkeydown={(e) => {
+                        if(e.key === "Escape" && inputAssistBusy){
+                            e.preventDefault()
+                            cancelInputAssist()
+                            return
+                        }
+                        if(e.key.toLocaleLowerCase() === "z" && (e.ctrlKey || e.metaKey) && !e.shiftKey
+                            && inputAssistOriginal !== null && messageInput === inputAssistResult){
+                            e.preventDefault()
+                            undoInputAssist()
+                            return
+                        }
                         if(e.key.toLocaleLowerCase() === "enter" && !e.isComposing){
                             if(shouldSendOnEnter(e)){
                                 send()
@@ -1560,6 +1665,38 @@ import { isMobile } from 'src/ts/platform'
                     <Maximize2 size={18} />
                 </button>
 
+                {#if inputAssistOriginal !== null && !inputAssistBusy}
+                    <button
+                            type="button"
+                            data-input-assistant-undo
+                            onclick={undoInputAssist}
+                            aria-label={language.risuBardInputAssistant.undo}
+                            title={language.risuBardInputAssistant.undo}
+                            class="order-2 shrink-0 flex justify-center items-center w-9 h-9 rounded-full text-textcolor hover:bg-primary/20 transition-colors"
+                    >
+                        <Undo2Icon size={18} />
+                    </button>
+                {/if}
+                {#if inputAssistEnabled && currentCharacter && currentChatSlot}
+                    <button
+                            type="button"
+                            data-input-assistant
+                            onclick={runInputAssist}
+                            disabled={!inputAssistBusy && inputAssistBlocked}
+                            aria-busy={inputAssistBusy}
+                            aria-label={inputAssistBusy ? language.risuBardInputAssistant.busy : language.risuBardInputAssistant.button}
+                            title={inputAssistBusy ? language.risuBardInputAssistant.busy : language.risuBardInputAssistant.button}
+                            class="order-2 shrink-0 flex justify-center items-center w-9 h-9 rounded-full bg-primary text-accenttext hover:bg-primary/80 transition-colors disabled:opacity-45 disabled:cursor-not-allowed"
+                    >
+                        {#if inputAssistBusy}
+                            <LoaderCircleIcon size={18} class="animate-spin" />
+                            <span class="sr-only" role="status">{language.risuBardInputAssistant.busy}</span>
+                        {:else}
+                            <WandSparklesIcon size={18} />
+                        {/if}
+                    </button>
+                {/if}
+
                 {#if currentChatGenerating || (sendingChat && sendingChatKey === currentChatGenKey())}
                     <button
                             aria-label={language.cancel}
@@ -1583,10 +1720,10 @@ import { isMobile } from 'src/ts/platform'
                 {:else}
                     <button
                             onclick={send}
-                            disabled={wikiRebootBlocksGeneration}
+                            disabled={wikiRebootBlocksGeneration || inputAssistBusy}
                             title={wikiRebootBlocksGeneration
                                 ? language.risuBardWikiRebootChatLocked
-                                : undefined}
+                                : inputAssistBusy ? language.risuBardInputAssistant.sendBlocked : undefined}
                             aria-label={willResend ? language.reroll : language.send}
                             class="order-2 shrink-0 flex justify-center items-center w-9 h-9 rounded-full bg-primary text-accenttext hover:bg-primary/80 transition-colors button-icon-send disabled:opacity-45 disabled:cursor-not-allowed"
                     >
@@ -1616,6 +1753,7 @@ import { isMobile } from 'src/ts/platform'
                                 type="button"
                                 data-risubard-wiki-button
                                 onclick={() => memoryWikiOpen = !memoryWikiOpen}
+                                aria-expanded={memoryWikiOpen}
                                 aria-label={language.risuBardMemoryOpenManual}
                                 title={language.risuBardMemoryOpenManual}
                                 style="left: 5px"

@@ -3,6 +3,7 @@
     import { ArrowLeft, ArrowLeftRightIcon, ArrowRight, BookmarkIcon, BotIcon, BookOpenCheck, CopyIcon, PowerOff, GitBranch, HamburgerIcon, LanguagesIcon, MenuIcon, PencilIcon, RefreshCcwIcon, SearchIcon, SplitIcon, TrashIcon, UserIcon, Volume2Icon, Scissors, EyeOff } from "@lucide/svelte"
     import ClipboardCopyIcon from '@lucide/svelte/icons/clipboard-copy'
     import { buildArcaClipboardHtml, exportArcaHtml, resolveArcaImageSource } from 'src/ts/arcaExport'
+    import { renderArcaComplexBlock } from 'src/ts/arcaSnapshot'
     import { aiLawApplies, changeChatTo, foldChatToMessage, getFileSrc, createChatCopyName, forageStorage, requestImmediateSave } from "src/ts/globalApi.svelte"
     import { retractWikiEventsBySourceMessages } from "src/ts/risubard/memoryWiki"
     import { announceRisuBardMemoryUpdated } from "src/ts/risubard/memoryEvents"
@@ -978,6 +979,7 @@
                     imageWidthPercent: DBState.db.risuBardArcaChatImageWidthPercent,
                     paragraphSpacingPercent: DBState.db.risuBardArcaChatParagraphSpacingPercent,
                     semanticPalette: $ColorSchemeTypeStore,
+                    renderComplexBlock: renderArcaComplexBlock,
                 })
                 const isUserMessage = role === 'user'
                 const displayName = isUserMessage ? getUserName() : name

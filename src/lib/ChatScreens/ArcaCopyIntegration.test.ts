@@ -10,6 +10,7 @@ describe('Arca-compatible chat copy connection', () => {
         expect(chatSource).toContain('button-icon-copy-arca');
         expect(chatSource).toContain('language.copyForArca');
         expect(chatSource).toContain('await exportArcaHtml(bodyRoot, {');
+        expect(chatSource).toContain('renderComplexBlock: renderArcaComplexBlock');
         expect(chatSource).toContain("'text/html': new Blob([html]");
         expect(chatSource).toContain("'text/plain': new Blob([plainText]");
     });

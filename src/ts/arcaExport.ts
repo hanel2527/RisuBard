@@ -501,6 +501,7 @@ function isComplexVisualBlock(
 
     const nodes = [element, ...Array.from(element.querySelectorAll<HTMLElement>('*'))];
     let hasStructuredLayout = false;
+    let hasMultiColumnLayout = false;
     let hasVisualBackground = false;
 
     for (const node of nodes) {
@@ -513,22 +514,71 @@ function isComplexVisualBlock(
         if (display === 'grid' || display === 'inline-grid' || display === 'flex' || display === 'inline-flex') {
             hasStructuredLayout = true;
         }
+        if (isMultiColumnLayout(node, style, readStyle)) {
+            hasMultiColumnLayout = true;
+        }
         const backgroundImage = getStyleValue(style, 'background-image');
         if (backgroundImage && backgroundImage !== 'none') {
             hasVisualBackground = true;
         }
     }
 
+    // A closed <details> cannot be rasterized with its hidden body, so it stays as HTML.
+    const closedDetails = 'details:not([open])';
+    if (hasMultiColumnLayout && !element.matches(closedDetails) && !element.querySelector(closedDetails)) {
+        return true;
+    }
     return hasVisualBackground && (hasStructuredLayout || nodes.length >= 4);
 }
 
-function createComplexSnapshotFrame(dataUrl: string, outputDocument: Document): HTMLParagraphElement {
+// Block-level flex rows and grids collapse into misaligned tables after Arca strips
+// their layout, so status boards built on them are snapshotted even without a background image.
+function isMultiColumnLayout(
+    element: HTMLElement,
+    style: CSSStyleDeclaration,
+    readStyle: (element: Element, pseudoElement?: string | null) => CSSStyleDeclaration,
+): boolean {
+    const display = getStyleValue(style, 'display');
+    if (display === 'flex') {
+        const direction = getStyleValue(style, 'flex-direction');
+        if (direction === 'column' || direction === 'column-reverse') return false;
+    }
+    else if (display !== 'grid') {
+        return false;
+    }
+    const visibleChildren = Array.from(element.children)
+        .filter(child => getStyleValue(readStyle(child), 'display') !== 'none');
+    return visibleChildren.length >= 2;
+}
+
+const PROSE_CHILD_TAGS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'UL', 'OL']);
+
+// A plain block that wraps the message prose is exported as HTML and searched
+// for complex blocks inside it, so one layout widget does not turn the whole body into an image.
+function isProseWrapper(
+    element: HTMLElement,
+    readStyle: (element: Element, pseudoElement?: string | null) => CSSStyleDeclaration,
+): boolean {
+    const style = readStyle(element);
+    const display = getStyleValue(style, 'display');
+    if (display === 'flex' || display === 'grid' || display === 'inline-flex' || display === 'inline-grid') return false;
+    if (isOutOfFlowPosition(getStyleValue(style, 'position'))) return false;
+    if (extractBackgroundUrl(getStyleValue(style, 'background-image'))) return false;
+    return Array.from(element.children).some(child => PROSE_CHILD_TAGS.has(child.tagName)
+        || (child instanceof HTMLElement && child.tagName === 'DIV' && isProseWrapper(child, readStyle)));
+}
+
+function createComplexSnapshotFrame(
+    dataUrl: string,
+    outputDocument: Document,
+    widthPercent = 100,
+): HTMLParagraphElement {
     const image = outputDocument.createElement('img');
     image.src = dataUrl;
     image.alt = '';
     image.setAttribute('data-arca-complex-snapshot', '');
     appendRawStyle(image, 'display', 'block');
-    appendRawStyle(image, 'width', '100%');
+    appendRawStyle(image, 'width', `${widthPercent}%`);
     appendRawStyle(image, 'max-width', '100%');
     appendRawStyle(image, 'height', 'auto');
     appendRawStyle(image, 'margin-left', 'auto');
@@ -627,11 +677,24 @@ ${titleBlock}
 <p><br></p>`;
 }
 
+type ResolvedArcaExportOptions = Required<Pick<ArcaExportOptions, 'baseUrl' | 'loadImage' | 'readStyle'>>
+    & ArcaExportOptions
+    & { sourceBaseFontSize: string; exportRoot: HTMLElement };
+
+// Keeps a narrow block at its share of the message width instead of stretching it to full width.
+function snapshotWidthPercent(element: HTMLElement, root: HTMLElement): number {
+    const width = element.getBoundingClientRect().width;
+    const rootWidth = root.getBoundingClientRect().width;
+    if (!width || !rootWidth) return 100;
+    return Math.min(100, Math.round(width / rootWidth * 1000) / 10);
+}
+
 async function cloneNodeForArca(
     source: Node,
     outputDocument: Document,
-    options: Required<Pick<ArcaExportOptions, 'baseUrl' | 'loadImage'>> & ArcaExportOptions & { sourceBaseFontSize: string },
+    options: ResolvedArcaExportOptions,
     forcedDisplay?: 'table-cell',
+    appendChildren?: (clone: HTMLElement) => Promise<void>,
 ): Promise<Node | null> {
     if (source.nodeType === Node.TEXT_NODE) {
         return outputDocument.createTextNode(source.textContent ?? '');
@@ -692,7 +755,10 @@ async function cloneNodeForArca(
     if (before) {
         clone.appendChild(before);
     }
-    for (const child of Array.from(source.childNodes)) {
+    if (appendChildren) {
+        await appendChildren(clone);
+    }
+    else for (const child of Array.from(source.childNodes)) {
         const childDisplay = tableRow && child.nodeType === Node.ELEMENT_NODE ? 'table-cell' : undefined;
         const clonedChild = await cloneNodeForArca(child, outputDocument, options, childDisplay);
         if (clonedChild) {
@@ -716,6 +782,41 @@ async function cloneNodeForArca(
     return clone;
 }
 
+async function exportChildNodes(
+    parent: HTMLElement,
+    target: HTMLElement,
+    options: ResolvedArcaExportOptions,
+): Promise<void> {
+    const outputDocument = target.ownerDocument;
+    for (const child of Array.from(parent.childNodes)) {
+        if (child instanceof HTMLElement
+            && options.renderComplexBlock
+            && isComplexVisualBlock(child, options.readStyle)) {
+            if (isProseWrapper(child, options.readStyle)) {
+                const wrapper = await cloneNodeForArca(child, outputDocument, options, undefined,
+                    clone => exportChildNodes(child, clone, options));
+                if (wrapper) {
+                    target.appendChild(wrapper);
+                }
+                continue;
+            }
+            const rendered = await options.renderComplexBlock(child);
+            const dataUrls = typeof rendered === 'string' ? [rendered] : rendered;
+            if (dataUrls?.length) {
+                dataUrls.forEach((dataUrl, index) => {
+                    const widthPercent = index === 0 ? snapshotWidthPercent(child, options.exportRoot) : 100;
+                    target.appendChild(createComplexSnapshotFrame(dataUrl, outputDocument, widthPercent));
+                });
+                continue;
+            }
+        }
+        const clonedChild = await cloneNodeForArca(child, outputDocument, options);
+        if (clonedChild) {
+            target.appendChild(clonedChild);
+        }
+    }
+}
+
 export async function exportArcaHtml(root: HTMLElement, options: ArcaExportOptions = {}): Promise<string> {
     const outputDocument = root.ownerDocument;
     const container = outputDocument.createElement('div');
@@ -726,31 +827,10 @@ export async function exportArcaHtml(root: HTMLElement, options: ArcaExportOptio
         loadImage: options.loadImage ?? loadImageAsDataUrl,
         readStyle,
         sourceBaseFontSize: getStyleValue(readStyle(root), 'font-size'),
+        exportRoot: root,
     };
 
-    for (const child of Array.from(root.childNodes)) {
-        if (child instanceof HTMLElement
-            && resolvedOptions.renderComplexBlock
-            && isComplexVisualBlock(child, readStyle)) {
-            try {
-                const rendered = await resolvedOptions.renderComplexBlock(child);
-                const dataUrls = typeof rendered === 'string' ? [rendered] : rendered;
-                if (dataUrls?.length) {
-                    for (const dataUrl of dataUrls) {
-                        container.appendChild(createComplexSnapshotFrame(dataUrl, outputDocument));
-                    }
-                    continue;
-                }
-            }
-            catch (cause) {
-                throw cause;
-            }
-        }
-        const clonedChild = await cloneNodeForArca(child, outputDocument, resolvedOptions);
-        if (clonedChild) {
-            container.appendChild(clonedChild);
-        }
-    }
+    await exportChildNodes(root, container, resolvedOptions);
     applyTopLevelSpacing(container, options.paragraphSpacingPercent);
     return container.innerHTML.trim();
 }

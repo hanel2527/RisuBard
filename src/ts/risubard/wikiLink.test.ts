@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import markdownit from 'markdown-it'
 import {
+    countWikiBacklinks,
     describeWikiLinkTarget,
     normalizeWikiLinkKey,
     resolveWikiLinkTarget,
@@ -157,5 +158,20 @@ describe('wikiLinkPlugin', () => {
 describe('normalizeWikiLinkKey', () => {
     test('collapses whitespace and lowercases', () => {
         expect(normalizeWikiLinkKey('  Foo   Bar ')).toBe('foo bar')
+    })
+})
+
+describe('countWikiBacklinks', () => {
+    test('counts links to the title or any alias with normalized keys, excluding the target itself', () => {
+        const target = { id: 'lavian', title: '라비안 스타폴', aliases: ['기사님'], links: [] }
+        const documents = [
+            target,
+            { id: 'a', title: 'A', aliases: [], links: ['라비안  스타폴'] },
+            { id: 'b', title: 'B', aliases: [], links: ['기사님|그 사람'] },
+            { id: 'c', title: 'C', aliases: [], links: ['기사님#과거'] },
+            { id: 'd', title: 'D', aliases: [], links: ['다른 사람'] },
+            { id: 'lavian', title: '라비안 스타폴', aliases: [], links: ['기사님'] },
+        ]
+        expect(countWikiBacklinks(target, documents)).toBe(3)
     })
 })

@@ -85,6 +85,11 @@ import {
     type BardLoreInstructionPreset,
 } from '../lorebook/bardLoreInstructionPreset';
 import {
+    normalizeInputAssistantPresetState,
+    normalizeInputAssistantSettings,
+    type InputAssistantSettings,
+} from '../risubard/inputAssistant';
+import {
     ARC_PLOTTER_DEFAULT_PRESET_ID,
     normalizeArcPlotterCustomPresets,
     normalizeArcPlotterPresetSelection,
@@ -977,9 +982,6 @@ export function setDatabase(data:Database){
         ? Math.min(48, Math.max(8, data.risuBardOocFontSize)) : 14
     data.risuBardAnalysisExcludeUserMessages =
         data.risuBardAnalysisExcludeUserMessages === true
-    data.risuBardBardChanEnabled = data.risuBardBardChanEnabled === true
-    data.risuBardBardChanModelMode =
-        data.risuBardBardChanModelMode === 'model' ? 'model' : 'memory'
     delete (data as { risuBardCanonicalMode?: unknown })
         .risuBardCanonicalMode
     data.risuBardAnalysisTokenLimit = normalizeRisuBardAnalysisTokenLimit(
@@ -1065,6 +1067,13 @@ export function setDatabase(data:Database){
     })
     data.risuBardGrimoirePromptPresets = grimoirePromptState.presets
     data.risuBardGrimoirePromptPresetId = grimoirePromptState.activePresetId
+    data.risuBardInputAssistantSettings = normalizeInputAssistantSettings(data.risuBardInputAssistantSettings)
+    const inputAssistantPromptState = normalizeInputAssistantPresetState({
+        presets: data.risuBardInputAssistantPromptPresets,
+        activePresetId: data.risuBardInputAssistantPromptPresetId,
+    })
+    data.risuBardInputAssistantPromptPresets = inputAssistantPromptState.presets
+    data.risuBardInputAssistantPromptPresetId = inputAssistantPromptState.activePresetId
     for(const char of data.characters){
         if(char.bardLore){
             const normalizedBardLore = normalizeBardLoreOwnerState(
@@ -1186,24 +1195,14 @@ export function newChatModelDefaults(
         supaMemory: false,
         bindedPersona: getNewChatPersonaBinding(db, character, previousChat),
     }
-    // A new chat keeps the previous chat's prompt binding and pinned toggles,
-    // matching chat copy, branch and wiki continuation.
-    if (previousChat && !previousChat._placeholder) {
-        if (previousChat.bindedBotPreset) {
-            defaults.bindedBotPreset = previousChat.bindedBotPreset
-            defaults.usePromptPresetParams = previousChat.usePromptPresetParams
-        }
-        if (!db.disableToggleBinding && previousChat.useLocallySetGlobalVariables) {
-            defaults.useLocallySetGlobalVariables = true
-            defaults.GLGlobalVariables = structuredClone(
-                $state.snapshot(previousChat.GLGlobalVariables) ?? {}
-            )
-            if (previousChat.togglePresetBaseline) {
-                defaults.togglePresetBaseline = structuredClone(
-                    $state.snapshot(previousChat.togglePresetBaseline)
-                )
-            }
-        }
+    // A new chat keeps the previous chat's prompt binding, matching chat copy,
+    // branch and wiki continuation.
+    if (previousChat && !previousChat._placeholder && previousChat.bindedBotPreset) {
+        defaults.bindedBotPreset = previousChat.bindedBotPreset
+        defaults.usePromptPresetParams = previousChat.usePromptPresetParams
+    }
+    if (!db.disableToggleBinding) {
+        Object.assign(defaults, newChatToggleDefaults(db, character, previousChat))
     }
     if (!db.useModelPresetByDefault) return defaults
     const def = db.defaultModelBinding
@@ -1211,6 +1210,55 @@ export function newChatModelDefaults(
         ...defaults,
         useModelPreset: true,
         modelBinding: def ? structuredClone($state.snapshot(def)) : emptyModelBinding(),
+    }
+}
+
+/**
+ * Every chat owns its toggle values. A toggle preset marked for new chats wins;
+ * otherwise a new chat copies the chat that was open, and a new bot (no
+ * previous chat of its own) starts from the values last in use.
+ */
+function newChatToggleDefaults(
+    db: Database,
+    character?: character | null,
+    previousChat?: Pick<Chat, '_placeholder' | 'useLocallySetGlobalVariables'
+        | 'GLGlobalVariables' | 'togglePresetBaseline'> | null,
+): Pick<Chat, 'useLocallySetGlobalVariables' | 'GLGlobalVariables' | 'togglePresetBaseline'> {
+    const preset = getNewChatTogglePreset(db)
+    if (preset) {
+        const values = { ...$state.snapshot(preset.values) }
+        return {
+            useLocallySetGlobalVariables: true,
+            GLGlobalVariables: values,
+            togglePresetBaseline: createTogglePresetBaseline(values, preset.name),
+        }
+    }
+    let source = previousChat && !previousChat._placeholder ? previousChat : null
+    let sourceCharacter = character
+    if (!source) {
+        const current = getCurrentChat()
+        if (current && !current._placeholder) {
+            source = current
+            sourceCharacter = getCurrentCharacter()
+        }
+    }
+    if (source?.useLocallySetGlobalVariables && source.GLGlobalVariables) {
+        const values = structuredClone($state.snapshot(source.GLGlobalVariables))
+        return {
+            useLocallySetGlobalVariables: true,
+            GLGlobalVariables: values,
+            togglePresetBaseline: source.togglePresetBaseline
+                ? structuredClone($state.snapshot(source.togglePresetBaseline))
+                : createTogglePresetBaseline(values),
+        }
+    }
+    const values = source && sourceCharacter
+        ? snapshotCurrentToggleValues(db, sourceCharacter, source as Chat)
+        : snapshotToggleValues(db)
+    return {
+        useLocallySetGlobalVariables: true,
+        GLGlobalVariables: values,
+        togglePresetBaseline: createTogglePresetBaseline(values),
     }
 }
 
@@ -1269,6 +1317,28 @@ export interface TogglePreset {
     name: string
     values: Record<string, string>   // toggle_key → value
     promptPresetName?: string        // name of the prompt preset active when saved
+    applyToNewChats?: boolean        // new chats and bots start from this preset
+}
+
+export function getNewChatTogglePreset(db:Database = getDatabase()):TogglePreset | undefined{
+    return db.togglePresets?.find((preset) => preset?.applyToNewChats)
+}
+
+/** At most one preset carries the mark; null clears it. */
+export function setNewChatTogglePreset(preset:TogglePreset | null, db:Database = getDatabase()):void{
+    const list = db.togglePresets ?? []
+    for(const item of list){
+        if(item === preset) item.applyToNewChats = true
+        else delete item.applyToNewChats
+    }
+    db.togglePresets = [...list]
+}
+
+export function getChatToggleScope(chat?:Chat | null, db:Database = getDatabase()):Record<string, string>{
+    return {
+        ...db.globalChatVariables,
+        ...(!db.disableToggleBinding && chat?.useLocallySetGlobalVariables ? chat.GLGlobalVariables : {}),
+    }
 }
 
 export function getActivePromptOverlayTemplate(db: Database = getDatabase()): PromptItem[] | null | undefined {
@@ -1297,7 +1367,7 @@ export function getToggleKeys(db:Database = getDatabase(), char:character = getC
 
 export function snapshotToggleValues(db:Database = getDatabase()):Record<string, string>{
     const values:Record<string, string> = {}
-    for(const [key, value] of Object.entries(db.globalChatVariables)){
+    for(const [key, value] of Object.entries(db.globalChatVariables ?? {})){
         if(key.startsWith('toggle_') && value !== undefined){
             values[key] = value
         }
@@ -1318,7 +1388,7 @@ export function snapshotCurrentToggleValues(
             && chat.GLGlobalVariables
             && Object.hasOwn(chat.GLGlobalVariables, key)
             ? chat.GLGlobalVariables[key]
-            : db.globalChatVariables[key]
+            : db.globalChatVariables?.[key]
         if(value !== undefined){
             values[key] = value
         }
@@ -1425,6 +1495,17 @@ export function fillMissingPinnedToggleValues(
     }
 }
 
+/** A legacy chat that read the shared globals takes over their current values once opened. */
+export function ensureChatOwnsToggleValues(
+    chat:Chat,
+    db:Database = getDatabase(),
+    char:character = getCurrentCharacter(),
+):boolean{
+    if(db.disableToggleBinding || !chat || chat._placeholder || chat.useLocallySetGlobalVariables || !char) return false
+    pinToggleValuesToChat(chat, db, char)
+    return true
+}
+
 export function saveTogglesToChat():void{
     if(getDatabase().disableToggleBinding) return
     const chat = getCurrentChat()
@@ -1460,6 +1541,7 @@ export function loadChatBindings(chat: Chat): void {
         else changeToPreset(index)
     }
     loadTogglesFromChat(chat)
+    ensureChatOwnsToggleValues(chat, db)
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1869,8 +1951,6 @@ export interface Database{
         yRatio: number
     }>
     risuBardModelMode?: 'memory' | 'model'
-    risuBardBardChanEnabled?: boolean
-    risuBardBardChanModelMode?: 'memory' | 'model'
     risuBardAutoWikiEnabled?: boolean
     risuBardWikiMarkdownPreview?: boolean
     risuBardRecentMessageCount?: number
@@ -1913,6 +1993,9 @@ export interface Database{
     risuBardWikiPromptOfficialRelease?: string
     risuBardGrimoirePromptPresets?: BardLoreInstructionPreset[]
     risuBardGrimoirePromptPresetId?: string
+    risuBardInputAssistantSettings?: InputAssistantSettings
+    risuBardInputAssistantPromptPresets?: BardLoreInstructionPreset[]
+    risuBardInputAssistantPromptPresetId?: string
     textAreaTextSize:number
     combineTranslation:boolean
     dynamicAssets:boolean

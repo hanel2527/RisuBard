@@ -5,7 +5,7 @@
     import { language } from "src/lang";
     import type { PromptItem } from "src/ts/process/prompt";
     import type { character } from "src/ts/storage/database.svelte";
-    import { fillMissingPinnedToggleValues, getActivePromptOverlayTemplate, getActivePromptOverlayToggleTemplate, getCurrentChat, pinToggleValuesToChat, resetPinnedToggleValues, saveTogglesToChat, unpinToggleValuesFromChat } from "src/ts/storage/database.svelte";
+    import { ensureChatOwnsToggleValues, fillMissingPinnedToggleValues, getActivePromptOverlayTemplate, getActivePromptOverlayToggleTemplate, getCurrentChat, pinToggleValuesToChat, resetPinnedToggleValues, saveTogglesToChat } from "src/ts/storage/database.svelte";
     import { getToggleValueDifferences } from "src/ts/storage/togglePresetBaseline";
     import { alertConfirmMulti, alertTogglePresets, notifySuccess } from "src/ts/alert";
     import { tooltip } from "src/ts/gui/tooltip";
@@ -43,17 +43,12 @@
     async function pinToChat() {
         const chat = getCurrentChat()
         if (!chat) return
+        // Every chat owns its values, so the pin only sets the reset baseline.
         if (chat.useLocallySetGlobalVariables) {
-            const choice = await alertConfirmMulti(language.toggleBindingLabel, [
-                language.togglePinOverwrite,
-                { label: language.togglePinUnpin, variant: 'destructive' },
-            ])
+            const choice = await alertConfirmMulti(language.toggleBindingLabel, [language.togglePinOverwrite])
             if (choice === 0) {
                 pinToggleValuesToChat(chat)
                 notifySuccess(language.togglePinSaved)
-            } else if (choice === 1) {
-                unpinToggleValuesFromChat(chat)
-                notifySuccess(language.togglePinUnbound)
             }
         } else {
             saveTogglesToChat()
@@ -176,7 +171,9 @@
     $effect(() => {
         const chat = currentChat
         const keys = collectToggleKeys(groupedToggles)
-        if(DBState.db.disableToggleBinding || !chat?.useLocallySetGlobalVariables) return
+        if(DBState.db.disableToggleBinding || !chat) return
+        ensureChatOwnsToggleValues(chat)
+        if(!chat.useLocallySetGlobalVariables) return
         fillMissingPinnedToggleValues(chat, keys)
     })
 

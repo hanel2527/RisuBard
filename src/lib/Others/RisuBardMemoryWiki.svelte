@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount } from 'svelte'
+    import { onMount, tick, untrack } from 'svelte'
     import { resolveDynamicMemorySettings } from 'src/ts/risubard/dynamicMemoryBudget'
     import { painterInsertionRequest } from 'src/ts/bardPainter/selectionState'
     import {
@@ -18,6 +18,7 @@
         MonitorIcon,
         SmartphoneIcon,
         XCircleIcon,
+        XIcon,
         Maximize2Icon,
         Minimize2Icon,
     } from '@lucide/svelte'
@@ -37,7 +38,6 @@
     } from 'src/ts/risubard/memoryWikiLayout'
     import {
         getBardChatUndoStatus,
-        loadNarrativeMemoryWiki,
         loadNarrativeMemoryWikiCatalog,
         loadWikiDocumentBodies,
         loadWikiStorySummaries,
@@ -55,8 +55,6 @@
         type RisuBardMemoryUpdatedDetail,
     } from 'src/ts/risubard/memoryEvents'
     import { DBState } from 'src/ts/stores.svelte'
-    import RisuBardNarrativeGraph from './RisuBardNarrativeGraph.svelte'
-    import RisuBardWriterWorkbench from './RisuBardWriterWorkbench.svelte'
     import RisuBardWikiEditor from './RisuBardWikiEditor.svelte'
     import RisuBardMemoryActivity from './RisuBardMemoryActivity.svelte'
     import RisuBardStorySoFar from './RisuBardStorySoFar.svelte'
@@ -128,12 +126,11 @@
     }: Props = $props()
     // The dock loads a table of contents; page bodies, story summaries and
     // export data are fetched only when a view needs them.
-    let wiki = $state<NarrativeMemoryWiki | NarrativeMemoryWikiCatalog | null>(null)
+    let wiki = $state<NarrativeMemoryWikiCatalog | null>(null)
     let bodies = $state.raw(new Map<string, NarrativeMemoryWikiDocument>())
     const pendingBodies = new Map<string, Promise<void>>()
     let storySummaries = $state.raw<Map<string, string[]> | null>(null)
     let storyLoading = $state(false)
-    let exportDocuments = $state.raw<NarrativeMemoryWikiDocument[] | null>(null)
     let loading = $state(false)
     let transferBusy = $state(false)
     let exportOpen = $state(false)
@@ -151,10 +148,14 @@
         finally { transferBusy = false }
     }
 
+    // The dialog lists the catalog right away; only the chosen pages' bodies are fetched on export.
     async function exportWiki(selectedIds: string[]) {
         if (transferBlocked || exportScope !== `${characterId}\u0000${chatId}`) throw new Error('위키가 변경되었습니다. 내보내기 창을 다시 열어 주세요.')
-        if (!exportDocuments) throw new Error('위키를 아직 불러오는 중입니다.')
-        await downloadFile('wiki.bardwiki.json', serializeWikiPackage(createWikiPackage(exportDocuments, selectedIds)))
+        const chosen: NarrativeMemoryWikiDocument[] = []
+        for (let index = 0; index < selectedIds.length; index += 256) {
+            chosen.push(...await loadWikiDocumentBodies({ ...wikiScope(), documentIds: selectedIds.slice(index, index + 256) }))
+        }
+        await downloadFile('wiki.bardwiki.json', serializeWikiPackage(createWikiPackage(chosen, selectedIds)))
         exportOpen = false
     }
 
@@ -183,6 +184,9 @@
         }
     }
     let error = $state('')
+    // Failures of one part (a page body, story summaries) stay inline instead of hiding the dock.
+    let inlineError = $state('')
+    let inlineRetry = $state.raw<(() => void) | null>(null)
     let forceUpdating = $state(false)
     let forceUpdateStatus = $state<'success' | 'empty' | 'failed' | ''>('')
     let forceUpdateError = $state('')
@@ -198,6 +202,38 @@
     let painterLoadError = $state('')
     let settingsOpen = $state(false)
     let settingsPopoverElement = $state<HTMLElement | null>(null)
+    let settingsButtonElement = $state<HTMLButtonElement | null>(null)
+    // Leaving the workspace unmounts the editor, so an unsaved draft would be lost.
+    let editorDirty = $state(false)
+
+    async function switchView(next: typeof activeView) {
+        if (next === activeView) return
+        if (activeView === 'workspace' && editorDirty
+            && !await alertConfirm('저장하지 않은 편집이 있습니다. 다른 보기로 가면 편집 내용이 사라집니다. 이동할까요?')) return
+        editorDirty = false
+        activeView = next
+        if (next === 'painter') settingsOpen = false
+    }
+
+    async function toggleSettings(next: boolean) {
+        settingsOpen = next
+        await tick()
+        if (next) settingsPopoverElement?.querySelector<HTMLElement>('input, select, button, textarea')?.focus()
+        else settingsButtonElement?.focus()
+    }
+
+    // Close the settings popover when the pointer goes down outside it.
+    $effect(() => {
+        if (!settingsOpen) return
+        const closeOutside = (event: PointerEvent) => {
+            const target = event.target as Element | null
+            if (!target || settingsPopoverElement?.contains(target) || settingsButtonElement?.contains(target)) return
+            if (target.closest?.('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]')) return
+            settingsOpen = false
+        }
+        window.addEventListener('pointerdown', closeOutside, true)
+        return () => window.removeEventListener('pointerdown', closeOutside, true)
+    })
     let layoutMode = $state<MemoryWikiLayout>('desktop')
     let dockViewsElement = $state<HTMLElement | null>(null)
     let dockViewsOverflow = $state({ start: false, end: false })
@@ -259,14 +295,6 @@
     let rebootStartChatIndex = $state(0)
     let wikiChatId = $derived(resolveWikiRebootViewChatId(chatId, rebootJob))
 
-    let v1State = $derived(wiki?.mode === 'v1' ? wiki.state : null)
-    let activeFacts = $derived(
-        v1State?.facts.filter((fact) => fact.status === 'active') ?? []
-    )
-    let invalidatedFacts = $derived(
-        v1State?.facts.filter((fact) => fact.status === 'invalidated') ?? []
-    )
-    let recentEvents = $derived(v1State ? [...v1State.events].reverse() : [])
     let markdownDocuments = $derived<WikiCatalogDocument[]>(
         wiki?.mode === 'markdown'
             ? wiki.documents.map((document) => {
@@ -324,13 +352,6 @@
     )
     let rebootAnalysisTokenLimit = $derived(
         resolveDynamicMemorySettings(resolvedChatSettings, currentChat?.message ?? []).risuBardAnalysisTokenLimit
-    )
-    let empty = $derived(
-        wiki?.mode === 'v1'
-        && !wiki.baseline
-        && activeFacts.length === 0
-        && invalidatedFacts.length === 0
-        && recentEvents.length === 0
     )
     let rebootButtonLabel = $derived.by(() => {
         if (!rebootJob) return language.risuBardWikiReboot
@@ -457,6 +478,9 @@
             wiki = null
             selectedMarkdownId = ''
             transferStatus = ''
+            forceUpdateStatus = ''
+            settingsOpen = false
+            inlineError = ''
             exportOpen = false
             bodies = new Map()
             pendingBodies.clear()
@@ -561,29 +585,27 @@
             if (scope === loadedScope) storySummaries = loaded
         }
         catch (cause) {
-            if (scope === loadedScope) error = cause instanceof Error ? cause.message : String(cause)
+            if (scope === loadedScope) {
+                showInlineError(cause, () => { storySummaries = null })
+                // An empty result stops the view from retrying in a loop; the banner retries.
+                storySummaries = new Map()
+            }
         }
         finally {
             storyLoading = false
         }
     }
 
-    async function loadExportDocuments() {
-        const scope = loadedScope
-        transferBusy = true
-        try {
-            const loaded = await loadNarrativeMemoryWiki(wikiScope())
-            if (scope === loadedScope && exportOpen) {
-                exportDocuments = loaded.mode === 'markdown' ? loaded.documents : []
-            }
-        }
-        catch (cause) {
-            exportOpen = false
-            alertError(cause)
-        }
-        finally {
-            transferBusy = false
-        }
+    function showInlineError(cause: unknown, retry: (() => void) | null = null) {
+        inlineError = cause instanceof Error ? cause.message : String(cause)
+        inlineRetry = retry
+    }
+
+    function retryInline() {
+        const retry = inlineRetry
+        inlineError = ''
+        inlineRetry = null
+        retry?.()
     }
 
     function cancelWikiLoad() {
@@ -782,20 +804,30 @@
         )
     }
 
+    // Only whether a wiki is needed and for which chat decide a reload; moving
+    // between wiki views must not refetch the catalog or clear BARDCHAT marks.
+    const needsWiki = $derived(open && activeView !== 'painter' && !!characterId && !!wikiChatId)
+
     $effect(() => {
-        if (!open || activeView === 'painter' || !characterId || !wikiChatId) {
-            cancelWikiLoad()
+        if (!needsWiki) {
+            untrack(cancelWikiLoad)
             return
         }
-        void loadWiki()
+        void characterId
+        void wikiChatId
+        untrack(() => void loadWiki())
         return cancelWikiLoad
     })
 
     $effect(() => {
-        if (!open || activeView === 'painter' || !characterId || !wikiChatId || !onExecuteWikiCommand) return
-        bardChatUpdatedIds = null
-        bardChatUndoAvailable = false
-        void refreshBardChatUndoStatus()
+        if (!needsWiki || !onExecuteWikiCommand) return
+        void characterId
+        void wikiChatId
+        untrack(() => {
+            bardChatUpdatedIds = null
+            bardChatUndoAvailable = false
+            void refreshBardChatUndoStatus()
+        })
     })
 
     $effect(() => {
@@ -823,14 +855,6 @@
         if (activeView !== 'arc-plot') return
         const arc = findStoryArcDocument(markdownDocuments)
         if (arc && arc.content === undefined) void requestBodies([arc.id]).catch(() => undefined)
-    })
-
-    $effect(() => {
-        if (!exportOpen) {
-            exportDocuments = null
-            return
-        }
-        if (exportDocuments === null) void loadExportDocuments()
     })
 
     $effect(() => {
@@ -960,10 +984,10 @@
                     </ShDropdownMenuContent>
                 </ShDropdownMenu>
             {/if}
-            <div class="dock-view-actions">
+            <div class="dock-view-actions" role="group" aria-label="보기" data-memory-view-group>
                 <button type="button" class:active={activeView === 'painter'} data-memory-view="painter"
                     title="바드페인터" aria-label="바드페인터" aria-pressed={activeView === 'painter'}
-                    onclick={() => { activeView = 'painter'; settingsOpen = false }}>
+                    onclick={() => void switchView('painter')}>
                     <SolarPen2Bold size={22} /><span>바드페인터</span>
                 </button>
                 <button
@@ -973,14 +997,15 @@
                     title="OOC 메모장"
                     aria-label="OOC 메모장"
                     aria-pressed={activeView === 'ooc'}
-                    onclick={() => activeView = 'ooc'}
+                    onclick={() => void switchView('ooc')}
                 ><SolarChatRoundQuestionMarkBold size={22} /><span>OOC 메모장</span></button>
                 <button
                     type="button"
                     class:active={activeView === 'workspace'}
                     data-memory-view="workspace"
                     title="작업 공간"
-                    onclick={() => activeView = 'workspace'}
+                    aria-pressed={activeView === 'workspace'}
+                    onclick={() => void switchView('workspace')}
                 ><SolarBoldIcon name="notebook" size={22} /><span>작업 공간</span></button>
                 {#if wiki?.mode === 'markdown'}
                     <button
@@ -988,7 +1013,8 @@
                         class:active={activeView === 'story'}
                         data-memory-view="story"
                         title="이야기"
-                        onclick={() => activeView = 'story'}
+                        aria-pressed={activeView === 'story'}
+                        onclick={() => void switchView('story')}
                     >
                         <svg data-memory-icon="scroll" viewBox="0 0 24 24" aria-hidden="true">
                             <path d="m22.5 17c-.17-.339-.621-.5-1-.5h-12.5c-.553 0-1 .448-1 1v1.5c0 .015-.012 1.5-1 1.5-.505 0-.931.376-.992.878-.062.501.26.97.75 1.092 2.119.53 5.094.53 8.242.53 4.858 0 6.163-.463 6.447-.605.159-.08 1.553-.85 1.553-3.395 0-1.688-.438-1.876-.5-2z" />
@@ -1002,16 +1028,18 @@
                         class:active={activeView === 'arc-plot'}
                         data-memory-view="arc-plot"
                         title="아크 플롯"
-                        onclick={() => activeView = 'arc-plot'}
+                        aria-pressed={activeView === 'arc-plot'}
+                        onclick={() => void switchView('arc-plot')}
                     ><NetworkIcon size={20} /><span>아크 플롯</span></button>
                 {/if}
                 <button
                     type="button"
                     class:active={activeView === 'log'}
                     data-memory-view="log"
-                    title="로그"
-                    onclick={() => activeView = 'log'}
-                ><LogsIcon size={20} /><span>로그</span></button>
+                    title="요청 기록: 답변마다 들어간 기억과 토큰"
+                    aria-pressed={activeView === 'log'}
+                    onclick={() => void switchView('log')}
+                ><LogsIcon size={20} /><span>요청 기록</span></button>
                 {#if wiki?.mode === 'markdown' && activeView !== 'painter'}
                     <button
                         type="button"
@@ -1019,9 +1047,10 @@
                         class:active={settingsOpen}
                         data-memory-settings
                         title="설정"
-                        aria-haspopup="true"
+                        aria-haspopup="dialog"
                         aria-expanded={settingsOpen}
-                        onclick={() => settingsOpen = !settingsOpen}
+                        bind:this={settingsButtonElement}
+                        onclick={() => toggleSettings(!settingsOpen)}
                     ><SolarBoldIcon name="settings" size={22} /><span>설정</span></button>
                 {/if}
             </div>
@@ -1076,12 +1105,15 @@
             <div class="dock-compact-actions">{@render dockWindowActions()}</div>
         {/if}
         {#if wiki?.mode === 'markdown'}
-            <section
+            <div
                 class="settings-popover"
                 data-memory-settings-popover
                 aria-label="BardWiki 현재 챗 설정"
+                role="dialog"
+                tabindex="-1"
                 hidden={!settingsOpen}
                 bind:this={settingsPopoverElement}
+                onkeydown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); void toggleSettings(false) } }}
             >
                 <RisuBardCurrentChatSettings chat={currentChat} character={currentCharacter} global={DBState.db} />
                 <ManagerResizeHandles
@@ -1090,39 +1122,24 @@
                     shadowPreview
                     resizeStorageKey="bardwiki-current-chat-settings"
                 />
-            </section>
+            </div>
         {/if}
     </header>
 
-    {#if transferStatus}<div class="force-update-status" role="status">{transferStatus}</div>{/if}
+    {#if transferStatus}
+        <div class="force-update-status" role="status">
+            <span>{transferStatus}</span>
+            <button type="button" class="status-dismiss" data-dismiss-transfer aria-label="알림 닫기" onclick={() => transferStatus = ''}><XIcon size={14} /></button>
+        </div>
+    {/if}
+    {#if inlineError}
+        <div class="force-update-status failed" role="alert" data-memory-inline-error>
+            <span>{inlineError}</span>
+            {#if inlineRetry}<button type="button" class="status-action" onclick={retryInline}>다시 시도</button>{/if}
+            <button type="button" class="status-dismiss" data-dismiss aria-label="알림 닫기" onclick={() => { inlineError = ''; inlineRetry = null }}><XIcon size={14} /></button>
+        </div>
+    {/if}
     <div class="memory-ledger min-h-0">
-        {#if wiki && wiki.mode !== 'markdown'}
-            <div class="ledger-toolbar">
-            <div class="ledger-stats" aria-live="polite">
-                {#if wiki.mode === 'v2'}
-                    <span class="graph-current">
-                        <NetworkIcon size={13} />
-                        {language.risuBardGraphCurrent}
-                    </span>
-                    <span>{wiki.graph.nodes.length} {language.risuBardGraphNodes}</span>
-                    <span>{wiki.graph.edges.length} {language.risuBardGraphRelations}</span>
-                {:else}
-                    <span>{activeFacts.length} {language.risuBardActiveFacts}</span>
-                    <span>{recentEvents.length} {language.risuBardEvents}</span>
-                    <span>{invalidatedFacts.length} {language.risuBardInvalidatedFacts}</span>
-                {/if}
-            </div>
-                <ShButton
-                    variant="ghost"
-                    size="sm"
-                    onclick={loadWiki}
-                    disabled={loading}
-                >
-                    <RefreshCwIcon size={15} class={loading ? 'animate-spin' : ''} />
-                    {language.risuBardMemoryRefresh}
-                </ShButton>
-            </div>
-        {/if}
         {#if forceUpdateStatus}
             <div
                 class="force-update-status"
@@ -1151,39 +1168,7 @@
                         )}
                     </span>
                 {/if}
-            </div>
-        {/if}
-        {#if wiki?.observability}
-            <div
-                class="memory-observability"
-                data-memory-observability
-                aria-label="RisuBard runtime observability"
-            >
-                <span>prompt {wiki.observability.lastPromptMode}</span>
-                <span>
-                    graph r{wiki.observability.graphRevision}
-                    / index r{wiki.observability.indexRevision}
-                    ({wiki.observability.cacheStatus})
-                </span>
-                {#if wiki.observability.lastInquiry}
-                    <span>
-                        candidates {wiki.observability.lastInquiry.candidateCount}
-                        · inspected {wiki.observability.lastInquiry.inspectedNodeCount}
-                        nodes / {wiki.observability.lastInquiry.inspectedEdgeCount}
-                        edges
-                    </span>
-                    <span>
-                        selected {wiki.observability.lastInquiry.selectedNodeCount}
-                        nodes / {wiki.observability.lastInquiry.selectedTokens}
-                        tokens
-                    </span>
-                {/if}
-                <span>
-                    analysis
-                    {wiki.observability.lastAnalysis?.status ?? 'none'}
-                    · {wiki.observability.lastAnalysis?.appliedCount ?? 0}
-                    operations
-                </span>
+                <button type="button" class="status-dismiss" data-dismiss-force-update aria-label="알림 닫기" onclick={() => forceUpdateStatus = ''}><XIcon size={14} /></button>
             </div>
         {/if}
 
@@ -1221,6 +1206,9 @@
                 <XCircleIcon size={24} />
                 <span>{language.risuBardMemoryLoadFailed}</span>
                 <small>{error}</small>
+                <ShButton size="sm" variant="outline" data-memory-retry onclick={() => void loadWiki()}>
+                    <RefreshCwIcon size={15} /> 다시 시도
+                </ShButton>
             </div>
         {:else if wiki?.mode === 'markdown'}
             <div
@@ -1246,7 +1234,7 @@
                             health={wiki.health}
                             bind:selectedId={selectedMarkdownId}
                             onChanged={loadWiki}
-                            onRequestBody={(documentId) => void requestBodies([documentId]).catch((cause) => { error = cause instanceof Error ? cause.message : String(cause) })}
+                            onRequestBody={(documentId) => void requestBodies([documentId]).catch((cause) => showInlineError(cause, () => void requestBodies([documentId]).catch((next) => showInlineError(next))))}
                             onSearch={searchDocumentIds}
                             onFocusModeChange={(focused) => editorFocus = focused}
                             onNavigateSource={onNavigateStorySource}
@@ -1255,6 +1243,7 @@
                             compact={compactActive}
                             fieldsExpanded={editorFieldsExpanded}
                             onFieldsExpandedChange={setEditorFieldsExpanded}
+                            onDirtyChange={(dirty) => editorDirty = dirty}
                         />
                     </div>
                     {#if onExecuteWikiCommand && !rebootJob}
@@ -1330,89 +1319,12 @@
                     </div>
                 {/if}
             </div>
-        {:else if wiki?.mode === 'v2'}
-            <div class="graph-scroll" data-memory-v2-scroll>
-                <RisuBardNarrativeGraph graph={wiki.graph} />
-                <RisuBardWriterWorkbench
-                    graph={wiki.graph}
-                    {characterId}
-                    {chatId}
-                    onApplied={() => loadWiki()}
-                />
-            </div>
-        {:else if empty}
-            <div class="ledger-state" data-memory-view-mode="v1">
-                <div class="fallback-note">
-                    <strong>{language.risuBardMemoryFallback}</strong>
-                    <span>{language.risuBardMemoryFallbackDescription}</span>
-                </div>
-                <BookOpenIcon size={28} />
-                <span>{language.risuBardMemoryEmpty}</span>
-            </div>
-        {:else}
-            <div class="ledger-scroll" data-memory-view-mode="v1">
-                <div class="fallback-note">
-                    <strong>{language.risuBardMemoryFallback}</strong>
-                    <span>{language.risuBardMemoryFallbackDescription}</span>
-                </div>
-                {#if wiki?.baseline}
-                    <section class="ledger-section ledger-baseline">
-                        <h3>{language.risuBardCurrentSnapshot}</h3>
-                        <p>{wiki.baseline}</p>
-                    </section>
-                {/if}
-
-                <div class="ledger-columns">
-                    <section class="ledger-section">
-                        <h3>
-                            <CheckCircle2Icon size={16} />
-                            {language.risuBardActiveFacts}
-                        </h3>
-                        {#if activeFacts.length === 0}
-                            <p class="ledger-muted">{language.none}</p>
-                        {:else}
-                            <ul>
-                                {#each activeFacts as fact (fact.id)}
-                                    <li>{fact.text}</li>
-                                {/each}
-                            </ul>
-                        {/if}
-                    </section>
-
-                    <section class="ledger-section">
-                        <h3>
-                            <Clock3Icon size={16} />
-                            {language.risuBardEvents}
-                        </h3>
-                        {#if recentEvents.length === 0}
-                            <p class="ledger-muted">{language.none}</p>
-                        {:else}
-                            <ol>
-                                {#each recentEvents as event (event.id)}
-                                    <li>{event.summary}</li>
-                                {/each}
-                            </ol>
-                        {/if}
-                    </section>
-                </div>
-
-                {#if invalidatedFacts.length > 0}
-                    <section class="ledger-section ledger-invalidated">
-                        <h3>{language.risuBardInvalidatedFacts}</h3>
-                        <ul>
-                            {#each invalidatedFacts as fact (fact.id)}
-                                <li>{fact.text}</li>
-                            {/each}
-                        </ul>
-                    </section>
-                {/if}
-            </div>
         {/if}
     </div>
 </aside>
 <input bind:this={importInput} type="file" accept=".bardwiki.json,application/json" hidden onchange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; void importFile(file, importScope) }} />
-{#if exportOpen && exportDocuments}
-    <RisuBardWikiExportDialog bind:open={exportOpen} documents={exportDocuments} onExport={exportWiki} disabled={transferBlocked} />
+{#if exportOpen}
+    <RisuBardWikiExportDialog bind:open={exportOpen} documents={markdownDocuments} onExport={exportWiki} disabled={transferBlocked} />
 {/if}
 
 {#if rebootChooserOpen}
@@ -1532,10 +1444,7 @@
     }
     .memory-wiki-dock.closed { display: none; }
     .memory-wiki-dock.settings-open { overflow: visible; }
-    .memory-wiki-dock.editor-focus > .dock-header,
-    .memory-wiki-dock.editor-focus .ledger-toolbar,
-    .memory-wiki-dock.editor-focus .force-update-status,
-    .memory-wiki-dock.editor-focus .memory-observability { display: none; }
+    .memory-wiki-dock.editor-focus > .dock-header, .memory-wiki-dock.editor-focus .force-update-status { display: none; }
     .dock-resizer {
         position: absolute;
         z-index: 5;
@@ -1749,6 +1658,9 @@
     .force-update-button:hover:not(:disabled) .force-update-hover,
     .force-update-button.running .force-update-hover { display: block !important; }
     .dock-view-actions svg { display: block; width: 22px; height: 22px; fill: currentColor; }
+    .status-dismiss, .status-action { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; min-height: 1.6rem; padding: 0 .4rem; border-radius: .3rem; color: inherit; }
+    .status-dismiss:hover, .status-action:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
+    .status-action { text-decoration: underline; }
     .dock-views button span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .dock-views .force-update-button span,
     .dock-views .find-replace-button span,
@@ -1928,36 +1840,6 @@
             linear-gradient(color-mix(in srgb, var(--risu-theme-primary) 5%, transparent) 1px, transparent 1px);
         background-size: 28px 28px;
     }
-    .ledger-toolbar {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 1rem;
-        padding: .75rem 1rem;
-        border-block: 1px solid var(--risu-theme-darkborderc);
-        background: color-mix(in srgb, var(--risu-theme-darkbg) 92%, transparent);
-    }
-    .ledger-stats {
-        display: flex;
-        flex-wrap: wrap;
-        gap: .5rem;
-        color: var(--risu-theme-textcolor2);
-        font-size: .72rem;
-        letter-spacing: .06em;
-        text-transform: uppercase;
-    }
-    .ledger-stats span {
-        display: inline-flex;
-        align-items: center;
-        gap: .35rem;
-        padding: .25rem .5rem;
-        border: 1px solid var(--risu-theme-darkborderc);
-        border-radius: 999px;
-    }
-    .ledger-stats .graph-current {
-        color: color-mix(in srgb, var(--risu-theme-primary) 78%, var(--risu-theme-textcolor));
-        border-color: color-mix(in srgb, var(--risu-theme-primary) 45%, var(--risu-theme-darkborderc));
-    }
     .force-update-status {
         display: flex;
         align-items: center;
@@ -1979,18 +1861,6 @@
         border-bottom-color: color-mix(in srgb, var(--risu-theme-draculared) 35%, var(--risu-theme-darkborderc));
         color: var(--risu-theme-draculared);
         background: color-mix(in srgb, var(--risu-theme-draculared) 7%, var(--risu-theme-darkbg));
-    }
-    .ledger-scroll {
-        flex: 1;
-        min-height: 0;
-        overflow-y: auto;
-        padding: 1rem;
-    }
-    .graph-scroll {
-        flex: 1;
-        min-height: 0;
-        overflow-y: auto;
-        overscroll-behavior: contain;
     }
     .markdown-wiki {
         flex: 1;
@@ -2237,83 +2107,6 @@
     .memory-wiki-dock.mobile-layout .dock-resizer { display: none; }
     .memory-wiki-dock.mobile-layout .dock-identity { min-width: 0; }
 
-    .memory-observability {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.35rem 0.8rem;
-        padding: 0.45rem 0.9rem;
-        border-bottom: 1px solid color-mix(in srgb, var(--risu-theme-primary) 16%, transparent);
-        color: var(--risu-theme-textcolor2);
-        font-size: 0.75rem;
-        font-variant-numeric: tabular-nums;
-    }
-    .ledger-columns {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 1rem;
-        margin-top: 1rem;
-    }
-    .fallback-note {
-        display: grid;
-        gap: .2rem;
-        margin-bottom: 1rem;
-        padding: .7rem .85rem;
-        border: 1px solid color-mix(in srgb, var(--risu-theme-primary) 28%, var(--risu-theme-darkborderc));
-        border-left: 3px solid var(--risu-theme-primary);
-        background: color-mix(in srgb, var(--risu-theme-primary) 7%, var(--risu-theme-darkbg));
-        font-size: .72rem;
-    }
-    .fallback-note span {
-        color: var(--risu-theme-textcolor2);
-    }
-    .ledger-section {
-        padding: 1rem;
-        border: 1px solid var(--risu-theme-darkborderc);
-        border-radius: .5rem;
-        background: color-mix(in srgb, var(--risu-theme-darkbg) 94%, transparent);
-        box-shadow: 0 10px 28px color-mix(in srgb, var(--color-shadow) 12%, transparent);
-    }
-    .ledger-section h3 {
-        display: flex;
-        align-items: center;
-        gap: .45rem;
-        margin: 0 0 .75rem;
-        color: var(--risu-theme-textcolor);
-        font-size: .8rem;
-        font-weight: 700;
-        letter-spacing: .08em;
-        text-transform: uppercase;
-    }
-    .ledger-section p {
-        margin: 0;
-        white-space: pre-wrap;
-        line-height: 1.7;
-    }
-    .ledger-section ul,
-    .ledger-section ol {
-        display: grid;
-        gap: .65rem;
-        margin: 0;
-        padding-left: 1.25rem;
-    }
-    .ledger-section li {
-        padding-left: .25rem;
-        line-height: 1.55;
-    }
-    .ledger-baseline {
-        border-left: 3px solid var(--risu-theme-primary);
-    }
-    .ledger-invalidated {
-        margin-top: 1rem;
-        opacity: .72;
-    }
-    .ledger-invalidated li {
-        text-decoration: line-through;
-    }
-    .ledger-muted {
-        color: var(--risu-theme-textcolor2);
-        font-style: italic;
-    }
     .ledger-state {
         flex: 1;
         min-height: 0;
@@ -2334,16 +2127,29 @@
         color: var(--risu-theme-textcolor2);
     }
     @media (max-width: 640px) {
-        .ledger-columns {
-            grid-template-columns: 1fr;
-        }
-        .ledger-toolbar {
-            align-items: flex-start;
-        }
     }
 
     @media (prefers-reduced-motion: reduce) {
         .memory-wiki-dock { animation: none; }
         .portrait-command-header :global(svg:last-child) { transition: none; }
+    }
+    /* A wide dock names each view under its icon; a narrow one keeps icons and tooltips. */
+    @container (min-width: 36rem) {
+        .dock-view-actions button {
+            width: auto;
+            min-width: 3.4rem;
+            flex-direction: column;
+            gap: .12rem;
+            padding: .25rem .3rem;
+        }
+        .dock-view-actions button span {
+            position: static;
+            width: auto;
+            height: auto;
+            overflow: visible;
+            clip-path: none;
+            font-size: .75rem;
+            line-height: 1.1;
+        }
     }
 </style>

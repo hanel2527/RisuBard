@@ -31,8 +31,6 @@ export interface RisuBardChatSettings {
     risuBardDynamicMemoryMode?: RisuBardDynamicMemoryMode
     risuBardDynamicMemoryMaximumTokens?: number
     risuBardModelMode?: 'memory' | 'model'
-    risuBardBardChanEnabled?: boolean
-    risuBardBardChanModelMode?: 'memory' | 'model'
     showRequestStatus?: boolean
     risuBardInquiryTargetTokenBudget?: number
     risuBardInquiryEventTokenBudget?: number
@@ -63,8 +61,6 @@ export interface ResolvedRisuBardChatSettings {
     risuBardDynamicMemoryMode: RisuBardDynamicMemoryMode
     risuBardDynamicMemoryMaximumTokens: number
     risuBardModelMode: 'memory' | 'model'
-    risuBardBardChanEnabled: boolean
-    risuBardBardChanModelMode: 'memory' | 'model'
     showRequestStatus: boolean
     risuBardInquiryTargetTokenBudget: number
     risuBardInquiryEventTokenBudget: number
@@ -103,6 +99,61 @@ function boundedInteger(
     return Math.max(minimum, Math.min(maximum, rounded))
 }
 
+export type RisuBardNumberSettingKey =
+    | 'risuBardDynamicMemoryMaximumTokens'
+    | 'risuBardInquiryTargetTokenBudget'
+    | 'risuBardInquiryEventTokenBudget'
+    | 'risuBardInquirySourceTokenBudget'
+    | 'risuBardInquiryMaximumTokenBudget'
+    | 'risuBardInquiryTimeoutMs'
+    | 'risuBardHistoricalSourceMatchLimit'
+    | 'risuBardAnalysisTokenLimit'
+    | 'risuBardAdditionalSearchLimit'
+    | 'risuBardCanonicalTargetLimit'
+    | 'risuBardRecentMessageCount'
+    | 'risuBardResponseMessageCount'
+
+/**
+ * The bounds resolveRisuBardChatSettings applies to each number setting.
+ * The three inquiry budgets other than the maximum are capped by the resolved maximum, passed as inquiryMaximum.
+ */
+export function risuBardNumberSettingBounds(
+    key: RisuBardNumberSettingKey,
+    inquiryMaximum = Number.MAX_SAFE_INTEGER,
+): { min: number; max: number } {
+    switch (key) {
+        case 'risuBardInquiryTargetTokenBudget':
+        case 'risuBardInquiryEventTokenBudget':
+        case 'risuBardInquirySourceTokenBudget':
+            return { min: 256, max: inquiryMaximum }
+        case 'risuBardDynamicMemoryMaximumTokens':
+        case 'risuBardInquiryMaximumTokenBudget':
+            return { min: 256, max: Number.MAX_SAFE_INTEGER }
+        case 'risuBardInquiryTimeoutMs': return { min: 1, max: 10_000 }
+        case 'risuBardHistoricalSourceMatchLimit': return { min: 0, max: 32 }
+        case 'risuBardAnalysisTokenLimit': return { min: 3_072, max: Number.MAX_SAFE_INTEGER }
+        case 'risuBardAdditionalSearchLimit': return { min: 0, max: Number.MAX_SAFE_INTEGER }
+        case 'risuBardCanonicalTargetLimit':
+        case 'risuBardRecentMessageCount':
+        case 'risuBardResponseMessageCount':
+            return { min: 1, max: Number.MAX_SAFE_INTEGER }
+    }
+}
+
+/** Rounds and clamps a typed value with the resolve bounds; non-numbers return the fallback. */
+export function normalizeRisuBardNumberSetting(
+    key: RisuBardNumberSettingKey,
+    value: unknown,
+    fallback: number,
+    inquiryMaximum?: number,
+): number {
+    const { min, max } = risuBardNumberSettingBounds(key, inquiryMaximum)
+    return boundedInteger(value, fallback, min, max)
+}
+
+const bounded = (key: RisuBardNumberSettingKey, value: unknown, fallback: number, inquiryMaximum?: number) =>
+    normalizeRisuBardNumberSetting(key, value, fallback, inquiryMaximum)
+
 export function resolveRisuBardChatSettings(
     global: RisuBardChatSettings,
     chat?: RisuBardChatSettings,
@@ -121,9 +172,6 @@ export function resolveRisuBardChatSettings(
         risuBardDynamicMemoryMode: normalizeRisuBardDynamicMemoryMode(value('risuBardDynamicMemoryMode')),
         risuBardDynamicMemoryMaximumTokens: normalizeRisuBardDynamicMemoryMaximum(value('risuBardDynamicMemoryMaximumTokens')),
         risuBardModelMode: value('risuBardModelMode') === 'model' ? 'model' : 'memory',
-        risuBardBardChanEnabled: value('risuBardBardChanEnabled') === true,
-        risuBardBardChanModelMode:
-            value('risuBardBardChanModelMode') === 'model' ? 'model' : 'memory',
         showRequestStatus: value('showRequestStatus') !== false,
         risuBardInquiryTargetTokenBudget: inquiry.target,
         risuBardInquiryEventTokenBudget: inquiry.events,
@@ -145,11 +193,11 @@ export function resolveRisuBardChatSettings(
         risuBardCanonicalTargetLimit: normalizeRisuBardCanonicalTargetLimit(
             value('risuBardCanonicalTargetLimit')
         ),
-        risuBardRecentMessageCount: boundedInteger(
-            value('risuBardRecentMessageCount'), 12, 1
+        risuBardRecentMessageCount: bounded(
+            'risuBardRecentMessageCount', value('risuBardRecentMessageCount'), 12
         ),
-        risuBardResponseMessageCount: boundedInteger(
-            value('risuBardResponseMessageCount'), 12, 1
+        risuBardResponseMessageCount: bounded(
+            'risuBardResponseMessageCount', value('risuBardResponseMessageCount'), 12
         ),
         risuBardResponseExcludeUserMessages:
             value('risuBardResponseExcludeUserMessages') === true,
@@ -184,42 +232,25 @@ export function normalizeRisuBardDynamicMemoryMode(value: unknown): RisuBardDyna
 }
 
 export function normalizeRisuBardDynamicMemoryMaximum(value: unknown): number {
-    return boundedInteger(value, RISUBARD_DYNAMIC_MEMORY_MAXIMUM_DEFAULT, 256)
+    return bounded('risuBardDynamicMemoryMaximumTokens', value, RISUBARD_DYNAMIC_MEMORY_MAXIMUM_DEFAULT)
 }
 
 export function normalizeRisuBardAnalysisTokenLimit(value: unknown): number {
-    return boundedInteger(
-        value,
-        RISUBARD_ANALYSIS_TOKEN_LIMIT_DEFAULT,
-        3_072
-    )
+    return bounded('risuBardAnalysisTokenLimit', value, RISUBARD_ANALYSIS_TOKEN_LIMIT_DEFAULT)
 }
 
 export function normalizeRisuBardAdditionalSearchLimit(value: unknown): number {
-    return boundedInteger(
-        value,
-        RISUBARD_ADDITIONAL_SEARCH_LIMIT_DEFAULT,
-        0
-    )
+    return bounded('risuBardAdditionalSearchLimit', value, RISUBARD_ADDITIONAL_SEARCH_LIMIT_DEFAULT)
 }
 
 export function normalizeRisuBardCanonicalTargetLimit(value: unknown): number {
-    return boundedInteger(
-        value,
-        RISUBARD_CANONICAL_TARGET_LIMIT_DEFAULT,
-        1
-    )
+    return bounded('risuBardCanonicalTargetLimit', value, RISUBARD_CANONICAL_TARGET_LIMIT_DEFAULT)
 }
 
 export function normalizeRisuBardHistoricalSourceMatchLimit(
     value: unknown
 ): number {
-    return boundedInteger(
-        value,
-        RISUBARD_HISTORICAL_SOURCE_MATCH_LIMIT_DEFAULT,
-        0,
-        32
-    )
+    return bounded('risuBardHistoricalSourceMatchLimit', value, RISUBARD_HISTORICAL_SOURCE_MATCH_LIMIT_DEFAULT)
 }
 
 export function normalizeRisuBardInquiryTokenBudget(
@@ -228,30 +259,11 @@ export function normalizeRisuBardInquiryTokenBudget(
     events?: unknown,
     perSource?: unknown,
 ): { target: number; events: number; perSource: number; maximum: number } {
-    const normalizedMaximum = boundedInteger(
-        maximum,
-        RISUBARD_INQUIRY_MAXIMUM_TOKEN_BUDGET_DEFAULT,
-        256
-    )
+    const normalizedMaximum = bounded('risuBardInquiryMaximumTokenBudget', maximum, RISUBARD_INQUIRY_MAXIMUM_TOKEN_BUDGET_DEFAULT)
     return {
-        target: boundedInteger(
-            target,
-            RISUBARD_INQUIRY_TARGET_TOKEN_BUDGET_DEFAULT,
-            256,
-            normalizedMaximum
-        ),
-        events: boundedInteger(
-            events,
-            RISUBARD_INQUIRY_EVENT_TOKEN_BUDGET_DEFAULT,
-            256,
-            normalizedMaximum,
-        ),
-        perSource: boundedInteger(
-            perSource,
-            RISUBARD_INQUIRY_SOURCE_TOKEN_BUDGET_DEFAULT,
-            256,
-            normalizedMaximum,
-        ),
+        target: bounded('risuBardInquiryTargetTokenBudget', target, RISUBARD_INQUIRY_TARGET_TOKEN_BUDGET_DEFAULT, normalizedMaximum),
+        events: bounded('risuBardInquiryEventTokenBudget', events, RISUBARD_INQUIRY_EVENT_TOKEN_BUDGET_DEFAULT, normalizedMaximum),
+        perSource: bounded('risuBardInquirySourceTokenBudget', perSource, RISUBARD_INQUIRY_SOURCE_TOKEN_BUDGET_DEFAULT, normalizedMaximum),
         maximum: normalizedMaximum,
     }
 }
@@ -289,12 +301,7 @@ function resolveRisuBardWritingStyleInstruction(
 }
 
 export function normalizeRisuBardInquiryTimeoutMs(value: unknown): number {
-    return boundedInteger(
-        value,
-        RISUBARD_INQUIRY_TIMEOUT_MS_DEFAULT,
-        1,
-        10_000,
-    )
+    return bounded('risuBardInquiryTimeoutMs', value, RISUBARD_INQUIRY_TIMEOUT_MS_DEFAULT)
 }
 
 export function buildRisuBardEventWritingPolicy(

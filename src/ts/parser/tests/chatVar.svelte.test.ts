@@ -274,6 +274,32 @@ test('script global writes persist to the database even in a chat with pinned to
   chat.GLGlobalVariables = undefined
 })
 
+test('script toggle writes stay in the chat that owns its toggle values', () => {
+  const chat = DBState.db.characters[0].chats[0] as typeof DBState.db.characters[0]['chats'][0] & {
+    useLocallySetGlobalVariables?: boolean
+    GLGlobalVariables?: Record<string, string>
+  }
+  DBState.db.globalChatVariables.toggle_mood = 'calm'
+  chat.useLocallySetGlobalVariables = true
+  chat.GLGlobalVariables = {}
+
+  setScriptGlobalChatVar('toggle_mood', 'tense', chat)
+
+  expect(chat.GLGlobalVariables).toEqual({ toggle_mood: 'tense' })
+  expect(DBState.db.globalChatVariables.toggle_mood).toBe('calm')
+
+  chat.useLocallySetGlobalVariables = false
+  chat.GLGlobalVariables = undefined
+})
+
+test('the wiki prompt guide renders with the current chat toggle scope', () => {
+  const source = readFileSync('src/ts/process/index.svelte.ts', 'utf8')
+  const start = source.indexOf('function renderWikiPromptGuide')
+  const body = source.slice(start, source.indexOf('\n}', start))
+  expect(body).toContain('getChatToggleScope(')
+  expect(body).not.toContain('DBState.db.globalChatVariables')
+})
+
 test('returns "null" for undefined variables', () => {
   fc.assert(
     fc.property(fc.string({ unit: 'grapheme' }), (key) => {
