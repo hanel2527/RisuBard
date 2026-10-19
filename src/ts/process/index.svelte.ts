@@ -1572,7 +1572,25 @@ export async function sendChat(chatProcessIndex = -1,arg:{
 
     }
 
-    const lorepmt = await loadLoreBookV3Prompt({ character: generationScope.character, chat: generationScope.chat })
+    let renderedFirstMessageCache: { source: string, content: string } | undefined
+    const renderFirstMessage = async (source: string) => {
+        if (renderedFirstMessageCache?.source === source) return renderedFirstMessageCache.content
+        const content = await processGenerationScript(nowChatroom,
+            parseGenerationText(source, {chara: currentChar}),
+        'editprocess')
+        renderedFirstMessageCache = { source, content }
+        return content
+    }
+    const selectedFirstMessage = currentChat.firstMessageDisabled
+        ? undefined
+        : currentChat.fmIndex === -1 ? nowChatroom.firstMessage : nowChatroom.alternateGreetings?.[currentChat.fmIndex]
+    const lorepmt = await loadLoreBookV3Prompt({
+        character: generationScope.character,
+        chat: generationScope.chat,
+        renderedFirstMessage: typeof selectedFirstMessage === 'string'
+            ? await renderFirstMessage(selectedFirstMessage)
+            : undefined,
+    })
     let wikiInquiryAttempted = false
     let wikiInquiryError: WikiInquiryFailure | undefined
     let wikiInquirySources: Awaited<ReturnType<typeof loadNarrativeInquiry>>['sources'] = []
@@ -2308,9 +2326,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
 
         const chat:OpenAIChat = {
             role: 'assistant',
-            content: await (processGenerationScript(nowChatroom,
-                parseGenerationText(firstMsg, {chara: currentChar}),
-            'editprocess'))
+            content: await renderFirstMessage(firstMsg)
         }
 
         if(usingPromptTemplate && requestSettings.promptSettings.sendName){
@@ -2324,6 +2340,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
 
     const triggerResult = await runTrigger(currentChar, 'start', {chat: currentChat})
     if(triggerResult){
+        renderedFirstMessageCache = undefined
         currentChat = triggerResult.chat
         generationScope.chat = normalizeChat(currentChat)
         ms = makeMs(currentChat)

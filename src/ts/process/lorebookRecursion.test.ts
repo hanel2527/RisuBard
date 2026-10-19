@@ -803,3 +803,63 @@ describe('Risu lorebook import owner routing', () => {
         expect(replacement.globalLore).toEqual([])
     })
 })
+
+describe('first message key search', () => {
+    function greetingChat(chatOverrides: Record<string, unknown> = {}, scanDepth = 2) {
+        mockModuleSources.length = 0
+        const character = {
+            chaId: 'greet', name: 'bot', chatPage: 0,
+            firstMessage: '하이츠 얼라이언스 기숙사 로비에 모였다.',
+            alternateGreetings: ['훈련장 한가운데에서 시작한다.'],
+            loreSettings: { scanDepth },
+            globalLore: [lore('기숙사', '기숙사', 'DORM FACT'), lore('훈련장', '훈련장', 'GYM FACT')],
+            chats: [{ id: 'chat', fmIndex: -1, localLore: [], message: [{ role: 'user', data: '주위를 둘러본다.' }], ...chatOverrides }],
+        }
+        mockDBState.db = { username: 'user', loreBookDepth: 3, loreBookToken: 8000, characters: [character] }
+        return character
+    }
+    const prompts = (result: Awaited<ReturnType<typeof loadLoreBookV3Prompt>>) => result.actives.map((entry) => entry.prompt)
+
+    it('activates lore from the selected greeting on the first turn', async () => {
+        greetingChat()
+        const result = await loadLoreBookV3Prompt()
+        expect(prompts(result)).toEqual(['DORM FACT'])
+        expect(result.matchLog).toContainEqual(expect.objectContaining({ source: 'first message', activated: '기숙사' }))
+    })
+
+    it('uses the alternate greeting chosen by fmIndex', async () => {
+        greetingChat({ fmIndex: 0 })
+        expect(prompts(await loadLoreBookV3Prompt())).toEqual(['GYM FACT'])
+    })
+
+    it('prefers the rendered greeting from request assembly over the raw source', async () => {
+        const character = greetingChat()
+        const result = await loadLoreBookV3Prompt({
+            character: character as any,
+            chat: character.chats[0] as any,
+            renderedFirstMessage: '훈련장으로 향한다.',
+        })
+        expect(prompts(result)).toEqual(['GYM FACT'])
+    })
+
+    it('keeps scan depth semantics: the greeting is outside a depth that the chat already fills', async () => {
+        greetingChat({}, 1)
+        expect(prompts(await loadLoreBookV3Prompt())).toEqual([])
+    })
+
+    it('skips the greeting when it is disabled or hidden by an allBefore marker', async () => {
+        greetingChat({ firstMessageDisabled: true })
+        expect(prompts(await loadLoreBookV3Prompt())).toEqual([])
+        greetingChat({ message: [{ role: 'char', data: '경계', disabled: 'allBefore' }, { role: 'user', data: '주위를 둘러본다.' }] }, 5)
+        expect(prompts(await loadLoreBookV3Prompt())).toEqual([])
+    })
+
+    it('searches every stored message when scan depth exceeds the chat length', async () => {
+        greetingChat({ firstMessageDisabled: true, message: [
+            { role: 'user', data: '훈련장에 간다.' },
+            { role: 'char', data: '도착했다.' },
+            { role: 'user', data: '둘러본다.' },
+        ] }, 5)
+        expect(prompts(await loadLoreBookV3Prompt())).toEqual(['GYM FACT'])
+    })
+})
