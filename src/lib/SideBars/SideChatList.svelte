@@ -2,7 +2,7 @@
     import { onDestroy, untrack } from "svelte";
     import { v4 } from "uuid";
     import Sortable from 'sortablejs/modular/sortable.core.esm.js';
-    import { DownloadIcon, PencilIcon, HardDriveUploadIcon, TrashIcon, SplitIcon, FolderPlusIcon, BookmarkCheckIcon, PackageIcon, CopyIcon, PlusIcon, MergeIcon, EllipsisIcon, XIcon, ListChecksIcon, FolderInputIcon, FolderMinusIcon, ArrowUpIcon, ArrowDownIcon, GripVerticalIcon, ChevronRightIcon, PaletteIcon } from "@lucide/svelte";
+    import { DownloadIcon, PencilIcon, HardDriveUploadIcon, TrashIcon, SplitIcon, FolderPlusIcon, BookmarkCheckIcon, PackageIcon, CopyIcon, PlusIcon, MergeIcon, EllipsisIcon, XIcon, ListChecksIcon, UserRoundIcon, FolderInputIcon, FolderMinusIcon, ArrowUpIcon, ArrowDownIcon, GripVerticalIcon, ChevronRightIcon, PaletteIcon } from "@lucide/svelte";
 
     import type { Chat, ChatFolder, character } from "src/ts/storage/database.svelte";
     import { newChatModelDefaults } from "src/ts/storage/database.svelte";
@@ -42,6 +42,10 @@
     import { rebindPainterChatScope } from 'src/ts/bardPainter/chatScope';
     import { deleteCharacterChats, exportCharacterChats } from 'src/ts/risubard/chatListActions';
     import { chatIdRange, chatSection, gatherSelectionAfterDrag, shiftSelectedChats } from 'src/ts/risubard/chatListOrder';
+    import { loadChatPreview } from 'src/ts/risubard/chatPreview';
+    import { formatPreviewTime, toChatPreviewText } from 'src/ts/risubard/chatPreviewText';
+    import type { ChatPreviewPayload } from 'src/ts/storage/chatContentPage';
+    import { getEffectivePersona, resolvePersonaById } from 'src/ts/personaScopes';
 
     interface Props {
         chara: character;
@@ -565,6 +569,83 @@
         node.focus()
         node.select()
     }
+
+    // ── Hover preview: persona and the last message, without opening the chat ──
+    const PREVIEW_DELAY_MS = 400
+    const PREVIEW_WIDTH = 320
+    let preview = $state<{ chatId: string, top: number, left: number, data: ChatPreviewPayload | null, loading: boolean } | null>(null)
+    let previewTimer: ReturnType<typeof setTimeout> | null = null
+    let previewRequest = 0
+
+    function portal(node: HTMLElement) {
+        document.body.appendChild(node)
+        return { destroy() { node.remove() } }
+    }
+
+    function hidePreview(): void {
+        if (previewTimer) clearTimeout(previewTimer)
+        previewTimer = null
+        previewRequest++
+        preview = null
+    }
+
+    function schedulePreview(anchor: HTMLElement, chat: Chat, index: number, delay = PREVIEW_DELAY_MS): void {
+        hidePreview()
+        if (!chat.id || draggingChat) return
+        const chatId = chat.id
+        const request = previewRequest
+        previewTimer = setTimeout(async () => {
+            previewTimer = null
+            const listRight = (listEle ?? anchor).getBoundingClientRect().right
+            const rowTop = anchor.getBoundingClientRect().top
+            const left = listRight + 8
+            // No room beside the sidebar (narrow window): skip rather than cover the row.
+            if (left + 240 > window.innerWidth) return
+            const top = Math.max(8, Math.min(rowTop, window.innerHeight - 240))
+            preview = { chatId, top, left, data: null, loading: true }
+            try {
+                const data = await loadChatPreview(chara, chat, index)
+                if (request !== previewRequest) return
+                preview = { chatId, top, left, data, loading: false }
+            } catch {
+                if (request === previewRequest) preview = { chatId, top, left, data: null, loading: false }
+            }
+        }, delay)
+    }
+
+    function onChatRowPointerEnter(event: PointerEvent, chat: Chat, index: number): void {
+        if (event.pointerType === 'touch') return
+        schedulePreview(event.currentTarget as HTMLElement, chat, index)
+    }
+
+    function onChatRowFocus(event: FocusEvent, chat: Chat, index: number): void {
+        const target = event.currentTarget as HTMLElement
+        if (target.matches(':focus-visible')) schedulePreview(target, chat, index)
+    }
+
+    const previewPersona = $derived.by(() => {
+        if (!preview?.data) return null
+        const bound = resolvePersonaById(DBState.db, chara, preview.data.bindedPersona)
+        const persona = bound?.persona ?? getEffectivePersona(DBState.db, chara, null)?.persona
+        return { name: persona?.name || DBState.db.username || 'User', bound: !!bound }
+    })
+
+    const previewMessage = $derived.by(() => {
+        const message = preview?.data?.lastMessage
+        if (!message) return null
+        const userName = previewPersona?.name ?? 'User'
+        const charName = chara.name || '캐릭터'
+        const speaker = message.role === 'user'
+            ? userName
+            : (message.saying ? findCharacterbyId(message.saying)?.name : null) || charName
+        const text = toChatPreviewText(message.data, { user: userName, char: charName })
+        return { speaker, time: message.time ? formatPreviewTime(message.time) : '', text: text || '(내용 없음)' }
+    })
+
+    $effect(() => {
+        if (draggingChat) untrack(hidePreview)
+    })
+    onDestroy(hidePreview)
 </script>
 <svelte:window onkeydown={onWindowKeydown} />
 {#snippet chatSelectBox(chat: Chat)}
@@ -667,17 +748,20 @@
         {/if}
 
         {#key sorted}
-        <div data-chat-list-scroll class="chat-list-scroll flex flex-col mt-1 overflow-y-auto overflow-x-hidden" bind:this={listEle} style:height={`${chatListHeight}px`}>
+        <div data-chat-list-scroll class="chat-list-scroll flex flex-col mt-1 overflow-y-auto overflow-x-hidden" bind:this={listEle} style:height={`${chatListHeight}px`} onscroll={hidePreview}>
         {#snippet chatRow(chat: Chat, index: number)}
             {@const isActive = index === chara.chatPage && !$chatDeselected}
             <div data-chat-list-row data-risu-chat-idx={index} class="chat-row group flex items-center rounded-md select-none"
                 class:bg-selected={isActive} class:chat-row-checked={!isActive && selectedSet.has(chat.id)}>
                 {@render chatSelectBox(chat)}
                 <button aria-current={isActive ? 'true' : undefined}
-                    onclick={(e) => onChatRowClick(e, chat, index)}
-                    onpointerdown={(e) => onChatRowPointerDown(e, chat)}
+                    aria-describedby={preview?.chatId === chat.id ? 'chat-preview-card' : undefined}
+                    onclick={(e) => { hidePreview(); onChatRowClick(e, chat, index) }}
+                    onpointerdown={(e) => { hidePreview(); onChatRowPointerDown(e, chat) }}
+                    onpointerenter={(e) => onChatRowPointerEnter(e, chat, index)}
+                    onfocus={(e) => onChatRowFocus(e, chat, index)} onblur={hidePreview}
                     onpointermove={onChatRowPointerMove}
-                    onpointerup={cancelLongPress} onpointercancel={cancelLongPress} onpointerleave={cancelLongPress}
+                    onpointerup={cancelLongPress} onpointercancel={cancelLongPress} onpointerleave={() => { cancelLongPress(); hidePreview() }}
                     oncontextmenu={(e) => { if (lastPointerType === 'touch') e.preventDefault() }}
                     class="flex min-w-0 grow items-center text-textcolor border-solid border-0 border-darkborderc p-2 pl-1 cursor-pointer rounded-md">
                     <span class="truncate">{chat.name}</span>
@@ -764,6 +848,35 @@
     </ShAccordion>
     </div>
 
+    {#if preview}
+        <div use:portal id="chat-preview-card" role="tooltip" data-chat-preview-card
+            class="chat-preview-card fixed z-50 rounded-md border border-darkborderc bg-darkbg p-3 text-sm text-textcolor shadow-lg pointer-events-none"
+            style:top={`${preview.top}px`} style:left={`${preview.left}px`} style:width={`min(${PREVIEW_WIDTH}px, calc(100vw - ${preview.left + 8}px))`}>
+            {#if preview.loading}
+                <p class="text-textcolor2">불러오는 중...</p>
+            {:else}
+                {#if previewPersona}
+                    <div class="flex min-w-0 items-center gap-1.5 text-xs text-textcolor2">
+                        <UserRoundIcon size={14} class="shrink-0" />
+                        <span class="truncate text-textcolor">{previewPersona.name}</span>
+                        {#if !previewPersona.bound}<span class="shrink-0">(챗에 고정 안 됨)</span>{/if}
+                    </div>
+                {/if}
+                {#if previewMessage}
+                    <div class="mt-2 flex min-w-0 items-baseline gap-1.5 border-t border-darkborderc pt-2 text-xs text-textcolor2">
+                        <span class="truncate font-semibold text-textcolor">{previewMessage.speaker}</span>
+                        {#if previewMessage.time}<span class="shrink-0">{previewMessage.time}</span>{/if}
+                    </div>
+                    <p class="chat-preview-text mt-1 whitespace-pre-line break-words">{previewMessage.text}</p>
+                {:else if preview.data}
+                    <p class="mt-2 text-textcolor2">아직 주고받은 메시지가 없습니다.</p>
+                {:else}
+                    <p class="text-textcolor2">미리보기를 불러오지 못했습니다.</p>
+                {/if}
+            {/if}
+        </div>
+    {/if}
+
     <div class="border-t border-selected mt-2">
         {#if DBState.db.characters[$selectedCharID]?.chaId !== '§playground' && !$chatDeselected}
             {#if DBState.db.showModelInSidebar}
@@ -793,6 +906,7 @@
     .chat-list-scroll::-webkit-scrollbar { width: 6px; }
     .chat-list-scroll::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--color-textcolor2) 40%, transparent); border-radius: 999px; }
     .chat-list-scroll :global([data-chat-list-row]) { flex-shrink: 0; }
+    .chat-preview-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 5; line-clamp: 5; overflow: hidden; line-height: 1.5; }
     .chat-list-scroll :global(.chat-row) { -webkit-touch-callout: none; }
     .chat-list-scroll :global(.chat-row-checked) { background: color-mix(in srgb, var(--color-borderc) 22%, transparent); }
     .chat-list-scroll :global(.chat-drag-handle) { touch-action: none; }

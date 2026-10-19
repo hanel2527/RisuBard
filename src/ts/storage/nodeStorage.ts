@@ -13,6 +13,7 @@ import {
     assembleChatContentPages,
     getRemainingChatContentPageOffsets,
     type ChatContentPageEnvelope,
+    type ChatPreviewPayload,
 } from './chatContentPage'
 import { isCanonicalFilesChangedResponse, isExternalChangesPendingResponse } from './canonicalConflict'
 import { uploadChatContent } from './chatContentUpload'
@@ -1229,6 +1230,17 @@ export class NodeStorage{
         if (da.status < 200 || da.status >= 300) throw new Error(`fetchChatContent error: ${da.status}`)
         const buffer = new Uint8Array(await da.arrayBuffer())
         return normalizeChat(await decodeRisuSave(buffer))
+    }
+
+    /** Persona binding and last message only, for the chat list hover card. */
+    async fetchChatPreview(chaId: string, chatIndex: number, chatId: string): Promise<ChatPreviewPayload | null> {
+        const da = await this.authFetch(`/api/chat-preview/${encodeURIComponent(chaId)}/${chatIndex}`, {
+            headers: { 'x-chat-id': chatId },
+        })
+        // 409: the chat moved since this index was read; the caller asks again later.
+        if (da.status === 404 || da.status === 409) return null
+        if (da.status < 200 || da.status >= 300) throw new Error(`fetchChatPreview error: ${da.status}`)
+        return await da.json() as ChatPreviewPayload
     }
 
     async fetchChatContent(chaId: string, chatIndex: number, chatId: string): Promise<any | null> {

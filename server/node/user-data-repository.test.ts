@@ -167,6 +167,24 @@ describe('canonical entity tree', () => {
         expect(repository.exportLegacyDatabase()).toEqual(database)
     })
 
+    it('previews an indexed chat from its metadata and last message line only', () => {
+        const dataRoot = root()
+        const repository = createUserDataRepository({ dataRoot })
+        const database = legacyDatabase()
+        Object.assign(database.characters[0].chats[0], { bindedPersona: 'persona-1', note: 'not in preview' })
+        repository.importLegacyDatabase(database, { mode: 'sync' })
+        const reads = vi.spyOn(fs, 'readFileSync')
+        expect(repository.loadIndexedChatPreview('char-1', 0)).toEqual({
+            id: 'chat-1',
+            bindedPersona: 'persona-1',
+            lastMessage: { role: 'char', data: 'world' },
+        })
+        // The message file is read through a bounded tail read, never parsed whole.
+        expect(reads.mock.calls.some(([file]) => String(file).endsWith('messages.jsonl'))).toBe(false)
+        expect(repository.loadIndexedChatPreview('char-1', 5)).toBeNull()
+        expect(repository.loadIndexedChatPreview('missing', 0)).toBeNull()
+    })
+
     it('declines direct startup for legacy chats needing persistent IDs', () => {
         const repository = createUserDataRepository({ dataRoot: root() })
         const database = legacyDatabase()

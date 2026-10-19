@@ -44,7 +44,7 @@ const { commitTransaction, moveToTrash, observeWrites } = require('./file-store.
 const { createRuntimeMemoryService } = require('./risubard-memory-runtime.cjs');
 const { openServerBrowser } = require('./open-server-browser.cjs');
 const { releaseToUpdateInfo } = require('./release-update.cjs');
-const { createChatContentPage } = require('./chat-content-page.cjs');
+const { createChatContentPage, createChatPreview } = require('./chat-content-page.cjs');
 const { createChatContentUploads, MAX_CHUNK_BYTES: CHAT_UPLOAD_MAX_CHUNK_BYTES } = require('./chat-content-upload.cjs');
 const chatContentUploads = createChatContentUploads();
 const { stageBackupEntries } = require('./backup-entry-stream.cjs');
@@ -5886,6 +5886,47 @@ app.get('/api/chat-content/:chaId/:chatIndex/page', async (req, res, next) => {
         const encoded = encodeRisuSaveLegacyBuffer(page);
         res.setHeader('Content-Type', 'application/octet-stream');
         res.send(encoded);
+    } catch (error) {
+        next(error);
+    }
+});
+
+// GET /api/chat-preview/:chaId/:chatIndex — persona binding and last message for the chat list hover card.
+app.get('/api/chat-preview/:chaId/:chatIndex', async (req, res, next) => {
+    if (!await checkAuth(req, res)) { return; }
+    try {
+        const chaId = req.params.chaId;
+        const chatIndex = parseInt(req.params.chatIndex, 10);
+        const expectedChatId = req.headers['x-chat-id'];
+        let preview = null;
+        if (!fullChatStore && canonicalProjectionReady && isRemoteMigrationDone()
+            && !externalEditSession.isActive() && !canonicalProjectionSync.hasExternalChanges()) {
+            try {
+                preview = userDataRepository.loadIndexedChatPreview(chaId, chatIndex);
+            } catch (error) {
+                logger.warn('[Read] Canonical chat preview unavailable; using compatibility reader', error?.code || error?.name);
+            }
+        }
+        if (!preview) {
+            let chat = null;
+            await ensureChatStore();
+            const charChats = fullChatStore.get(chaId);
+            if (charChats && expectedChatId) chat = charChats.get(expectedChatId) || null;
+            if (!chat) {
+                const raw = kvGet('database/database.bin');
+                if (!raw) return res.status(404).json({ error: 'Database not found' });
+                const dbObj = await decodeRisuSave(raw);
+                chat = dbObj.characters?.find(c => c?.chaId === chaId)?.chats?.[chatIndex] || null;
+            }
+            if (!chat) return res.status(404).json({ error: 'Chat not found' });
+            // A cold-stored chat keeps its messages elsewhere; show no message rather than restoring it.
+            const messages = Array.isArray(chat.message) && !isColdStorageChat(chat) ? chat.message : [];
+            preview = createChatPreview(chat, messages[messages.length - 1] ?? null);
+        }
+        if (expectedChatId && preview.id !== expectedChatId) {
+            return res.status(409).json({ error: 'Chat ID mismatch — index may have shifted' });
+        }
+        res.json(preview);
     } catch (error) {
         next(error);
     }
