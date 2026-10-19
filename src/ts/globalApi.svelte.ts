@@ -56,7 +56,9 @@ export const liveFileConflictRecovery: { time: string, conflicts: LiveFileConfli
 
 export async function downloadFile(name: string, dat: Uint8Array | ArrayBuffer | string) {
     if (typeof (dat) === 'string') {
-        dat = Buffer.from(dat, 'utf-8')
+        // The browser Buffer polyfill collects UTF-8 bytes in a JS array, which
+        // throws "Invalid array length" past ~100 MB (large chat exports on phones).
+        dat = new TextEncoder().encode(dat)
     }
     const data = new Uint8Array(dat)
     const downloadURL = (data: string, fileName: string) => {
