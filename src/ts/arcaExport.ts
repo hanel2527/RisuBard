@@ -670,7 +670,9 @@ ${badgeHtml}
 </div>`;
     }
 
-    return `<div style="margin: 1rem 0; color: ${colors.text}; background-color: ${colors.background}; border: 1px solid ${colors.border}; border-radius: 12px; font-family: 'Segoe UI', Roboto, Arial, sans-serif; font-size: ${fontSizePx}px; line-height: 1.6;">
+    // Empty paragraphs on both sides leave a typing line above and below the pasted card in the editor.
+    return `<p><br></p>
+<div style="margin: 1rem 0; color: ${colors.text}; background-color: ${colors.background}; border: 1px solid ${colors.border}; border-radius: 12px; font-family: 'Segoe UI', Roboto, Arial, sans-serif; font-size: ${fontSizePx}px; line-height: 1.6;">
 <div style="padding: 20px;">
 ${titleBlock}
 <div style="padding-top: 1rem; border-top: 1px solid ${colors.border};">${options.bodyHtml}</div>
@@ -794,8 +796,12 @@ async function exportChildNodes(
 ): Promise<void> {
     const outputDocument = target.ownerDocument;
     for (const child of Array.from(parent.childNodes)) {
+        // Controls such as a bot's fixed FAB buttons are dropped, not snapshotted: rendered on
+        // their own they leave transparent images that Arca shows as blank space.
         if (child instanceof HTMLElement
             && options.renderComplexBlock
+            && shouldIncludeArcaSnapshotNode(child, [])
+            && !shouldDropElement(child)
             && isComplexVisualBlock(child, options.readStyle)) {
             if (isProseWrapper(child, options.readStyle)) {
                 const wrapper = await cloneNodeForArca(child, outputDocument, options, undefined,

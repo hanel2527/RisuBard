@@ -212,6 +212,26 @@ describe('exportArcaHtml', () => {
         expect(html).not.toContain('5F');
     });
 
+    it('drops fixed FAB buttons instead of snapshotting them into blank images', async () => {
+        const root = document.createElement('div');
+        root.innerHTML = '<p>prose</p><div class="mha-clear"></div><button class="fab">지도</button><button class="fab">설정</button>';
+        const [, , map, settings] = Array.from(root.children) as HTMLElement[];
+        const styles = new Map<Element, CSSStyleDeclaration>([
+            [map, cssStyle('position: fixed; right: 18px; bottom: 220px; width: 56px; height: 56px;')],
+            [settings, cssStyle('position: fixed; right: 18px; bottom: 288px; width: 56px; height: 56px;')],
+        ]);
+        const renderComplexBlock = vi.fn(async () => 'data:image/png;base64,blank');
+
+        const html = await exportArcaHtml(root, {
+            readStyle: element => styles.get(element) ?? cssStyle(''),
+            renderComplexBlock,
+        });
+
+        expect(renderComplexBlock).not.toHaveBeenCalled();
+        expect(html).not.toContain('<img');
+        expect(html).not.toContain('지도');
+    });
+
     it('keeps column flex layouts and closed details as HTML', async () => {
         const root = document.createElement('div');
         root.innerHTML = '<div class="stack"><b>one</b><b>two</b></div>'
@@ -677,7 +697,7 @@ describe('buildArcaClipboardHtml', () => {
         expect(html).not.toMatch(/class=|<style|display:\s*(?:flex|grid)|position:|overflow:|opacity:|url\(/i);
     });
 
-    it('adds an empty paragraph after the chat frame for pasting the next turn', () => {
+    it('adds an empty paragraph before and after the chat frame for typing around it', () => {
         const html = buildArcaClipboardHtml({
             bodyHtml: '<p>본문</p>',
             displayName: 'Test',
@@ -685,7 +705,10 @@ describe('buildArcaClipboardHtml', () => {
         const output = document.createElement('div');
         output.innerHTML = html;
 
-        expect(output.children).toHaveLength(2);
+        expect(output.children).toHaveLength(3);
+        expect(output.firstElementChild?.tagName).toBe('P');
+        expect(output.firstElementChild?.innerHTML).toBe('<br>');
+        expect(output.children[1].tagName).toBe('DIV');
         expect(output.lastElementChild?.tagName).toBe('P');
         expect(output.lastElementChild?.innerHTML).toBe('<br>');
     });
