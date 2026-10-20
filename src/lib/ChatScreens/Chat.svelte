@@ -26,7 +26,8 @@
     import { alertClear, alertConfirm, alertConfirmMulti, alertInput, alertRequestData, alertWait, notifyError, notifyInfo, notifySuccess, type AlertAction } from "../../ts/alert"
     import { ParseMarkdown, type CbsConditions, type simpleCharacterArgument } from "../../ts/parser/parser.svelte"
     import { getLLMCache, setLLMCache } from "../../ts/translator/translator"
-    import { getCurrentCharacter, getCurrentChat, setCurrentChat, type MessageGenerationInfo, type StreamingDisplayOptimizationMode } from "../../ts/storage/database.svelte"
+    import { getCurrentCharacter, normalizeChat, type MessageGenerationInfo, type StreamingDisplayOptimizationMode } from "../../ts/storage/database.svelte"
+    import { captureGenerationTarget, createGenerationScope, type GenerationTarget } from 'src/ts/process/generationTarget'
     import { selectedCharID } from "../../ts/stores.svelte"
     import { HideIconStore, ReloadGUIPointer, selIdState } from "../../ts/stores.svelte"
     import AutoresizeArea from "../UI/GUI/TextAreaResizable.svelte"
@@ -378,6 +379,17 @@
         if(!currentChar){
             return
         }
+        // A slow trigger (e.g. a Lightboard reroll) may finish after the user
+        // switched chats; its result belongs to the chat the button was in.
+        let target: GenerationTarget
+        try {
+            target = captureGenerationTarget(currentChar)
+        }
+        catch {
+            return
+        }
+        const triggerScope = createGenerationScope(() => DBState.db.characters, target)
+        const sourceChat = triggerScope.chat
 
         const triggerName = origin.getAttribute('risu-trigger')
         const triggerId = origin.getAttribute('risu-id')
@@ -386,16 +398,22 @@
         const triggerResult =
             triggerName ?
                 await runTrigger(currentChar, 'manual', {
-                    chat: getCurrentChat(),
+                    chat: sourceChat,
                     manualName: triggerName,
                     triggerId: triggerId || undefined,
                 }) :
             btnEvent ?
-                await runLuaButtonTrigger(currentChar, btnEvent) :
+                await runLuaButtonTrigger(currentChar, btnEvent, sourceChat) :
             null
 
-        if(triggerResult) {
-            setCurrentChat(triggerResult.chat)
+        if(triggerResult?.chat) {
+            try {
+                triggerScope.chat = normalizeChat(triggerResult.chat)
+            }
+            catch (error) {
+                // The source chat was deleted while the trigger ran.
+                console.warn('[button trigger] result dropped:', error)
+            }
             ReloadChatPointer.update((v) => {
                 v[idx] = (v[idx] ?? 0) + 1
                 return v

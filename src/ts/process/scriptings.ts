@@ -1579,7 +1579,7 @@ export async function runLuaEditTrigger<T extends string|OpenAIChat[]>(char:char
     }
 }
 
-export async function runLuaButtonTrigger(char:character|simpleCharacterArgument, data:string):Promise<any>{
+export async function runLuaButtonTrigger(char:character|simpleCharacterArgument, data:string, chat?:Chat):Promise<any>{
     let runResult
     try {
         const triggers = char.triggerscript.map<triggerscript>((v) => ({
@@ -1591,6 +1591,7 @@ export async function runLuaButtonTrigger(char:character|simpleCharacterArgument
             if(trigger?.effect?.[0]?.type === 'triggerlua'){
                 runResult = await runScripted(trigger.effect[0].code, {
                     char: char,
+                    chat,
                     lowLevelAccess: trigger.lowLevelAccess,
                     mode: 'onButtonClick',
                     data: data,
