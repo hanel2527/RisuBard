@@ -1,6 +1,6 @@
 <script lang="ts">
     import { isOocAssistantTurn } from 'src/ts/risubard/oocTurns'
-    import { ArrowLeft, ArrowLeftRightIcon, ArrowRight, BookmarkIcon, BotIcon, BookOpenCheck, CopyIcon, PowerOff, GitBranch, HamburgerIcon, LanguagesIcon, MenuIcon, PencilIcon, RefreshCcwIcon, SearchIcon, SplitIcon, TrashIcon, UserIcon, Volume2Icon, Scissors, EyeOff } from "@lucide/svelte"
+    import { ArrowLeft, ArrowLeftRightIcon, ArrowRight, BookmarkIcon, BotIcon, BookOpenCheck, CopyIcon, PowerOff, GitBranch, HamburgerIcon, LanguagesIcon, PencilIcon, RefreshCcwIcon, SearchIcon, SplitIcon, TrashIcon, UserIcon, Volume2Icon, Scissors, EyeOff } from "@lucide/svelte"
     import ClipboardCopyIcon from '@lucide/svelte/icons/clipboard-copy'
     import { buildArcaClipboardHtml, exportArcaHtml, resolveArcaImageSource } from 'src/ts/arcaExport'
     import { renderArcaComplexBlock } from 'src/ts/arcaSnapshot'
@@ -45,10 +45,6 @@
     } from 'src/ts/firstMessageStudio'
     import type { character as Character } from 'src/ts/storage/database.svelte'
     import { createRisuTriggerActivation } from './risuTriggerActivation'
-    import { Popover } from 'bits-ui'
-
-    let viewportWidth = $state(window.innerWidth)
-    let mobileActionsOpen = $state(false)
     let translating = $state(false)
     let editMode = $state(false)
     let statusMessage:string = $state('')
@@ -645,8 +641,6 @@
     {/if}
 {/snippet}
 
-<svelte:window bind:innerWidth={viewportWidth} />
-
 {#snippet iconButtons(options:{applyTextColors?:boolean} = {})}
     {#if !readOnly}
     <div class="grow flex items-center justify-end" class:text-textcolor2={options?.applyTextColors !== false}>
@@ -663,48 +657,18 @@
         {:else}
             <span class="text-xs">{statusMessage}</span>
             <div class="flex items-center ml-2 gap-2 flex-wrap justify-end">
-                {#if viewportWidth >= 640}
-                    {@render translationButton()}
-                    {@render editButton()}
-                    {@render majorIconButtonsBody(false)}
-                    {#if DBState.db.characters[selIdState.selId] && idx > -1}
-                        <PopupButton>
-                            {@render minorIconButtonsBody(true)}
-                        </PopupButton>
-                    {/if}
-                {:else}
-                    <div class="mobile-message-actions flex items-center gap-2">
-                        {@render editButton()}
-                        <Popover.Root bind:open={mobileActionsOpen}>
-                            <Popover.Trigger class="button-icon-menu flex min-h-11 min-w-11 items-center justify-center rounded-md hover:text-primary" aria-label={language.messageMoreActions}>
-                                <MenuIcon size={20} />
-                            </Popover.Trigger>
-                            <Popover.Portal>
-                                <Popover.Content align="end" sideOffset={6} collisionPadding={8} aria-label={language.messageMoreActions} class="mobile-message-flyout z-50 flex w-64 max-w-[calc(100vw-1rem)] max-h-[min(70dvh,var(--bits-popover-content-available-height))] flex-col gap-1 overflow-y-auto rounded-md border border-darkborderc bg-darkbg p-2 text-textcolor shadow-md"
-                                    onclick={(event) => {
-                                        const button = (event.target as Element).closest('button')
-                                        if (button && !button.disabled) mobileActionsOpen = false
-                                    }}>
-                                    {@render translationButton(true)}
-                                    {@render majorIconButtonsBody(true)}
-                                    {#if DBState.db.characters[selIdState.selId] && idx > -1}
-                                        {@render minorIconButtonsBody(true)}
-                                    {/if}
-                                    {@render firstMessageToggle(true)}
-                                    <div class="mobile-message-rerolls flex items-center justify-between gap-2">
-                                        {@render rerolls()}
-                                    </div>
-                                </Popover.Content>
-                            </Popover.Portal>
-                        </Popover.Root>
-                    </div>
+                {@render translationButton()}
+                {@render editButton()}
+                {@render majorIconButtonsBody(false)}
+                {#if DBState.db.characters[selIdState.selId] && idx > -1}
+                    <PopupButton>
+                        {@render minorIconButtonsBody(true)}
+                    </PopupButton>
                 {/if}
-                {#if viewportWidth >= 640}
-                    {@render firstMessageToggle()}
-                    <div class="flex items-center gap-1">
-                        {@render rerolls()}
-                    </div>
-                {/if}
+                {@render firstMessageToggle()}
+                <div class="flex items-center gap-1">
+                    {@render rerolls()}
+                </div>
             </div>
         {/if}
     </div>
@@ -1813,24 +1777,3 @@
 }}></div>
 {/if}
 
-<style>
-    .mobile-message-actions :global(.button-icon-edit) {
-        min-width: 44px;
-        min-height: 44px;
-        justify-content: center;
-        border-radius: 0.375rem;
-    }
-    :global(.mobile-message-flyout > button) {
-        min-height: 44px;
-        width: 100%;
-        padding: 0.5rem;
-        text-align: left;
-    }
-    :global(.mobile-message-flyout button svg) { flex-shrink: 0; }
-    :global(.mobile-message-rerolls button) {
-        min-width: 44px;
-        min-height: 44px;
-        justify-content: center;
-        opacity: 1;
-    }
-</style>
