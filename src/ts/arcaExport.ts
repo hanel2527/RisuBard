@@ -171,7 +171,8 @@ export function findDetachedArcaPanels(
         if (positionOf(element) !== 'absolute' || !isLargeLayer(element)) return false;
         if (selected.some(layer => layer === element || layer.contains(element) || element.contains(layer))) return false;
         const style = readStyle(element);
-        return hasDetachedPanelSurface(style) && hasDetachedLayerState(style);
+        const parentStyle = element.parentElement ? readStyle(element.parentElement) : null;
+        return hasDetachedPanelSurface(style) && hasDetachedLayerState(style, parentStyle);
     });
     selected.push(...absoluteLayers);
     return selected.filter((candidate, index) =>
@@ -211,13 +212,17 @@ function hasDetachedPanelSurface(style: CSSStyleDeclaration): boolean {
         || overflow.some(value => value === 'auto' || value === 'scroll' || value === 'hidden');
 }
 
-function hasDetachedLayerState(style: CSSStyleDeclaration): boolean {
+function hasDetachedLayerState(style: CSSStyleDeclaration, parentStyle: CSSStyleDeclaration | null): boolean {
     const zIndex = Number.parseInt(getStyleValue(style, 'z-index'), 10);
     const opacity = Number.parseFloat(getStyleValue(style, 'opacity'));
     const transform = getStyleValue(style, 'transform');
+    // pointer-events is inherited: a background layer inside a non-interactive picture
+    // is not a hidden panel unless it disables pointer events on its own.
+    const ownPointerEventsNone = getStyleValue(style, 'pointer-events') === 'none'
+        && (!parentStyle || getStyleValue(parentStyle, 'pointer-events') !== 'none');
     return (Number.isFinite(zIndex) && zIndex >= 10)
         || (Number.isFinite(opacity) && opacity < 1)
-        || getStyleValue(style, 'pointer-events') === 'none'
+        || ownPointerEventsNone
         || (transform !== '' && transform !== 'none');
 }
 

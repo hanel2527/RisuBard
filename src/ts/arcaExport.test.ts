@@ -83,6 +83,31 @@ describe('findDetachedArcaPanels', () => {
         expect(plan[0].element).toBe(panel);
     });
 
+    it('keeps an image background layer that only inherits pointer-events none', () => {
+        const root = document.createElement('div');
+        root.innerHTML = '<div class="pic"><span class="stage"><span class="bg"></span><img class="sprite"></span></div>';
+        const stage = root.querySelector('.stage') as HTMLElement;
+        const background = root.querySelector('.bg') as HTMLElement;
+        const sprite = root.querySelector('.sprite') as HTMLElement;
+        const styles = new Map<Element, CSSStyleDeclaration>([
+            [stage, cssStyle('position: relative; pointer-events: none;')],
+            [background, cssStyle('position: absolute; z-index: 0; pointer-events: none; background-image: linear-gradient(#123, #456); box-shadow: 4px 4px 0 #111;')],
+            [sprite, cssStyle('position: absolute; z-index: 1; pointer-events: none; transform: translateX(-50%);')],
+        ]);
+        const rects = new Map<Element, DOMRect>([
+            [root, domRect(760, 600)],
+            [stage, domRect(600, 340)],
+            [background, domRect(600, 340)],
+            [sprite, domRect(230, 340)],
+        ]);
+
+        expect(findDetachedArcaPanels(
+            root,
+            element => styles.get(element) ?? cssStyle(''),
+            element => rects.get(element) ?? domRect(0, 0),
+        )).toEqual([]);
+    });
+
     it('detects an unnamed absolute off-canvas layer from geometry and computed state', () => {
         const root = document.createElement('div');
         root.innerHTML = '<section class="ordinary"><i></i></section><aside class="unknown-layer">Details</aside>';
