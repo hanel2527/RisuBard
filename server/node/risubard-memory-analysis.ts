@@ -783,8 +783,9 @@ function resolveCanonicalTarget(
         targetDocumentId: string | null
     },
     documents: readonly LoadedCanonicalDocument[],
-    excludedDocumentIds: ReadonlySet<string>
-): LoadedCanonicalDocument | undefined {
+    excludedDocumentIds: ReadonlySet<string>,
+    identities: ReadonlySet<string>
+): LoadedCanonicalDocument | null | undefined {
     const eligible = documents.filter((document) =>
         document.type === candidate.type
         && !excludedDocumentIds.has(document.id)
@@ -795,16 +796,15 @@ function resolveCanonicalTarget(
         )
         if (exact) return exact
     }
-    const normalizedTitle = candidate.title.normalize('NFKC')
-        .toLocaleLowerCase()
     const sameIdentity = eligible.filter((document) =>
         [document.title, ...(document.aliases ?? [])].some((identity) =>
-            identity.normalize('NFKC').toLocaleLowerCase() === normalizedTitle
+            identities.has(identity.trim().normalize('NFKC').toLocaleLowerCase())
         )
     )
     if (sameIdentity.length === 1) return sameIdentity[0]
+    const unresolved = sameIdentity.length > 1 ? null : undefined
     if (candidate.action !== 'update' || !candidate.targetDocumentId) {
-        return undefined
+        return unresolved
     }
     const pool = sameIdentity.length > 1 ? sameIdentity : eligible
     const scored = pool.map((document) => ({
@@ -813,10 +813,10 @@ function resolveCanonicalTarget(
             candidate.targetDocumentId!, document.id, 2
         ),
     })).filter(({ distance }) => distance <= 2)
-    if (scored.length === 0) return undefined
+    if (scored.length === 0) return unresolved
     const minimum = Math.min(...scored.map(({ distance }) => distance))
     const nearest = scored.filter(({ distance }) => distance === minimum)
-    return nearest.length === 1 ? nearest[0].document : undefined
+    return nearest.length === 1 ? nearest[0].document : unresolved
 }
 
 function mergeEvidenceBackedAliases(
@@ -1553,30 +1553,36 @@ export function createMemoryAnalysisRunner(
             }
             if (options.markdownWikiService.saveCanonicalDocument) {
                 try {
-                    const used = new Set<string>()
                     const batchTargets: Array<{
                         candidate: (typeof draft.canonicalUpdateCandidates)[number]
                         target: LoadedCanonicalDocument | undefined
                         preparedMarkdown: string
+                        identities: Set<string>
                         storyArcPlan?: StoryArcUpdatePlan
                     }> = []
                     for (const candidate of draft.canonicalUpdateCandidates
                         .slice(0, snapshot.canonicalTargetLimit ?? 8)) {
-                        const normalizedTitle = candidate.title.normalize('NFKC')
-                            .toLocaleLowerCase()
+                        const identities = new Set([
+                            candidate.title,
+                            ...mergeEvidenceBackedAliases(candidate, undefined, snapshot.messages),
+                        ].map((name) => name.trim().normalize('NFKC').toLocaleLowerCase()))
                         const repeatsExcludedTitle = snapshot.additionalAnalysis
                             && candidate.action === 'create'
                             && documents.some((document) =>
                                 excludedDocumentIds.has(document.id)
                                 && document.type === candidate.type
                                 && [document.title, ...(document.aliases ?? [])]
-                                    .some((identity) => identity.normalize('NFKC')
-                                        .toLocaleLowerCase() === normalizedTitle)
+                                    .some((identity) => identities.has(identity.trim().normalize('NFKC')
+                                        .toLocaleLowerCase()))
                             )
                         if (repeatsExcludedTitle) continue
                         const target = resolveCanonicalTarget(
-                            candidate, documents, excludedDocumentIds
+                            candidate, documents, excludedDocumentIds, identities
                         )
+                        if (target === null) {
+                            receiptWarnings.push(`대상 충돌: ${candidate.title}의 이름/별칭이 여러 문서와 겹쳐 새 문서를 만들지 않았습니다.`)
+                            continue
+                        }
                         if (deferred.some((entry) => entry.documentId
                             ? entry.documentId === target?.id || entry.documentId === candidate.targetDocumentId
                             : entry.type === candidate.type && normalizeCanonicalMatch(entry.title) === normalizeCanonicalMatch(candidate.title))) continue
@@ -1596,14 +1602,10 @@ export function createMemoryAnalysisRunner(
                                 `대상 ID 보정: ${candidate.title}의 ${candidate.targetDocumentId}를 ${target.id}(으)로 연결했습니다.`
                             )
                         }
-                        const targetKey = target?.id
-                            ?? `${candidate.type}:${normalizedTitle}`
                         if (candidate.targetDocumentId
                             && excludedDocumentIds.has(candidate.targetDocumentId)) {
                             continue
                         }
-                        if (used.has(targetKey)) continue
-                        used.add(targetKey)
                         let preparedMarkdown: string
                         try {
                             preparedMarkdown = prepareCanonicalMarkdown(target?.content ?? `## ${candidate.title}`)
@@ -1612,10 +1614,47 @@ export function createMemoryAnalysisRunner(
                             await canonicalFailure({ candidate, target }, error, true)
                             continue
                         }
+                        for (const name of target ? [target.title, ...(target.aliases ?? [])] : []) {
+                            identities.add(name.trim().normalize('NFKC').toLocaleLowerCase())
+                        }
+                        const duplicates = batchTargets.filter((entry) =>
+                            entry.candidate.type === candidate.type
+                            && (target && entry.target
+                                ? entry.target.id === target.id
+                                : [...identities].some((name) => entry.identities.has(name))))
+                        // A resolved target anchors the merge; the filter above excludes other existing IDs.
+                        if (duplicates.length > 1 && !target) {
+                            receiptWarnings.push(`대상 충돌: ${candidate.title}의 이름/별칭이 여러 갱신 후보와 겹쳐 새 문서를 만들지 않았습니다.`)
+                            continue
+                        }
+                        const duplicate = duplicates[0]
+                        if (duplicate) {
+                            if (target && !duplicate.target) {
+                                duplicate.target = target
+                                duplicate.preparedMarkdown = preparedMarkdown
+                            }
+                            const aliases = [...duplicate.candidate.aliases, candidate.title, ...candidate.aliases]
+                            for (let index = 1; index < duplicates.length; index += 1) {
+                                const redundant = duplicates[index]
+                                aliases.push(redundant.candidate.title, ...redundant.candidate.aliases)
+                                for (const name of redundant.identities) identities.add(name)
+                                batchTargets.splice(batchTargets.indexOf(redundant), 1)
+                            }
+                            duplicate.candidate = {
+                                ...duplicate.candidate,
+                                aliases: mergeEvidenceBackedAliases({
+                                    title: duplicate.candidate.title,
+                                    aliases,
+                                }, duplicate.target, snapshot.messages),
+                            }
+                            for (const name of identities) duplicate.identities.add(name)
+                            continue
+                        }
                         batchTargets.push({
                             candidate,
                             target,
                             preparedMarkdown,
+                            identities,
                             ...(storyArcPlan && isStoryArcCandidate(candidate)
                                 ? { storyArcPlan }
                                 : {}),
