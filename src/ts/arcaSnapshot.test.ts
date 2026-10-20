@@ -1,7 +1,18 @@
 // @vitest-environment happy-dom
 
 import { describe, expect, it } from 'vitest';
-import { collectLocalFontFaceCSS, loadLazyImages } from './arcaSnapshot';
+import { vi } from 'vitest';
+import { collectLocalFontFaceCSS, encodeArcaSnapshot, loadLazyImages } from './arcaSnapshot';
+
+describe('encodeArcaSnapshot', () => {
+    it('encodes snapshots as quality 85 WebP so transparency survives', () => {
+        const toDataURL = vi.fn(() => 'data:image/webp;base64,AAAA');
+        const canvas = { toDataURL } as unknown as HTMLCanvasElement;
+
+        expect(encodeArcaSnapshot(canvas)).toBe('data:image/webp;base64,AAAA');
+        expect(toDataURL).toHaveBeenCalledWith('image/webp', 0.85);
+    });
+});
 
 describe('loadLazyImages', () => {
     it('switches lazy sprites to eager loading before the snapshot', async () => {

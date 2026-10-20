@@ -62,10 +62,19 @@ export async function loadLazyImages(element: HTMLElement): Promise<void> {
     }));
 }
 
+export const ARCA_SNAPSHOT_PIXEL_RATIO = 2;
+export const ARCA_SNAPSHOT_WEBP_QUALITY = 0.85;
+
+// WebP keeps the alpha channel a sprite needs where it sticks out of its background.
+// Browsers without a WebP encoder return PNG from toDataURL, which is used as is.
+export function encodeArcaSnapshot(canvas: HTMLCanvasElement): string {
+    return canvas.toDataURL('image/webp', ARCA_SNAPSHOT_WEBP_QUALITY);
+}
+
 // Arca's sanitizer strips flex, grid and position, so layout-dependent blocks
 // are rasterized from the rendered DOM instead of being rebuilt as HTML.
 export async function renderArcaComplexBlock(element: HTMLElement): Promise<readonly string[]> {
-    const { getFontEmbedCSS, toPng } = await import('html-to-image');
+    const { getFontEmbedCSS, toCanvas } = await import('html-to-image');
     await loadLazyImages(element);
     const snapshotPlan = planArcaComplexSnapshots(element);
     // Without the block's own @font-face rules the snapshot falls back to wider fonts,
@@ -78,14 +87,16 @@ export async function renderArcaComplexBlock(element: HTMLElement): Promise<read
     catch (cause) {
         console.warn('Arca snapshot fonts skipped:', cause);
     }
-    const pixelRatio = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+    // Arca shows pasted images at the column width, so a 1x snapshot from a 100% scale
+    // monitor looks blurry. A fixed 2x WebP keeps detail and transparency at a modest size.
+    const pixelRatio = ARCA_SNAPSHOT_PIXEL_RATIO;
     const images: string[] = [];
     const failures: unknown[] = [];
 
     for (const target of snapshotPlan) {
         const rect = target.element.getBoundingClientRect();
         try {
-            images.push(await toPng(target.element, {
+            const canvas = await toCanvas(target.element, {
                 cacheBust: false,
                 pixelRatio,
                 ...(fontEmbedCSS === undefined ? { skipFonts: true } : { fontEmbedCSS }),
@@ -106,7 +117,8 @@ export async function renderArcaComplexBlock(element: HTMLElement): Promise<read
                     visibility: 'visible',
                     pointerEvents: 'auto',
                 } : { margin: '0' },
-            }));
+            });
+            images.push(encodeArcaSnapshot(canvas));
         }
         catch (cause) {
             failures.push(cause);
