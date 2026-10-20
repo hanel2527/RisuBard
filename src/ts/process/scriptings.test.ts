@@ -53,6 +53,14 @@ class FakeLuaEngine {
         return [getGlobal(id, 'mha_img_scale'), getGlobal(id, 'toggle_detail'), getGlobal(id, 'mha_hagakure')]
       })
     }
+    if (source.includes('FULL_CHAT_PROBE')) {
+      this.global.set('fullChatProbe', (id: string) => {
+        const getFull = this.global.get('getFullChatMain') as (id: string) => string
+        const setFull = this.global.get('setFullChatMain') as (id: string, value: string) => void
+        const chats = JSON.parse(getFull(id)) as { role: string, data: string }[]
+        setFull(id, JSON.stringify(chats.map(chat => ({ ...chat, data: chat.data.toUpperCase() }))))
+      })
+    }
     if (source.includes('CONTEXT_REUSE_PROBE')) {
       this.global.set('context-reuse', (id: string) => {
         const stopChat = this.global.get('stopChat') as ((id: string) => void) | undefined
@@ -215,6 +223,22 @@ describe('lightweight chat scripting APIs', () => {
     expect(setScriptGlobalChatVar).toHaveBeenCalledWith('mha_img_scale', '70', chat)
     expect(globalVars.has('toggle_detail')).toBe(false)
     expect(globalVars.has('')).toBe(false)
+  })
+
+  test('setFullChat keeps message identity, timing and BardWiki state of rewritten messages', async () => {
+    const { runScripted } = await loadScriptings()
+    const chat = {
+      id: 'A',
+      message: [
+        { role: 'user' as const, data: 'hi', chatId: 'u1', time: 10 },
+        { role: 'char' as const, data: 'reply', chatId: 'c1', time: 20, saying: 'bot', risubardMemoryConfirmed: true },
+      ],
+    }
+    const result = await runScripted('-- FULL_CHAT_PROBE', { mode: 'fullChatProbe', chat: chat as never })
+    expect(result.chat.message).toEqual([
+      { role: 'user', data: 'HI', chatId: 'u1', time: 10 },
+      { role: 'char', data: 'REPLY', chatId: 'c1', time: 20, saying: 'bot', risubardMemoryConfirmed: true },
+    ])
   })
 
   test('exposes direct message fields without copying unrelated message data', async () => {

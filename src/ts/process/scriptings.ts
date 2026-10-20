@@ -19,6 +19,7 @@ import { fetchNative, readImage } from "../globalApi.svelte";
 import { loadLoreBookV3Prompt } from './lorebook.svelte';
 import { getPersonaPrompt, getUserName, getUserIcon } from '../util';
 import { resolveGenerationTarget, type GenerationTarget } from './generationTarget';
+import { mergeLuaFullChat } from './luaFullChat';
 let luaFactory:LuaFactory
 let ScriptingSafeIds = new Set<string>()
 let ScriptingEditDisplayIds = new Set<string>()
@@ -319,12 +320,10 @@ export async function runScripted(code:string, arg:{
                 }
                 const realValue = JSON.parse(value)
 
-                ScriptingEngineState.chat.message = realValue.map((v) => {
-                    return {
-                        role: v.role,
-                        data: v.data
-                    }
-                })
+                ScriptingEngineState.chat.message = mergeLuaFullChat(
+                    ScriptingEngineState.chat.message ?? [],
+                    Array.isArray(realValue) ? realValue : []
+                )
             })
 
             declareAPI('logMain', (value:string) => {
