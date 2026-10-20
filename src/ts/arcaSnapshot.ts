@@ -43,10 +43,30 @@ export function collectLocalFontFaceCSS(
     return rules.join('\n');
 }
 
+// Off-screen `loading="lazy"` images (bot sprites, every message staged by the chat log)
+// have not loaded yet, so their computed size is 0 and html-to-image copies that size
+// into the snapshot. Load them first so the sprite keeps its real size.
+export async function loadLazyImages(element: HTMLElement): Promise<void> {
+    const images = element instanceof HTMLImageElement
+        ? [element]
+        : Array.from(element.querySelectorAll('img'));
+    await Promise.all(images.map(async (image) => {
+        if (image.loading === 'lazy') image.loading = 'eager';
+        if (!image.complete) {
+            await new Promise<void>((resolve) => {
+                image.addEventListener('load', () => resolve(), { once: true });
+                image.addEventListener('error', () => resolve(), { once: true });
+            });
+        }
+        await image.decode?.().catch(() => undefined);
+    }));
+}
+
 // Arca's sanitizer strips flex, grid and position, so layout-dependent blocks
 // are rasterized from the rendered DOM instead of being rebuilt as HTML.
 export async function renderArcaComplexBlock(element: HTMLElement): Promise<readonly string[]> {
     const { getFontEmbedCSS, toPng } = await import('html-to-image');
+    await loadLazyImages(element);
     const snapshotPlan = planArcaComplexSnapshots(element);
     // Without the block's own @font-face rules the snapshot falls back to wider fonts,
     // so fixed-width labels clip or wrap. Only families the block uses are embedded.

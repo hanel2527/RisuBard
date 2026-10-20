@@ -1,7 +1,22 @@
 // @vitest-environment happy-dom
 
 import { describe, expect, it } from 'vitest';
-import { collectLocalFontFaceCSS } from './arcaSnapshot';
+import { collectLocalFontFaceCSS, loadLazyImages } from './arcaSnapshot';
+
+describe('loadLazyImages', () => {
+    it('switches lazy sprites to eager loading before the snapshot', async () => {
+        const block = document.createElement('div');
+        block.innerHTML = '<span><img loading="lazy" alt="sprite"></span><img alt="eager">';
+        // happy-dom never finishes loading images; a real browser fires load or error.
+        for (const image of Array.from(block.querySelectorAll('img'))) {
+            Object.defineProperty(image, 'complete', { value: true });
+        }
+
+        await loadLazyImages(block);
+
+        expect(Array.from(block.querySelectorAll('img')).map(image => image.loading)).toEqual(['eager', 'auto']);
+    });
+});
 
 describe('collectLocalFontFaceCSS', () => {
     it('keeps local-only font faces the block uses and leaves url fonts to html-to-image', () => {

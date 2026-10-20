@@ -168,6 +168,8 @@ export function findDetachedArcaPanels(
     }
 
     const absoluteLayers = elements.filter((element) => {
+        // A positioned picture (a sprite over a background) is part of its scene, never a panel.
+        if (element instanceof HTMLImageElement) return false;
         if (positionOf(element) !== 'absolute' || !isLargeLayer(element)) return false;
         if (selected.some(layer => layer === element || layer.contains(element) || element.contains(layer))) return false;
         const style = readStyle(element);

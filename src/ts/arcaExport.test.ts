@@ -92,7 +92,8 @@ describe('findDetachedArcaPanels', () => {
         const styles = new Map<Element, CSSStyleDeclaration>([
             [stage, cssStyle('position: relative; pointer-events: none;')],
             [background, cssStyle('position: absolute; z-index: 0; pointer-events: none; background-image: linear-gradient(#123, #456); box-shadow: 4px 4px 0 #111;')],
-            [sprite, cssStyle('position: absolute; z-index: 1; pointer-events: none; transform: translateX(-50%);')],
+            // Chrome reports overflow on <img>; the loaded sprite must still not become a panel.
+            [sprite, cssStyle('position: absolute; z-index: 1; pointer-events: none; overflow: hidden; transform: translateX(-50%);')],
         ]);
         const rects = new Map<Element, DOMRect>([
             [root, domRect(760, 600)],
