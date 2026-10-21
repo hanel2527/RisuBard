@@ -103,7 +103,7 @@ export function reverseAutoscroll(container: HTMLElement) {
         Object.assign(marker.style, {
             position: 'fixed', left: `${startX - 14}px`, top: `${startY - 14}px`, width: '28px', height: '28px',
             borderRadius: '9999px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: 'rgba(240,240,240,0.9)', color: '#333', border: '1px solid #888',
+            background: 'var(--color-darkbg)', color: 'var(--color-textcolor)', border: '1px solid var(--color-borderc)',
             font: '16px/1 sans-serif', pointerEvents: 'none', zIndex: '2147483647',
         })
         document.body.append(marker)
