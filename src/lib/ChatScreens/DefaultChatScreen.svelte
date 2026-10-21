@@ -61,6 +61,7 @@ import { isMobile } from 'src/ts/platform'
     import AssetInput from './AssetInput.svelte';
     import { scrollWithinContainer } from './scrollWithin';
     import { observeChatScroll } from './observeChatScroll';
+    import { reverseAutoscroll } from './reverseAutoscroll';
     import {
         captureChatScrollAnchor,
         createChatScrollEndAnchor,
@@ -1892,6 +1893,7 @@ import { isMobile } from 'src/ts/platform'
              (bar floats up with a gap below). PWA/standalone has no URL bar, hence unaffected. -->
         <div class="h-full w-full flex flex-col-reverse overflow-y-auto overscroll-y-contain relative default-chat-screen"
             bind:this={chatScrollContainer}
+            use:reverseAutoscroll
             class:nodeonly-standard={DBState.db.theme === ''}
             class:no-chat-width-wide={DBState.db.theme === '' && DBState.db.nodeOnlyStandardChatWidth === 'wide'}
             class:no-chat-width-full={DBState.db.theme === '' && DBState.db.nodeOnlyStandardChatWidth === 'full'}
