@@ -1,7 +1,7 @@
 import type MarkdownIt from 'markdown-it'
 import type { NarrativeMemoryWikiMarkdown } from './memoryWiki'
 
-// Link resolution reads titles and aliases only, so catalog entries without bodies work.
+// Link resolution reads ids, titles and aliases only, so catalog entries without bodies work.
 export type WikiDocument = Omit<NarrativeMemoryWikiMarkdown['documents'][number], 'content'> & {
     content?: string
 }
@@ -25,6 +25,9 @@ export function describeWikiLinkTarget(
 ): WikiLinkResolution {
     const wanted = normalizeWikiLinkKey(target)
     if (!wanted) return { status: 'missing' }
+    // Writers sometimes copy the internal id instead of the title; an exact id is unambiguous.
+    const byId = documents.find((document) => document.id === target.trim())
+    if (byId) return { status: 'resolved', document: byId }
     const owners: WikiDocument[] = []
     const ownerIds = new Set<string>()
     for (const document of documents) {
@@ -39,7 +42,7 @@ export function describeWikiLinkTarget(
     return { status: 'resolved', document: owners[0] }
 }
 
-/** Counts other documents linking to the target by its title or any alias. */
+/** Counts other documents linking to the target by its id, title or any alias. */
 export function countWikiBacklinks(
     target: { id: string; title: string; aliases?: readonly string[] },
     documents: readonly { id: string; links?: readonly string[] }[]
@@ -47,9 +50,10 @@ export function countWikiBacklinks(
     const keys = new Set([target.title, ...(target.aliases ?? [])]
         .map(normalizeWikiLinkKey).filter(Boolean))
     return documents.filter((document) => document.id !== target.id
-        && (document.links ?? []).some((link) => keys.has(
-            normalizeWikiLinkKey(link.split('|')[0]?.split('#')[0] ?? '')
-        ))).length
+        && (document.links ?? []).some((link) => {
+            const linked = link.split('|')[0]?.split('#')[0]?.trim() ?? ''
+            return linked === target.id || keys.has(normalizeWikiLinkKey(linked))
+        })).length
 }
 
 /** Resolves a `[[target]]` only when one loaded document owns the identifier. */

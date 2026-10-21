@@ -526,6 +526,7 @@ function computeHealth(documents: MarkdownWikiDocument[]): MarkdownWikiHealth {
         const pathWithoutExtension = document.relativePath.replace(/\.md$/i, '')
         const fileName = basename(pathWithoutExtension)
         for (const value of [
+            document.id,
             document.title,
             ...document.aliases,
             pathWithoutExtension,

@@ -134,6 +134,16 @@ describe('unsaved draft protection', () => {
         expect(markdownEditor().value).toBe('# 라비안\n\n고친 기록.')
     })
 
+    it('saves a rename typed only into the body heading instead of reverting it', async () => {
+        mocks.saveManualWikiDocument.mockResolvedValueOnce({ ...lavian, title: '라비안 경', content: '## 라비안 경\n\n기록.', contentHash: 'renamed' })
+        await mountEditor()
+        await typeMarkdown('## 라비안 경\n\n기록.')
+        q<HTMLButtonElement>('button[aria-label="저장"]')!.click()
+        await vi.waitFor(() => expect(mocks.saveManualWikiDocument).toHaveBeenCalledWith(expect.objectContaining({
+            documentId: 'character.lavian', title: '라비안 경',
+        })))
+    })
+
     it('discards the draft when the user moves without saving', async () => {
         mocks.alertConfirmMulti.mockResolvedValueOnce(1)
         await mountEditor()

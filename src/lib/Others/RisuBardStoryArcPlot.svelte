@@ -45,7 +45,8 @@
         const normalized = normalizedTitle(target)
         return documents.find((document) =>
             document.status !== 'retracted'
-            && (normalizedTitle(document.title) === normalized
+            && (document.id === target.trim()
+                || normalizedTitle(document.title) === normalized
                 || (document.aliases ?? []).some((alias) =>
                     normalizedTitle(alias) === normalized)))
     }

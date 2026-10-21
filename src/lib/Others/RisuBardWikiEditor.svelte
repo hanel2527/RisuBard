@@ -650,6 +650,12 @@
         saving = true
         error = ''
         notice = ''
+        // The server rewrites the body heading from the title, so a rename typed
+        // only into the heading would silently revert. Adopt it as the title.
+        const headingOf = (value: string) => value.match(/^#{1,2}\s+(.+)$/m)?.[1]?.trim()
+        const heading = headingOf(markdown)
+        if (!creating && title === loadedTitle && heading
+            && heading !== headingOf(loadedMarkdown)) title = heading.slice(0, 160)
         try {
             const saved = await saveManualWikiDocument({
                 characterId,

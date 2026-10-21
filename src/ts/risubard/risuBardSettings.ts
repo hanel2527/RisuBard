@@ -315,6 +315,7 @@ export function buildRisuBardEventWritingPolicy(
         'When compressing, do not invent action targets or locations, turn temporal order into causation, or cross character knowledge boundaries at the time of an event.',
         'Preserve observed puzzle elements, order, spatial layout, pairings, blanks, mechanism positions and attempt outcomes. Separate observations from inferred rules or solutions; retain unresolved clues as open continuity.',
         'Style affects expression only; it cannot change fact selection, evidence, structure or safety rules.',
+        'Inside [[...]], write only a document title or alias as the target. Never use a document id field (for example location.abc123) or file path as a link target.',
         buildWikiWritingLanguageGuard(language),
     ].join('\n')
 }

@@ -75,6 +75,35 @@ describe('resolveWikiLinkTarget', () => {
     })
 })
 
+describe('document id link targets', () => {
+    const location = { id: 'location._Y9aUPRcvN-thmz2s26URj2y', title: '검은 이끼 골짜기', aliases: [] } as never
+    const other = { id: 'location.other', title: 'location._y9aUPRcvN-thmz2s26URj2y', aliases: [] } as never
+
+    test('resolves an exact internal id even when another title normalizes to it', () => {
+        expect(describeWikiLinkTarget('location._Y9aUPRcvN-thmz2s26URj2y', [location, other]))
+            .toEqual({ status: 'resolved', document: location })
+    })
+
+    test('renders an id link as a resolved link that keeps its display text', () => {
+        const md = markdownit({ html: false, breaks: false, linkify: false })
+        md.use(wikiLinkPlugin, {
+            resolve: (target: string) => describeWikiLinkTarget(target, [location]).status === 'resolved'
+                ? { status: 'resolved' } : { status: 'missing' },
+        })
+        const html = md.render('[[location._Y9aUPRcvN-thmz2s26URj2y|검은 이끼 골짜기]]에 도착했다.')
+        expect(html).toContain('data-wikilink-status="resolved"')
+        expect(html).toContain('>검은 이끼 골짜기</a>에 도착했다.')
+        expect(html).not.toContain('[[')
+    })
+
+    test('counts backlinks written with the id', () => {
+        expect(countWikiBacklinks(
+            { id: 'location._Y9aUPRcvN-thmz2s26URj2y', title: '검은 이끼 골짜기' },
+            [{ id: 'event.a', links: ['location._Y9aUPRcvN-thmz2s26URj2y|검은 이끼 골짜기'] }]
+        )).toBe(1)
+    })
+})
+
 describe('wikiLinkPlugin', () => {
     test('renders a wikilink as an anchor carrying the target', () => {
         expect(render('[[셀레나 스타폴]]')).toBe(
