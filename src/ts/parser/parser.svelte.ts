@@ -4,6 +4,7 @@ import { appVer, getCurrentCharacter, getDatabase, type Chat, type Database, typ
 import { DBState, selIdState } from '../stores.svelte';
 import { aiWatermarkingLawApplies, getFileSrc } from '../globalApi.svelte';
 import { isNodeServer } from "src/ts/platform"
+import { sha256Digest } from '../secureCrypto';
 import { getChatVar, setChatVar, getGlobalChatVar } from './chatVar.svelte';
 import { processScriptFull } from '../process/scripts';
 import { get } from 'svelte/store';
@@ -1119,7 +1120,7 @@ function decodeStyleContent(encoded:string): string|{diagnostic:string}{
 }
 
 export async function hasher(data:Uint8Array){
-    return Buffer.from(await crypto.subtle.digest("SHA-256", data as any)).toString('hex');
+    return Buffer.from(await sha256Digest(data)).toString('hex');
 }
 
 export type CbsConditions = {
