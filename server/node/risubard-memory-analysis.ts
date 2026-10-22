@@ -783,7 +783,8 @@ function resolveCanonicalTarget(
         targetDocumentId: string | null
     },
     documents: readonly LoadedCanonicalDocument[],
-    excludedDocumentIds: ReadonlySet<string>
+    excludedDocumentIds: ReadonlySet<string>,
+    confirmedAliasKeys: ReadonlySet<string>
 ): LoadedCanonicalDocument | undefined {
     const eligible = documents.filter((document) =>
         document.type === candidate.type
@@ -795,14 +796,19 @@ function resolveCanonicalTarget(
         )
         if (exact) return exact
     }
-    const normalizedTitle = candidate.title.normalize('NFKC')
-        .toLocaleLowerCase()
+    const titleKey = canonicalIdentityKey(candidate.title)
     const sameIdentity = eligible.filter((document) =>
-        [document.title, ...(document.aliases ?? [])].some((identity) =>
-            identity.normalize('NFKC').toLocaleLowerCase() === normalizedTitle
-        )
+        canonicalIdentityKeys(document).includes(titleKey)
     )
     if (sameIdentity.length === 1) return sameIdentity[0]
+    if (sameIdentity.length === 0) {
+        // A confirmed alias may name an existing document by its title. Two
+        // people can share a nickname, so alias-to-alias overlap never merges.
+        const titled = eligible.filter((document) =>
+            confirmedAliasKeys.has(canonicalIdentityKey(document.title))
+        )
+        if (titled.length === 1) return titled[0]
+    }
     if (candidate.action !== 'update' || !candidate.targetDocumentId) {
         return undefined
     }
@@ -852,6 +858,16 @@ function mergeEvidenceBackedAliases(
         if (aliases.length >= 32) break
     }
     return aliases
+}
+
+function canonicalIdentityKey(value: string): string {
+    return value.trim().normalize('NFKC').toLocaleLowerCase()
+}
+
+function canonicalIdentityKeys(
+    document: { title: string, aliases?: readonly string[] }
+): string[] {
+    return [document.title, ...(document.aliases ?? [])].map(canonicalIdentityKey)
 }
 
 function normalizeCanonicalMatch(value: string): string {
@@ -1553,33 +1569,45 @@ export function createMemoryAnalysisRunner(
             }
             if (options.markdownWikiService.saveCanonicalDocument) {
                 try {
-                    const used = new Set<string>()
                     const batchTargets: Array<{
                         candidate: (typeof draft.canonicalUpdateCandidates)[number]
                         target: LoadedCanonicalDocument | undefined
                         preparedMarkdown: string
+                        identityKeys: Set<string>
+                        mergedNames: string[]
                         storyArcPlan?: StoryArcUpdatePlan
                     }> = []
                     for (const candidate of draft.canonicalUpdateCandidates
                         .slice(0, snapshot.canonicalTargetLimit ?? 8)) {
-                        const normalizedTitle = candidate.title.normalize('NFKC')
-                            .toLocaleLowerCase()
+                        const titleKey = canonicalIdentityKey(candidate.title)
+                        const aliasKeys = new Set(mergeEvidenceBackedAliases(
+                            candidate, undefined, snapshot.messages
+                        ).map(canonicalIdentityKey))
                         const repeatsExcludedTitle = snapshot.additionalAnalysis
                             && candidate.action === 'create'
                             && documents.some((document) =>
                                 excludedDocumentIds.has(document.id)
                                 && document.type === candidate.type
-                                && [document.title, ...(document.aliases ?? [])]
-                                    .some((identity) => identity.normalize('NFKC')
-                                        .toLocaleLowerCase() === normalizedTitle)
+                                && (canonicalIdentityKeys(document).includes(titleKey)
+                                    || aliasKeys.has(canonicalIdentityKey(document.title)))
                             )
                         if (repeatsExcludedTitle) continue
                         const target = resolveCanonicalTarget(
-                            candidate, documents, excludedDocumentIds
+                            candidate, documents, excludedDocumentIds, aliasKeys
                         )
                         if (deferred.some((entry) => entry.documentId
                             ? entry.documentId === target?.id || entry.documentId === candidate.targetDocumentId
                             : entry.type === candidate.type && normalizeCanonicalMatch(entry.title) === normalizeCanonicalMatch(candidate.title))) continue
+                        if (!target && documents.filter((document) =>
+                            document.type === candidate.type
+                            && !excludedDocumentIds.has(document.id)
+                            && canonicalIdentityKeys(document).includes(titleKey)
+                        ).length > 1) {
+                            receiptWarnings.push(
+                                `이름 충돌: ${candidate.title}이(가) 여러 문서의 이름이나 별칭과 같아 새 문서를 만들지 않았습니다.`
+                            )
+                            continue
+                        }
                         if (candidate.confidence < 0.75) {
                             receiptWarnings.push(
                                 `낮은 확신 (${Math.round(candidate.confidence * 100)}%): ${candidate.title}`
@@ -1596,14 +1624,29 @@ export function createMemoryAnalysisRunner(
                                 `대상 ID 보정: ${candidate.title}의 ${candidate.targetDocumentId}를 ${target.id}(으)로 연결했습니다.`
                             )
                         }
-                        const targetKey = target?.id
-                            ?? `${candidate.type}:${normalizedTitle}`
                         if (candidate.targetDocumentId
                             && excludedDocumentIds.has(candidate.targetDocumentId)) {
                             continue
                         }
-                        if (used.has(targetKey)) continue
-                        used.add(targetKey)
+                        // A queued new document is the same person only through a
+                        // title: its title equals this name or alias, or this title
+                        // is one of its aliases.
+                        const sameTarget = batchTargets.filter((entry) => target
+                            ? entry.target?.id === target.id
+                            : !entry.target && entry.candidate.type === candidate.type
+                                && (entry.identityKeys.has(titleKey)
+                                    || aliasKeys.has(canonicalIdentityKey(entry.candidate.title))))
+                        if (sameTarget.length > 1) {
+                            receiptWarnings.push(
+                                `이름 충돌: ${candidate.title}이(가) 여러 갱신 후보의 이름이나 별칭과 같아 새 문서를 만들지 않았습니다.`
+                            )
+                            continue
+                        }
+                        if (sameTarget.length === 1) {
+                            sameTarget[0].mergedNames.push(candidate.title, ...candidate.aliases)
+                            for (const key of [titleKey, ...aliasKeys]) sameTarget[0].identityKeys.add(key)
+                            continue
+                        }
                         let preparedMarkdown: string
                         try {
                             preparedMarkdown = prepareCanonicalMarkdown(target?.content ?? `## ${candidate.title}`)
@@ -1616,10 +1659,36 @@ export function createMemoryAnalysisRunner(
                             candidate,
                             target,
                             preparedMarkdown,
+                            identityKeys: new Set([titleKey, ...aliasKeys]),
+                            mergedNames: [],
                             ...(storyArcPlan && isStoryArcCandidate(candidate)
                                 ? { storyArcPlan }
                                 : {}),
                         })
+                    }
+                    // Links resolve a name only when one document owns it, so a new
+                    // alias already used by another document or queued target is dropped.
+                    const identityOwners = new Map<string, Set<unknown>>()
+                    const addIdentityOwner = (key: string, owner: unknown) => {
+                        const owners = identityOwners.get(key) ?? new Set<unknown>()
+                        owners.add(owner)
+                        identityOwners.set(key, owners)
+                    }
+                    for (const document of documents) {
+                        for (const key of canonicalIdentityKeys(document)) addIdentityOwner(key, document.id)
+                    }
+                    for (const entry of batchTargets) {
+                        for (const key of entry.identityKeys) addIdentityOwner(key, entry.target?.id ?? entry)
+                    }
+                    const canonicalAliasesFor = (entry: (typeof batchTargets)[number]) => {
+                        const owner = entry.target?.id ?? entry
+                        return mergeEvidenceBackedAliases({
+                            title: entry.candidate.title,
+                            aliases: [...entry.candidate.aliases, ...entry.mergedNames],
+                        }, entry.target, snapshot.messages).filter((alias) =>
+                            entry.target?.aliases?.includes(alias)
+                            || [...identityOwners.get(canonicalIdentityKey(alias)) ?? []]
+                                .every((other) => other === owner))
                     }
                     if (batchTargets.length > 0) {
                         const hasStoryArcTarget = batchTargets.some((entry) =>
@@ -2009,11 +2078,7 @@ export function createMemoryAnalysisRunner(
                             }
                             try {
                                 signal?.throwIfAborted()
-                                const aliases = mergeEvidenceBackedAliases(
-                                    entry.candidate,
-                                    entry.target,
-                                    snapshot.messages
-                                )
+                                const aliases = canonicalAliasesFor(entry)
                                 const saved = await options.markdownWikiService
                                     .saveCanonicalDocument({
                                     characterId: snapshot.characterId,
