@@ -21,6 +21,7 @@ vi.mock('../parser/parser.svelte', () => ({
 vi.mock('../util', () => ({
     findCharacterbyId: vi.fn(),
     pickHashRand: vi.fn(() => 1),
+    parseKeyValue: () => [],
     selectSingleFile: mockSelectSingleFile,
 }))
 vi.mock('../alert', () => ({
@@ -861,5 +862,43 @@ describe('first message key search', () => {
             { role: 'user', data: '둘러본다.' },
         ] }, 5)
         expect(prompts(await loadLoreBookV3Prompt())).toEqual(['GYM FACT'])
+    })
+})
+
+describe('lorebook regex keys and activation flags', () => {
+    function prepare(entries: any[], messages: string[]) {
+        mockModuleSources.length = 0
+        const chat = { id: 'chat', localLore: [], scriptstate: {} as Record<string, string>, message: messages.map((data) => ({ role: 'user', data })) }
+        const character = { chaId: 'regex', name: 'regex', chatPage: 0, globalLore: entries, chats: [chat] }
+        mockDBState.db = { username: 'user', loreBookDepth: 3, loreBookToken: 8000, characters: [character] }
+        return { character, chat }
+    }
+
+    it('matches /pattern/flags and /pattern/ keys without rewriting the entry key', async () => {
+        const flagged = { ...lore('Flagged', '/dragon\\s+king/i', 'FLAGGED FACT'), useRegex: true }
+        const bare = { ...lore('Bare', '/castle/', 'BARE FACT'), useRegex: true }
+        const notRegex = { ...lore('Not regex', 'castle', 'NOT REGEX FACT'), useRegex: true }
+        const multiKey = { ...lore('Multi', '/nomatch/,/castle/', 'MULTI FACT'), useRegex: true }
+        prepare([flagged, bare, notRegex, multiKey], ['The DRAGON  King rests in the castle.'])
+
+        const result = await loadLoreBookV3Prompt()
+        const prompts = result.actives.map((entry) => entry.prompt)
+
+        expect(prompts).toEqual(expect.arrayContaining(['FLAGGED FACT', 'BARE FACT', 'MULTI FACT']))
+        expect(prompts).not.toContain('NOT REGEX FACT')
+        expect(flagged.key).toBe('/dragon\\s+king/i')
+        expect(multiKey.key).toBe('/nomatch/,/castle/')
+    })
+
+    it('records keep-activate flags only for the entry that declared them', async () => {
+        const keeper = { ...lore('Keeper', 'alpha', '@@keep_activate_after_match\nKEEPER FACT'), id: 'keeper' }
+        const plain = { ...lore('Plain', 'beta', 'PLAIN FACT'), id: 'plain' }
+        const { chat } = prepare([keeper, plain], ['alpha and beta'])
+
+        const result = await loadLoreBookV3Prompt()
+
+        expect(result.actives.map((entry) => entry.prompt)).toEqual(expect.arrayContaining(['KEEPER FACT', 'PLAIN FACT']))
+        expect(chat.scriptstate['$__internal_ka_keeper']).toBe('true')
+        expect(chat.scriptstate['$__internal_ka_plain']).toBeUndefined()
     })
 })
