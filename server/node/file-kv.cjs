@@ -246,9 +246,17 @@ function createFileKv(options = {}) {
     function kvSet(key, value) {
         const data = Buffer.isBuffer(value) ? value : Buffer.from(value);
         const hash = digest(data);
+        const previous = key === 'database/database.bin' ? manifest.entries[key]?.object : undefined;
         writeObject(dataRoot, hash, data);
         manifest.entries[key] = { object: hash, size: data.length, updatedAt: Date.now() };
         saveManifest();
+        // The compatibility database is rewritten whole on every save, and a
+        // failing save retries it each time. Background GC waits an hour, so a
+        // large database would fill the disk first. Snapshots that share the
+        // replaced object keep it referenced.
+        if (previous && previous !== hash && !referencedObjects().has(previous)) {
+            try { fs.unlinkSync(path.join(dataRoot, 'kv', 'objects', previous)); } catch {}
+        }
     }
 
     // Accepts any iterable so a generator can stream values one at a time.

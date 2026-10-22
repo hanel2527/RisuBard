@@ -3105,7 +3105,21 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     let emoChanged = false
     let resendChat = false
     let outputMessageId: string | undefined
-    
+    // An output trigger hands back a plain copy of the chat. Once that copy is
+    // stored, deleting fields on it no longer reaches the reactive chat that the
+    // screen and saves read, so edit the stored chat instead.
+    const attachOutputScriptstateCheckpoint = () => {
+        const storedChat = generationScope.chat
+        const outputMessageIndex = findMessageIndexByChatId(storedChat, outputMessageId)
+        if(outputMessageIndex < 0) return
+        attachScriptstateCheckpoint(
+            storedChat.message,
+            outputMessageIndex,
+            scriptstateBeforeResponse,
+            snapshotChatScriptstate(storedChat.scriptstate),
+        )
+    }
+
     if(abortSignal.aborted === true){
         return false
     }
@@ -3313,15 +3327,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             chatIndex: generationScope.chatIndex,
             messageIndex: findMessageIndexByChatId(currentChat, outputMessageId),
         })
-        const outputMessageIndex = findMessageIndexByChatId(currentChat, outputMessageId)
-        if(outputMessageIndex >= 0){
-            attachScriptstateCheckpoint(
-                currentChat.message,
-                outputMessageIndex,
-                scriptstateBeforeResponse,
-                snapshotChatScriptstate(currentChat.scriptstate),
-            )
-        }
+        attachOutputScriptstateCheckpoint()
         if(requestSettings.ttsAutoSpeech){
             await sayTTS(currentChar, result)
         }
@@ -3416,15 +3422,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             chatIndex: generationScope.chatIndex,
             messageIndex: findMessageIndexByChatId(currentChat, outputMessageId),
         })
-        const outputMessageIndex = findMessageIndexByChatId(currentChat, outputMessageId)
-        if(outputMessageIndex >= 0){
-            attachScriptstateCheckpoint(
-                currentChat.message,
-                outputMessageIndex,
-                scriptstateBeforeResponse,
-                snapshotChatScriptstate(currentChat.scriptstate),
-            )
-        }
+        attachOutputScriptstateCheckpoint()
     }
 
     let needsAutoContinue = false

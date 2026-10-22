@@ -1,5 +1,5 @@
 import { get } from 'svelte/store';
-import type { ChatScriptstateCheckpoint } from '../chatScriptstateCheckpoint';
+import type { ChatScriptstateCheckpoint, StoredSwipeScriptstateCheckpoint } from '../chatScriptstateCheckpoint';
 import type { TagAutocompleteSettings } from '../tagAutocomplete/settings';
 import { checkNullish, decryptBuffer, encryptBuffer, selectSingleFile } from '../util';
 import { changeLanguage, language } from '../../lang';
@@ -2990,7 +2990,7 @@ export interface Message{
     /** Script state before and after this assistant response was applied. */
     scriptstateCheckpoint?: ChatScriptstateCheckpoint
     /** State checkpoints aligned with `swipes`; null marks a legacy candidate. */
-    scriptstateSwipeCheckpoints?: Array<ChatScriptstateCheckpoint | null>
+    scriptstateSwipeCheckpoints?: StoredSwipeScriptstateCheckpoint[]
     risubardMemoryConfirmed?: boolean
     risubardCanonicalReceipt?: CanonicalTurnReceipt
 }

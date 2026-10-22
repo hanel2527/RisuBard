@@ -50,6 +50,7 @@
 import { isMobile } from 'src/ts/platform'
     import { processScript } from "src/ts/process/scripts";
     import {
+        compactSwipeScriptstateCheckpoints,
         getSwipeScriptstateCheckpoints,
         restoreScriptstateBeforeReroll,
         restoreSelectedSwipeScriptstate,
@@ -953,10 +954,10 @@ import { isMobile } from 'src/ts/platform'
         if (newLastMsg && !newLastMsg.swipes) {
             newLastMsg.swipes = [...savedSwipes, newLastMsg.data]
             newLastMsg.swipeId = newLastMsg.swipes.length - 1
-            newLastMsg.scriptstateSwipeCheckpoints = [
+            newLastMsg.scriptstateSwipeCheckpoints = compactSwipeScriptstateCheckpoints([
                 ...savedSwipeCheckpoints,
                 newLastMsg.scriptstateCheckpoint ?? null,
-            ]
+            ])
         }
     }
 
@@ -1010,7 +1011,7 @@ import { isMobile } from 'src/ts/platform'
             else delete lastMsg.scriptstateCheckpoint
         }
         else{
-            lastMsg.scriptstateSwipeCheckpoints = swipeCheckpoints
+            lastMsg.scriptstateSwipeCheckpoints = compactSwipeScriptstateCheckpoints(swipeCheckpoints)
         }
         restoreSelectedSwipeScriptstate(
             DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage],
