@@ -804,6 +804,7 @@ export function setDatabase(data:Database){
     data.showDeprecatedTriggerV2 ??= false
     data.returnCSSError ??= true
     data.realmDirectOpen ??= false
+    data.blockedRealmCreators ??= []
     data.checkCorruption ??= false
     data.toggleConfirmRecommendedPreset ??= false
     data.useExperimentalGoogleTranslator ??= false
@@ -1133,12 +1134,7 @@ export function getDatabase(options:getDatabaseOptions = {}):Database{
 }
 
 export function getCurrentCharacter(options:getDatabaseOptions = {}):character{
-    const db = getDatabase(options)
-    if(!db.characters){
-        db.characters = []
-    }
-    const char = db.characters?.[get(selectedCharID)]
-    return char
+    return getCharacterByIndex(get(selectedCharID), options)
 }
 
 export function setCurrentCharacter(char:character){
@@ -1149,12 +1145,12 @@ export function setCurrentCharacter(char:character){
 }
 
 export function getCharacterByIndex(index:number,options:getDatabaseOptions = {}):character{
-    const db = getDatabase(options)
-    if(!db.characters){
-        db.characters = []
+    if(!DBState.db.characters){
+        DBState.db.characters = []
     }
-    const char = db.characters?.[index]
-    return char
+    const char = DBState.db.characters[index]
+    // snapshot only the requested character instead of the whole database
+    return options.snapshot ? $state.snapshot(char) as character : char
 }
 
 export function setCharacterByIndex(index:number,char:character){
@@ -1567,6 +1563,11 @@ export interface RisuPersona {
     portraitPrompt?:import('../bardPainter/personaPortrait').PersonaPortraitPrompt
 }
 
+export type BlockedRealmCreator = {
+    id: string
+    name: string
+}
+
 export function ensurePersonaIds(
     values: readonly unknown[],
     createId: () => string,
@@ -1827,12 +1828,12 @@ export interface Database{
     openrouterFallback:boolean
     selectedPersona:number
     personas:RisuPersona[]
-    personaNote:boolean
     assetWidth:number
     animationSpeed:number
     botSettingAtStart:false
     NAIsettings:NAISettings
     hideRealm:boolean
+    blockedRealmCreators:BlockedRealmCreator[]
     colorScheme:ColorScheme
     colorSchemeName:string
     promptTemplate?:PromptItem[]
@@ -2527,6 +2528,7 @@ export interface character{
         ext: string
     }>
     defaultVariables?:string
+    onboarding?:CharacterOnboarding
     lowLevelAccess?:boolean
     hideChatIcon?:boolean
     moduleNamespace?:string
@@ -2567,10 +2569,9 @@ export function purgeUnsupportedGroupChats(db: Database): number {
                 }
                 continue
             }
-            const data = entry.data.filter((id) => validIds.has(id))
-            if (data.length > 0) {
-                nextOrder.push({ ...entry, data })
-            }
+            // Empty folders are kept, as in checkCharOrder: the character
+            // manager creates a folder first and fills it afterwards.
+            nextOrder.push({ ...entry, data: entry.data.filter((id) => validIds.has(id)) })
         }
         db.characterOrder = nextOrder
     }
@@ -2965,6 +2966,38 @@ export type { ChatStub } from './chatStub'
 export { isChatStub } from './chatStub'
 
 export type ChatOrStub = Chat | import('./chatStub').ChatStub
+
+export interface OnboardingOption{
+    label:string
+    value:string
+}
+
+export interface OnboardingQuestion{
+    id:string
+    title:string
+    description?:string
+    type:'single'|'multiple'|'text'
+    varName:string
+    required?:boolean
+    options:OnboardingOption[]
+    placeholder?:string
+}
+
+/**
+ * A creator-defined set of choices shown before a chat starts (upstream card
+ * spec, `extensions.risuai.onboarding`). Kept through card import/export but
+ * not shown yet.
+ */
+export interface CharacterOnboarding{
+    enabled:boolean
+    mode:'form'|'html'
+    title?:string
+    description?:string
+    questions:OnboardingQuestion[]
+    html?:string
+    /** Also shows a floating button on the chat screen that opens the onboarding. */
+    floatingButton?:boolean
+}
 
 export interface ChatFolder{
     id:string

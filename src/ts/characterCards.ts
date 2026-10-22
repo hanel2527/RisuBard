@@ -1,5 +1,5 @@
 import { writable, type Writable } from "svelte/store"
-import { alertCardExport, alertConfirm, alertConfirmMulti, alertError, alertInput, alertStore, alertTOS, alertWait, notifySuccess, notifyError } from "./alert"
+import { alertCardExport, alertConfirm, alertConfirmMulti, alertError, alertInput, alertNormal, alertStore, alertTOS, alertWait, notifySuccess, notifyError } from "./alert"
 import { defaultSdDataFunc, type character, setDatabase, type customscript, type loreSettings, type loreBook, type triggerscript, importPreset, getDatabase, setDatabaseLite, appVer, newChatModelDefaults } from "./storage/database.svelte"
 import { resolveLorebookMatchingMode } from "./process/lorebookMatching"
 import { isLorebookEntryEnabled } from "./process/lorebookActivation"
@@ -24,6 +24,8 @@ import { normalizeBardLoreOwnerState, type BardLoreState } from './lorebook/bard
 import { createUniqueDisplayName } from './displayName'
 import { yieldImportTask } from './importTaskYield'
 import { exportPainterBotData, normalizePainterBotData } from './bardPainter/painterCardData'
+import { normalizeOnboarding } from './onboarding'
+import { filterBlockedRealmCards, isRealmCreatorBlocked } from './realmBlocking'
 import { filterPainterLoreLinks } from './bardPainter/library'
 import type { PainterBotData } from './bardPainter/types'
 import { classifyCharx, inspectCharx } from './charxPreflight'
@@ -454,17 +456,38 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
     
 }
 
+async function fetchRealmInfo(realmPath: string): Promise<hubType> {
+    const res = await fetch(`${hubURL}/hub/info/${realmPath}`)
+    if(res.status !== 200){
+        throw new Error(await res.text())
+    }
+
+    return await res.json()
+}
+
+function canAccessRealmCreator(creator?: string): boolean {
+    if(isRealmCreatorBlocked(getDatabase().blockedRealmCreators ?? [], creator)){
+        alertNormal(language.realmCreatorBlocked)
+        return false
+    }
+
+    return true
+}
+
 export const getRealmInfo = async (realmPath:string) => {
     const url = new URL(location.href);
     url.searchParams.delete('realm');
     window.history.pushState(null, '', url.toString());
 
-    const res = await fetch(`${hubURL}/hub/info/${realmPath}`)
-    if(res.status !== 200){
-        notifyError(await res.text())
-        return
+    try {
+        const realmInfo = await fetchRealmInfo(realmPath)
+        if(!canAccessRealmCreator(realmInfo.creator)){
+            return
+        }
+        showRealmInfoStore.set(realmInfo)
+    } catch (error) {
+        notifyError(error instanceof Error ? error.message : String(error))
     }
-    showRealmInfoStore.set(await res.json())
 }
 
 export const showRealmInfoStore:Writable<null|hubType> = writable(null)
@@ -741,6 +764,29 @@ export async function exportChar(charaID:number):Promise<string> {
     return ''
 }
 
+
+async function readCardExportImage(image?: string) {
+    if(image){
+        try{
+            const img = await readImage(image)
+            if(img?.length){
+                return img
+            }
+        } catch (e) {
+            console.warn('readCardExportImage: failed to read character image, falling back to none.webp', e)
+        }
+    }
+
+    const res = await fetch('/none.webp')
+    if(!res.ok){
+        throw new Error(`Failed to load fallback character image: ${res.status} ${res.statusText}`)
+    }
+    const fallbackImage = new Uint8Array(await res.arrayBuffer())
+    if(!fallbackImage.length){
+        throw new Error('Failed to load fallback character image: empty response')
+    }
+    return fallbackImage
+}
 
 async function importCharacterCardSpec<T extends boolean = false>(card:CharacterCardV2Risu|CharacterCardV3, img?:Uint8Array, mode:'hub'|'normal' = 'normal', assetDict:{[key:string]:string} = {}, overrideLorebook: loreBook[] = null, returnValue:T = false as T, transaction?: ImportTransaction):Promise<T extends true ? character|false : boolean>{
     const saveAsset = importAsset(transaction)
@@ -1049,6 +1095,7 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
         prebuiltAssetExclude: data?.extensions?.risuai?.prebuiltAssetExclude ?? [],
         prebuiltAssetStyle: data?.extensions?.risuai?.prebuiltAssetStyle ?? '',
         customModuleToggle: data?.extensions?.risuai?.toggles ?? '',
+        onboarding: normalizeOnboarding(risuext?.onboarding),
     }
 
     if(card.spec === 'chara_card_v3'){
@@ -1336,7 +1383,7 @@ export async function exportCharacterCard(char:character, type:'png'|'json'|'cha
     spec?:'v2'|'v3'
     onProgress?:(msg:string, pct:number) => void
 } = {}) {
-    let img = await readImage(char.image)
+    let img = await readCardExportImage(char.image)
     const spec:'v2'|'v3' = arg.spec ?? 'v2' //backward compatibility
     const onProgress = arg.onProgress ?? ((msg:string, pct:number) => {
         if (pct >= 100) {
@@ -1755,6 +1802,7 @@ export function createBaseV3(char:character){
                     prebuiltAssetExclude: char.prebuiltAssetExclude ?? [],
                     prebuiltAssetStyle: char.prebuiltAssetStyle ?? '',
                     toggles: char.customModuleToggle ?? '',
+                    onboarding: char.onboarding,
                 },
                 risubard: bardLoreOwner || bardPainter ? { bardLore, bardPainter } : undefined,
                 depth_prompt: char.depth_prompt
@@ -1821,11 +1869,11 @@ export async function getRisuHub(arg:{
             return []
         }
         const jso = await da.json()
-        if(Array.isArray(jso)){
-            return jso
+        const cards:hubType[] = Array.isArray(jso) ? jso : jso.cards
+        if(!Array.isArray(jso)){
+            hubAdditionalHTML = jso.additionalHTML || hubAdditionalHTML
         }
-        hubAdditionalHTML = jso.additionalHTML || hubAdditionalHTML
-        return jso.cards
+        return filterBlockedRealmCards(cards ?? [], getDatabase().blockedRealmCreators ?? [])
     } catch (error) {
         return[]
     }
@@ -1833,12 +1881,33 @@ export async function getRisuHub(arg:{
 
 export async function downloadRisuHub(id:string, arg:{
     forceRedirect?: boolean
+    creator?: string
 } = {}) {
     try {
+        // RisuAI's terms come first: the creator lookup below already calls
+        // the RisuAI server.
         if(!arg.forceRedirect){
             if(!(await alertTOS())){
                 return
             }
+        }
+
+        // Look up the creator only when something is blocked, and do not let a
+        // failed lookup stop the download.
+        let creator = arg.creator
+        if(!creator && (getDatabase().blockedRealmCreators?.length ?? 0) > 0){
+            try {
+                const realmInfo = await fetchRealmInfo(id)
+                creator = realmInfo.creator
+            } catch (error) {
+                console.warn('RisuRealm creator lookup failed', error)
+            }
+        }
+        if(!canAccessRealmCreator(creator)){
+            return
+        }
+
+        if(!arg.forceRedirect){
             alertStore.set({
                 type: "wait",
                 msg: language.characterImportDownloading

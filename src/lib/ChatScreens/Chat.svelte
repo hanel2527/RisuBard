@@ -4,7 +4,7 @@
     import ClipboardCopyIcon from '@lucide/svelte/icons/clipboard-copy'
     import { buildArcaClipboardHtml, exportArcaHtml, resolveArcaImageSource } from 'src/ts/arcaExport'
     import { renderArcaComplexBlock } from 'src/ts/arcaSnapshot'
-    import { aiLawApplies, changeChatTo, foldChatToMessage, getFileSrc, createChatCopyName, forageStorage, requestImmediateSave } from "src/ts/globalApi.svelte"
+    import { aiLawApplies, changeChatTo, foldChatToMessage, getFileSrc, createChatCopyName, forageStorage, requestImmediateSave, trackChatForSave } from "src/ts/globalApi.svelte"
     import { retractWikiEventsBySourceMessages } from "src/ts/risubard/memoryWiki"
     import { announceRisuBardMemoryUpdated } from "src/ts/risubard/memoryEvents"
     import { completeMemoryWikiFork, forkMemoryWiki } from "src/ts/risubard/memoryWikiFork"
@@ -12,7 +12,7 @@
     import { resetImportedBardWikiState } from "src/ts/risubard/chatImportMemory"
     import { ColorSchemeTypeStore } from "src/ts/gui/colorscheme"
     import { getModelInfo } from "src/ts/model/modellist"
-    import { runLuaButtonTrigger } from 'src/ts/process/scriptings'
+    import { runLuaButtonTrigger, runLuaInteractionTrigger } from 'src/ts/process/scriptings'
     import { risuChatParser } from "src/ts/process/scripts"
     import { runTrigger } from 'src/ts/process/triggers'
     import { sayTTS } from "src/ts/process/tts"
@@ -406,19 +406,7 @@
                 await runLuaButtonTrigger(currentChar, btnEvent, sourceChat) :
             null
 
-        if(triggerResult?.chat) {
-            try {
-                triggerScope.chat = normalizeChat(triggerResult.chat)
-            }
-            catch (error) {
-                // The source chat was deleted while the trigger ran.
-                console.warn('[button trigger] result dropped:', error)
-            }
-            ReloadChatPointer.update((v) => {
-                v[idx] = (v[idx] ?? 0) + 1
-                return v
-            })
-        }
+        writeTriggerResult(target, triggerScope, triggerResult)
         
         if(triggerName && triggerId) {
             setTimeout(() => {
@@ -427,9 +415,81 @@
         }
     }
 
+    function writeTriggerResult(target: GenerationTarget, triggerScope: ReturnType<typeof createGenerationScope>, triggerResult: any) {
+        if(!triggerResult?.chat) return
+        try {
+            triggerScope.chat = normalizeChat(triggerResult.chat)
+            // Only the chat on screen is tracked for saving; queue any other
+            // chat or the result is lost on reload.
+            const openChar = getCurrentCharacter()
+            const isOpen = openChar?.chaId === target.characterId
+                && openChar.chats[openChar.chatPage]?.id === target.chatId
+            if(!isOpen){
+                trackChatForSave(target.characterId, target.chatId)
+                void Promise.resolve(requestImmediateSave()).catch((error) => {
+                    console.warn('[button trigger] save request failed:', error)
+                })
+            }
+        }
+        catch (error) {
+            // The source chat was deleted while the trigger ran.
+            console.warn('[button trigger] result dropped:', error)
+        }
+        ReloadChatPointer.update((v) => {
+            v[idx] = (v[idx] ?? 0) + 1
+            return v
+        })
+    }
+
     const buttonTriggerActivation = createRisuTriggerActivation(activateButtonTrigger, {
         pointerDownFallback: navigator.userAgent.includes('Firefox/'),
     })
+
+    async function handleFormTriggerWithin(event: SubmitEvent) {
+        const form = event.target as HTMLFormElement
+        const submitter = event.submitter as HTMLButtonElement | HTMLInputElement | null
+        const method = submitter?.hasAttribute('formmethod') ? submitter.formMethod : form.method
+        // A form in a message must never navigate away, reload the page or post
+        // elsewhere. method="dialog" only closes its <dialog>, so it goes through.
+        if (method !== 'dialog') {
+            event.preventDefault()
+        }
+        if(readOnly) return
+
+        const formEvent = form.getAttribute('risu-form')
+        if (!formEvent) {
+            return
+        }
+        const currentChar = getCurrentCharacter()
+        if (!currentChar) {
+            return
+        }
+        let target: GenerationTarget
+        try {
+            target = captureGenerationTarget(currentChar)
+        }
+        catch {
+            return
+        }
+        const triggerScope = createGenerationScope(() => DBState.db.characters, target)
+
+        const data: Record<string, FormDataEntryValue | FormDataEntryValue[]> = Object.create(null)
+        for (const [key, value] of new FormData(form, event.submitter)) {
+            if (Object.hasOwn(data, key)) {
+                const prev = data[key]
+                if (Array.isArray(prev)) {
+                    prev.push(value)
+                } else {
+                    data[key] = [prev, value]
+                }
+            } else {
+                data[key] = value
+            }
+        }
+
+        const triggerResult = await runLuaInteractionTrigger('form', currentChar, formEvent, triggerScope.chat, { data })
+        writeTriggerResult(target, triggerScope, triggerResult)
+    }
 
     let isBookmarked = $derived(
         DBState.db.characters[selIdState.selId]
@@ -1640,7 +1700,8 @@
      data-chat-id={DBState.db.characters?.[selIdState.selId]?.chats?.[DBState.db.characters?.[selIdState.selId]?.chatPage]?.message?.[idx]?.chatId ?? ''}
      style={isLastMemory ? `border-top:${DBState.db.memoryLimitThickness}px solid color-mix(in srgb, var(--color-borderc) 70%, transparent);` : ''}
      onpointerdowncapture={buttonTriggerActivation.pointerdown}
-     onclickcapture={buttonTriggerActivation.click}>
+     onclickcapture={buttonTriggerActivation.click}
+     onsubmitcapture={handleFormTriggerWithin}>
     <div class="text-textcolor grow max-w-full sm:px-4 py-4">
         {#if !blankMessage}
             {@const nodeOnlyWidthClass =
@@ -1692,7 +1753,8 @@
      data-chat-id={DBState.db.characters?.[selIdState.selId]?.chats?.[DBState.db.characters?.[selIdState.selId]?.chatPage]?.message?.[idx]?.chatId ?? ''}
      style={isLastMemory ? `border-top:${DBState.db.memoryLimitThickness}px solid color-mix(in srgb, var(--color-borderc) 70%, transparent);` : ''}
      onpointerdowncapture={buttonTriggerActivation.pointerdown}
-     onclickcapture={buttonTriggerActivation.click}>
+     onclickcapture={buttonTriggerActivation.click}
+     onsubmitcapture={handleFormTriggerWithin}>
     <div class="text-textcolor mt-1 ml-4 mr-4 mb-1 p-2 bg-transparent grow border-t-darkborderc border-opacity/30 border-transparent flexium items-start max-w-full" >
         {#if DBState.db.theme === 'mobilechat' && !blankMessage}
             <div class={role === 'user' ? "flex items-start w-full justify-end" : "flex items-start"}>

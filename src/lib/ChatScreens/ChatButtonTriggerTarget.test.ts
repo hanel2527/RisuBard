@@ -41,6 +41,8 @@ function setup(switchTo: (db: { characters: any[] }, bot: any) => void) {
         runLuaButtonTrigger: vi.fn(() => pending),
         normalizeChat: (chat: unknown) => chat,
         ReloadChatPointer: { update: vi.fn() },
+        trackChatForSave: vi.fn(),
+        requestImmediateSave: vi.fn(async () => {}),
         CurrentTriggerIdStore: { set: vi.fn() },
     }
     const activate = loadActivateButtonTrigger(deps)
@@ -68,6 +70,16 @@ it('writes a slow button trigger result to the chat it started in, not the chat 
     expect(t.bot.chats.map(chat => chat.id)).toEqual(['A', 'B'])
     expect(t.bot.chats[0].message[0].data).toBe('rerolled A')
     expect(t.bot.chats[1]).toBe(t.b)
+    // The written chat is off screen, so it is queued for saving explicitly.
+    expect(t.deps.trackChatForSave).toHaveBeenCalledWith('bot', 'A')
+    expect(t.deps.requestImmediateSave).toHaveBeenCalled()
+})
+
+it('does not queue the chat separately when it is still open', async () => {
+    const t = setup(() => {})
+    await t.run()
+    expect(t.bot.chats[0].message[0].data).toBe('rerolled A')
+    expect(t.deps.trackChatForSave).not.toHaveBeenCalled()
 })
 
 it('leaves another bot untouched when the user switched bots during the trigger', async () => {
@@ -83,5 +95,6 @@ it('drops the result when the source chat was deleted during the trigger', async
     await t.run()
     expect(t.bot.chats).toEqual([t.b])
     expect(t.b.message[0].data).toBe('original B')
+    expect(t.deps.trackChatForSave).not.toHaveBeenCalled()
     warn.mockRestore()
 })

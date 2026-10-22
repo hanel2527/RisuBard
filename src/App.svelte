@@ -2,6 +2,8 @@
     import { DynamicGUI, settingsOpen, sideBarStore, openPresetList, openModelPresetList, openModelProfileBrowser, openPersonaList, openPersonaManager, personaSelectCallback, openHypaV3PresetList, openThemePresetList, MobileGUI, loadedStore, alertStore, LoadingStatusState, bookmarkListOpen, popupStore, popUpEditorStore, promptAssistantOpen, characterAssistantOpen } from './ts/stores.svelte';
     import Sidebar from './lib/SideBars/Sidebar.svelte';
     import { DBState } from './ts/stores.svelte';
+    import { accountImportBlocking } from './ts/stores.svelte';
+    import RisuAccountImportScreen from './lib/Setting/RisuAccountImportScreen.svelte';
     import ChatScreen from './lib/ChatScreens/ChatScreen.svelte';
     import RisuBardPromptAssistant from './lib/Others/RisuBardPromptAssistant.svelte';
     import RisuBardCharacterAssistant from './lib/Others/RisuBardCharacterAssistant.svelte';
@@ -42,13 +44,14 @@
     import LoadingActivity from './lib/Others/LoadingActivity.svelte';
     import Toaster from './lib/UI/GUI/Toaster.svelte';
     import RequestStatusToaster from './lib/UI/GUI/RequestStatusToaster.svelte';
-    import sendSound from './etc/send.mp3'
+    import { createKeepAliveAudio } from './ts/keepAliveAudio';
     import { RISU_APP_INTERNAL_DRAG_TYPE, RISU_SIDEBAR_DRAG_TYPE } from './ts/dragTypes';
 
     let gridOpen = $state(false)
     let aprilFools = $state(new Date().getMonth() === 3 && new Date().getDate() === 1)
     let aprilFoolsPage = $state(0)
     let keepingSessionAlive = $state(false)
+    let keepAliveAudio: HTMLAudioElement | null = null
     let settingsComponentPromise: Promise<typeof import('./lib/Setting/Settings.svelte')> | undefined
 
     function loadSettings() {
@@ -141,12 +144,23 @@
             break
         }
         case 'sound':{
-            console.log("Starting silent audio to keep session alive")
-            const silentAudio = new Audio(sendSound);
-            silentAudio.loop = true;
-            silentAudio.volume = 0.000001;
-            silentAudio.play();
-            keepingSessionAlive = true;
+            console.log("Starting inaudible audio to keep session alive")
+            if(!keepAliveAudio){
+                keepAliveAudio = createKeepAliveAudio()
+                // Paused by the OS or by another app taking audio focus; restart on the next click
+                keepAliveAudio.addEventListener('pause', () => {
+                    keepingSessionAlive = false
+                })
+            }
+            keepingSessionAlive = true
+            keepAliveAudio.play().catch(() => {
+                keepingSessionAlive = false
+            })
+            if('mediaSession' in navigator){
+                navigator.mediaSession.metadata = new MediaMetadata({
+                    title: 'RisuBard'
+                })
+            }
             break
         }
     }
@@ -221,6 +235,8 @@
             </div>
             <span class="absolute top-4 left-4 font-bold text-textcolor2 text-md md:text-lg">RisyGTP-9</span>
         </div>
+    {:else if $accountImportBlocking}
+        <RisuAccountImportScreen />
     {:else if !$loadedStore}
         <div class="w-full h-full flex justify-center items-center text-textcolor text-xl bg-darkbg flex-col">
             <img

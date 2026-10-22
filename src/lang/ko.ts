@@ -1826,6 +1826,14 @@ export const languageKorean = {
   ifRandom: "만약 랜덤",
   ifValue: "값이 다음과 같다면",
   hideRealm: "RisuRealm 접힘으로 시작",
+  blockRealmCreator: "제작자 차단",
+  blockRealmCreatorConfirm: "{{creator}} 제작자의 모든 RisuRealm 콘텐츠를 차단할까요?",
+  realmCreatorBlocked: "차단한 RisuRealm 제작자의 콘텐츠이므로 이용할 수 없습니다.",
+  realmCreatorBlockedSuccess: "제작자를 차단했습니다.",
+  manageBlockedRealmCreators: "차단한 제작자 관리",
+  blockedRealmCreators: "차단한 RisuRealm 제작자",
+  noBlockedRealmCreators: "차단한 RisuRealm 제작자가 없습니다.",
+  unblockRealmCreator: "차단 해제",
   hideAllImages: "모든 이미지 숨기기",
   hideMessagePageCount: "메세지 페이지 숫자 숨기기",
   popularityLevel: "{} 인기도",
@@ -2782,7 +2790,7 @@ export const languageKorean = {
   claude1HourCaching: "Claude 1시간 캐싱",
   folderNameInput: "새 폴더 이름을 입력해주세요",
   folderRemoveLengthError: "폴더를 제거하려면 폴더가 비어 있어야 합니다.",
-  personaNote: "페르소나 노트",
+  personaNotePlaceholder: "구분용 메모 (예: 헌터 페르소나)",
   mcpAccessPrompt:
     '{{tool}}이(가) "{{action}}"을(를) 시도하고 있습니다. 허용하시겠습니까?',
   rememberToolUsage: "도구 사용 기억하기",
@@ -3010,6 +3018,9 @@ export const languageKorean = {
     cancel: "취소",
   },
   hamburgerButtonBottom: "메뉴 버튼을 사이드바 하단으로 이동",
+  keepSessionAlive: "세션 유지",
+  keepSessionAlivePip: "PIP 사용",
+  keepSessionAliveSound: "소리 사용",
   hideLeftBarCollapseButton: "메뉴바 접기 버튼 숨기기",
   toggleBindingLabel: "채팅별 프리셋 고정",
   togglePinToChat: "현재 토글 값을 이 채팅에만 고정",
@@ -3552,6 +3563,97 @@ export const languageKorean = {
   migrationSaveFolderDesc:
     "이전에 사용하던 노드리스/RisuAI 인스턴스의 save 폴더를 리스바드로 가져올 때 사용합니다.",
   migrationLoadUpstreamBackup: "원본 리스 로컬 백업 불러오기",
+  risuAccountImport: "RisuAI 계정에서 가져오기",
+  risuAccountImportBadge: "시험 기능",
+  risuAccountImportDesc:
+    "risuai.xyz에서 \"계정에 데이터 저장\"을 켜 두었다면, 계정의 캐릭터, 채팅, 설정, 이미지를 서버가 직접 받아 리스바드로 옮깁니다. 웹 버전 백업 파일을 쓸 수 없을 때 사용하세요.",
+  risuAccountLogin: "RisuAI 로그인",
+  risuAccountLoginTitle: "RisuAI 계정 로그인",
+  risuAccountLoginDesc:
+    "아이디와 비밀번호는 RisuAI로만 전송됩니다. 돌려받은 로그인 토큰은 가져오기가 끝날 때까지 이 서버 메모리에만 있고 저장되지 않습니다.",
+  risuAccountChecking: "계정 데이터를 확인하는 중…",
+  risuAccountCheckingRemotes: (n: number) =>
+    `계정 데이터를 확인하는 중… (캐릭터 ${n.toLocaleString()}개 읽음)`,
+  risuAccountSummaryCharacters: (n: number) => `캐릭터 ${n.toLocaleString()}개`,
+  risuAccountSummaryChats: (n: number) => `채팅 ${n.toLocaleString()}개`,
+  risuAccountSummaryAssets: (n: number, staged: number) =>
+    `이미지 ${n.toLocaleString()}장${staged > 0 ? ` (이미 받음 ${staged.toLocaleString()}장)` : ""}`,
+  risuAccountSummaryCold: (n: number) => `보관된 항목 ${n.toLocaleString()}개`,
+  risuAccountEstimate: (time: string) => `예상 시간 약 ${time}`,
+  risuAccountMinutes: (n: number) => `${n.toLocaleString()}분`,
+  risuAccountHours: (h: number, m: number) => `${h.toLocaleString()}시간 ${m}분`,
+  risuAccountUnresolvedRemotes: (n: number) =>
+    `캐릭터 ${n.toLocaleString()}개는 계정에 내용이 없어 가져올 수 없습니다. RisuAI 데스크톱 앱에서 저장한 캐릭터라면 그 앱에서 일반 백업으로 옮기세요.`,
+  risuAccountSkipped: (n: number) =>
+    `이름이 올바르지 않은 항목 ${n.toLocaleString()}개는 건너뜁니다.`,
+  risuAccountDamaged: (n: number, names: string) =>
+    `계정 데이터 중 손상되어 읽을 수 없는 항목 ${n.toLocaleString()}개가 있습니다 (${names}). 바꿀 때 이 항목은 빠집니다.`,
+  risuAccountStartWarn:
+    "가져오기를 시작하면 끝날 때까지 리스바드를 쓸 수 없고, 끝나면 이 서버의 모든 데이터가 계정 데이터로 바뀝니다.",
+  risuAccountSnapshotNote:
+    "계정 데이터는 방금 로그인한 시점 기준입니다. 받는 동안 RisuAI 웹에서 한 채팅은 들어오지 않습니다.",
+  risuAccountInlayNote:
+    "RisuAI 웹에서 채팅에 넣은 이미지(인레이)는 브라우저에만 저장돼 있어 가져오지 않습니다. 리스바드에 있던 인레이 이미지도 교체할 때 함께 지워집니다.",
+  risuAccountStart: "가져오기 시작",
+  risuAccountConfirm1Title: "지금 데이터를 계정 데이터로 바꿉니다",
+  risuAccountConfirm1: (time: string) =>
+    `이 서버의 캐릭터, 채팅, 설정, 이미지가 모두 RisuAI 계정 데이터로 바뀝니다. 다 받는 동안(약 ${time}) 리스바드를 쓸 수 없습니다.`,
+  risuAccountContinue: "계속",
+  risuAccountConfirm2Title: "정말 바꿀까요?",
+  risuAccountConfirm2:
+    "교체한 뒤에는 되돌릴 수 없습니다. 지금 데이터가 필요하면 시작하기 전에 백업 탭에서 전체 백업을 내려받아 두세요. 교체 전에 취소하면 지금 데이터는 그대로 남습니다.",
+  risuAccountConfirmStart: "데이터 바꾸고 시작",
+  risuAccountSaveFailed: "저장하지 못한 변경이 있어 가져오기를 시작하지 않았습니다. 잠시 뒤 다시 시도하세요.",
+  risuAccountScreenTitle: "RisuAI 계정에서 가져오는 중",
+  risuAccountScreenDesc: "끝나면 데이터가 계정 데이터로 바뀌고 자동으로 새로고침됩니다.",
+  risuAccountStepCheck: "계정 데이터 확인",
+  risuAccountStepCold: "보관된 항목",
+  risuAccountStepAssets: "이미지",
+  risuAccountStepApply: "데이터 교체",
+  risuAccountRemaining: (time: string) => `남은 시간 약 ${time}`,
+  risuAccountScreenNote:
+    "이 창을 닫아도 서버가 계속 받습니다. 다른 기기에서 열어도 이 화면이 보입니다. RisuAI 서버에 부담을 주지 않도록 1초에 하나씩 받습니다.",
+  risuAccountCancel: "가져오기 취소",
+  risuAccountCancelConfirm: "가져오기를 취소할까요? 받은 파일은 지워지고, 지금 데이터는 그대로 남습니다.",
+  risuAccountPaused: "RisuAI 서버에 연결하지 못해 멈췄습니다. 잠시 뒤 다시 시도하세요.",
+  risuAccountKeptFiles: "받은 파일은 그대로 있습니다.",
+  risuAccountRetry: "다시 시도",
+  risuAccountNeedsLogin:
+    "RisuAI 로그인이 만료됐습니다. 다시 로그인하면 이어서 받습니다. 이미 받은 파일은 다시 받지 않습니다.",
+  risuAccountRelogin: "다시 로그인",
+  risuAccountInterruptedTitle: "멈춘 가져오기가 있습니다",
+  risuAccountInterrupted:
+    "서버가 다시 시작돼 가져오기가 멈췄습니다. 같은 계정으로 다시 로그인하면 남은 것만 받고 이어서 바꿉니다.",
+  risuAccountStagedFiles: (staged: number, total: number) =>
+    `받은 파일 ${staged.toLocaleString()}/${total.toLocaleString()}`,
+  risuAccountDataUnchanged: "지금 데이터는 아직 그대로입니다.",
+  risuAccountReloginResume: "다시 로그인해서 이어 받기",
+  risuAccountDownloaded: "다 받았습니다",
+  risuAccountMissingAsk: (n: number) =>
+    `${n.toLocaleString()}개 항목을 계정에서 찾지 못했거나 읽을 수 없습니다. 이 항목 없이 바꿀까요?`,
+  risuAccountMissingAssets: (n: number) => `이미지 ${n.toLocaleString()}개`,
+  risuAccountMissingCold: (n: number) => `보관된 항목 ${n.toLocaleString()}개`,
+  risuAccountMissingNotFound: "계정에 없음",
+  risuAccountMissingUnreadable: "읽을 수 없음",
+  risuAccountApplyAuto: "빠진 항목이 없으면 이 화면 없이 바로 바꿉니다.",
+  risuAccountApplyWithout: "이 항목 없이 바꾸기",
+  risuAccountApplyFailed: "데이터를 바꾸지 못했습니다.",
+  risuAccountApplyRetry: "다시 바꾸기",
+  risuAccountApplyingTitle: "데이터를 바꾸는 중",
+  risuAccountApplyingDesc: "몇 초에서 몇 분 걸립니다. 끝나면 자동으로 새로고침됩니다.",
+  risuAccountDone: "가져오기를 마쳤습니다. 새로고침합니다…",
+  risuAccountImportActiveTitle: "RisuAI 계정 가져오기가 진행 중입니다",
+  risuAccountImportActive:
+    "RisuAI 계정 가져오기가 시작돼 이 창에서는 저장할 수 없습니다. 가져오기가 끝나면 모든 데이터가 계정 데이터로 바뀝니다. 이 창에만 남은 편집이 필요하면 먼저 JSON으로 내려받으세요. 다시 불러오면 진행 화면이 보입니다.",
+  risuAccountErrorLoginFailed: "RisuAI가 로그인을 거부했습니다. 다시 로그인해 주세요.",
+  risuAccountErrorNoData:
+    "이 계정에는 저장된 데이터가 없습니다. RisuAI에서 \"계정에 데이터 저장\"이 켜져 있는지 확인하세요.",
+  risuAccountErrorRequestFailed: "RisuAI 서버에 연결하지 못했습니다. 잠시 후 다시 시도하세요.",
+  risuAccountErrorUnreadable: "계정 데이터를 읽지 못했습니다.",
+  risuAccountErrorRateLimited: "RisuAI 서버가 잠시 뒤에 다시 요청하라고 했습니다. 나중에 다시 시도하세요.",
+  risuAccountErrorDiskFull: "서버의 디스크 여유 공간이 부족합니다.",
+  risuAccountErrorMismatch: "가져오기를 시작한 계정과 다른 계정입니다. 같은 계정으로 로그인하세요.",
+  risuAccountErrorStagedUnreadable: "받아 둔 계정 데이터를 읽을 수 없습니다. 가져오기를 취소하고 처음부터 다시 시작하세요.",
 
   // 시스템 → 백업 탭
   systemBackups: "백업",

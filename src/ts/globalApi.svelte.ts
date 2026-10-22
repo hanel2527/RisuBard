@@ -276,6 +276,7 @@ let requestImmediateSaveImpl: ((options?: {
     flushSignal?: AbortSignal
     rejectOnFailure?: boolean
 }) => Promise<void> | void) = () => {}
+let trackChatForSaveImpl: (chaId: string, chatId: string) => void = () => {}
 let patchSyncBaseline: Database | null = null
 
 // Surfaces server-side persist failures (Stage 1 visibility — see issues.md).
@@ -389,6 +390,15 @@ export function requestImmediateSave(options?: {
     return requestImmediateSaveImpl(options)
 }
 
+/**
+ * Include this chat's body in the next save. Only the chat on screen (and
+ * chats being generated into) are tracked automatically, so a write to any
+ * other chat needs this; a failed save keeps it queued like any other change.
+ */
+export function trackChatForSave(chaId: string, chatId: string) {
+    trackChatForSaveImpl(chaId, chatId)
+}
+
 export function setPatchSyncBaseline(data: Database | null) {
     patchSyncBaseline = data ? safeStructuredClone(data) as Database : null
 }
@@ -482,14 +492,20 @@ export async function saveDb() {
         channel = new BroadcastChannel('risu-db')
         saveRuntime.addCleanup(() => channel?.close())
     }
+    // Set when the server refused a write because a RisuAI account import
+    // started (on any device); the pause then says so instead of naming
+    // another tab.
+    let pausedForAccountImport = false
+    const pausedTitle = () => pausedForAccountImport ? language.risuAccountImportActiveTitle : language.sessionSavePausedTitle
+    const pausedDetail = () => pausedForAccountImport ? language.risuAccountImportActive : language.sessionSavePausedDetail
     const sessionHandoff = createSessionHandoff({
         isActive: () => saveRuntime.isActive(),
         isVisible: () => document.visibilityState === 'visible',
         choose: async () => {
-            const choice = await alertConfirmMulti(language.sessionSavePausedTitle, [
+            const choice = await alertConfirmMulti(pausedTitle(), [
                 language.canonicalSaveConflictDownload,
                 { label: language.sessionReloadLatest, variant: 'destructive' },
-            ], language.sessionSavePausedDetail)
+            ], pausedDetail())
             return choice === 0 ? 'download' : choice === 1 ? 'reload' : 'cancel'
         },
         download: async () => {
@@ -507,14 +523,17 @@ export async function saveDb() {
             try { sessionStorage.setItem('risu-session-handoff-reload', '1') } catch {}
             location.reload()
         },
-        notifyPaused: () => notifyError(language.sessionSavePausedTitle, {
-            description: language.sessionSavePausedDetail, source: 'session-handoff',
+        notifyPaused: () => notifyError(pausedTitle(), {
+            description: pausedDetail(), source: 'session-handoff',
         }),
         notifyBusy: () => notifyError(language.sessionReloadBusy),
         onError: error => notifyError(error),
     })
-    const handleSessionDeactivated = () => {
+    const handleSessionDeactivated = (event?: Event) => {
         if (!saveRuntime.isActive()) return
+        if ((event as CustomEvent<{ code?: string | null }> | undefined)?.detail?.code === 'ACCOUNT_IMPORT_ACTIVE') {
+            pausedForAccountImport = true
+        }
         gotChannel = true
         closeLiveEvents?.()
         void sessionHandoff.deactivate()
@@ -1652,6 +1671,14 @@ export async function saveDb() {
         })()
 
         return saveInFlight
+    }
+
+    trackChatForSaveImpl = (chaId, chatId) => {
+        if (!chaId || !chatId) return
+        if (!changeTracker.chat.some(([owner, id]) => owner === chaId && id === chatId)) {
+            changeTracker.chat.push([chaId, chatId])
+        }
+        changed = true
     }
 
     requestImmediateSaveImpl = async (options) => {

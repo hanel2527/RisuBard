@@ -9,6 +9,8 @@ import { loadData } from "./ts/bootstrap";
 import { initHotkey } from "./ts/hotkey";
 import { preLoadCheck } from "./preload";
 import { mount, tick } from "svelte";
+import { get } from "svelte/store";
+import { accountImportBlocking } from "./ts/stores.svelte";
 import { applyEarlyLanguage } from "./lang";
 
 window.addEventListener('vite:preloadError', (event) => {
@@ -35,7 +37,8 @@ export const ready = (async () => {
     await tick()
     await handoffStartupLogo()
     await loadData()
-    initHotkey()
+    // The account import screen has no database for the shortcuts to act on.
+    if (!get(accountImportBlocking)) initHotkey()
 })()
 
 export default app;
