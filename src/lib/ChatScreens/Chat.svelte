@@ -52,6 +52,7 @@
     import { Popover } from 'bits-ui'
 
     let viewportWidth = $state(window.innerWidth)
+    let inlineMessageActions = $derived(viewportWidth >= 640 || DBState.db.mobileMessageActionsInline === true)
     let mobileActionsOpen = $state(false)
     let translating = $state(false)
     let editMode = $state(false)
@@ -772,8 +773,8 @@
             </button>
         {:else}
             <span class="text-xs">{statusMessage}</span>
-            <div class="flex items-center ml-2 gap-2 flex-wrap justify-end">
-                {#if viewportWidth >= 640}
+            <div class="flex items-center ml-2 gap-2 flex-wrap justify-end" class:mobile-message-inline={viewportWidth < 640 && inlineMessageActions}>
+                {#if inlineMessageActions}
                     {@render translationButton()}
                     {@render editButton()}
                     {@render majorIconButtonsBody(false)}
@@ -809,7 +810,7 @@
                         </Popover.Root>
                     </div>
                 {/if}
-                {#if viewportWidth >= 640}
+                {#if inlineMessageActions}
                     {@render firstMessageToggle()}
                     <div class="flex items-center gap-1">
                         {@render rerolls()}
@@ -1931,6 +1932,11 @@
         min-height: 44px;
         justify-content: center;
         border-radius: 0.375rem;
+    }
+    .mobile-message-inline :global(button) {
+        min-width: 44px;
+        min-height: 44px;
+        justify-content: center;
     }
     :global(.mobile-message-flyout > button) {
         min-height: 44px;
