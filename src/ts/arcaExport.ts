@@ -196,13 +196,11 @@ function rectArea(rect: DOMRect): number {
 }
 
 function hasDetachedPanelSurface(style: CSSStyleDeclaration): boolean {
-    const background = [
-        getStyleValue(style, 'background'),
-        getStyleValue(style, 'background-color'),
-        getStyleValue(style, 'background-image'),
-    ].join(' ');
-    const hasBackground = Boolean(background.trim())
-        && !/^(?:\s*|none|transparent|rgba\(0,\s*0,\s*0,\s*0\))+$/i.test(background.trim());
+    // The computed `background` shorthand always lists default layers such as
+    // `none repeat scroll 0% 0%`, so only its color and images count as a surface.
+    const backgroundColor = getStyleValue(style, 'background-color');
+    const hasBackground = (backgroundColor !== '' && !/^(?:transparent|rgba\([^)]*,\s*0\))$/i.test(backgroundColor))
+        || /(?:url|gradient)\s*\(/i.test(`${getStyleValue(style, 'background-image')} ${getStyleValue(style, 'background')}`);
     const boxShadow = getStyleValue(style, 'box-shadow');
     const overflow = [
         getStyleValue(style, 'overflow'),
@@ -414,7 +412,24 @@ function createPseudoElementClone(
     return clone;
 }
 
-function getSingleImageChild(element: HTMLElement): HTMLElement | null {
+// Image plugins such as Asset Maid wrap a picture with hidden history images and
+// controls that only appear on hover; none of them is part of what the reader sees.
+function isHiddenOrControl(
+    element: HTMLElement,
+    readStyle?: (element: Element, pseudoElement?: string | null) => CSSStyleDeclaration,
+): boolean {
+    if (!readStyle) return false;
+    if (shouldDropElement(element) || !shouldIncludeArcaSnapshotNode(element, [])) return true;
+    const style = readStyle(element);
+    return getStyleValue(style, 'display') === 'none'
+        || getStyleValue(style, 'visibility') === 'hidden'
+        || getStyleValue(style, 'opacity') === '0';
+}
+
+function getSingleImageChild(
+    element: HTMLElement,
+    readStyle?: (element: Element, pseudoElement?: string | null) => CSSStyleDeclaration,
+): HTMLElement | null {
     if (!['DIV', 'FIGURE', 'P', 'SPAN', 'TABLE', 'TBODY', 'TR', 'TD'].includes(element.tagName)) {
         return null;
     }
@@ -422,13 +437,23 @@ function getSingleImageChild(element: HTMLElement): HTMLElement | null {
         if (node.nodeType === Node.TEXT_NODE) {
             return Boolean(node.textContent?.trim());
         }
-        return node.nodeType !== Node.COMMENT_NODE && !(node instanceof HTMLBRElement);
+        return node.nodeType !== Node.COMMENT_NODE
+            && !(node instanceof HTMLBRElement)
+            && !(node instanceof HTMLElement && isHiddenOrControl(node, readStyle));
     });
     return meaningfulChildren.length === 1
         && meaningfulChildren[0] instanceof HTMLElement
-        && (meaningfulChildren[0].tagName === 'IMG' || getSingleImageChild(meaningfulChildren[0]) !== null)
+        && (meaningfulChildren[0].tagName === 'IMG' || getSingleImageChild(meaningfulChildren[0], readStyle) !== null)
         ? meaningfulChildren[0]
         : null;
+}
+
+// A lone picture keeps its original file. Rasterizing it would only re-encode the
+// image and risk dropping it, as happened to Asset Maid illustrations.
+function isStandalonePicture(element: HTMLElement, options: ResolvedArcaExportOptions): boolean {
+    if (extractBackgroundUrl(readBackgroundImage(element, options))) return false;
+    const single = getSingleImageChild(element, options.readStyle);
+    return single !== null && (single.tagName === 'IMG' || isStandalonePicture(single, options));
 }
 
 async function createImageClone(
@@ -720,7 +745,7 @@ async function cloneNodeForArca(
         return null;
     }
 
-    const singleImage = getSingleImageChild(source);
+    const singleImage = getSingleImageChild(source, options.readStyle);
     if (singleImage) {
         const frame = await cloneNodeForArca(singleImage, outputDocument, options);
         const image = frame instanceof HTMLElement ? frame.querySelector('img') : null;
@@ -804,6 +829,7 @@ async function exportChildNodes(
             && options.renderComplexBlock
             && shouldIncludeArcaSnapshotNode(child, [])
             && !shouldDropElement(child)
+            && !isStandalonePicture(child, options)
             && isComplexVisualBlock(child, options.readStyle)) {
             if (isProseWrapper(child, options.readStyle)) {
                 const wrapper = await cloneNodeForArca(child, outputDocument, options, undefined,

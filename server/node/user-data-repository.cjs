@@ -77,8 +77,33 @@ function jsonBytes(value) {
     return Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
+const CHECKPOINT_FIELDS = new Set(['scriptstateCheckpoint', 'scriptstateSwipeCheckpoints']);
+const hasCheckpoint = message => !!message && typeof message === 'object'
+    && [...CHECKPOINT_FIELDS].some(field => Object.prototype.hasOwnProperty.call(message, field));
+
+// Chat-variable checkpoints only serve rerolling the latest response. Versions
+// before 0.9.78 kept a full copy on every response, which can push a single
+// message past the JSON string limit and block every save, including the one
+// that would clean it up. Drop the older copies here, and drop the latest one
+// too if it alone cannot be serialized.
+function serializeMessage(message, keepCheckpoint) {
+    if (!keepCheckpoint) return JSON.stringify(without(message, CHECKPOINT_FIELDS));
+    try {
+        return JSON.stringify(message) ?? '';
+    } catch (error) {
+        if (!(error instanceof RangeError) || !hasCheckpoint(message)) throw error;
+        return JSON.stringify(without(message, CHECKPOINT_FIELDS));
+    }
+}
+
 function* messageChunks(messages) {
-    for (const message of messages) yield Buffer.from(`${JSON.stringify(message) ?? ''}\n`, 'utf8');
+    let latest = messages.length - 1;
+    while (latest >= 0 && !hasCheckpoint(messages[latest])) latest -= 1;
+    for (let index = 0; index < messages.length; index += 1) {
+        const message = messages[index];
+        const keepCheckpoint = index === latest || !hasCheckpoint(message);
+        yield Buffer.from(`${serializeMessage(message, keepCheckpoint)}\n`, 'utf8');
+    }
 }
 
 function parseMessageBytes(bytes, relativePath, errorCode) {

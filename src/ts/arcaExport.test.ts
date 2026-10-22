@@ -132,6 +132,36 @@ describe('findDetachedArcaPanels', () => {
             element => rects.get(element) ?? domRect(0, 0),
         )).toEqual([layer]);
     });
+
+    it('does not treat a transparent control overlay as a panel because of the computed background shorthand', () => {
+        const root = document.createElement('div');
+        root.innerHTML = '<div class="frame"><img class="art"><span class="controls"><span class="count">2/3</span></span></div>';
+        const controls = root.querySelector('.controls') as HTMLElement;
+        const styles = new Map<Element, CSSStyleDeclaration>([
+            // Chrome always reports the shorthand with its default layers.
+            [controls, computedStyle({
+                position: 'absolute',
+                'z-index': '16',
+                opacity: '0',
+                'pointer-events': 'none',
+                background: 'rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box',
+                'background-color': 'rgba(0, 0, 0, 0)',
+                'background-image': 'none',
+                'box-shadow': 'none',
+                overflow: 'visible',
+            })],
+        ]);
+        const rects = new Map<Element, DOMRect>([
+            [root, domRect(760, 600)],
+            [controls, domRect(560, 608)],
+        ]);
+
+        expect(findDetachedArcaPanels(
+            root,
+            element => styles.get(element) ?? cssStyle(''),
+            element => rects.get(element) ?? domRect(0, 0),
+        )).toEqual([]);
+    });
 });
 
 describe('exportArcaHtml', () => {
@@ -286,6 +316,60 @@ describe('exportArcaHtml', () => {
         const snapshot = exportedWrapper.querySelector('img[data-arca-complex-snapshot]') as HTMLImageElement;
         expect(snapshot.getAttribute('src')).toBe('data:image/png;base64,overlay');
         expect(snapshot.style.width).toBe('40%');
+    });
+
+    it('exports an image plugin picture with hidden overlays as the original image instead of a snapshot', async () => {
+        const root = document.createElement('div');
+        root.innerHTML = `
+            <p>before</p>
+            <div class="am-generated-image"><span class="am-generated-image-frame"><img class="am-generated-image__img" src="/api/asset/module-art" loading="lazy"><span class="history"><img src="/api/asset/old-art"></span><span class="edge-controls"><button>prev</button><span class="count">2/3</span></span><span class="regen-ui"><span class="spinner"></span></span></span></div>
+            <p>after</p>
+        `;
+        const picture = root.querySelector('.am-generated-image') as HTMLElement;
+        const styles = new Map<Element, CSSStyleDeclaration>([
+            [picture, cssStyle('display: flex; justify-content: center;')],
+            [root.querySelector('.am-generated-image-frame') as HTMLElement, cssStyle('display: grid; position: relative;')],
+            [root.querySelector('.history') as HTMLElement, cssStyle('display: none;')],
+            [root.querySelector('.edge-controls') as HTMLElement, cssStyle('position: absolute; inset: 0 -72px; z-index: 16; opacity: 0;')],
+            [root.querySelector('.regen-ui') as HTMLElement, cssStyle('position: absolute; display: none;')],
+        ]);
+        const renderComplexBlock = vi.fn(async () => 'data:image/webp;base64,snapshot');
+        const loadImage = vi.fn(async (url: string) => `data:image/png;base64,${url.split('/').pop()}`);
+
+        const html = await exportArcaHtml(root, {
+            baseUrl: 'https://risu.example/chat',
+            readStyle: element => styles.get(element) ?? cssStyle(''),
+            loadImage,
+            renderComplexBlock,
+        });
+        const output = document.createElement('div');
+        output.innerHTML = html;
+
+        expect(renderComplexBlock).not.toHaveBeenCalled();
+        expect(Array.from(output.children).map(element => element.tagName)).toEqual(['P', 'P', 'P']);
+        expect(Array.from(output.querySelectorAll('img')).map(image => image.getAttribute('src')))
+            .toEqual(['data:image/png;base64,module-art']);
+        expect(loadImage).toHaveBeenCalledWith('https://risu.example/api/asset/module-art');
+        expect(output.textContent).not.toContain('2/3');
+    });
+
+    it('still snapshots a sprite over a background picture', async () => {
+        const root = document.createElement('div');
+        root.innerHTML = '<div class="scene"><img class="sprite" src="/sprite.png"></div>';
+        const scene = root.firstElementChild as HTMLElement;
+        const styles = new Map<Element, CSSStyleDeclaration>([
+            [scene, cssStyle('position: relative; background-image: url("/room.png");')],
+            [scene.firstElementChild as HTMLElement, cssStyle('position: absolute; left: 10px;')],
+        ]);
+        const renderComplexBlock = vi.fn(async () => 'data:image/webp;base64,scene');
+
+        await exportArcaHtml(root, {
+            readStyle: element => styles.get(element) ?? cssStyle(''),
+            loadImage: async url => url,
+            renderComplexBlock,
+        });
+
+        expect(renderComplexBlock).toHaveBeenCalledWith(scene);
     });
 
     it('replaces a CSS background asset with a real image without changing message order', async () => {
@@ -793,6 +877,10 @@ function cssStyle(cssText: string): CSSStyleDeclaration {
     const element = document.createElement('div');
     element.style.cssText = cssText;
     return element.style;
+}
+
+function computedStyle(values: Record<string, string>): CSSStyleDeclaration {
+    return { getPropertyValue: (property: string) => values[property] ?? '' } as CSSStyleDeclaration;
 }
 
 function domRect(width: number, height: number): DOMRect {
