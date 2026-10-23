@@ -442,6 +442,14 @@ await (async function() {
 })();
 `;
 
+function pluginCallLogging(): boolean {
+    try {
+        return globalThis.localStorage?.getItem('risubard.debugPlugins') === '1';
+    } catch {
+        return false;
+    }
+}
+
 export class SandboxHost {
     private iframe: HTMLIFrameElement;
     private apiFactory: any;
@@ -894,8 +902,12 @@ export class SandboxHost {
                     for (const id of usedAbortIds) this.abortControllers.delete(id);
                 }
 
-                console.log("Original request:", data);
-                console.log('Original response:', response, transferables);
+                // Every plugin call used to be logged; a plugin that polls the page flooded the console and kept
+                // every logged object alive. Opt in with localStorage['risubard.debugPlugins'] = '1'.
+                if (pluginCallLogging()) {
+                    console.log("Original request:", data);
+                    console.log('Original response:', response, transferables);
+                }
                 try {
                     this.iframe.contentWindow?.postMessage(response, '*', transferables);
                 } catch (error) {

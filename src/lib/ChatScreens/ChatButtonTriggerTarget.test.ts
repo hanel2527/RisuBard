@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 import { expect, it, vi } from 'vitest'
 import { captureGenerationTarget, createGenerationScope } from 'src/ts/process/generationTarget'
+import { mergeTriggerChat } from './triggerResultMerge'
 
 function loadActivateButtonTrigger(deps: Record<string, unknown>) {
     const source = readFileSync('src/lib/ChatScreens/Chat.svelte', 'utf8')
@@ -44,6 +45,8 @@ function setup(switchTo: (db: { characters: any[] }, bot: any) => void) {
         trackChatForSave: vi.fn(),
         requestImmediateSave: vi.fn(async () => {}),
         CurrentTriggerIdStore: { set: vi.fn() },
+        mergeTriggerChat,
+        debugTiming: { click() {}, stage() {}, afterPaint() {} },
     }
     const activate = loadActivateButtonTrigger(deps)
     const origin = { getAttribute: (name: string) => name === 'risu-btn' ? 'lb-reroll__lb-mini' : null }

@@ -20,6 +20,7 @@ import { loadLoreBookV3Prompt } from './lorebook.svelte';
 import { getPersonaPrompt, getUserName, getUserIcon } from '../util';
 import { resolveGenerationTarget, type GenerationTarget } from './generationTarget';
 import { mergeLuaFullChat } from './luaFullChat';
+import { debugTiming } from '../debugTiming';
 let luaFactory:LuaFactory
 let ScriptingSafeIds = new Set<string>()
 let ScriptingEditDisplayIds = new Set<string>()
@@ -95,6 +96,7 @@ export async function runScripted(code:string, arg:{
     
     try {
         return await ScriptingEngineState.mutex.runExclusive(async () => {
+        const timingRunStart = performance.now()
         ScriptingEngineState.moduleId = arg.moduleId
         ScriptingEngineState.chat = chat
         ScriptingEngineState.char = char
@@ -108,6 +110,7 @@ export async function runScripted(code:string, arg:{
             // Invalidate the cached identity before rebuilding. If engine creation or
             // script initialization fails, the next run must retry instead of using
             // a closed or partially initialized runtime under the previous identity.
+            const timingEngineStart = performance.now()
             ScriptingEngineState.code = undefined
             ScriptingEngineState.permissionFingerprint = undefined
             let declareAPI:(name: string, func:Function) => void
@@ -1112,6 +1115,7 @@ export async function runScripted(code:string, arg:{
             }
             ScriptingEngineState.code = code
             ScriptingEngineState.permissionFingerprint = permissionFingerprint
+            debugTiming.engine(mode, performance.now() - timingEngineStart)
         }
         let accessKey = v4()
         if(mode === 'editDisplay'){
@@ -1224,6 +1228,7 @@ export async function runScripted(code:string, arg:{
         ScriptingSafeIds.delete(accessKey)
         ScriptingEditDisplayIds.delete(accessKey)
         ScriptingLowLevelIds.delete(accessKey)
+        debugTiming.lua(mode, performance.now() - timingRunStart)
         chat = ScriptingEngineState.chat
 
         return {

@@ -11,6 +11,7 @@
     import { clearGenericChatImageStyles, isFirstMessageStudioManagedImage } from './chatImageHandling'
     import { retainedChatHtml } from './retainedChatHtml'
     import { inlayImageControls } from './inlayImageControls'
+    import { debugTiming } from 'src/ts/debugTiming'
 
     interface Props {
         character?: simpleCharacterArgument|string|null
@@ -157,7 +158,9 @@
                 return transResult
             }
             else{
+                const timingStart = performance.now()
                 const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition())
+                debugTiming.render(idx, performance.now() - timingStart)
                 lastParsedQueue = marked
                 lastCharArg = charArg
                 return marked

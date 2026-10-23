@@ -46,6 +46,8 @@
     } from 'src/ts/firstMessageStudio'
     import type { character as Character } from 'src/ts/storage/database.svelte'
     import { createRisuTriggerActivation } from './risuTriggerActivation'
+    import { debugTiming } from 'src/ts/debugTiming'
+    import { mergeTriggerChat } from './triggerResultMerge'
     import { Popover } from 'bits-ui'
 
     let viewportWidth = $state(window.innerWidth)
@@ -395,6 +397,12 @@
         const triggerId = origin.getAttribute('risu-id')
         const btnEvent = origin.getAttribute('risu-btn')
 
+        debugTiming.click(triggerName || btnEvent || '?')
+        // To tell afterwards whether the click changed anything (variables are written live as the trigger runs).
+        const stateBefore = JSON.stringify(sourceChat?.scriptstate ?? {})
+        // A script may redraw this message itself (Lua reloadChat); then the redraw below would render it twice.
+        let reloadBefore: number | undefined
+        ReloadChatPointer.update((v) => { reloadBefore = v[idx]; return v })
         const triggerResult =
             triggerName ?
                 await runTrigger(currentChar, 'manual', {
@@ -406,8 +414,11 @@
                 await runLuaButtonTrigger(currentChar, btnEvent, sourceChat) :
             null
 
-        writeTriggerResult(target, triggerScope, triggerResult)
-        
+        debugTiming.stage('trigger finished')
+        writeTriggerResult(target, triggerScope, triggerResult, stateBefore, reloadBefore)
+        debugTiming.stage('result written')
+        debugTiming.afterPaint('painted (two frames later)')
+
         if(triggerName && triggerId) {
             setTimeout(() => {
                 CurrentTriggerIdStore.set(null)
@@ -415,10 +426,20 @@
         }
     }
 
-    function writeTriggerResult(target: GenerationTarget, triggerScope: ReturnType<typeof createGenerationScope>, triggerResult: any) {
+    function writeTriggerResult(target: GenerationTarget, triggerScope: ReturnType<typeof createGenerationScope>, triggerResult: any, stateBefore?: string, reloadBefore?: number) {
         if(!triggerResult?.chat) return
         try {
-            triggerScope.chat = normalizeChat(triggerResult.chat)
+            const nextChat = normalizeChat(triggerResult.chat)
+            const merged = mergeTriggerChat(triggerScope.chat, nextChat)
+            if(!merged){
+                triggerScope.chat = nextChat
+            }
+            // A click that changed nothing (a view switch done in CSS, say) leaves the message as it is.
+            if(merged === 'same' && stateBefore !== undefined && JSON.stringify(triggerScope.chat?.scriptstate ?? {}) === stateBefore){
+                debugTiming.stage('nothing changed, no redraw')
+                return
+            }
+            debugTiming.stage(merged ? 'chat merged (messages kept), redraw requested' : 'chat replaced, redraw requested')
             // Only the chat on screen is tracked for saving; queue any other
             // chat or the result is lost on reload.
             const openChar = getCurrentCharacter()
@@ -436,6 +457,10 @@
             console.warn('[button trigger] result dropped:', error)
         }
         ReloadChatPointer.update((v) => {
+            if ((v[idx] ?? 0) !== (reloadBefore ?? 0)) {
+                debugTiming.stage('the script already redrew this message')
+                return v
+            }
             v[idx] = (v[idx] ?? 0) + 1
             return v
         })

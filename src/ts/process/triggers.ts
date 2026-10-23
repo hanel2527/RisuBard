@@ -16,6 +16,7 @@ import { generateAIImage } from "./stableDiff";
 import { writeInlayImage } from "./files/inlays";
 import { runScripted } from "./scriptings";
 import { calcString } from "./infunctions";
+import { debugTiming } from "../debugTiming";
 
 
 export interface triggerscript{
@@ -1213,9 +1214,14 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
         
         varChanged = true
         chat.scriptstate ??= {}
+        if (chat.scriptstate['$' + key] !== value) debugTiming.stage(`trigger variable ${key} set${('$' + key) in chat.scriptstate ? '' : ' (new)'}`)
         chat.scriptstate['$' + key] = value
+        // Write the one key: replacing the live object invalidated every message that reads any variable.
         const liveChat = getTargetChat()
-        if (liveChat) liveChat.scriptstate = chat.scriptstate
+        if (liveChat && liveChat.scriptstate !== chat.scriptstate) {
+            liveChat.scriptstate ??= {}
+            liveChat.scriptstate['$' + key] = value
+        }
     }
     
     
@@ -2783,9 +2789,21 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
         caculatedTokens += await tokenize(additonalSysPrompt.promptend)
     }
     if(varChanged){
-        const liveChat = getTargetChat()
-        if (liveChat) liveChat.scriptstate = chat.scriptstate
-        ReloadGUIPointer.set(get(ReloadGUIPointer) + 1)
+        // The live variables already took each key in setVar. A button that runs Lua only redraws its own
+        // message (Chat.svelte); Lua calls reloadDisplay itself when the whole chat must redraw. Redrawing
+        // every message after each click made buttons on a long chat take most of a second.
+        // Script triggers run on every call; other triggers only when their name matches the button.
+        const ran = triggers.filter((t) => {
+            const kind = t?.effect?.[0]?.type
+            return kind === 'triggerlua' || kind === 'triggercode' || (!!arg.manualName && t.comment === arg.manualName)
+        })
+        const luaOnly = ran.every((t) => (t?.effect ?? []).every((e) => e?.type === 'triggerlua'))
+        const redrawAll = !(mode === 'manual' && luaOnly)
+        debugTiming.stage(`variables changed; ${ran.length} trigger(s) ran, ${redrawAll ? 'redraw every message' : 'no redraw of every message'}`
+            + (luaOnly ? '' : ` (not Lua: ${ran.filter((t) => !(t?.effect ?? []).every((e) => e?.type === 'triggerlua')).map((t) => `${t.comment || '?'}:${t.effect?.[0]?.type}`).join(', ')})`))
+        if (redrawAll) {
+            ReloadGUIPointer.set(get(ReloadGUIPointer) + 1)
+        }
     }
 
     if (shouldSetTriggerId && mode !== 'manual') {

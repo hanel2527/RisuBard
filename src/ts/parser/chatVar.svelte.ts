@@ -1,6 +1,7 @@
 import { get } from 'svelte/store'
 import { DBState, selectedCharID } from '../stores.svelte'
 import { parseKeyValue } from '../util'
+import { debugTiming } from '../debugTiming'
 import type { Chat, character } from '../storage/database.svelte'
 
 function getSelectedChat() {
@@ -39,6 +40,7 @@ export function setChatVar(key:string, value:string, targetChat?:Chat): boolean 
     if(chat.scriptstate[stateKey] === value){
         return false
     }
+    debugTiming.stage(`variable ${key} set${stateKey in chat.scriptstate ? '' : ' (new)'}`)
     chat.scriptstate[stateKey] = value
     return true
 }
