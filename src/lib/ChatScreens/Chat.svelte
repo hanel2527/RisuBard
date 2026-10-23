@@ -764,6 +764,7 @@
         {#if isComment}
             <button
                 class="flex items-center hover:text-danger/80 transition-colors button-icon-remove"
+                aria-label={language.remove}
                 onclick={async () => {
                     await rm()
                 }}
@@ -779,7 +780,7 @@
                     {@render editButton()}
                     {@render majorIconButtonsBody(false)}
                     {#if DBState.db.characters[selIdState.selId] && idx > -1}
-                        <PopupButton>
+                        <PopupButton ariaLabel={language.messageMoreActions}>
                             {@render minorIconButtonsBody(true)}
                         </PopupButton>
                     {/if}
@@ -824,7 +825,7 @@
 
 {#snippet firstMessageToggle(showNames = false)}
     {#if firstMessage}
-                    <button class={"flex items-center shrink-0 transition-colors " + (disabled === true ? 'text-danger hover:text-danger/80' : 'hover:text-primary')} onclick={async () => {
+                    <button aria-label={disabled === true ? language.messageFirstEnable : language.messageFirstDisable} class={"flex items-center shrink-0 transition-colors " + (disabled === true ? 'text-danger hover:text-danger/80' : 'hover:text-primary')} onclick={async () => {
                         await sleep(1)
                         const chat = DBState.db.characters[selIdState.selId].chats[DBState.db.characters[selIdState.selId].chatPage]
                         if(chat.firstMessageDisabled){
@@ -842,7 +843,7 @@
 
 {#snippet majorIconButtonsBody(showNames:boolean)}
     {#if !blankMessage}
-    <button class="flex items-center hover:text-primary transition-colors button-icon-copy" onclick={async ()=>{
+    <button aria-label={language.copy} class="flex items-center hover:text-primary transition-colors button-icon-copy" onclick={async ()=>{
         const copyText = renderRawStreaming
             ? risuChatParser(rawStreamingText, {chara: name, chatID: idx, rmVar: true, visualize: true, cbsConditions: getCbsCondition()})
             : msgDisplay
@@ -1164,7 +1165,7 @@
 {/if}
 {#if idx > -1}
     {#if DBState.db.characters[selIdState.selId].ttsMode !== 'none' && (DBState.db.characters[selIdState.selId].ttsMode)}
-        <button class="flex items-center hover:text-primary transition-colors button-icon-tts" onclick={()=>{
+        <button aria-label="TTS" class="flex items-center hover:text-primary transition-colors button-icon-tts" onclick={()=>{
             return sayTTS(null, isOptimizedStreamingMessage ? rawStreamingText : message)
         }}>
             <Volume2Icon size={20}/>
@@ -1173,7 +1174,7 @@
             {/if}
         </button>
     {/if}
-    <button class="flex items-center hover:text-danger/80 transition-colors button-icon-remove" onclick={rm}>
+    <button aria-label={language.remove} class="flex items-center hover:text-danger/80 transition-colors button-icon-remove" onclick={rm}>
         <TrashIcon size={20}/>
 
         {#if showNames}
@@ -1185,7 +1186,7 @@
 
 {#snippet translationButton(showNames = false)}
     {#if DBState.db.translator !== '' && !blankMessage && !isOptimizedStreamingMessage}
-        <button class={"flex items-center cursor-pointer hover:text-primary transition-colors button-icon-translate " + (translated ? 'text-info':'')} class:translating={translating} onclick={async () => {
+        <button aria-label={language.axModelTranslate} aria-pressed={translated} class={"flex items-center cursor-pointer hover:text-primary transition-colors button-icon-translate " + (translated ? 'text-info':'')} class:translating={translating} onclick={async () => {
             translated = !translated
         }}>
             <LanguagesIcon />
@@ -1225,18 +1226,18 @@
         && !memoryConfirming}
         {#if altGreeting}
             <!-- First message: ← counter → -->
-            <button class="flex items-center shrink-0 hover:text-primary transition-colors button-icon-unreroll" onclick={unReroll}>
+            <button aria-label={language.chatMessagePrevious} class="flex items-center shrink-0 hover:text-primary transition-colors button-icon-unreroll" onclick={unReroll}>
                 <ArrowLeft size={22}/>
             </button>
             {#if !DBState.db.hideMessagePageCount}
                 <span class="flex items-center text-xs text-textcolor2 shrink overflow-hidden whitespace-nowrap min-w-0">{currentPage}/{totalPages}</span>
             {/if}
-            <button class="flex items-center shrink-0 hover:text-primary transition-colors button-icon-reroll" onclick={onReroll}>
+            <button aria-label={language.chatMessageNext} class="flex items-center shrink-0 hover:text-primary transition-colors button-icon-reroll" onclick={onReroll}>
                 <ArrowRight size={22}/>
             </button>
         {:else}
             <!-- Normal messages: ← counter → ↻ -->
-            <button class="flex items-center shrink-0 hover:text-primary transition-colors button-icon-unreroll" class:dyna-icon={rerollIcon === 'dynamic' || rerollIcon === 'force'} class:force-show={rerollIcon === 'force'} onclick={async () => {
+            <button aria-label={totalPages <= 1 ? language.reroll : language.chatMessagePrevious} class="flex items-center shrink-0 hover:text-primary transition-colors button-icon-unreroll" class:dyna-icon={rerollIcon === 'dynamic' || rerollIcon === 'force'} class:force-show={rerollIcon === 'force'} onclick={async () => {
                 if (totalPages <= 1) {
                     if (!DBState.db.confirmReroll || await alertConfirm(language.noSwipesRerollConfirm)) onReroll()
                 } else {
@@ -1248,7 +1249,7 @@
             {#if !DBState.db.hideMessagePageCount}
                 <span class="flex items-center text-xs text-textcolor2 shrink overflow-hidden whitespace-nowrap min-w-0" class:dyna-icon={rerollIcon === 'dynamic' || rerollIcon === 'force'} class:force-show={rerollIcon === 'force'}>{currentPage}/{totalPages}</span>
             {/if}
-            <button class="flex items-center shrink-0 hover:text-primary transition-colors button-icon-reroll" class:dyna-icon={rerollIcon === 'dynamic' || rerollIcon === 'force'} class:force-show={rerollIcon === 'force'} onclick={async () => {
+            <button aria-label={totalPages <= 1 ? language.reroll : language.chatMessageNext} class="flex items-center shrink-0 hover:text-primary transition-colors button-icon-reroll" class:dyna-icon={rerollIcon === 'dynamic' || rerollIcon === 'force'} class:force-show={rerollIcon === 'force'} onclick={async () => {
                 if (totalPages <= 1) {
                     if (!DBState.db.confirmReroll || await alertConfirm(language.noSwipesRerollConfirm)) onReroll()
                 } else {
@@ -1257,7 +1258,7 @@
             }}>
                 <ArrowRight size={22}/>
             </button>
-            <button data-hotkey-action="reroll" class="flex items-center shrink-0 hover:text-primary transition-colors button-icon-reroll" class:dyna-icon={rerollIcon === 'dynamic' || rerollIcon === 'force'} class:force-show={rerollIcon === 'force'} onclick={async () => {
+            <button aria-label={language.reroll} data-hotkey-action="reroll" class="flex items-center shrink-0 hover:text-primary transition-colors button-icon-reroll" class:dyna-icon={rerollIcon === 'dynamic' || rerollIcon === 'force'} class:force-show={rerollIcon === 'force'} onclick={async () => {
                 if (!DBState.db.confirmReroll || await alertConfirm(language.rerollConfirm)) onReroll()
             }}>
                 <RefreshCcwIcon size={20}/>
@@ -1939,6 +1940,7 @@
         justify-content: center;
     }
     :global(.mobile-message-flyout > button) {
+        flex-shrink: 0;
         min-height: 44px;
         width: 100%;
         padding: 0.5rem;
