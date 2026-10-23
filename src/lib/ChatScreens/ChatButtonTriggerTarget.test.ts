@@ -46,6 +46,7 @@ function setup(switchTo: (db: { characters: any[] }, bot: any) => void) {
         requestImmediateSave: vi.fn(async () => {}),
         CurrentTriggerIdStore: { set: vi.fn() },
         mergeTriggerChat,
+        getChatVar: () => 'null',
         debugTiming: { click() {}, stage() {}, afterPaint() {} },
     }
     const activate = loadActivateButtonTrigger(deps)

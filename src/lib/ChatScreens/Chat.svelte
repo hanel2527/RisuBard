@@ -48,6 +48,7 @@
     import { createRisuTriggerActivation } from './risuTriggerActivation'
     import { debugTiming } from 'src/ts/debugTiming'
     import { mergeTriggerChat } from './triggerResultMerge'
+    import { getChatVar } from 'src/ts/parser/chatVar.svelte'
     import { Popover } from 'bits-ui'
 
     let viewportWidth = $state(window.innerWidth)
@@ -434,9 +435,12 @@
             if(!merged){
                 triggerScope.chat = nextChat
             }
-            // A click that changed nothing (a view switch done in CSS, say) leaves the message as it is.
-            if(merged === 'same' && stateBefore !== undefined && JSON.stringify(triggerScope.chat?.scriptstate ?? {}) === stateBefore){
-                debugTiming.stage('nothing changed, no redraw')
+            // The message redraws even when the chat looks unchanged: a script may keep its state outside the
+            // chat variables (global variables, Lua), and 0.9.80 skipping this left such buttons needing two clicks.
+            // Only a bot that opted in (chat variable __risubard_fast_buttons = 1) skips a click that changed nothing.
+            const fastButtons = getChatVar('__risubard_fast_buttons', undefined, triggerScope.chat) === '1'
+            if(fastButtons && merged === 'same' && stateBefore !== undefined && JSON.stringify(triggerScope.chat?.scriptstate ?? {}) === stateBefore){
+                debugTiming.stage('fast buttons: nothing changed, no redraw')
                 return
             }
             debugTiming.stage(merged ? 'chat merged (messages kept), redraw requested' : 'chat replaced, redraw requested')
@@ -707,8 +711,11 @@
             data-painter-message={!readOnly && idx >= 0 && !isOptimizedStreamingMessage && !translated && !editMode ? idx : undefined}
             class:prose-invert={$ColorSchemeTypeStore === 'dark'}
             bind:this={bodyRoot}
-            onclick={() => {
-            if(!readOnly && DBState.db.clickToEdit && idx > -1 && !isOptimizedStreamingMessage && !window.getSelection()?.toString()){
+            onclick={(event) => {
+            // Controls a bot draws in the message (tabs as labels, inputs) are not a click on the text.
+            const clicked = event?.target
+            const control = clicked instanceof Element ? clicked.closest('button, label, input, select, textarea, a, summary, [risu-trigger], [risu-btn]') : null
+            if(!readOnly && DBState.db.clickToEdit && idx > -1 && !control && !isOptimizedStreamingMessage && !window.getSelection()?.toString()){
                 editMode = true
             }
         }}

@@ -2789,19 +2789,18 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
         caculatedTokens += await tokenize(additonalSysPrompt.promptend)
     }
     if(varChanged){
-        // The live variables already took each key in setVar. A button that runs Lua only redraws its own
-        // message (Chat.svelte); Lua calls reloadDisplay itself when the whole chat must redraw. Redrawing
-        // every message after each click made buttons on a long chat take most of a second.
-        // Script triggers run on every call; other triggers only when their name matches the button.
+        // The live variables already took each key in setVar. Every message redraws, since bots show variables
+        // in other messages too (0.9.80 skipped this for Lua buttons and broke such bots). A bot that keeps its
+        // button state in chat variables and shows it only in the button's own message opts out with the chat
+        // variable __risubard_fast_buttons = 1; its Lua-only buttons then redraw that message alone (Chat.svelte).
         const ran = triggers.filter((t) => {
             const kind = t?.effect?.[0]?.type
             return kind === 'triggerlua' || kind === 'triggercode' || (!!arg.manualName && t.comment === arg.manualName)
         })
         const luaOnly = ran.every((t) => (t?.effect ?? []).every((e) => e?.type === 'triggerlua'))
-        const redrawAll = !(mode === 'manual' && luaOnly)
-        debugTiming.stage(`variables changed; ${ran.length} trigger(s) ran, ${redrawAll ? 'redraw every message' : 'no redraw of every message'}`
-            + (luaOnly ? '' : ` (not Lua: ${ran.filter((t) => !(t?.effect ?? []).every((e) => e?.type === 'triggerlua')).map((t) => `${t.comment || '?'}:${t.effect?.[0]?.type}`).join(', ')})`))
-        if (redrawAll) {
+        const fast = mode === 'manual' && luaOnly && getVar('__risubard_fast_buttons') === '1'
+        debugTiming.stage(fast ? 'variables changed, fast buttons: no redraw of every message' : 'variables changed, redraw every message')
+        if (!fast) {
             ReloadGUIPointer.set(get(ReloadGUIPointer) + 1)
         }
     }
