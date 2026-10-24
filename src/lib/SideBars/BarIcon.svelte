@@ -8,6 +8,8 @@
     title?: string;
     pressed?: boolean;
     disabled?: boolean;
+    /** Blinks orange until the user looks at what it leads to. */
+    attention?: boolean;
     children?: import('svelte').Snippet;
   }
 
@@ -18,14 +20,15 @@
     title,
     pressed,
     disabled = false,
+    attention = false,
     children,
   }: Props = $props();
 </script>
 
 {#await additionalStyle}
-  <button onclick={onClick} class="ico" class:active={pressed} {disabled} aria-label={ariaLabel} aria-pressed={pressed} {title}>{@render children?.()}</button>
+  <button onclick={onClick} class="ico" class:active={pressed} class:attention {disabled} aria-label={ariaLabel} aria-pressed={pressed} {title}>{@render children?.()}</button>
 {:then as}
-  <button onclick={onClick} class="ico" class:active={pressed} {disabled} aria-label={ariaLabel} aria-pressed={pressed} {title} style={as}>{@render children?.()}</button>
+  <button onclick={onClick} class="ico" class:active={pressed} class:attention {disabled} aria-label={ariaLabel} aria-pressed={pressed} {title} style={as}>{@render children?.()}</button>
 {/await}
 
 <style>
@@ -59,6 +62,39 @@
   .ico.active {
     background-color: var(--color-warning);
     color: var(--color-on-warning);
+  }
+
+  .ico.attention {
+    position: relative;
+    color: #1f1300;
+    background-color: #f59e0b;
+    animation: ico-attention-blink 1.6s ease-in-out infinite, ico-attention-ring 1.6s ease-out infinite;
+  }
+
+  .ico.attention::after {
+    content: '';
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #fde68a;
+    border: 2px solid var(--color-bgcolor);
+  }
+
+  @keyframes ico-attention-blink {
+    0%, 100% { background-color: #f59e0b; }
+    50% { background-color: #b45309; }
+  }
+
+  @keyframes ico-attention-ring {
+    0% { box-shadow: 0 0 0 0 rgb(245 158 11 / 0.75); }
+    70%, 100% { box-shadow: 0 0 0 12px rgb(245 158 11 / 0); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ico.attention { animation: none; }
   }
 
   .ico:disabled {
