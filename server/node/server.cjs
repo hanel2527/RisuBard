@@ -31,7 +31,8 @@ const getVips = () => {
 const { kvGet, kvSet, kvSetMany, kvSetManyAsync, kvReplacePrefixesAsync, kvReplacePrefixesFromFilesAsync, preparePrefixReplacementFromFilesAsync, reloadManifest, kvReplaceAllAsync, kvDel, kvDelMany, kvList,
         kvDelPrefix, kvListWithSizes, kvSize, kvGetUpdatedAt, kvCopyValue,
         gcChunks, reclaimableChunkBytes, objectStoreBytes, isDbBlobChunked, snapshotFootprint, repository: userDataRepository, compatibilityCache, characterAssets,
-        retireAssets, restoreRetiredAssets, retiredStatus, retiredSummary } = require('./db.cjs');
+        retireAssets, restoreRetiredAssets, retiredStatus, retiredSummary,
+        removeAssetStoreKeys, assetStoreStatus, assetStoreShare, convertToAssetStore, revertAssetStore } = require('./db.cjs');
 const {
     addLogBatch, queryLogs, clearLogs, countLogs,
     logger, installProcessHandlers, expressErrorMiddleware,
@@ -3071,7 +3072,9 @@ async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0
                 canonicalDirectories: CANONICAL_BACKUP_DIRECTORIES,
                 manifestBytes: preparedKv.manifestBytes,
                 retiredBytes: preparedKv.retiredBytes,
-                store: { reloadManifest },
+                assetStoreDirectory: preparedKv.assetStoreDirectory,
+                assetStoreKeys: preparedKv.assetStoreKeys,
+                store: { reloadManifest, removeAssetStoreKeys },
                 restoreId: `backup-${nodeCrypto.randomUUID()}`,
             });
             atomicRestorePublished = true;
@@ -4629,7 +4632,7 @@ require('./character-package-routes.cjs').registerCharacterPackageRoutes(app, {
     repository: userDataRepository,
     assets: characterAssets,
     readSource: kvGet,
-    kv: { retireAssets, restoreRetiredAssets, retiredStatus },
+    kv: { retireAssets, restoreRetiredAssets, retiredStatus, assetStoreShare },
     prepare: async () => {
         if (externalEditSession.isActive() || !canonicalProjectionReady || canonicalProjectionSync.hasExternalChanges()) return null;
         await flushPendingDbWithinQueue({ materialize: false });
@@ -4638,13 +4641,21 @@ require('./character-package-routes.cjs').registerCharacterPackageRoutes(app, {
     },
 });
 
+require('./asset-store-routes.cjs').registerAssetStoreRoutes(app, {
+    auth: checkAuth,
+    activeSession: checkActiveSession,
+    queue: queueStorageOperation,
+    recordTransition: event => saveObservation.record(event),
+    kv: { assetStoreStatus, convertToAssetStore, revertAssetStore },
+});
+
 require('./module-asset-routes.cjs').registerModuleAssetRoutes(app, {
     auth: checkAuth,
     activeSession: checkActiveSession,
     queue: queueStorageOperation,
     recordTransition: event => saveObservation.record(event),
     assets: characterAssets,
-    kv: { retireAssets, restoreRetiredAssets, retiredStatus, retiredSummary },
+    kv: { retireAssets, restoreRetiredAssets, retiredStatus, retiredSummary, assetStoreShare },
     prepare: async () => {
         if (externalEditSession.isActive() || !canonicalProjectionReady || canonicalProjectionSync.hasExternalChanges()) return null;
         await flushPendingDbWithinQueue({ materialize: false });

@@ -1157,6 +1157,18 @@ export class NodeStorage{
         return response.json()
     }
 
+    async assetStoreTransition(action: 'status' | 'convert' | 'revert', options: { limit?: number, verify?: boolean } = {}) {
+        const response = action === 'status'
+            ? await this.authFetch('/api/asset-store/status')
+            : await this.authFetch(`/api/asset-store/${action}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(options),
+            })
+        if (!response.ok) throw new Error(`Asset store ${action} failed: ${response.status}`)
+        return response.json()
+    }
+
     async storagePackageOverview() {
         const response = await this.authFetch('/api/storage-packages/overview')
         if (!response.ok) throw new Error(`Storage package overview failed: ${response.status}`)

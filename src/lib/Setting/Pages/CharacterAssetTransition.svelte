@@ -14,7 +14,7 @@
     let batchMessage = $state('')
     let batchResults = $state<{ id: string; name: string; outcome: string }[]>([])
     onDestroy(() => { stopRequested = true })
-    let result = $state<{ enabled: boolean; directory: string; chats: number; assets: { enabled: boolean; copied: number; skipped: number; failed: number }; kv?: { retired: number; bytes: number }; v4?: { retired?: number; shared?: number; sharedBy?: Record<string, number>; unverified?: number; restored?: number; failed?: number }; diagnostics: { reads: number; fallbacks: number } } | null>(null)
+    let result = $state<{ enabled: boolean; directory: string; chats: number; assets: { enabled: boolean; copied: number; skipped: number; failed: number }; kv?: { retired: number; bytes: number }; store?: { stored: number; bytes: number }; v4?: { retired?: number; shared?: number; sharedBy?: Record<string, number>; unverified?: number; restored?: number; failed?: number }; diagnostics: { reads: number; fallbacks: number } } | null>(null)
     const megabytes = (bytes: number) => (bytes / 1048576).toFixed(1)
     const sharedPlaceNames: Record<string, string> = {
         replica: '다른 캐릭터나 모듈 폴더', characters: '다른 캐릭터', modules: '모듈',
@@ -187,7 +187,7 @@
             {#if !result}
                 <p>캐릭터를 고르고 상태 확인을 누르면, V3 구조를 쓰는 캐릭터에서 V4로 전환할 수 있습니다.</p>
             {:else}
-                <p>{result.kv?.retired ? `V4 사용 중: KV 목록에서 뺀 에셋 ${result.kv.retired}개 (${megabytes(result.kv.bytes)}MB)` : result.enabled ? 'V4 미사용: 에셋이 모두 KV 목록에 있습니다.' : 'V3 구조로 먼저 전환해야 V4로 전환할 수 있습니다.'}</p>
+                <p>{result.kv?.retired ? `V4 사용 중: KV 목록에서 뺀 에셋 ${result.kv.retired}개 (${megabytes(result.kv.bytes)}MB)` : result.store?.stored ? `에셋 저장소 사용 중: 에셋 ${result.store.stored}개(${megabytes(result.store.bytes)}MB)가 이미 KV 목록 밖의 전용 폴더에 있어 V4 전환이 필요 없습니다.` : result.enabled ? 'V4 미사용: 에셋이 모두 KV 목록에 있습니다.' : 'V3 구조로 먼저 전환해야 V4로 전환할 수 있습니다.'}</p>
                 {#if result.v4?.retired !== undefined}
                     {#if result.v4.retired === 0}
                         <p class="notice">옮길 수 있는 에셋이 없어 아무것도 바꾸지 않았습니다. 다른 곳에서도 쓰는 에셋과 복사본이 원본과 다른 에셋은 KV에 그대로 둡니다.</p>

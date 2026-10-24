@@ -6,6 +6,7 @@
     import SettingPage from 'src/lib/UI/GUI/SettingPage.svelte'
     import ShButton from 'src/lib/UI/GUI/ShButton.svelte'
     import CharacterAssetTransition from './CharacterAssetTransition.svelte'
+    import AssetStoreTransition from 'src/lib/UI/AssetStoreTransition.svelte'
     import ModuleAssetTransition from './ModuleAssetTransition.svelte'
 
     interface DurationSummary {
@@ -81,6 +82,7 @@
 
 <SettingPage title={language.storageDiagnosticsTitle} description={language.storageDiagnosticsDesc}>
     <div class="diagnostics-stack">
+        <AssetStoreTransition />
         <CharacterAssetTransition />
         <ModuleAssetTransition />
         <section class="privacy-note" aria-label={language.storageDiagnosticsPrivacy}>
