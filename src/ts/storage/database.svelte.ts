@@ -916,6 +916,7 @@ export function setDatabase(data:Database){
     data.pluginCustomStorage ??= {}
     data.longPressToPopupEditor ??= false
     data.showInputActionBar ??= true
+    data.mobileMessageActionsInline ??= false
     data.moveInsteadOfCopyOnCMPConvert ??= false
     data.chatLoadInitialPages = normalizeChatLoadPages(data.chatLoadInitialPages, DEFAULT_CHAT_LOAD_INITIAL_PAGES)
     data.chatLoadAdditionalPages = normalizeChatLoadPages(data.chatLoadAdditionalPages, DEFAULT_CHAT_LOAD_ADDITIONAL_PAGES)
@@ -2236,6 +2237,7 @@ export interface Database{
     pluginStorageMeta?:{[key:string]:{plugin:string,updatedAt:number}}
     longPressToPopupEditor?: boolean
     showInputActionBar?: boolean
+    mobileMessageActionsInline?: boolean
     moveInsteadOfCopyOnCMPConvert?:boolean
     chatLoadInitialPages?: number
     chatLoadAdditionalPages?: number
