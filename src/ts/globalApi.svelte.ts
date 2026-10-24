@@ -277,6 +277,7 @@ let requestImmediateSaveImpl: ((options?: {
     rejectOnFailure?: boolean
 }) => Promise<void> | void) = () => {}
 let trackChatForSaveImpl: (chaId: string, chatId: string) => void = () => {}
+let trackCharacterForSaveImpl: (chaId: string) => void = () => {}
 let patchSyncBaseline: Database | null = null
 
 // Surfaces server-side persist failures (Stage 1 visibility — see issues.md).
@@ -397,6 +398,11 @@ export function requestImmediateSave(options?: {
  */
 export function trackChatForSave(chaId: string, chatId: string) {
     trackChatForSaveImpl(chaId, chatId)
+}
+
+/** Saves a bot changed while it is not the selected one (only that bot is watched for edits). */
+export function trackCharacterForSave(chaId: string) {
+    trackCharacterForSaveImpl(chaId)
 }
 
 export function setPatchSyncBaseline(data: Database | null) {
@@ -1678,6 +1684,12 @@ export async function saveDb() {
         if (!changeTracker.chat.some(([owner, id]) => owner === chaId && id === chatId)) {
             changeTracker.chat.push([chaId, chatId])
         }
+        changed = true
+    }
+
+    trackCharacterForSaveImpl = (chaId) => {
+        if (!chaId) return
+        if (!changeTracker.character.includes(chaId)) changeTracker.character.push(chaId)
         changed = true
     }
 

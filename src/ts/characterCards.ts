@@ -17,7 +17,7 @@ import { reencodeImage } from "./process/files/inlays"
 import { PngChunk } from "./pngChunk"
 import type { OnnxModelFiles } from "./process/transformers"
 import { CharXImporter, CharXSkippableChecker, CharXWriter, type CharXImportProgress } from "./process/processzip"
-import { exportModuleLegacy, importRisum, readModule, type RisuModule } from "./process/modules"
+import { exportModuleLegacy, importRisum, installImportedModule, prepareImportedModule, readModule, type RisuModule } from "./process/modules"
 import { pinCharacterVaultQuickAccess } from './characterVault'
 import { normalizeFirstMessageStudioProject, type FirstMessageStudioProject } from './firstMessageStudio'
 import { normalizeBardLoreOwnerState, type BardLoreState } from './lorebook/bardLore'
@@ -32,6 +32,15 @@ import { classifyCharx, inspectCharx } from './charxPreflight'
 import { importAsset, runImport } from './importSession'
 import { ImportCancelled, type ImportTransaction } from './storage/importTransaction'
 import { convertCharacterToModule } from './interchangeability'
+import { BOT_LINEAGE_KEY } from './characterUpdate'
+import { tryUpdateExistingCharacter } from './characterUpdateFlow.svelte'
+
+/** Records the RisuRealm item a card came from, so a later download updates the same bot. */
+function stampRealmId(card: { data?: { extensions?: Record<string, any> } } | null | undefined, realmId?: string) {
+    if (!realmId || !card?.data) return
+    card.data.extensions ??= {}
+    card.data.extensions.risuRealmImportId = realmId
+}
 
 
 const EXTERNAL_HUB_URL = 'https://sv.risuai.xyz';
@@ -129,6 +138,10 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
     returnCharacter?:T //note That this option only works with v3 charx
     transaction?: ImportTransaction
     installAs?: 'module' | 'character'
+    /** RisuRealm item id of a downloaded card. */
+    realmId?: string
+    /** false skips offering to update an installed bot (packages carry their own chats). */
+    updateExisting?: boolean
 }):Promise<T extends true ? character | number | null : number | null>{
     if (!f.transaction && !f.returnCharacter) {
         return await runImport(transaction => importCharacterProcess({ ...f, transaction })) as any
@@ -143,13 +156,18 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
         }
         const data = f.data instanceof Uint8Array ? f.data : new Uint8Array(await f.data.arrayBuffer())
         const da = JSON.parse(Buffer.from(data).toString('utf-8'))
-        if(await importCharacterCardSpec(da, undefined, 'normal', {}, null, false, transaction)){
-            let db = getDatabase()
-            return db.characters.length - 1 as any
+        const index = await importCharacterCardSpec(da, undefined, 'normal', {}, null, false, transaction)
+        if(index !== false){
+            return index as any
         }
         if((da.char_name || da.name) && (da.char_persona || da.description) && (da.char_greeting || da.first_mes)){
             let db = getDatabase()
             const character = convertOffSpecCards(da)
+            const updated = await tryUpdateExistingCharacter(character, transaction)
+            if (updated !== null) {
+                await persistImportedData(transaction)
+                return updated as any
+            }
             character.name = createUniqueDisplayName(character.name, db.characters)
             transaction?.register('character', character.chaId)
             db.characters.push(character)
@@ -198,6 +216,7 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
         if(card.spec !== 'chara_card_v3'){
             throw new Error(language.errors.noData)
         }
+        stampRealmId(card, f.realmId)
         let lorebook:loreBook[] = null
         if(importer.moduleData){
             alertWait(language.characterImportReadingModule)
@@ -219,10 +238,23 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
         transaction?.check()
         if (installAs === 'module') {
             const module = convertCharacterToModule(v)
-            transaction?.register('module', module.id)
-            db.modules.push(module)
+            // The card's bot id and RisuRealm id let the next version of this file update the module.
+            module.updateLineage = v.extentions?.[BOT_LINEAGE_KEY] || undefined
+            module.realmId = v.extentions?.risuRealmImportId || undefined
+            if (f.updateExisting !== false) await installImportedModule(module, transaction)
+            else {
+                transaction?.register('module', module.id)
+                db.modules.push(module)
+            }
             await persistImportedData(transaction)
             return null
+        }
+        if (f.updateExisting !== false) {
+            const updated = await tryUpdateExistingCharacter(v, transaction)
+            if (updated !== null) {
+                await persistImportedData(transaction)
+                return updated
+            }
         }
         v.name = createUniqueDisplayName(v.name, db.characters)
         transaction?.register('character', v.chaId)
@@ -402,9 +434,10 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
                     try {
                         const decrypted = await decryptBuffer(encrypted, password)         
                         const charaData:CharacterCardV2Risu = JSON.parse(Buffer.from(decrypted).toString('utf-8'))
-                        if(await importCharacterCardSpec(charaData, img, "normal", assets, null, false, transaction)){
-                            let db = getDatabase()
-                            return db.characters.length - 1
+                        stampRealmId(charaData, f.realmId)
+                        const index = await importCharacterCardSpec(charaData, img, "normal", assets, null, false, transaction)
+                        if(index !== false){
+                            return index
                         }
                         else{
                             throw new Error('Error while importing')
@@ -419,10 +452,11 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
                 const decrypted = await decryptBuffer(encrypted, 'RISU_NONE')
                 try {
                     const charaData:CharacterCardV2Risu = JSON.parse(Buffer.from(decrypted).toString('utf-8'))
-                    if(await importCharacterCardSpec(charaData, img, "normal", assets, null, false, transaction)){
-                        let db = getDatabase()
-                        return db.characters.length - 1
-                    }   
+                    stampRealmId(charaData, f.realmId)
+                    const index = await importCharacterCardSpec(charaData, img, "normal", assets, null, false, transaction)
+                    if(index !== false){
+                        return index
+                    }
                 } catch (error) {
                     if (error instanceof ImportCancelled) throw error
                     throw new Error(language.errors.noData)
@@ -441,6 +475,11 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
         const charaData:OldTavernChar = JSON.parse(Buffer.from(readedChara, 'base64').toString('utf-8'))
         const imgp = await saveAsset(img)
         const character = convertOffSpecCards(charaData, imgp)
+        const updated = await tryUpdateExistingCharacter(character, transaction)
+        if (updated !== null) {
+            await persistImportedData(transaction)
+            return updated
+        }
         character.name = createUniqueDisplayName(character.name, db.characters)
         transaction?.register('character', character.chaId)
         db.characters.push(character)
@@ -449,10 +488,9 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
         if (!transaction) notifySuccess(language.importedCharacter)
         return db.characters.length - 1
     }
-    await importCharacterCardSpec(parsed, img, "normal", assets, null, false, transaction)
-    
-    db = getDatabase()
-    return db.characters.length - 1
+    stampRealmId(parsed, f.realmId)
+    const index = await importCharacterCardSpec(parsed, img, "normal", assets, null, false, transaction)
+    return index === false ? null : index
     
 }
 
@@ -551,19 +589,15 @@ export async function characterURLImport() {
     if(hash.startsWith('#import_module=')){
         const data = hash.replace('#import_module=', '')
         const importData = JSON.parse(Buffer.from(decodeURIComponent(data), 'base64').toString('utf-8'))
-        importData.id = v4()
+        prepareImportedModule(importData)
 
-        const db = getDatabase()
         if(importData.lowLevelAccess){
             const conf = await alertConfirm(language.lowLevelAccessConfirm)
             if(!conf){
                 return false
             }
         }
-        await runImport(async transaction => {
-            transaction.register('module', importData.id)
-            db.modules.push(importData)
-        })
+        await runImport(transaction => installImportedModule(importData, transaction))
         openSettings(SettingsRoute.Module)
         return
     }
@@ -788,7 +822,7 @@ async function readCardExportImage(image?: string) {
     return fallbackImage
 }
 
-async function importCharacterCardSpec<T extends boolean = false>(card:CharacterCardV2Risu|CharacterCardV3, img?:Uint8Array, mode:'hub'|'normal' = 'normal', assetDict:{[key:string]:string} = {}, overrideLorebook: loreBook[] = null, returnValue:T = false as T, transaction?: ImportTransaction):Promise<T extends true ? character|false : boolean>{
+async function importCharacterCardSpec<T extends boolean = false>(card:CharacterCardV2Risu|CharacterCardV3, img?:Uint8Array, mode:'hub'|'normal' = 'normal', assetDict:{[key:string]:string} = {}, overrideLorebook: loreBook[] = null, returnValue:T = false as T, transaction?: ImportTransaction):Promise<T extends true ? character|false : number|false>{
     const saveAsset = importAsset(transaction)
     transaction?.check()
     if(!card ||(card.spec !== 'chara_card_v2' && card.spec !== 'chara_card_v3' )){
@@ -1118,12 +1152,17 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
         return char as any
     }
 
+    const updated = await tryUpdateExistingCharacter(char, transaction)
+    if (updated !== null) {
+        await persistImportedData(transaction)
+        return updated as any
+    }
     char.name = createUniqueDisplayName(char.name, db.characters)
     transaction?.register('character', char.chaId)
     db.characters.push(char)
     await persistImportedData(transaction)
     if (!transaction) notifySuccess(language.importedCharacter)
-    return true as any
+    return db.characters.length - 1 as any
 
 }
 
@@ -1373,6 +1412,8 @@ export function createBaseV2(char:character) {
             card.data.extensions[key] = char.extentions[key]
         }
     }
+    // Lets the next install of this card offer to update the same bot.
+    card.data.extensions[BOT_LINEAGE_KEY] ??= char.chaId
     return card
 }
 
@@ -1824,6 +1865,8 @@ export function createBaseV3(char:character){
             card.data.extensions[key] = char.extentions[key]
         }
     }
+    // Lets the next install of this card offer to update the same bot.
+    card.data.extensions[BOT_LINEAGE_KEY] ??= char.chaId
     return card
 }
 
@@ -1931,6 +1974,7 @@ export async function downloadRisuHub(id:string, arg:{
                     name: 'realm.charx',
                     data: new Uint8Array(await res.arrayBuffer()),
                     lightningRealmImport: db.lightningRealmImport,
+                    realmId: id,
                 })
             }
             else{
@@ -1938,6 +1982,7 @@ export async function downloadRisuHub(id:string, arg:{
                     name: 'realm.png',
                     data: res.body,
                     lightningRealmImport: db.lightningRealmImport,
+                    realmId: id,
                 })
             }
             checkCharOrder()
@@ -1957,8 +2002,8 @@ export async function downloadRisuHub(id:string, arg:{
     
         const index = await runImport(async transaction => {
             const result = await importCharacterCardSpec(data, await getHubResources(img), 'hub', {}, null, false, transaction)
-            if (!result) throw new Error(language.errors.noData)
-            return getDatabase().characters.length - 1
+            if (result === false) throw new Error(language.errors.noData)
+            return result
         })
         checkCharOrder()
         let db = getDatabase()

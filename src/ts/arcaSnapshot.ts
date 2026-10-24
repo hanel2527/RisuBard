@@ -1,4 +1,4 @@
-import { planArcaComplexSnapshots, shouldIncludeArcaSnapshotNode } from './arcaExport';
+import { planArcaComplexSnapshots, shouldIncludeArcaRasterNode } from './arcaExport';
 
 function normalizeFontFamily(family: string): string {
     return family.trim().replace(/["']/g, '');
@@ -101,7 +101,7 @@ export async function renderArcaComplexBlock(element: HTMLElement): Promise<read
                 pixelRatio,
                 ...(fontEmbedCSS === undefined ? { skipFonts: true } : { fontEmbedCSS }),
                 width: target.kind === 'panel' ? Math.min(760, Math.max(220, rect.width)) : undefined,
-                filter: node => shouldIncludeArcaSnapshotNode(node, target.excludeElements),
+                filter: node => shouldIncludeArcaRasterNode(node, target.excludeElements),
                 // The clone keeps computed margins such as `margin: 0 auto` resolved to
                 // pixels, which would shift the content inside a canvas sized to the border box.
                 style: target.kind === 'panel' ? {

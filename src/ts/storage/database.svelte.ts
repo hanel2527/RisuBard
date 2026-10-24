@@ -2515,6 +2515,8 @@ export interface character{
     vits?: OnnxModelFiles
     realmId?:string
     imported?:boolean
+    /** Asset key of the card as last installed, the base for merging the next update. */
+    updateBase?:string
     trashTime?:number
     nickname?:string
     source?:string[]

@@ -1083,9 +1083,12 @@
                 return
             }
 
+            const exportRoot = bodyRoot
             alertWait(language.loading)
-            try {
-                const bodyHtml = await exportArcaHtml(bodyRoot, {
+            // Browsers only allow a clipboard write shortly after the click, and baking a picture-heavy
+            // message can take longer. Writing starts now and the item resolves once the copy is built.
+            const payload = (async () => {
+                const bodyHtml = await exportArcaHtml(exportRoot, {
                     imageWidthPercent: DBState.db.risuBardArcaChatImageWidthPercent,
                     paragraphSpacingPercent: DBState.db.risuBardArcaChatParagraphSpacingPercent,
                     semanticPalette: $ColorSchemeTypeStore,
@@ -1138,13 +1141,16 @@
                 const plainTextContainer = document.createElement('div')
                 plainTextContainer.innerHTML = bodyHtml
                 const plainText = plainTextContainer.innerText.trim() || plainTextContainer.textContent?.trim() || msgDisplay
-
+                return { html, plainText }
+            })()
+            try {
                 await window.navigator.clipboard.write([
                     new ClipboardItem({
-                        'text/html': new Blob([html], { type: 'text/html' }),
-                        'text/plain': new Blob([plainText], { type: 'text/plain' }),
+                        'text/html': payload.then(({ html }) => new Blob([html], { type: 'text/html' })),
+                        'text/plain': payload.then(({ plainText }) => new Blob([plainText], { type: 'text/plain' })),
                     }),
                 ])
+                await payload
                 alertClear()
                 notifyInfo(language.copyForArcaDone)
             }

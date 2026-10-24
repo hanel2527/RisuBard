@@ -6,6 +6,7 @@ import {
     exportArcaHtml,
     findDetachedArcaPanels,
     planArcaComplexSnapshots,
+    shouldIncludeArcaRasterNode,
     shouldIncludeArcaSnapshotNode,
 } from './arcaExport';
 
@@ -20,6 +21,36 @@ describe('shouldIncludeArcaSnapshotNode', () => {
         expect(shouldIncludeArcaSnapshotNode(proseText, [panel])).toBe(true);
         expect(shouldIncludeArcaSnapshotNode(button, [panel])).toBe(false);
         expect(shouldIncludeArcaSnapshotNode(panel, [panel])).toBe(false);
+    });
+});
+
+describe('shouldIncludeArcaRasterNode', () => {
+    it('keeps in-flow buttons and folded sprites in a rasterized block but drops floating controls', () => {
+        const root = document.createElement('div');
+        root.innerHTML = '<button class="chip">501</button><div class="sprite" role="button"><img src="a.png"></div><button class="fab">menu</button><aside>panel</aside>';
+        const [chip, sprite, fab, panel] = Array.from(root.children) as HTMLElement[];
+        const readStyle = (element: Element) => ({
+            getPropertyValue: (property: string) => property === 'position' && element === fab ? 'fixed' : '',
+        }) as unknown as CSSStyleDeclaration;
+
+        expect(shouldIncludeArcaRasterNode(chip, [panel], readStyle)).toBe(true);
+        expect(shouldIncludeArcaRasterNode(sprite, [panel], readStyle)).toBe(true);
+        expect(shouldIncludeArcaRasterNode(fab, [panel], readStyle)).toBe(false);
+        expect(shouldIncludeArcaRasterNode(panel, [panel], readStyle)).toBe(false);
+    });
+
+    it('drops small fixed labels but keeps a fixed wrapper that holds a panel', () => {
+        const root = document.createElement('div');
+        root.innerHTML = '<label class="fab">지도</label><div class="wrap"><section class="tablet"></section></div>';
+        const [fab, wrap] = Array.from(root.children) as HTMLElement[];
+        const tablet = wrap.firstElementChild as HTMLElement;
+        const readStyle = (element: Element) => ({
+            getPropertyValue: (property: string) => property === 'position' && element !== tablet ? 'fixed' : '',
+        }) as unknown as CSSStyleDeclaration;
+        const readRect = (element: Element) => (element === tablet ? domRect(360, 640) : domRect(element === fab ? 56 : 0, element === fab ? 56 : 0));
+
+        expect(shouldIncludeArcaRasterNode(fab, [], readStyle, readRect)).toBe(false);
+        expect(shouldIncludeArcaRasterNode(wrap, [], readStyle, readRect)).toBe(true);
     });
 });
 
@@ -109,6 +140,31 @@ describe('findDetachedArcaPanels', () => {
         )).toEqual([]);
     });
 
+    it('keeps a framed and tilted picture cut-in as part of its scene', () => {
+        const root = document.createElement('div');
+        root.innerHTML = '<span class="bg"><span class="cuts"><span class="cut"><img src="rain.webp"></span></span></span>';
+        const background = root.querySelector('.bg') as HTMLElement;
+        const cuts = root.querySelector('.cuts') as HTMLElement;
+        const cut = root.querySelector('.cut') as HTMLElement;
+        const styles = new Map<Element, CSSStyleDeclaration>([
+            [background, cssStyle('position: absolute; background-image: url(room.webp);')],
+            [cuts, cssStyle('position: absolute; pointer-events: none; z-index: 1;')],
+            [cut, cssStyle('position: absolute; overflow: hidden; box-shadow: 4px 4px 0 #111; background-color: rgb(28, 35, 48); transform: rotate(1.5deg); pointer-events: none;')],
+        ]);
+        const rects = new Map<Element, DOMRect>([
+            [root, domRect(760, 400)],
+            [background, domRect(600, 340)],
+            [cuts, domRect(600, 340)],
+            [cut, domRect(240, 180)],
+        ]);
+
+        expect(findDetachedArcaPanels(
+            root,
+            element => styles.get(element) ?? cssStyle(''),
+            element => rects.get(element) ?? domRect(0, 0),
+        )).toEqual([]);
+    });
+
     it('detects an unnamed absolute off-canvas layer from geometry and computed state', () => {
         const root = document.createElement('div');
         root.innerHTML = '<section class="ordinary"><i></i></section><aside class="unknown-layer">Details</aside>';
@@ -165,6 +221,24 @@ describe('findDetachedArcaPanels', () => {
 });
 
 describe('exportArcaHtml', () => {
+    it('drops floating label FABs instead of copying them as text', async () => {
+        const root = document.createElement('div');
+        root.innerHTML = '<p>prose</p><div class="fabs"><label class="fab" for="tab-map">지도</label><label class="fab" for="tab-set">설정</label></div>';
+        const labels = Array.from(root.querySelectorAll('label'));
+        const styles = new Map<Element, CSSStyleDeclaration>(
+            labels.map(label => [label, cssStyle('position: fixed; display: flex; width: 56px; height: 56px;')]),
+        );
+
+        const html = await exportArcaHtml(root, {
+            readStyle: element => styles.get(element) ?? cssStyle(''),
+            loadImage: async url => url,
+        });
+
+        expect(html).toContain('prose');
+        expect(html).not.toContain('지도');
+        expect(html).not.toContain('설정');
+    });
+
     it('surfaces complex snapshot failures instead of silently flattening hidden panels', async () => {
         const root = document.createElement('div');
         root.innerHTML = '<div class="unknown-wrapper"><div class="unknown-panel">Hidden panel</div></div>';

@@ -116,7 +116,42 @@ export function shouldIncludeArcaSnapshotNode(
 ): boolean {
     if (excludedElements.includes(node as HTMLElement)) return false;
     return !(node instanceof Element
-        && node.matches('button, input, textarea, select, [role="button"]'));
+        && node.matches(CONTROL_SELECTOR));
+}
+
+const CONTROL_SELECTOR = 'button, input, textarea, select, [role="button"]';
+
+// Floating buttons stay on screen while the chat scrolls, so they are app chrome, not
+// message content. Bots also build them from labels or divs: any small fixed element
+// counts, while a large one is a panel that is rendered on its own.
+function isFloatingControl(
+    element: Element,
+    readStyle: (element: Element) => CSSStyleDeclaration,
+    readRect: (element: Element) => DOMRect,
+): boolean {
+    const position = getStyleValue(readStyle(element), 'position');
+    if (position !== 'fixed' && position !== 'sticky') return false;
+    if (element.matches(CONTROL_SELECTOR)) return true;
+    if (position !== 'fixed') return false;
+    // A zero-size fixed wrapper can still hold a panel, which must not go with it.
+    const isLarge = (target: Element) => {
+        const rect = readRect(target);
+        return rect.width >= 220 && rect.height >= 120;
+    };
+    return !isLarge(element) && !Array.from(element.querySelectorAll('*')).some(isLarge);
+}
+
+// Inside a rasterized block, controls are part of what the reader sees: a bot's room
+// grid of buttons, or a folded sprite that is itself a role="button" toggle. Only
+// floating controls such as FAB buttons stay out of the picture.
+export function shouldIncludeArcaRasterNode(
+    node: Node,
+    excludedElements: readonly HTMLElement[],
+    readStyle: (element: Element) => CSSStyleDeclaration = element => getComputedStyle(element),
+    readRect: (element: Element) => DOMRect = element => element.getBoundingClientRect(),
+): boolean {
+    if (excludedElements.includes(node as HTMLElement)) return false;
+    return !(node instanceof Element && isFloatingControl(node, readStyle, readRect));
 }
 
 export function findDetachedArcaPanels(
@@ -168,8 +203,9 @@ export function findDetachedArcaPanels(
     }
 
     const absoluteLayers = elements.filter((element) => {
-        // A positioned picture (a sprite over a background) is part of its scene, never a panel.
-        if (element instanceof HTMLImageElement) return false;
+        // A positioned picture (a sprite over a background, or a framed and tilted cut-in
+        // such as a bot's weather inset) is part of its scene, never a panel.
+        if (element instanceof HTMLImageElement || getSingleImageChild(element) !== null) return false;
         if (positionOf(element) !== 'absolute' || !isLargeLayer(element)) return false;
         if (selected.some(layer => layer === element || layer.contains(element) || element.contains(layer))) return false;
         const style = readStyle(element);
@@ -742,6 +778,9 @@ async function cloneNodeForArca(
 
     const computedStyle = options.readStyle?.(source) ?? source.style;
     if (getStyleValue(computedStyle, 'display') === 'none') {
+        return null;
+    }
+    if (options.readStyle && isFloatingControl(source, options.readStyle, element => element.getBoundingClientRect())) {
         return null;
     }
 

@@ -9,6 +9,7 @@
     import RisuBardCharacterAssistant from './lib/Others/RisuBardCharacterAssistant.svelte';
     import AlertComp from './lib/Others/AlertComp.svelte';
     import ExternalChangeReview from './lib/Others/ExternalChangeReview.svelte';
+    import CharacterUpdateDialog from './lib/Others/CharacterUpdateDialog.svelte';
     import RealmPopUp from './lib/UI/Realm/RealmPopUp.svelte';
     import GridChars from './lib/Others/GridCatalog.svelte';
     import BookmarkList from './lib/Others/BookmarkList.svelte';
@@ -305,6 +306,7 @@
     {/if}
     <AlertComp />
     <ExternalChangeReview />
+    <CharacterUpdateDialog />
     {#if $showRealmInfoStore}
         <RealmPopUp bind:openedData={$showRealmInfoStore} />
     {/if}
