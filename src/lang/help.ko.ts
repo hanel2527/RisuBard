@@ -180,6 +180,7 @@ export const helpKo = {
         "enableBlockPartialEdit": "메시지의 단락(블록) 위에 마우스를 올리면 해당 블록만 따로 편집할 수 있게 합니다.",
         "longPressToPopupEditor": "메시지를 길게 눌렀을 때 팝업 편집기를 엽니다.",
         "showInputActionBar": "여러 줄 입력창 하단에 복사·초기화·편집기 확대 버튼이 있는 도구 모음을 표시합니다.",
+        "mobileMessageActionsInline": "화면 너비가 640px보다 작을 때 번역·리롤 등 주요 메시지 버튼을 바로 표시합니다. 기본값은 꺼짐이며 기존 더보기 메뉴를 유지합니다. 데스크톱 배치는 바뀌지 않습니다.",
         "enableDragPartialEdit": "메시지에서 텍스트를 드래그로 선택한 뒤 그 부분만 편집할 수 있게 합니다.",
         "botSettingAtStart": "앱을 새로 실행할 때마다 설정 페이지(봇 설정)부터 자동으로 엽니다.",
         "showMenuChatList": "사이드바 메뉴에 현재 캐릭터의 채팅 목록을 직접 표시합니다.",

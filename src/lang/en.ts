@@ -3005,6 +3005,7 @@ export const languageEnglish = {
     togglePresetMoreActions: "More actions",
     longPressToPopupEditor: "Long press to open popup editor",
     showInputActionBar: "Show input action bar",
+    mobileMessageActionsInline: "Show mobile message actions inline",
     importSaveFolderHeader: "Load Save into RisuBard",
     importSaveZip: "Load from Save Folder (Zip Upload)",
     importSaveZipDesc: "Compress your existing RisuAI project's save folder into a zip file and upload it here to import your data. Uploading may fail if the zip file is too large — in that case, copy the save folder directly into the server's save directory and restart to migrate automatically.",

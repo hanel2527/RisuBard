@@ -2980,6 +2980,7 @@ export const languageKorean = {
   newMessageButtonTopBar: "상단 바",
   longPressToPopupEditor: "길게 눌러 팝업 편집기 열기",
   showInputActionBar: "입력창 액션 바 표시",
+  mobileMessageActionsInline: "모바일 메시지 버튼 펼쳐 표시",
   createFolderOnBranch: "분기 시 폴더 생성",
   goToChat: "채팅으로 이동",
   duplicatePluginFoundUpdateIt:
