@@ -719,7 +719,7 @@
 >
   <span class="relative">
     <HomeIcon />
-    {#if assetStorePending.convertible > 0}<span class="absolute -top-1 -right-1 size-2.5 rounded-full bg-[#f59e0b] animate-pulse" aria-hidden="true"></span>{/if}
+    {#if assetStorePending.convertible > 0}<span class="absolute -top-1 -right-1 size-2.5 rounded-full bg-warning animate-pulse" aria-hidden="true"></span>{/if}
   </span>
   <span class="text-xs">{language.home}</span>
 </button>

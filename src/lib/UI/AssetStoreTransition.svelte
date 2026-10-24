@@ -284,11 +284,11 @@
 
     /* Home placement: a warm card that is hard to overlook, mixed from the theme background. */
     .home-card {
-        --orange: #f59e0b;
-        --orange-deep: #b45309;
-        --on-orange: #1f1300;
+        --orange: color-mix(in srgb, var(--color-warning) 70%, var(--color-draculared));
+        --orange-deep: color-mix(in srgb, var(--orange) 65%, var(--color-darkbg));
+        --on-orange: var(--color-on-warning);
         display: grid; gap: 1rem; width: 100%; min-width: 0; padding: 1.15rem 1.25rem;
-        background: color-mix(in srgb, var(--orange) 12%, var(--color-bgcolor));
+        background: color-mix(in srgb, var(--orange) 16%, var(--color-bgcolor));
         border: 1px solid color-mix(in srgb, var(--orange-deep) 85%, var(--color-bgcolor));
         border-radius: .75rem;
         color: var(--color-textcolor);
@@ -303,7 +303,7 @@
     .home-copy h2 { margin: 0; font-size: 1.15rem; font-weight: 600; line-height: 1.35; color: var(--color-textcolor); text-wrap: balance; }
     .home-copy p { margin: 0; font-size: .92rem; line-height: 1.6; max-width: 68ch; color: color-mix(in srgb, var(--color-textcolor) 84%, var(--orange)); }
     .home-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .6rem; margin: 0; }
-    .home-tiles div { display: grid; gap: .15rem; padding: .65rem .8rem; border-radius: .55rem; background: color-mix(in srgb, var(--orange) 20%, var(--color-bgcolor)); }
+    .home-tiles div { display: grid; gap: .15rem; padding: .65rem .8rem; border-radius: .55rem; background: color-mix(in srgb, var(--orange) 26%, var(--color-bgcolor)); }
     .home-tiles dt { font-size: .78rem; color: color-mix(in srgb, var(--color-textcolor) 72%, var(--orange)); }
     .home-tiles dd { margin: 0; font-size: 1.35rem; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--color-textcolor); }
     .home-tiles dd.lead { color: color-mix(in srgb, var(--orange) 80%, var(--color-textcolor)); }
@@ -317,7 +317,7 @@
     }
     .home-button:hover:not(:disabled) { background: color-mix(in srgb, var(--orange) 18%, transparent); }
     .home-button.primary { color: var(--on-orange); background: var(--orange); border-color: var(--orange); }
-    .home-button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--orange) 85%, white); }
+    .home-button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--orange) 85%, var(--color-textcolor)); }
     .home-button.quiet { border-color: color-mix(in srgb, var(--color-textcolor) 22%, var(--color-bgcolor)); color: var(--color-textcolor); }
     .home-button:disabled, .home-revert:disabled { opacity: .5; cursor: not-allowed; }
     .home-button:focus-visible, .home-revert:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }

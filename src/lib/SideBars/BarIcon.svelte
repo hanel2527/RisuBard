@@ -64,10 +64,13 @@
     color: var(--color-on-warning);
   }
 
+  /* Orange from the theme's warning and red roles, so custom themes recolor it too. */
   .ico.attention {
+    --attention: color-mix(in srgb, var(--color-warning) 70%, var(--color-draculared));
+    --attention-deep: color-mix(in srgb, var(--attention) 65%, var(--color-darkbg));
     position: relative;
-    color: #1f1300;
-    background-color: #f59e0b;
+    color: var(--color-on-warning);
+    background-color: var(--attention);
     animation: ico-attention-blink 1.6s ease-in-out infinite, ico-attention-ring 1.6s ease-out infinite;
   }
 
@@ -79,18 +82,18 @@
     width: 10px;
     height: 10px;
     border-radius: 50%;
-    background: #fde68a;
+    background: var(--color-warning);
     border: 2px solid var(--color-bgcolor);
   }
 
   @keyframes ico-attention-blink {
-    0%, 100% { background-color: #f59e0b; }
-    50% { background-color: #b45309; }
+    0%, 100% { background-color: var(--attention); }
+    50% { background-color: var(--attention-deep); }
   }
 
   @keyframes ico-attention-ring {
-    0% { box-shadow: 0 0 0 0 rgb(245 158 11 / 0.75); }
-    70%, 100% { box-shadow: 0 0 0 12px rgb(245 158 11 / 0); }
+    0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--attention) 75%, transparent); }
+    70%, 100% { box-shadow: 0 0 0 12px color-mix(in srgb, var(--attention) 0%, transparent); }
   }
 
   @media (prefers-reduced-motion: reduce) {
