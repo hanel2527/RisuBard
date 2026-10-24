@@ -703,8 +703,10 @@
             {language.noMessage}
         </div>
     {:else}
-        {@const chatReloadPointer = $ReloadGUIPointer + ($ReloadChatPointer[idx] ?? 0)}
+        {@const chatReloadPointer = `${$ReloadGUIPointer}:${$ReloadChatPointer[idx] ?? 0}`}
         {@const totalLengthPointer = (idx > totalLength - 6) ? totalLength : 0}
+        <!-- chatReloadPointer is not a sum: a GUI reload resets every message pointer, so GUI+1 with pointer 1→0 kept the same key and skipped the redraw. -->
+
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <span class="text chat-width chattext prose minw-0"
