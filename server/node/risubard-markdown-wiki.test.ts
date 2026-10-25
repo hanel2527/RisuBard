@@ -94,7 +94,8 @@ describe('Markdown narrative wiki', () => {
 
         expect(calls.readdir).toBe(0)
         expect(calls.readFile.map((path) => basename(path))).toEqual([
-            basename(event.relativePath), basename(alice.relativePath), basename(alice.relativePath),
+            // No per-document history copy is read or written any more.
+            basename(event.relativePath), basename(alice.relativePath),
         ])
         const view = await wiki.loadView('character', 'chat')
         const fresh = await createMarkdownNarrativeWiki(root).loadView('character', 'chat')
@@ -966,8 +967,7 @@ describe('Markdown narrative wiki', () => {
             join(workspace.directory, ...created.relativePath.split('/')),
             'utf8'
         )).rejects.toMatchObject({ code: 'ENOENT' })
-        expect(await fs.readdir(join(workspace.historyDirectory, created.id)))
-            .toHaveLength(1)
+        await expect(fs.readdir(workspace.historyDirectory)).rejects.toMatchObject({ code: 'ENOENT' })
     })
 
     test('moves canonical pages to recoverable trash and rejects event deletion', async () => {
@@ -1047,8 +1047,7 @@ describe('Markdown narrative wiki', () => {
         })
         expect(edited.content).toContain('전투에서 패배했다.')
         const workspace = resolveMarkdownWikiWorkspace(root, 'character', 'chat')
-        expect(await fs.readdir(join(workspace.historyDirectory, event.id)))
-            .toHaveLength(1)
+        await expect(fs.readdir(workspace.historyDirectory)).rejects.toMatchObject({ code: 'ENOENT' })
     })
 
     test('permanently deletes a retracted event from the view and filesystem', async () => {
@@ -1199,7 +1198,7 @@ describe('Markdown narrative wiki', () => {
             .toBe('active')
     })
 
-    test('keeps a stable canonical page and archives its previous revision', async () => {
+    test('keeps a stable canonical page without a history copy', async () => {
         const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
         temporaryDirectories.push(root)
         const times = [
@@ -1234,14 +1233,7 @@ describe('Markdown narrative wiki', () => {
             /^characters\/라비안-[a-zA-Z0-9_-]+\.md$/
         )
         const workspace = resolveMarkdownWikiWorkspace(root, 'character', 'chat')
-        const revisions = await fs.readdir(
-            join(workspace.historyDirectory, created.id)
-        )
-        expect(revisions).toHaveLength(1)
-        expect(await fs.readFile(
-            join(workspace.historyDirectory, created.id, revisions[0]),
-            'utf8'
-        )).toContain('건강하다')
+        await expect(fs.readdir(workspace.historyDirectory)).rejects.toMatchObject({ code: 'ENOENT' })
         expect((await wiki.loadView('character', 'chat')).documents)
             .toEqual([expect.objectContaining({
                 type: 'character',

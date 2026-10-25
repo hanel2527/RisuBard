@@ -76,6 +76,15 @@ describe('canonical unit edits', () => {
         expect(result.restored).toBe(2)
     })
 
+    test('does not take a similar line for a dropped one', () => {
+        const clues = '## Alice\n\n### Knowledge\n\n- 북문에서 단서 6를 확인했다. (#6)\n- 북문에서 단서 12를 확인했다. (#12)'
+        const resolution = resolveCanonicalUnitPatches({ markdown: clues, title: 'Alice', allowSupersede: false,
+            patches: [{ heading: 'Knowledge', operation: 'upsert', content: '- 북문에서 단서 12를 확인했다.\n- 북문에서 단서 18를 확인했다.' }] })
+        expect(resolution.restored).toBe(1)
+        expect(applyCanonicalSectionPatches({ markdown: clues, title: 'Alice', patches: resolution.patches }))
+            .toContain('단서 6를 확인했다')
+    })
+
     test('keeps a deleted section unless its facts moved elsewhere', () => {
         const blocked = apply([{ heading: 'Knowledge', operation: 'delete', content: '' }])
         expect(blocked.markdown).toBe(doc)

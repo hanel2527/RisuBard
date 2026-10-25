@@ -106,6 +106,9 @@ import {
     STORY_ARC_MAX_MARKDOWN_CHARACTERS,
     buildStoryArcUpdatePlan,
     isStoryArcCandidate,
+    isStoryArcChapterTitle,
+    planStoryArcChapter,
+    storyArcChapterTitle,
     stampStoryArcCheckpoint,
     storyArcRewriteInstruction,
     validateStoryArcCheckpointEventLink,
@@ -1304,7 +1307,8 @@ export function createMemoryAnalysisRunner(
                 let remaining = COMPLETE_CANONICAL_TOKEN_BUDGET
                 const selected: Array<{ id: string; type: string; title: string; completeText: string }> = []
                 for (const document of candidateDocuments.slice(0, 12)) {
-                    if (document.type === 'event' || isStoryArcCandidate(document)) continue
+                    if (document.type === 'event' || isStoryArcCandidate(document)
+                        || isStoryArcChapterTitle(document.title)) continue
                     const entry = { id: document.id, type: document.type,
                         title: document.title, completeText: annotateCanonicalUnits(document.content) }
                     const size = countAnalysisTokens(JSON.stringify(entry))
@@ -1485,7 +1489,8 @@ export function createMemoryAnalysisRunner(
                 // A model-proposed copy must not create duplicates or rewrite it
                 // on every confirmed turn.
                 canonicalUpdateCandidates: draft.canonicalUpdateCandidates
-                    .filter((candidate) => !isStoryArcCandidate(candidate)),
+                    .filter((candidate) => !isStoryArcCandidate(candidate)
+                        && !isStoryArcChapterTitle(candidate.title)),
             }
             if (!hasMemoryWriterContent(draft)) {
                 if (!snapshot.rebootTurns) return emptyNativeState()
@@ -1582,6 +1587,51 @@ export function createMemoryAnalysisRunner(
                         ?? retrievalMetadata?.storyTime ?? { day: null, precision: 'unknown' })
                 }
             }
+            const receiptWarningsBeforeCanon: string[] = []
+            const chapterNotes: string[] = []
+            const chapterChanges: Array<{ documentId: string; title: string; relativePath: string; afterHash: string }> = []
+            // A full plot moves its arcs to a closed chapter before the rewrite,
+            // so older arcs are kept as written instead of being summarized again.
+            const closeStoryArcChapter = async (
+                target: LoadedCanonicalDocument,
+                markdown: string,
+                plan: StoryArcUpdatePlan,
+            ): Promise<string | undefined> => {
+                if (!options.markdownWikiService?.saveCanonicalDocument) return undefined
+                const chapters = documents.filter((document) => document.type === 'other'
+                    && isStoryArcChapterTitle(document.title))
+                const chapterTitle = storyArcChapterTitle(target.title, chapters.length + 1)
+                const rollover = planStoryArcChapter({
+                    markdown, title: target.title, chapterTitle,
+                    writingLanguage: snapshot.wikiWritingLanguage ?? 'ko',
+                    settings: snapshot.arcPlotterSettings,
+                })
+                if (!rollover) return undefined
+                const body = (value: string) => value.replace(/^#{1,2}[\t ]+.+$/mu, '').replace(/\s+/gu, ' ').trim()
+                // A retry after a failed rewrite reuses the chapter it already wrote.
+                const written = chapters.find((chapter) => body(chapter.content) === body(rollover.chapterMarkdown))
+                if (written) return rollover.liveMarkdown.replace(chapterTitle, written.title)
+                try {
+                    const saved = await options.markdownWikiService.saveCanonicalDocument({
+                        characterId: snapshot.characterId,
+                        chatId: snapshot.chatId,
+                        type: 'other',
+                        title: chapterTitle,
+                        sourceMessageIds: target.sourceMessageIds.length > 0 ? target.sourceMessageIds
+                            : [...new Set(plan.events.flatMap((event) => event.sourceMessageIds))],
+                        markdown: rollover.chapterMarkdown,
+                        writingLanguage: snapshot.wikiWritingLanguage,
+                        reviewStatus: 'reviewed',
+                    }, ...optionalSignalArgument(signal))
+                    chapterChanges.push({ documentId: saved.id, title: saved.title, relativePath: saved.relativePath, afterHash: saved.contentHash })
+                    chapterNotes.push(`스토리 아크 플롯의 지난 아크를 [[${saved.title}]]에 옮겨 두었습니다.`)
+                    return rollover.liveMarkdown
+                }
+                catch (error) {
+                    await reportError(error)
+                    return undefined
+                }
+            }
             const storyArcPlan: StoryArcUpdatePlan | undefined =
                 snapshot.additionalAnalysis
                     || savedEvents.length === 0
@@ -1594,6 +1644,9 @@ export function createMemoryAnalysisRunner(
                         settings: snapshot.arcPlotterSettings,
                         sourceMessageOrder: snapshot.sourceMessageOrder,
                     })
+            if (storyArcPlan?.checkpointRecovered) {
+                receiptWarningsBeforeCanon.push('스토리 아크 플롯의 체크포인트를 찾지 못해 마지막으로 연결된 사건 뒤부터 이어 갑니다.')
+            }
             if (storyArcPlan) {
                 draft = {
                     ...draft,
@@ -1616,6 +1669,7 @@ export function createMemoryAnalysisRunner(
             const changedUnitSummaries: string[] = []
             const unitEditSummaries: string[] = []
             const receiptWarnings: string[] = [
+                ...receiptWarningsBeforeCanon,
                 ...deferred.map((entry) => entry.warning),
                 ...recoveredNewCharacters.map((candidate) =>
                     `지식 기록에서 인물 최초 등록 후보 복구: ${candidate.title}`),
@@ -1671,7 +1725,7 @@ export function createMemoryAnalysisRunner(
                     const overLimit = draft.canonicalUpdateCandidates.slice(targetLimit)
                         .filter((candidate) => !isStoryArcCandidate(candidate))
                     if (overLimit.length > 0) {
-                        receiptWarnings.push(`자동 정본 대상 한도(${targetLimit}개)를 넘어 이번 턴에 반영하지 않은 후보 ${overLimit.length}개: ${
+                        receiptWarnings.push(`자동 정본 대상 한도(${targetLimit}개)를 넘은 후보 ${overLimit.length}개는 추가 분석으로 이어서 반영합니다: ${
                             overLimit.map((candidate) => candidate.title).join(', ')}`.slice(0, 1024))
                     }
                     for (const candidate of draft.canonicalUpdateCandidates
@@ -1752,6 +1806,9 @@ export function createMemoryAnalysisRunner(
                             await canonicalFailure({ candidate, target }, error, true)
                             continue
                         }
+                        if (storyArcPlan && isStoryArcCandidate(candidate) && target) {
+                            preparedMarkdown = await closeStoryArcChapter(target, preparedMarkdown, storyArcPlan) ?? preparedMarkdown
+                        }
                         batchTargets.push({
                             candidate,
                             target,
@@ -1775,8 +1832,11 @@ export function createMemoryAnalysisRunner(
                             title: entry.target?.title ?? entry.candidate.title,
                             patches: sections,
                             allowSupersede: draft.stateChanges.length > 0,
+                            stamp: savedEvents.at(-1)?.sequence,
                             // The arc map compacts by design; the scene page is a snapshot.
-                            rewrite: entry.storyArcPlan !== undefined || entry.candidate.type === 'scene',
+                            // An explicit historical correction rewrites what it corrects.
+                            rewrite: entry.storyArcPlan !== undefined || entry.candidate.type === 'scene'
+                                || snapshot.historicalReanalysis === true,
                         })
                         unitResolutions.set(entry, resolution)
                         return resolution.patches
@@ -2288,7 +2348,8 @@ export function createMemoryAnalysisRunner(
             const canonicalReceipt: CanonicalTurnReceipt = {
                 sourceMessageIds,
                 eventIds: savedEvents.map((event) => event.id),
-                changes: receiptChanges,
+                changes: [...chapterChanges.map((change) => ({ ...change, type: 'other' as const, action: 'create' as const })),
+                    ...receiptChanges],
                 warnings: receiptWarnings,
                 ...(() => {
                     const notes = [
@@ -2299,6 +2360,7 @@ export function createMemoryAnalysisRunner(
                         ...(unitEditSummaries.length > 0
                             ? [`정본 항목 편집: ${unitEditSummaries.join('; ')}`.slice(0, 512)]
                             : []),
+                        ...chapterNotes,
                         ...receiptNotes,
                     ].slice(0, 8)
                     return notes.length > 0 ? { notes } : {}

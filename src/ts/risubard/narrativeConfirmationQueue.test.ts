@@ -45,4 +45,20 @@ describe('per-chat narrative confirmation queue', () => {
         await Promise.resolve()
         expect(pendingNarrativeConfirmationKeys()).not.toContain('chat-3')
     })
+
+    test('holds a browser-wide lock per chat so other tabs wait too', async () => {
+        const names: string[] = []
+        const original = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks')
+        Object.defineProperty(globalThis.navigator, 'locks', { configurable: true, value: {
+            request: async (name: string, callback: () => Promise<unknown>) => { names.push(name); return callback() },
+        } })
+        try {
+            expect(await enqueueNarrativeConfirmation('chat-lock', async () => 'done')).toBe('done')
+            expect(names).toEqual(['risubard-wiki-analysis:chat-lock'])
+        }
+        finally {
+            if (original) Object.defineProperty(globalThis.navigator, 'locks', original)
+            else delete (globalThis.navigator as { locks?: unknown }).locks
+        }
+    })
 })

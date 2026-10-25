@@ -35,6 +35,9 @@ import {
 } from './narrativeContext'
 import {
     loadNarrativeMemoryWiki,
+    loadNarrativeMemoryWikiCatalog,
+    loadWikiDocumentBodies,
+    type NarrativeMemoryWikiDocument,
 } from './memoryWiki'
 import {
     beginWikiRebootBatch,
@@ -733,6 +736,7 @@ export function projectMemoryBacklog(
 export function createStoredResponseMemoryAnalysis(
     options: MemoryAnalysisClientOptions
 ) {
+    const documentBodyCache = new Map<string, Map<string, NarrativeMemoryWikiDocument>>()
     async function requestMemoryModel(
         request: MemoryAnalysisModelCall,
         signal?: AbortSignal
@@ -909,14 +913,31 @@ export function createStoredResponseMemoryAnalysis(
             chatId: string,
             signal?: AbortSignal
         ) {
-            const view = await loadNarrativeMemoryWiki({
-                characterId,
-                chatId,
-                fetchImpl: options.fetchImpl,
-                createAuth: options.createAuth,
-                signal,
-            })
-            return view.mode === 'markdown' ? view.documents : []
+            const scope = { characterId, chatId, fetchImpl: options.fetchImpl, createAuth: options.createAuth, signal }
+            // Each turn reads the body-less catalog and fetches only pages whose
+            // hash changed, so the transfer follows changes, not the wiki's size.
+            try {
+                const catalog = await loadNarrativeMemoryWikiCatalog(scope)
+                const key = JSON.stringify([characterId, chatId])
+                const cached = documentBodyCache.get(key) ?? new Map<string, NarrativeMemoryWikiDocument>()
+                const stale = catalog.documents.filter((document) =>
+                    cached.get(document.id)?.contentHash !== document.contentHash).map((document) => document.id)
+                for (const document of stale.length > 0 ? await loadWikiDocumentBodies({ ...scope, documentIds: stale }) : []) {
+                    cached.set(document.id, document)
+                }
+                const listed = new Set(catalog.documents.map((document) => document.id))
+                for (const id of [...cached.keys()]) if (!listed.has(id)) cached.delete(id)
+                documentBodyCache.set(key, cached)
+                return catalog.documents.flatMap((document) => {
+                    const body = cached.get(document.id)
+                    return body?.contentHash === document.contentHash ? [body] : []
+                })
+            }
+            catch (error) {
+                if (signal?.aborted) throw error
+                const view = await loadNarrativeMemoryWiki(scope)
+                return view.mode === 'markdown' ? view.documents : []
+            }
         },
         async saveCanonicalDocument(input: {
             characterId: string

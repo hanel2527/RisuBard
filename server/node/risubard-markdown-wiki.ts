@@ -16,6 +16,8 @@ import {
     type MemoryRetrievalMetadata,
 } from './risubard-memory-metadata'
 
+export { eventSequences } from './risubard-event-sequence'
+
 export interface MarkdownWikiDocument {
     id: string
     type: MarkdownWikiDocumentType
@@ -29,6 +31,8 @@ export interface MarkdownWikiDocument {
     content: string
     links: string[]
     created?: string
+    /** Story order of an event, assigned once when it is first saved. */
+    sequence?: number
     authoring?: 'automatic' | 'ai-assisted' | 'manual'
     contextMode: MarkdownWikiContextMode
     contentHash: string
@@ -358,6 +362,25 @@ function prepareDocument(
     }
 }
 
+function nextEventSequence(documents: readonly MarkdownWikiDocument[]): number {
+    // Stored numbers sit above the legacy ranks; keep new ones above both.
+    const legacy = documents.filter((document) => document.type === 'event'
+        && document.status !== 'retracted' && document.sequence === undefined).length
+    const stored = documents.reduce((maximum, document) =>
+        document.type === 'event' && document.sequence !== undefined ? Math.max(maximum, document.sequence) : maximum, 0)
+    return Math.max(stored, legacy) + 1
+}
+
+// A repeated event title would make [[links]] to both ambiguous; number the new one.
+function distinctEventTitle(content: string, documents: readonly MarkdownWikiDocument[], id: string, sequence: number): string {
+    const title = content.match(/^##\s+(.+)$/m)?.[1]?.trim()
+    if (!title) return content
+    const key = (value: string) => value.normalize('NFKC').toLocaleLowerCase().trim()
+    const taken = documents.some((document) => document.id !== id && document.status !== 'retracted'
+        && [document.title, ...document.aliases].some((name) => key(name) === key(title)))
+    return taken ? content.replace(/^##\s+.+$/m, `## ${title} #${sequence}`) : content
+}
+
 function serializeDocument(
     document: Omit<MarkdownWikiDocument, 'contentHash'>
 ): string {
@@ -371,6 +394,9 @@ function serializeDocument(
             : []),
         ...(document.created
             ? [`created: ${yamlString(document.created)}`]
+            : []),
+        ...(document.sequence !== undefined
+            ? [`sequence: ${document.sequence}`]
             : []),
         `updated: ${yamlString(document.updated)}`,
         ...(document.authoring
@@ -443,6 +469,7 @@ function parseDocument(
         catch { return match[1].trim() }
     }
     const updated = scalar('updated')
+    const sequence = Number(optionalScalar('sequence'))
     const authoring = optionalScalar('authoring')
     const context = optionalScalar('context')
     const reviewStatus = optionalScalar('review_status')
@@ -481,6 +508,7 @@ function parseDocument(
         content: normalized.content,
         links: list('links'),
         created: optionalScalar('created') ?? updated,
+        ...(type === 'event' && Number.isSafeInteger(sequence) && sequence > 0 ? { sequence } : {}),
         authoring: (['automatic', 'ai-assisted', 'manual'].includes(
             authoring ?? ''
         ) ? authoring : type === 'event' ? 'automatic' : 'ai-assisted') as
@@ -752,24 +780,22 @@ export function createMarkdownNarrativeWiki(
                 ? '\\' : '/'}`)) {
             throw new Error('Wiki workspace escapes its memory workspace')
         }
-        let snapshotsStatus: Awaited<ReturnType<WikiFileSystem['lstat']>>
-        try {
-            snapshotsStatus = await fileSystem.lstat(
-                workspace.snapshotsDirectory
-            )
+        // Retired folders: whole-wiki snapshots, and per-document history that
+        // nothing reads (save slots are the way back to an earlier wiki).
+        for (const retired of [workspace.snapshotsDirectory, workspace.historyDirectory]) {
+            let status: Awaited<ReturnType<WikiFileSystem['lstat']>>
+            try {
+                status = await fileSystem.lstat(retired)
+            }
+            catch (error) {
+                if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+                throw error
+            }
+            await fileSystem.rm(retired, {
+                recursive: !status.isSymbolicLink() && status.isDirectory(),
+                force: true,
+            })
         }
-        catch (error) {
-            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
-            throw error
-        }
-        if (snapshotsStatus.isSymbolicLink()) {
-            await fileSystem.rm(workspace.snapshotsDirectory, { force: true })
-            return
-        }
-        await fileSystem.rm(workspace.snapshotsDirectory, {
-            recursive: snapshotsStatus.isDirectory(),
-            force: true,
-        })
     }
 
     const recoveryPaths = (workspace: MarkdownWikiWorkspace) => ({
@@ -1548,6 +1574,9 @@ export function createMarkdownNarrativeWiki(
                     addition,
                 ].filter(Boolean).join('\n\n'))
             }
+            const sequence = existingEvent?.sequence ?? nextEventSequence(knownDocuments)
+            normalized = normalizeMarkdown(distinctEventTitle(
+                normalized.content, knownDocuments, `event.${suffix}`, sequence))
             normalized = normalizeMarkdown(appendKnownDocumentLinks(
                 normalized.content,
                 knownDocuments,
@@ -1556,6 +1585,7 @@ export function createMarkdownNarrativeWiki(
             ))
             const prepared = prepareDocument({
                 id: `event.${suffix}`,
+                sequence,
                 type: 'event',
                 status: 'active',
                 title: normalized.title,
@@ -1659,16 +1689,6 @@ export function createMarkdownNarrativeWiki(
                     fileSystem,
                     reviewFile,
                     existing ? await fileSystem.readFile(file, 'utf8') : ''
-                )
-            }
-            if (existing) {
-                const history = join(workspace.historyDirectory, existing.id)
-                await fileSystem.mkdir(history, { recursive: true })
-                const stamp = operationTime.replace(/[:.]/g, '-')
-                await writeAtomically(
-                    fileSystem,
-                    join(history, `${stamp}-${randomUUID().slice(0, 8)}.md`),
-                    await fileSystem.readFile(file, 'utf8')
                 )
             }
             let normalized = normalizeMarkdown(input.markdown)
@@ -1781,13 +1801,6 @@ export function createMarkdownNarrativeWiki(
                         deleted: true as const,
                     }
                 }
-                const history = join(workspace.historyDirectory, document.id)
-                await fileSystem.mkdir(history, { recursive: true })
-                await writeAtomically(
-                    fileSystem,
-                    join(history, `${now().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}.md`),
-                    await fileSystem.readFile(file, 'utf8')
-                )
                 await writeAtomically(fileSystem, file, baseline)
             }
             else {
@@ -1883,16 +1896,6 @@ export function createMarkdownNarrativeWiki(
                 throw new Error('A wiki document already owns that path')
             }
             await fileSystem.mkdir(resolve(file, '..'), { recursive: true })
-            if (existing && oldFile) {
-                const history = join(workspace.historyDirectory, existing.id)
-                await fileSystem.mkdir(history, { recursive: true })
-                const stamp = operationTime.replace(/[:.]/g, '-')
-                await writeAtomically(
-                    fileSystem,
-                    join(history, `${stamp}-${randomUUID().slice(0, 8)}.md`),
-                    await fileSystem.readFile(oldFile, 'utf8')
-                )
-            }
             const normalized = normalizeMarkdown(input.markdown)
             const content = normalized.content.replace(
                 /^##\s+.+$/m,
@@ -1911,6 +1914,7 @@ export function createMarkdownNarrativeWiki(
                 relativePath,
                 sourceMessageIds: existing?.sourceMessageIds ?? [],
                 created: existing?.created ?? operationTime,
+                ...(existing?.sequence !== undefined ? { sequence: existing.sequence } : {}),
                 updated: operationTime,
                 authoring: 'manual',
                 content,
@@ -1948,16 +1952,6 @@ export function createMarkdownNarrativeWiki(
                         links: linksFrom(changed),
                         updated: operationTime,
                     }
-                    const linkedHistory = join(
-                        workspace.historyDirectory,
-                        linked.id
-                    )
-                    await fileSystem.mkdir(linkedHistory, { recursive: true })
-                    await writeAtomically(
-                        fileSystem,
-                        join(linkedHistory, `${operationTime.replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}.md`),
-                        await fileSystem.readFile(linkedFile, 'utf8')
-                    )
                     await writeAtomically(
                         fileSystem,
                         linkedFile,
@@ -2004,13 +1998,6 @@ export function createMarkdownNarrativeWiki(
                 ...document.relativePath.split('/')
             )
             const operationTime = now().toISOString()
-            const history = join(workspace.historyDirectory, document.id)
-            await fileSystem.mkdir(history, { recursive: true })
-            await writeAtomically(
-                fileSystem,
-                join(history, `${operationTime.replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}.md`),
-                await fileSystem.readFile(file, 'utf8')
-            )
             const { contentHash: _contentHash, ...stored } = document
             const prepared = prepareDocument({
                 ...stored,

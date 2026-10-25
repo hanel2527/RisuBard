@@ -352,17 +352,18 @@ describe('memory analysis runner', () => {
                             type: 'character', title, reason: 'Arrival', action: title === 'Alice' ? 'update' : 'create',
                             targetDocumentId: title === 'Alice' ? 'character.Alice' : null, confidence: 1,
                         })) })
-                    : canonicalPatchBatch([
-                        { heading: 'Current State', operation: 'upsert', content: '- At the gate.' },
-                        { heading: 'Knowledge', operation: 'upsert', content: '- Knows the gate code.\n- Knows the cellar key.' },
-                    ]),
+                    : JSON.stringify({ documents: [{ candidateIndex: 0, sections: [
+                        { heading: 'Current State', operation: 'upsert', content: '- At the gate.', add: [], replace: [], remove: [] },
+                        { heading: 'Knowledge', operation: 'edit', content: '', add: [],
+                            replace: [{ index: 2, text: 'Knows the bell tower.' }], remove: [] },
+                    ] }] }),
             })),
         })
 
         const result = await runner.run({ characterId: 'character', chatId: 'chat', canonicalTargetLimit: 1,
             messages: [{ messageId: 'assistant-1', role: 'assistant', content: 'Alice and Bob arrived.' }] })
 
-        expect(result.canonicalReceipt?.warnings).toContain('자동 정본 대상 한도(1개)를 넘어 이번 턴에 반영하지 않은 후보 1개: Bob')
+        expect(result.canonicalReceipt?.warnings).toContain('자동 정본 대상 한도(1개)를 넘은 후보 1개는 추가 분석으로 이어서 반영합니다: Bob')
         expect(canonicalTurnNeedsRetry(result.canonicalReceipt!)).toBe(false)
         expect(result.canonicalReceipt?.notes).toEqual([
             '분석 입력 조정: 분석 토큰 상한에 맞추려고 로어 참고 2개를 뺐습니다.',

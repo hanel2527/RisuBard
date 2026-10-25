@@ -1,5 +1,5 @@
 import { isWikiHeadingLabel } from '../../src/ts/risubard/wikiWritingLanguage'
-import { coverSupportsUnit, joinSectionUnits, splitSectionUnits } from './risubard-canonical-maintenance'
+import { joinSectionUnits, splitSectionUnits } from './risubard-canonical-maintenance'
 import {
     applyCanonicalSectionPatches,
     listCanonicalSections,
@@ -11,12 +11,19 @@ import type { CanonicalSectionPatch } from './risubard-memory-writer'
 // Existing sections are edited unit by unit so that whatever the model leaves
 // out stays; only the current-state snapshot and new sections are written whole.
 export const CANONICAL_UNIT_EDIT_INSTRUCTIONS = [
-    'Existing sections show numbered units such as "- [3] text". The numbers are references only; never write them.',
-    'To change an existing section other than the current-state section, use operation edit with empty content: put new units in add, rewritten units in replace with their index, and units to drop in remove with a reason. Units you do not mention stay unchanged, so never repeat them.',
-    'Remove reasons: superseded when a confirmed change in this turn made the unit untrue; merged when its facts now live in the unit numbered mergedInto, which must stay; corrected when the confirmed messages show it was wrong. Set mergedInto only for merged. Prefer replace when a unit only needs new wording or a new value.',
-    'For the current-state section and for a section that does not exist yet, use operation upsert with the complete body. Do not delete an existing section; remove its units with edit. Delete a section only when every fact in it appears in another section in the same response.',
-    'Every section object has heading, operation, content, add, replace and remove. Use empty arrays for the fields an operation does not use.',
+    'Existing sections show numbered units like "- [3] text"; the numbers are references, never write them. A trailing (#N) marks the event that set a unit; the program writes it, not you.',
+    'To change an existing section other than current state, use operation edit with empty content: new units in add, rewritten units in replace by index, dropped units in remove with a reason. Unmentioned units stay; never repeat them.',
+    'Remove reasons: superseded (a confirmed change this turn made it untrue), merged (its facts now live in the kept unit mergedInto), corrected (the confirmed messages show it was wrong). mergedInto is only for merged. Prefer replace for a new wording or value.',
+    'Use upsert with the complete body only for the current-state section and new sections. Do not delete an existing section unless every fact in it appears in another section in this response.',
+    'Every section has heading, operation, content, add, replace and remove; use empty arrays for unused fields.',
 ]
+
+const STAMP = /\s*\(#\d+\)\s*$/u
+
+/** Marks a unit with the event that set it, replacing any older mark. */
+export function stampUnit(text: string, sequence: number): string {
+    return `${text.replace(STAMP, '')} (#${sequence})`
+}
 
 const UNIT_MARKER = /^(\s*(?:[-*]\s+)?)\[\d{1,4}\]\s+/gmu
 const LINK = /\[\[([^\]|#]+)/gu
@@ -70,7 +77,10 @@ export function resolveCanonicalUnitPatches(input: {
     /** The turn recorded a state change, so a unit may be superseded on its own. */
     allowSupersede: boolean
     rewrite?: boolean
+    /** Story-order number of this turn's event, stamped on the units it adds or rewrites. */
+    stamp?: number
 }): CanonicalUnitResolution {
+    const stamped = (text: string) => input.stamp === undefined ? text : stampUnit(text, input.stamp)
     const existing = new Map(listCanonicalSections(input.markdown)
         .map((section) => [normalizeCanonicalSectionHeading(section.heading), section]))
     let restored = 0
@@ -87,13 +97,19 @@ export function resolveCanonicalUnitPatches(input: {
                 content: stripUnitMarkers(patch.content).trim(),
             }
             if (section && !input.rewrite && !isWikiHeadingLabel('currentState', patch.heading)) guarded.add(next)
+            // A section new in this turn holds only this turn's facts.
+            if (!section && patch.heading && next.operation === 'upsert' && input.stamp !== undefined
+                && !input.rewrite && !isWikiHeadingLabel('currentState', patch.heading)) {
+                const { bullet, units } = splitSectionUnits(next.content)
+                next.content = joinSectionUnits(units.map(stamped), bullet)
+            }
             resolved.push(next)
             continue
         }
         const edits = patch.edits ?? { add: [], replace: [], remove: [] }
         const add = edits.add.map(unitText).filter(Boolean)
         if (!section) {
-            if (add.length > 0) resolved.push({ heading: patch.heading, operation: 'upsert', content: joinSectionUnits(add, true) })
+            if (add.length > 0) resolved.push({ heading: patch.heading, operation: 'upsert', content: joinSectionUnits(add.map(stamped), true) })
             rejected += edits.replace.length + edits.remove.length
             continue
         }
@@ -107,7 +123,7 @@ export function resolveCanonicalUnitPatches(input: {
                 continue
             }
             replaced.add(item.index)
-            result[item.index] = text
+            result[item.index] = stamped(text)
         }
         const removals = new Map<number, (typeof edits.remove)[number]>()
         for (const item of edits.remove) {
@@ -129,7 +145,7 @@ export function resolveCanonicalUnitPatches(input: {
                 rejected += 1
             }
         }
-        const kept = () => [...result.filter((_unit, index) => !removals.has(index)), ...add]
+        const kept = () => [...result.filter((_unit, index) => !removals.has(index)), ...add.map(stamped)]
         const present = linksIn(kept().join('\n'))
         for (const index of [...removals.keys()]) {
             if ([...linksIn(units[index])].some((link) => !present.has(link))) {
@@ -153,8 +169,13 @@ export function resolveCanonicalUnitPatches(input: {
         // The caller applies the same patches and reports the structural error.
         return { patches: resolved, restored, rejected, removed }
     }
-    const remaining = normalized(documentText)
-    const supported = (unit: string) => remaining.includes(normalized(unit)) || coverSupportsUnit(unit, documentText)
+    // Only the unit's own words count as kept. A similar line about another
+    // clue or person must not pass for it, so a reworded unit may come back as
+    // a duplicate; card maintenance can merge it later with its own checks.
+    const comparable = (value: string) => normalized(value.replace(/\(#\d+\)/gu, ''))
+        .replace(/[.!?。]+(?=\s|$)/gu, '').toLocaleLowerCase()
+    const remaining = comparable(documentText)
+    const supported = (unit: string) => remaining.includes(comparable(unit))
     const patches = resolved.map((patch) => {
         if (!guarded.has(patch)) return patch
         const section = existing.get(normalizeCanonicalSectionHeading(patch.heading))!

@@ -540,6 +540,23 @@ async function runNarrativeBacklog(input: {
         }
         const message = findNarrativeMessage(input.characterId, input.chatId, turn.targetMessageId)
         if (message && message.risubardMemoryConfirmed !== true) break
+        // Candidates over the target limit get one more pass on the same turn's
+        // evidence; the saved documents are excluded so nothing is redone.
+        const receipt = message?.risubardCanonicalReceipt
+        if (receipt?.warnings.some((warning) => warning.startsWith('자동 정본 대상 한도('))) {
+            const followUp = projectConfirmedMemoryTurn(chat.message, turn.targetMessageId, {
+                includeConfirmed: true, ignoreOocTurns: true,
+            })
+            if (followUp) {
+                await confirmProjectedNarrativeTurn({
+                    characterId: input.characterId,
+                    chatId: input.chatId,
+                    additionalAnalysis: true,
+                    excludeCanonicalDocumentIds: receipt.changes.map((change) => change.documentId),
+                    ...followUp,
+                }).catch((error: unknown) => console.warn('[RisuBard memory confirmation]', error))
+            }
+        }
     }
 }
 

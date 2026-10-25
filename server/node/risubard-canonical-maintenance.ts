@@ -126,6 +126,7 @@ const MAINTENANCE_SYSTEM = [
     'Equipment and Possessions: one entry per meaningful item with its current condition only.',
     'Dispositions: kept or merged means the old unit\'s facts are in new unit newIndex of the same section. moved means the old unit is not state that belongs in this section; set moveTo to identity or currentState and movedText to one concise sentence for that section. covered means the old unit only narrates how or when something happened and documentId names a supplied cover document that records it. Use null for fields that do not apply.',
     'Never invent facts. Keep every [[wiki link]] that still applies. Preserve attribution, certainty and conditions. Write in the language already used by the units.',
+    'A unit may end with (#N), the story order of the event that set it. A merged unit keeps the largest such mark of the units it combines.',
 ].join('\n')
 
 const GENERIC_MAINTENANCE_SYSTEM = [
@@ -135,6 +136,7 @@ const GENERIC_MAINTENANCE_SYSTEM = [
     'The document keeps what is true now and what matters for later choices. Merge only units about the same topic, part, member or rule. Keep distinct facts, conditions, unresolved questions and who knows what. Drop how and when something came about only through the covered disposition.',
     'Dispositions: kept or merged means the old unit\'s facts are in new unit newIndex of the same section. moved means the old unit is current state that belongs in an existing Current State section; set moveTo to currentState and movedText to one concise sentence. covered means the old unit only narrates how or when something happened and documentId names a supplied cover document that records it. Use null for fields that do not apply.',
     'Never invent facts. Keep every [[wiki link]] that still applies. Preserve attribution, certainty and conditions. Write in the language already used by the units.',
+    'A unit may end with (#N), the story order of the event that set it. A merged unit keeps the largest such mark of the units it combines.',
 ].join('\n')
 
 const CHUNKED_SECTIONS_NOTE = 'A long section can arrive in numbered parts such as knowledge:1 and knowledge:2. Consolidate each part on its own and give each part its own dispositions.'

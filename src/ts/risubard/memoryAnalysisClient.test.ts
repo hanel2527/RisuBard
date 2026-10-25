@@ -348,6 +348,51 @@ describe('stored response memory analysis', () => {
         })
     })
 
+    test('reads the wiki catalog each turn and refetches only changed pages', async () => {
+        const page = (id: string, contentHash: string) => ({
+            id, type: 'character', status: 'active', title: id, aliases: [], relativePath: `characters/${id}.md`,
+            sourceMessageIds: [], updated: '2026-10-26T00:00:00.000Z', links: [], contextMode: 'auto', contentHash,
+        })
+        let hashes = { alice: 'a1', bob: 'b1' }
+        const bodyRequests: string[][] = []
+        const fetchImpl = vi.fn(async (input, init) => {
+            const url = String(input)
+            if (url.endsWith('/catalog')) {
+                return new Response(JSON.stringify({ mode: 'markdown', wikiPath: 'wiki',
+                    health: { danglingLinks: [], unlinkedDocumentIds: [] },
+                    documents: [page('alice', hashes.alice), page('bob', hashes.bob)] }))
+            }
+            if (url.endsWith('/wiki/documents')) {
+                const ids = JSON.parse(String(init?.body)).documentIds as string[]
+                bodyRequests.push(ids)
+                return new Response(JSON.stringify({ documents: ids.map((id) => ({
+                    ...page(id, hashes[id as 'alice' | 'bob']), content: `## ${id}`,
+                })) }))
+            }
+            if (url.endsWith('/inquiry')) {
+                return new Response(JSON.stringify({ mode: 'v2-current', graphRevision: 0, indexRevision: 0,
+                    cacheStatus: 'current', sources: [], metrics: { candidateCount: 0, inspectedNodeCount: 0,
+                        inspectedEdgeCount: 0, selectedNodeCount: 0, selectedTokens: 0, hopCount: 0, auxiliaryModelCalls: 0 } }))
+            }
+            return new Response(JSON.stringify({ id: 'event-1' }))
+        }) as unknown as typeof fetch
+        const analysis = createStoredResponseMemoryAnalysis({
+            requestModel: vi.fn(async () => ({ type: 'success' as const, result: JSON.stringify({
+                schemaVersion: 1, title: '대화', establishedEvents: ['대화했다.'], stateChanges: [], characterKnowledge: [],
+                persistentFacts: [], openContinuity: [], canonicalUpdateCandidates: [] }) })),
+            fetchImpl, createAuth: async () => 'test-jwt', onError: vi.fn(), nativeV2Analysis: true,
+        })
+        const turn = (id: string) => analysis.confirm({ characterId: 'character', chatId: 'chat',
+            messages: [{ messageId: id, role: 'assistant', content: '대화했다.' }] })
+
+        await turn('assistant-1')
+        await turn('assistant-2')
+        hashes = { ...hashes, bob: 'b2' }
+        await turn('assistant-3')
+
+        expect(bodyRequests).toEqual([['alice', 'bob'], ['bob']])
+    })
+
     test('sends native confirmation as a schema-bound memory draft', async () => {
         const calls: string[] = []
         const onError = vi.fn()
@@ -434,7 +479,9 @@ describe('stored response memory analysis', () => {
                 warnings: [],
             },
         })
+        // This mock has no catalog route, so the client falls back to the full view.
         expect(calls).toEqual([
+            '/api/risubard/memory/catalog',
             '/api/risubard/memory/view',
             '/api/risubard/memory/inquiry',
             '/api/risubard/memory/wiki/save',

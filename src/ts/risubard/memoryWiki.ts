@@ -55,6 +55,7 @@ export interface NarrativeMemoryWikiMarkdown {
         content: string
         links: string[]
         created?: string
+        sequence?: number
         authoring?: 'automatic' | 'ai-assisted' | 'manual'
         contextMode: MarkdownWikiContextMode
         contentHash: string
@@ -335,7 +336,7 @@ function parseMarkdownWikiDocument(document: unknown, catalog = false): WikiCata
     if (!isRecord(document)
         || !documentKeys.every((key) => key in document)
         || Object.keys(document).some((key) => ![
-            ...documentKeys, 'created', 'authoring',
+            ...documentKeys, 'created', 'sequence', 'authoring',
             'supersededBy', 'reviewStatus',
             'reviewBaseContent', 'aliases', 'retrievalMetadata',
         ].includes(key))
@@ -364,6 +365,8 @@ function parseMarkdownWikiDocument(document: unknown, catalog = false): WikiCata
                     typeof alias === 'string')))
         || (document.created !== undefined
             && typeof document.created !== 'string')
+        || (document.sequence !== undefined
+            && (!Number.isSafeInteger(document.sequence) || (document.sequence as number) < 1))
         || (document.authoring !== undefined
             && !['automatic', 'ai-assisted', 'manual'].includes(
                 String(document.authoring)
@@ -406,6 +409,7 @@ function parseMarkdownWikiDocument(document: unknown, catalog = false): WikiCata
         ...(document.created === undefined
             ? {}
             : { created: requireString(document.created) }),
+        ...(document.sequence === undefined ? {} : { sequence: document.sequence as number }),
         ...(document.authoring === undefined
             ? {}
             : { authoring: document.authoring as
