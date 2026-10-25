@@ -370,6 +370,103 @@ describe('memory analysis runner', () => {
         ])
     })
 
+    test.each(['batch', 'inline'] as const)('applies unit edits and keeps units a rewrite left out (%s)', async (path) => {
+        const existing = {
+            id: 'character.Alice', type: 'character' as const, title: 'Alice', aliases: [],
+            relativePath: 'characters/Alice.md', sourceMessageIds: [], contentHash: 'alice-old',
+            content: '## Alice\n\n### Current State\n\n- Home.\n\n### Knowledge\n\n- Knows the gate code.\n- Knows the cellar key.\n- Knows the bell.\n\n### Relationships\n\n- Trusts Bob.\n- Owes Carol a favor.',
+        }
+        const sections = [
+            { heading: 'Current State', operation: 'upsert', content: '- At the gate.', add: [], replace: [], remove: [] },
+            { heading: 'Knowledge', operation: 'edit', content: '', add: ['Knows the tower stair.'],
+                replace: [{ index: 0, text: 'Knows the new gate code.' }],
+                remove: [{ index: 2, reason: 'merged', mergedInto: 0 }] },
+            { heading: 'Relationships', operation: 'upsert', content: '- Trusts Bob completely.', add: [], replace: [], remove: [] },
+        ]
+        const inputs: string[] = []
+        const saveCanonicalDocument = vi.fn(async (input) => ({ ...input, id: 'character.Alice',
+            type: 'character' as const, relativePath: 'characters/Alice.md', contentHash: 'alice-new' }))
+        const runner = createMemoryAnalysisRunner({
+            memoryService: { loadState: vi.fn(), applyDelta: vi.fn() }, nativeV2Analysis: true,
+            markdownWikiService: {
+                inquire: vi.fn(async () => ({ graphRevision: 0, sources: [{ id: 'narrative-memory:wiki:characters/Alice.md', content: existing.content }] })),
+                loadDocuments: vi.fn(async () => [existing]),
+                saveConfirmedTurn: vi.fn(async () => undefined), saveCanonicalDocument,
+            },
+            onError: vi.fn(),
+            analyze: vi.fn(async (request: MemoryAnalysisModelRequest) => {
+                inputs.push(request.input)
+                if (request.format === 'memory-draft') return JSON.stringify({
+                    title: 'Gate', establishedEvents: ['Alice changed the gate code.'], stateChanges: [],
+                    characterKnowledge: [], persistentFacts: [], openContinuity: [],
+                    canonicalUpdateCandidates: [{ type: 'character', title: 'Alice', reason: 'New code', action: 'update',
+                        targetDocumentId: 'character.Alice', confidence: 1 }],
+                    canonicalPatches: path === 'inline' ? [{ candidateIndex: 0, sections }] : [],
+                })
+                return JSON.stringify({ documents: [{ candidateIndex: 0, sections }] })
+            }),
+        })
+
+        const result = await runner.run({ characterId: 'character', chatId: 'chat',
+            messages: [{ messageId: 'assistant-1', role: 'assistant', content: 'Alice changed the gate code.' }] })
+
+        expect(inputs.some((input) => input.includes('- [0] Knows the gate code.'))).toBe(true)
+        expect(inputs).toHaveLength(path === 'inline' ? 1 : 2)
+        expect(saveCanonicalDocument).toHaveBeenCalledWith(expect.objectContaining({
+            markdown: '## Alice\n\n### Current State\n\n- At the gate.\n\n### Knowledge\n\n- Knows the new gate code.\n- Knows the cellar key.\n- Knows the tower stair.\n\n### Relationships\n\n- Trusts Bob completely.\n- Owes Carol a favor.',
+        }))
+        expect(result.canonicalReceipt?.notes).toContain('정본 항목 편집: Alice (삭제 1, 되살림 1)')
+    })
+
+    test('retries maintenance of an oversized place after new sources instead of raising its baseline', async () => {
+        const units = Array.from({ length: 30 }, (_, index) => `The north gate has rule number ${index + 1} for travelers.`)
+        const gate = {
+            id: 'location.gate', type: 'location' as const, title: 'North Gate', aliases: [],
+            relativePath: 'locations/gate.md', sourceMessageIds: ['assistant-0'], contentHash: 'gate-old',
+            content: ['## North Gate', '', '### Current State', '', '- Closed.', '', '### Rules', '', ...units.map((unit) => `- ${unit}`)].join('\n'),
+        }
+        const maintenanceSystems: string[] = []
+        const runner = createMemoryAnalysisRunner({
+            memoryService: { loadState: vi.fn(), applyDelta: vi.fn() }, nativeV2Analysis: true,
+            markdownWikiService: {
+                inquire: vi.fn(async () => ({ graphRevision: 0, sources: [] })),
+                loadDocuments: vi.fn(async () => [gate]),
+                saveConfirmedTurn: vi.fn(async () => undefined),
+                // Saved documents accumulate their sources, as the wiki does.
+                saveCanonicalDocument: vi.fn(async (input) => {
+                    gate.sourceMessageIds = [...new Set([...gate.sourceMessageIds, ...input.sourceMessageIds])]
+                    return { ...input, id: gate.id, type: 'location' as const, relativePath: gate.relativePath, contentHash: 'gate-new' }
+                }),
+            },
+            onError: vi.fn(),
+            analyze: vi.fn(async (request: MemoryAnalysisModelRequest) => {
+                if (request.system.startsWith('Canonical maintenance')) {
+                    maintenanceSystems.push(request.system)
+                    return JSON.stringify({
+                        sections: [{ role: 's1', units }],
+                        dispositions: units.map((_, old) => ({ role: 's1', old, action: 'kept', newIndex: old,
+                            moveTo: null, movedText: null, documentId: null })),
+                    })
+                }
+                if (request.format === 'memory-draft') return JSON.stringify({
+                    title: 'Gate', establishedEvents: ['The gate stayed closed.'], stateChanges: [],
+                    characterKnowledge: [], persistentFacts: [], openContinuity: [],
+                    canonicalUpdateCandidates: [{ type: 'location', title: 'North Gate', reason: 'Still closed', action: 'update',
+                        targetDocumentId: 'location.gate', confidence: 1 }],
+                })
+                return canonicalPatchBatch([{ heading: 'Current State', operation: 'upsert', content: '- Closed tonight.' }])
+            }),
+        })
+        for (let turn = 1; turn <= 9; turn += 1) {
+            await runner.run({ characterId: 'character', chatId: 'chat',
+                inquiryTokenBudget: { target: 256, perSource: 256, maximum: 1_024 },
+                messages: [{ messageId: `assistant-${turn}`, role: 'assistant', content: 'The gate stayed closed.' }] })
+        }
+
+        expect(maintenanceSystems).toHaveLength(2)
+        expect(maintenanceSystems[0]).toContain('place, group, creature, item, concept or open thread')
+    })
+
     test('saves a complete 4,000-character section without treating its length as truncation', async () => {
         const saveCanonicalDocument = vi.fn(async (input) => ({
             ...input,

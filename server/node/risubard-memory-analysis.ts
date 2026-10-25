@@ -80,6 +80,13 @@ import {
     type ArcPlotterRuntimeSettings,
 } from '../../src/ts/risubard/arcPlotterSettings'
 import {
+    annotateCanonicalUnits,
+    CANONICAL_UNIT_EDIT_INSTRUCTIONS,
+    resolveCanonicalUnitPatches,
+    type CanonicalUnitResolution,
+} from './risubard-canonical-unit-edit'
+import {
+    CARD_CEILING_RATIO,
     MAINTENANCE_COOLDOWN_SOURCES,
     changedCanonicalUnits,
     maintainCharacterCanon,
@@ -512,8 +519,8 @@ function parseLoreReference(value: unknown): AnalysisLoreReference[] | undefined
 
 const settingReferenceInstruction = [
     'settingReference holds lorebook entries the story used around these messages. It is setting reference, not event evidence.',
-    'Use it only to confirm or fill durable setting facts (identity, gender, age, appearance, role, abilities, relationships) of subjects that appear in confirmedMessages. It is not external canon: it overrides source-work knowledge.',
-    'When confirmedMessages conflict with settingReference, follow confirmedMessages.',
+    'Use it only to confirm or fill stable identity facts (name, gender, age, species, appearance, innate abilities) of subjects that appear in confirmedMessages. Never take relationships, roles, affiliations, goals, current state or knowledge from it; those come from the story. It is not external canon: it overrides source-work knowledge.',
+    'When confirmedMessages or an existing wiki document conflict with settingReference, follow them: the story may have changed what the lorebook describes. Lorebook entries are evaluated with the chat\'s current variables, which can be later than these messages.',
     'Never record facts found only in settingReference as events, state changes, or character knowledge, never reveal its secrets, plans, or hidden truths before confirmedMessages do, and never create a document for a subject that appears only in settingReference.',
 ].join('\n')
 
@@ -1299,7 +1306,7 @@ export function createMemoryAnalysisRunner(
                 for (const document of candidateDocuments.slice(0, 12)) {
                     if (document.type === 'event' || isStoryArcCandidate(document)) continue
                     const entry = { id: document.id, type: document.type,
-                        title: document.title, completeText: document.content }
+                        title: document.title, completeText: annotateCanonicalUnits(document.content) }
                     const size = countAnalysisTokens(JSON.stringify(entry))
                     if (size > remaining) continue
                     selected.push(entry)
@@ -1607,6 +1614,7 @@ export function createMemoryAnalysisRunner(
             const receiptNotes: string[] = []
             // Before C's unit edits exist, this is the loss signal to watch.
             const changedUnitSummaries: string[] = []
+            const unitEditSummaries: string[] = []
             const receiptWarnings: string[] = [
                 ...deferred.map((entry) => entry.warning),
                 ...recoveredNewCharacters.map((candidate) =>
@@ -1757,6 +1765,22 @@ export function createMemoryAnalysisRunner(
                     }
                     // Links resolve a name only when one document owns it, so a new
                     // alias already used by another document or queued target is dropped.
+                    const unitResolutions = new Map<(typeof batchTargets)[number], CanonicalUnitResolution>()
+                    const resolveUnits = (
+                        entry: (typeof batchTargets)[number],
+                        sections: CanonicalSectionPatch[],
+                    ) => {
+                        const resolution = resolveCanonicalUnitPatches({
+                            markdown: entry.preparedMarkdown,
+                            title: entry.target?.title ?? entry.candidate.title,
+                            patches: sections,
+                            allowSupersede: draft.stateChanges.length > 0,
+                            // The arc map compacts by design; the scene page is a snapshot.
+                            rewrite: entry.storyArcPlan !== undefined || entry.candidate.type === 'scene',
+                        })
+                        unitResolutions.set(entry, resolution)
+                        return resolution.patches
+                    }
                     const identityOwners = new Map<string, Set<unknown>>()
                     const addIdentityOwner = (key: string, owner: unknown) => {
                         const owners = identityOwners.get(key) ?? new Set<unknown>()
@@ -1788,12 +1812,11 @@ export function createMemoryAnalysisRunner(
                                 'Use confirmedMessages as the primary evidence; confirmedEvent and candidate reasons are concise guides, not replacements for the original evidence.',
                                 'Each event reference in confirmedEvent names a separate saved document. Copy its exact [[title]] when linking. Even when summarizing several events in one sentence, keep their links separate: [[A]], [[B]]. Never combine event titles inside one wiki link.',
                                 'The program preserves the existing H1/H2 title and every omitted section. Never repeat an unchanged section.',
-                                'For an existing section, return its heading and the complete replacement body without the H3 heading line. Use operation upsert.',
-                                'For a new section, use operation upsert. Use operation delete with empty content only when the whole existing section must be removed.',
+                                ...CANONICAL_UNIT_EDIT_INSTRUCTIONS,
                                 'Use an empty heading only to replace or delete legacy text between the document title and the first H3 section.',
                                 'For a new document, return every initial section needed to assemble it. Do not return an H1 or H2 title.',
                                 'If an existing target has no verified change after checking the evidence, return an empty sections array so the program skips persistence. A new document must contain at least one section.',
-                                'There is no fixed 4,000-character limit per section. Return every changed section complete, never stop at an artificial character boundary, and stay concise enough to finish within the overall output token limit.',
+                                'There is no fixed 4,000-character limit per section. Return every upsert section complete, never stop at an artificial character boundary, and stay concise enough to finish within the overall output token limit.',
                                 'Use semanticUpdate as a structured coverage checklist, but verify every item against confirmedMessages before applying it.',
                                 `Prefer a compact self-contained \`### ${wikiWritingHeadings[normalizeWikiWritingLanguage(snapshot.wikiWritingLanguage)].currentState}\` section near the top of character documents when verified current facts benefit from a snapshot. Its absence is not a persistence error and never justifies a structure-only rewrite.`,
                                 'Remove superseded facts from current-state sections; retain an old state only as a clearly historical transition when it remains narratively useful.',
@@ -1804,6 +1827,9 @@ export function createMemoryAnalysisRunner(
                                 'Never fill a section from external canon, source-work knowledge, or assumptions, including for a new document. The story may differ from a known source work in gender, age, role, ability, or relationships; follow the story. Omit a detail rather than guess it.',
                                 snapshot.historicalReanalysis
                                     ? `This is a historical correction. Correct history sections, but preserve an existing character ${wikiWritingHeadings[normalizeWikiWritingLanguage(snapshot.wikiWritingLanguage)].currentState} section because it may represent later events.`
+                                    : '',
+                                hasStoryArcTarget
+                                    ? 'Rewrite the sections of the reserved story arc document with operation upsert.'
                                     : '',
                                 hasStoryArcTarget
                                     ? storyArcRewriteInstruction(
@@ -1830,7 +1856,7 @@ export function createMemoryAnalysisRunner(
                                             ?? entry.candidate.title,
                                         aliases: entry.target?.aliases ?? [],
                                         contentHash: entry.target?.contentHash ?? null,
-                                        markdown: entry.preparedMarkdown,
+                                        markdown: annotateCanonicalUnits(entry.preparedMarkdown),
                                     },
                                     candidate: entry.candidate,
                                     ...(entry.storyArcPlan ? {
@@ -1883,6 +1909,7 @@ export function createMemoryAnalysisRunner(
                                 if (!safeTarget || entry.storyArcPlan || entry.candidate.confidence < 0.75) sections = undefined
                                 if (sections) {
                                     try {
+                                        sections = resolveUnits(entry, sections)
                                         if (!entry.target && sections.length === 0) throw new Error('Missing initial sections')
                                         if (!entry.target && entry.candidate.type === 'character') {
                                             sections = normalizeNewCharacterCurrentState(sections, snapshot.wikiWritingLanguage)
@@ -1965,6 +1992,7 @@ export function createMemoryAnalysisRunner(
                                     for (const document of parsed.documents) {
                                         const target = targets[document.candidateIndex]
                                         try {
+                                            document.sections = resolveUnits(target, document.sections)
                                             if (!target.target && document.sections.length === 0) {
                                                 throw new Error('Missing initial sections for new canonical document')
                                             }
@@ -2132,7 +2160,7 @@ export function createMemoryAnalysisRunner(
                                 }
                             }
                             let maintenanceNote: string | undefined
-                            if (entry.target && entry.candidate.type === 'character' && !entry.storyArcPlan
+                            if (entry.target && entry.candidate.type !== 'scene' && !entry.storyArcPlan
                                 && !snapshot.rebootTurns && !snapshot.historicalReanalysis
                                 && !snapshot.additionalAnalysis) {
                                 const attemptKey = `${snapshot.characterId}\u0000${snapshot.chatId}\u0000${entry.target.id}`
@@ -2140,18 +2168,20 @@ export function createMemoryAnalysisRunner(
                                 const currentSources = new Set([...entry.target.sourceMessageIds, ...sourceMessageIds])
                                 const state = maintenanceState.get(attemptKey)
                                 const failedSources = state?.failedSources
-                                // Only a model error cools down; a card that is already minimal waits for growth instead.
+                                // A model error, or a card over the retrieval ceiling that cannot shrink, waits for new sources.
                                 if (failedSources === undefined
                                     || [...currentSources].filter((id) => !failedSources.has(id)).length >= MAINTENANCE_COOLDOWN_SOURCES) {
+                                    const perSourceTokens = snapshot.inquiryTokenBudget?.perSource
+                                        ?? RISUBARD_INQUIRY_SOURCE_TOKEN_BUDGET_DEFAULT
                                     const maintained = await maintainCharacterCanon({
                                         markdown: rewritten,
                                         title: entry.target.title,
+                                        documentType: entry.candidate.type,
                                         coverDocuments: maintenanceCoverDocuments(entry.target, [...documents, ...savedEvents]),
                                         policy: [snapshot.wikiPromptGuide?.canonicalRewrite ?? '', canonicalWritingPolicy]
                                             .filter(Boolean).join('\n'),
                                         countTokens: countAnalysisTokens,
-                                        perSourceTokens: snapshot.inquiryTokenBudget?.perSource
-                                            ?? RISUBARD_INQUIRY_SOURCE_TOKEN_BUDGET_DEFAULT,
+                                        perSourceTokens,
                                         baselineTokens: state?.baselineTokens,
                                         request: async (prompt) => readModelResponseText(await analyzeResponse({
                                             format: 'canonical-batch',
@@ -2166,7 +2196,10 @@ export function createMemoryAnalysisRunner(
                                         maintenanceState.set(attemptKey, { baselineTokens: maintained.tokensAfter })
                                     }
                                     else if (maintained.outcome === 'no-reduction') {
-                                        maintenanceState.set(attemptKey, { baselineTokens: maintained.tokensBefore })
+                                        // Raising the baseline above the ceiling would let the card outgrow retrieval for good.
+                                        maintenanceState.set(attemptKey, (maintained.tokensBefore ?? 0) > Math.floor(perSourceTokens * CARD_CEILING_RATIO)
+                                            ? { baselineTokens: state?.baselineTokens, failedSources: currentSources }
+                                            : { baselineTokens: maintained.tokensBefore })
                                     }
                                     else if (maintained.outcome === 'error') {
                                         maintenanceState.set(attemptKey, {
@@ -2223,6 +2256,14 @@ export function createMemoryAnalysisRunner(
                                     ) ? 'update' : 'create',
                                     afterHash: saved.contentHash,
                                 })
+                                const resolution = unitResolutions.get(entry)
+                                if (resolution && resolution.removed + resolution.restored + resolution.rejected > 0) {
+                                    unitEditSummaries.push(`${saved.title} (${[
+                                        resolution.removed > 0 ? `삭제 ${resolution.removed}` : '',
+                                        resolution.restored > 0 ? `되살림 ${resolution.restored}` : '',
+                                        resolution.rejected > 0 ? `무시한 지시 ${resolution.rejected}` : '',
+                                    ].filter(Boolean).join(', ')})`)
+                                }
                                 if (maintenanceNote) receiptNotes.push(maintenanceNote)
                             }
                             catch (error) {
@@ -2254,6 +2295,9 @@ export function createMemoryAnalysisRunner(
                         ...inputReportNotes(inputReports),
                         ...(changedUnitSummaries.length > 0
                             ? [`정본에서 이전 문장이 그대로 남지 않은 항목: ${changedUnitSummaries.join('; ')}`.slice(0, 512)]
+                            : []),
+                        ...(unitEditSummaries.length > 0
+                            ? [`정본 항목 편집: ${unitEditSummaries.join('; ')}`.slice(0, 512)]
                             : []),
                         ...receiptNotes,
                     ].slice(0, 8)

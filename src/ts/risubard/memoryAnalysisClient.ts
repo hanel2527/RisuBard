@@ -162,7 +162,7 @@ const OPTIONAL_ANALYSIS_INPUTS: ReadonlyArray<{ key: string; label: string }> = 
     { key: 'settingReference', label: '로어 참고' },
     { key: 'previousStoryEvent', label: '직전 사건 요약' },
 ]
-// Novelist context windows around the evidence may still be shortened.
+// Context windows around manuscript evidence may still be shortened.
 const SHORTENABLE_CONTEXT_KEYS = ['priorContext', 'currentContext']
 
 function fitAnalysisInput(
