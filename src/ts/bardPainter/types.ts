@@ -181,6 +181,8 @@ export interface PainterChatData {
     imagePreset?: { promptPresetId: string; name: string; values: Record<string, string> }
     /** Missing on legacy chats: preserve their existing local generation options. */
     settingsScope?: 'global' | 'chat'
+    /** The user picked this chat's style; otherwise a bot lorebook default style applies. */
+    styleChosen?: boolean
     anchor?: PainterAnchor
     draft?: PainterDraft
     outfits: PainterOutfit[]

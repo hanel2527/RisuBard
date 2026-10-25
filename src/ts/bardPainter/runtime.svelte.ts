@@ -25,6 +25,7 @@ import type { PainterLibraryData } from './types'
 import { painterSubjectLimit } from './types'
 import type { loreBook } from '../storage/database.svelte'
 import { blankPainterIdentityIds, botOutfitCatalog, copyPainterIdentity, copyPainterOutfit, getPainterLoreIdentity, globalIdentityForSubject, outfitsForIdentity, painterNameKey, unreflectedGlobalIdentities, withPainterLoreIdentity } from './library'
+import { collectPainterLorePresets, isPainterLoreIdentity, isPainterLoreStyle, painterLoreCandidates, type PainterLoreLibrary } from './lorePresets'
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value))
 const errorText = (cause: unknown) => cause instanceof Error ? cause.message : String(cause)
@@ -59,6 +60,10 @@ export class PainterSession {
     private controller: AbortController | null = null
     /** Presets connected through lore entries matched for the latest prompt request. */
     private loreIdentityIds = new Set<string>()
+    /** Presets written as lorebook entries, CBS-evaluated for this chat. Read-only here; edited in the lorebook. */
+    loreLibrary = $state<PainterLoreLibrary>({ identities: [], outfits: [], styles: [], warnings: [] })
+    /** Selected passage and context messages of the latest prompt request, used to pick lore presets. */
+    private sceneText = ''
     private pending: {
         png: Uint8Array
         result: PainterResult
@@ -106,6 +111,27 @@ export class PainterSession {
         })
     }
     get globalLibrary(): PainterLibraryData { return DBState.db.bardPainterLibrary ?? { identities: [], outfits: [] } }
+    /** Every character a block can link to: lorebook presets first, then the bot's saved presets. */
+    get identities(): PainterIdentity[] { return [...this.loreLibrary.identities, ...this.bot.identities] }
+    /** Re-read lorebook presets so CBS conditions follow the chat's current variables. */
+    async refreshLorePresets(): Promise<void> {
+        const char = this.character
+        const chat = this.chat
+        const modules = new Set([...(DBState.db.enabledModules ?? []), ...(char.modules ?? []), ...(chat.modules ?? [])])
+        const sources = [
+            ...(DBState.db.modules ?? []).filter(item => modules.has(item.id)).map(item => ({ scope: `module:${item.id}`, entries: item.lorebook ?? [] })),
+            { scope: 'character', entries: char.globalLore ?? [] },
+            { scope: 'chat', entries: chat.localLore ?? [] },
+        ]
+        // Most bots have no painter entries; skip loading the CBS parser for them.
+        if (!sources.some(source => source.entries.some(entry => /bardpainter/i.test(entry.content ?? '')))) {
+            if (this.loreLibrary.identities.length || this.loreLibrary.outfits.length || this.loreLibrary.styles.length || this.loreLibrary.warnings.length) this.loreLibrary = { identities: [], outfits: [], styles: [], warnings: [] }
+            return
+        }
+        const { risuChatParser } = await import('../parser/parser.svelte')
+        const chara = { ...char, chatPage: char.chats.indexOf(chat) }
+        this.loreLibrary = collectPainterLorePresets(sources, content => risuChatParser(content, { chara, chat }))
+    }
     /** Bot-only outfits plus the global outfits selected for this bot. */
     get botCatalog(): PainterLibraryData { return botOutfitCatalog(this.bot, this.globalLibrary) }
     async setBotGlobalOutfits(ids: string[]): Promise<boolean> {
@@ -209,7 +235,7 @@ export class PainterSession {
     /** Blank bot identities judged from loaded chats only; pruning rechecks every chat. */
     get blankIdentityIds() { return blankPainterIdentityIds(this.bot, this.character.chats.flatMap(chat => chat.bardPainter?.outfits ?? []), this.character.globalLore ?? []) }
     globalMatchFor(subject: Pick<PainterSubject, 'name' | 'aliases' | 'kind' | 'id'>) {
-        if (subject.kind !== 'character' || this.bot.identities.some(item => item.id === subject.id && item.appearance.trim())) return
+        if (subject.kind !== 'character' || isPainterLoreIdentity(subject.id) || this.bot.identities.some(item => item.id === subject.id && item.appearance.trim())) return
         return globalIdentityForSubject(subject, this.bot, this.globalLibrary)
     }
     /**
@@ -255,10 +281,28 @@ export class PainterSession {
             return copied.id
         })
     }
-    get styles() { return [...PAINTER_STYLES, ...(DBState.db.bardPainterStyles ?? [])] }
+    /** Built-in, this bot's lorebook styles, then the user's saved styles. */
+    get styles() { return [...PAINTER_STYLES, ...this.loreLibrary.styles, ...(DBState.db.bardPainterStyles ?? [])] }
+    /** The lorebook style marked as this bot's default. */
+    get botDefaultStyle() { return this.loreLibrary.styles.find(item => item.id === this.loreLibrary.defaultStyleId) }
     get fragments() { return DBState.db.bardPainterFragments ?? [] }
     get defaultStyle() { return this.styles.find(item => item.id === DBState.db.bardPainterDefaultStyleId) ?? PAINTER_STYLES[0] }
-    get style() { return this.styles.find((item) => item.id === this.data.settings.styleId) ?? this.defaultStyle }
+    get style() {
+        const chosen = this.styles.find((item) => item.id === this.data.settings.styleId)
+        // A chat that only carries the global default (stamped at creation) follows the bot's style.
+        const bot = this.botDefaultStyle
+        if (bot && !this.data.styleChosen && (!chosen || chosen.id === this.defaultStyle.id)) return bot
+        return chosen ?? this.defaultStyle
+    }
+    /** Use a style in this chat; an explicit choice outranks the bot's default style. */
+    async chooseStyle(id: string): Promise<boolean> {
+        return (await this.presetAction('화풍을 바꿨습니다.', write => {
+            if (!this.styles.some(item => item.id === id)) throw new Error('화풍을 다시 선택해 주세요.')
+            write(this.data.settings, 'styleId', id)
+            write(this.data, 'styleChosen', true)
+            return true
+        })) === true
+    }
     get promptPreset() { return painterPromptPreset(DBState.db, this.chat) }
     get imagePresets() {
         const prompt = this.promptPreset
@@ -434,12 +478,13 @@ export class PainterSession {
     /** Outfits a saved character can wear here: its chat, bot and selected global outfits. */
     outfitsFor(identityId: string): PainterOutfit[] {
         return [...this.data.outfits.filter(outfit => outfit.subjectId === identityId),
+            ...this.loreLibrary.outfits.filter(outfit => outfit.subjectId && outfit.subjectId === identityId),
             ...outfitsForIdentity(this.botCatalog, identityId).map(outfit => ({ ...outfit, subjectId: identityId }))]
     }
     /** Outfits offered in a block's picker: its own first, then shared templates. */
     outfitChoices(subjectId: string): PainterOutfit[] {
         const own = this.outfitsFor(subjectId)
-        const shared = [...this.data.outfits, ...this.botCatalog.outfits].filter(item => !item.subjectId && !own.some(outfit => outfit.id === item.id))
+        const shared = [...this.data.outfits, ...this.loreLibrary.outfits, ...this.botCatalog.outfits].filter(item => !item.subjectId && !own.some(outfit => outfit.id === item.id))
         return [...own, ...shared]
     }
     /** A block filled from a saved character: its look verbatim, plus the default outfit when the block has none. */
@@ -451,7 +496,7 @@ export class PainterSession {
         return next
     }
     private findBotIdentity(id: string) {
-        const identity = this.bot.identities.find(item => item.id === id)
+        const identity = this.identities.find(item => item.id === id)
         if (!identity) throw new Error('캐릭터 프리셋을 다시 선택해 주세요.')
         return identity
     }
@@ -601,6 +646,7 @@ export class PainterSession {
             add(`${i < index ? '이전' : '이후'} 메시지 ${i + 1} (${msg.role})`, msg.data)
             scene.push(msg.data)
         }
+        this.sceneText = [instruction, ...scene].join('\n\n')
         if (options.characterLorebook) {
             const lore = await matchLoreBuilderCharacterLorebook({
                 character: contextCharacter, targetEntryId: '',
@@ -652,6 +698,7 @@ export class PainterSession {
         this.state.status = 'prompt'
         await this.action(async () => {
             this.loreIdentityIds = new Set()
+            await this.refreshLorePresets()
             const sources = await this.context(target, options.instruction ?? this.settings.instruction)
             if (controller.signal.aborted) return
             this.state.sources = sources
@@ -667,7 +714,8 @@ export class PainterSession {
             const draft = seed && (seed.scene.trim() || seed.subjects.length) ? seed : undefined
             const requestCharacter = { ...this.character, chatPage: this.character.chats.indexOf(this.chat) }
             const userName = resolvePersonaById(DBState.db, this.character, this.chat.bindedPersona)?.persona.name ?? DBState.db.username ?? 'User'
-            const presets = clone(this.bot.identities)
+            // Only lore presets named in the scene (or already in the draft) reach the planner's index.
+            const presets = clone([...painterLoreCandidates(this.loreLibrary.identities, this.sceneText, (draft?.subjects ?? []).map(item => item.id)), ...this.bot.identities])
             const outfitsFor = (identityId: string) => this.outfitsFor(identityId)
             const formated = buildPainterMessages({ anchor: target, settings, style, sources, userName,
                 identities: presets, draft, fragments: previousDraft?.fragments,
@@ -710,6 +758,7 @@ export class PainterSession {
             this.state.notice = unreflected
                 ? `프롬프트를 작성했습니다. 글로벌 캐릭터와 이름이 같은 인물 ${unreflected}명이 이 봇에 반영되지 않아 저장된 외형을 쓰지 못했습니다. 해당 블록에서 '봇에 반영'을 눌러 주세요.`
                 : '프롬프트를 작성했습니다. 외형과 의상을 확인한 뒤 이미지를 생성하세요.'
+            if (this.loreLibrary.warnings.length) this.state.notice += ` 로어북 프리셋 확인 필요: ${this.loreLibrary.warnings.slice(0, 3).join(' / ')}${this.loreLibrary.warnings.length > 3 ? ` 외 ${this.loreLibrary.warnings.length - 3}건` : ''}`
         })
         if (!prepared && previousDraft && previousAnchor) {
             this.data.anchor = previousAnchor
@@ -883,7 +932,7 @@ export class PainterSession {
             if (!subject) throw new Error('의상을 저장할 인물을 선택해 주세요.')
             const outfit = capturePainterOutfit(subject, name, includeState)
             uniquePresetName(outfit.name, this.data.outfits.filter(item => item.subjectId === subjectId), outfit.id)
-            if (!this.bot.identities.some(item => item.id === subject.id)) {
+            if (!isPainterLoreIdentity(subject.id) && !this.bot.identities.some(item => item.id === subject.id)) {
                 uniquePresetName(subject.name, this.bot.identities, subject.id)
                 write(this.bot, 'identities', [...this.bot.identities, { id: subject.id, name: subject.name.trim(), aliases: [...subject.aliases], appearance: '' }])
             }
@@ -972,6 +1021,7 @@ export class PainterSession {
     async rememberIdentity(subjectId: string) {
         const subject = this.data.draft?.subjects.find(item => item.id === subjectId)
         if (!subject) return
+        if (isPainterLoreIdentity(subject.id)) { this.state.error = '로어북에서 온 캐릭터입니다. 외형은 로어북의 바드페인터 항목에서 고쳐 주세요.'; return }
         const target = this.bot.identities.find(item => item.id === subject.id)
             ?? this.bot.identities.find(item => !item.appearance.trim() && painterNameKey(item.name) === painterNameKey(subject.name))
         const id = await this.saveIdentity({ ...(target ? clone(target) : {}), id: target?.id ?? subject.id, name: subject.name, aliases: [...new Set([...(target?.aliases ?? []), ...subject.aliases])], appearance: subject.appearance })
@@ -1073,13 +1123,14 @@ export class PainterSession {
     async setDefaultStyle(id: string): Promise<boolean> {
         return (await this.presetAction('새 작업에 사용할 기본 화풍을 지정했습니다.', write => {
             if (!this.styles.some(item => item.id === id)) return
+            if (isPainterLoreStyle(id)) throw new Error('봇 로어의 화풍은 이 봇에서만 쓰여 전체 기본 화풍으로 지정할 수 없습니다.')
             write(DBState.db, 'bardPainterDefaultStyleId', id)
             return true
         }, true)) === true
     }
     async saveStyle(style: PainterStyle, asNew = false): Promise<string | undefined> {
         return this.presetAction('화풍 프리셋을 저장했습니다.', write => {
-            const custom = { ...clone(style), id: asNew || !style.id || PAINTER_STYLES.some(item => item.id === style.id) ? v4() : style.id, name: style.name.trim() }
+            const custom = { ...clone(style), id: asNew || !style.id || PAINTER_STYLES.some(item => item.id === style.id) || isPainterLoreStyle(style.id) ? v4() : style.id, name: style.name.trim() }
             uniquePresetName(custom.name, this.styles, custom.id)
             const draft = { rendering: '', scene: 'landscape', negative: '', subjects: [] }
             buildPainterImageRequest(draft, custom, this.settings, 1)
@@ -1087,6 +1138,7 @@ export class PainterSession {
             const index = existing.findIndex(item => item.id === custom.id)
             write(DBState.db, 'bardPainterStyles', index < 0 ? [...existing, custom] : existing.map((item, position) => position === index ? custom : item))
             write(this.data.settings, 'styleId', custom.id)
+            write(this.data, 'styleChosen', true)
             return custom.id
         }, true)
     }
@@ -1096,7 +1148,10 @@ export class PainterSession {
             write(DBState.db, 'bardPainterStyles', DBState.db.bardPainterStyles.filter(item => item.id !== id))
             if (DBState.db.bardPainterDefaultStyleId === id) write(DBState.db, 'bardPainterDefaultStyleId', PAINTER_STYLES[0].id)
             for (const character of DBState.db.characters) for (const chat of character.chats) {
-                if (!chat._placeholder && chat.bardPainter?.settings.styleId === id) write(chat.bardPainter.settings, 'styleId', this.defaultStyle.id)
+                if (!chat._placeholder && chat.bardPainter?.settings.styleId === id) {
+                    write(chat.bardPainter.settings, 'styleId', this.defaultStyle.id)
+                    write(chat.bardPainter, 'styleChosen', undefined)
+                }
             }
             return true
         }, true)) === true

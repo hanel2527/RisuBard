@@ -45,7 +45,7 @@ beforeEach(() => {
     const data = createPainterChatData()
     const style = result().style
     runtime.current = painterTestState({
-        data, get settings() { return this.data.settings }, chat: { isStreaming: false }, bot: { identities: [] as any[], outfits: [] }, style, styles: [style],
+        data, get settings() { return this.data.settings }, chat: { isStreaming: false }, bot: { identities: [] as any[], outfits: [] }, get identities() { return this.bot.identities }, refreshLorePresets: vi.fn(async () => {}), style, styles: [style],
         get botCatalog() { return this.bot }, unreflectedGlobalIdentities: [] as any[], generationSettingsPinned: false, hasGenerationOverrides: false,
         promptPreset: { id: 'current' }, imagePreset: undefined,
         imagePresets: [{ index: 0, preset: { name: 'Image', values: { toggle_detail: '0' } } }], applyImagePreset: vi.fn().mockResolvedValue(true),
