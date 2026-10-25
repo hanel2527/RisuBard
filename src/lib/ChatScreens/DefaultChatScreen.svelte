@@ -34,6 +34,8 @@
         doingChat,
         executeCurrentNarrativeWikiCommand,
         forceCurrentNarrativeWikiUpdate,
+        retryNarrativeBacklog,
+        skipNarrativeBacklogTurn,
         resumeCurrentWikiReboot,
         startCurrentWikiReboot,
         stopCurrentWikiReboot,
@@ -2083,6 +2085,8 @@ import { isMobile } from 'src/ts/platform'
             characterId={currentCharacter.chaId}
             chatId={currentChatSlot.id}
             onForceWikiUpdate={forceCurrentNarrativeWikiUpdate}
+            onRetryWikiBacklog={retryNarrativeBacklog}
+            onSkipWikiBacklogTurn={skipNarrativeBacklogTurn}
             rebootJob={currentChatSlot.risuBardWikiReboot}
             onStartWikiReboot={startCurrentWikiReboot}
             onStopWikiReboot={stopCurrentWikiReboot}

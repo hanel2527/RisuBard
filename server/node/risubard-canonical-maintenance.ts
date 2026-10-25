@@ -298,6 +298,32 @@ export function applyMaintenanceResponse(input: {
     }
 }
 
+const normalizedUnit = (value: string) => value.normalize('NFKC').replace(/\s+/gu, ' ').trim()
+
+/**
+ * Units of each section whose exact text no longer appears after a turn rewrite.
+ * Changed and removed units both count; the current-state snapshot is replaced by design.
+ */
+export function changedCanonicalUnits(before: string, after: string): Array<{ heading: string; count: number }> {
+    const currentState = new Set(roleHeadings('currentState').map(identityKey))
+    const remaining = normalizedUnit(after)
+    const seen = new Set<string>()
+    const result: Array<{ heading: string; count: number }> = []
+    for (const match of before.matchAll(/^###[ \t]+(.+?)[ \t]*$/gmu)) {
+        const key = identityKey(match[1])
+        if (currentState.has(key) || seen.has(key)) continue
+        seen.add(key)
+        let section: ReturnType<typeof readCanonicalSection>
+        try { section = readCanonicalSection(before, [match[1]]) }
+        catch { return [] }
+        if (!section) continue
+        const count = splitSectionUnits(section.body).units
+            .filter((unit) => !remaining.includes(normalizedUnit(unit))).length
+        if (count > 0) result.push({ heading: section.heading, count })
+    }
+    return result
+}
+
 const skipNote = (title: string, reason: string) =>
     `정본 정리 보류: ${title} (${reason}). 문서는 바꾸지 않았습니다.`.slice(0, 512)
 

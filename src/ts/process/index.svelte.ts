@@ -42,7 +42,7 @@ import {
     buildBoundedNarrativeInquiryFallback,
     createStoredResponseMemoryAnalysis,
     projectConfirmedMemoryTurn,
-    projectUnconfirmedMemoryTurns,
+    projectMemoryBacklog,
     projectMemoryAnalysisEvidence,
     projectRecentMemoryMessages,
     type MemoryAnalysisMessage,
@@ -110,6 +110,7 @@ import type { WikiSemanticMatch } from '../risubard/wikiEmbeddingIndex';
 import { normalizeArcPlotterRuntimeSettings } from '../risubard/arcPlotterSettings';
 import {
     canonicalTurnNeedsRetry,
+    canonicalTurnRetryWarning,
     canonicalTurnFailureWarning,
     mergeCanonicalTurnReceipts,
 } from '../risubard/canonicalTurnReceipt';
@@ -424,14 +425,25 @@ async function runNarrativeConfirmation(
             (item) => item.chatId === input.targetMessageId
         )
         const accepted = input.messages.at(-1)
+        if (message && accepted?.role === 'assistant' && message.data !== accepted.content) {
+            message.risubardWikiPending = {
+                reason: '분석하는 동안 메시지 내용이 바뀌어 다시 분석합니다.',
+                failedAt: new Date().toISOString(),
+            }
+        }
         if (message
             && accepted?.role === 'assistant'
             && message.data === accepted.content) {
             if (receipt && canonicalTurnNeedsRetry(receipt)) {
                 delete message.risubardMemoryConfirmed
+                message.risubardWikiPending = {
+                    reason: canonicalTurnRetryWarning(receipt)?.slice(0, 512),
+                    failedAt: new Date().toISOString(),
+                }
             }
             else {
                 message.risubardMemoryConfirmed = true
+                delete message.risubardWikiPending
             }
             if (receipt) {
                 message.risubardCanonicalReceipt = mergeCanonicalTurnReceipts(
@@ -447,6 +459,13 @@ async function runNarrativeConfirmation(
         const reason = (error instanceof Error
             ? error.message
             : String(error)).trim().slice(0, 512)
+        const failed = findNarrativeMessage(input.characterId, input.chatId, input.targetMessageId)
+        if (failed && failed.risubardMemoryConfirmed !== true) {
+            failed.risubardWikiPending = {
+                reason: reason || '알 수 없는 오류',
+                failedAt: new Date().toISOString(),
+            }
+        }
         publishRisuBardMemoryActivity({
             characterId: input.characterId,
             chatId: input.chatId,
@@ -459,6 +478,98 @@ async function runNarrativeConfirmation(
     finally {
         endWikiGeneration(generationOperation)
     }
+}
+
+function findNarrativeMessage(characterId: string, chatId: string, messageId: string): Message | undefined {
+    return DBState.db.characters.find((item) => item.chaId === characterId)
+        ?.chats.find((item) => item.id === chatId)
+        ?.message.find((item) => item.chatId === messageId && item.role === 'char')
+}
+
+const NARRATIVE_BACKLOG_TURNS_PER_RUN = 4
+
+/**
+ * Analyzes the chat's queued turns in story order, at most a few per call,
+ * and stops at the first turn that does not confirm so that no later turn
+ * overtakes it. The target turn is queued first.
+ */
+const narrativeBacklogRuns = new Map<string, Promise<void>>()
+
+function processNarrativeBacklog(input: {
+    characterId: string
+    chatId: string
+    targetMessageId?: string
+}): Promise<void> {
+    if (input.targetMessageId) {
+        const target = findNarrativeMessage(input.characterId, input.chatId, input.targetMessageId)
+        if (target && target.risubardMemoryConfirmed !== true) target.risubardWikiPending ??= {}
+    }
+    // A second trigger waits for the running pass instead of colliding with it.
+    const key = JSON.stringify([input.characterId, input.chatId])
+    const run = (narrativeBacklogRuns.get(key) ?? Promise.resolve()).then(() => runNarrativeBacklog(input))
+    const settled = run.catch(() => undefined)
+    narrativeBacklogRuns.set(key, settled)
+    void settled.then(() => {
+        if (narrativeBacklogRuns.get(key) === settled) narrativeBacklogRuns.delete(key)
+    })
+    return run
+}
+
+async function runNarrativeBacklog(input: {
+    characterId: string
+    chatId: string
+    targetMessageId?: string
+}): Promise<void> {
+    const chat = DBState.db.characters.find((item) => item.chaId === input.characterId)
+        ?.chats.find((item) => item.id === input.chatId)
+    if (!chat) return
+    const turns = projectMemoryBacklog(chat.message, input.targetMessageId, {
+        limit: NARRATIVE_BACKLOG_TURNS_PER_RUN,
+        ignoreOocTurns: true,
+    })
+    for (const turn of turns) {
+        try {
+            await confirmProjectedNarrativeTurn({
+                characterId: input.characterId,
+                chatId: input.chatId,
+                ...turn,
+            })
+        }
+        catch (error) {
+            console.warn('[RisuBard memory confirmation]', error)
+        }
+        const message = findNarrativeMessage(input.characterId, input.chatId, turn.targetMessageId)
+        if (message && message.risubardMemoryConfirmed !== true) break
+    }
+}
+
+/** Runs the current chat's waiting wiki turns now, from the oldest. */
+export async function retryNarrativeBacklog(): Promise<void> {
+    const character = DBState.db.characters[get(selectedCharID)]
+    const chat = character?.chats[character.chatPage]
+    if (!character || !chat) return
+    await processNarrativeBacklog({
+        characterId: character.chaId,
+        chatId: ensureNarrativeSessionChatId(chat, v4),
+    })
+}
+
+/** Leaves one waiting turn out of the wiki so that the turns after it can proceed. */
+export function skipNarrativeBacklogTurn(messageId: string): boolean {
+    const character = DBState.db.characters[get(selectedCharID)]
+    const chat = character?.chats[character.chatPage]
+    const message = chat?.message.find((item) => item.chatId === messageId && item.role === 'char')
+    if (!message || message.risubardMemoryConfirmed === true) return false
+    delete message.risubardWikiPending
+    message.risubardMemoryConfirmed = true
+    message.risubardCanonicalReceipt = mergeCanonicalTurnReceipts(message.risubardCanonicalReceipt, {
+        sourceMessageIds: [messageId],
+        eventIds: [],
+        changes: [],
+        warnings: ['사용자가 이 턴을 건너뛰었습니다. 이 턴의 내용은 위키에 반영되지 않았습니다.'],
+        recordedAt: new Date().toISOString(),
+    })
+    return true
 }
 
 export async function confirmCurrentNarrativeMessage(
@@ -653,6 +764,7 @@ async function finalizeWikiReboot(
     for (const message of chat.message) {
         delete message.risubardMemoryConfirmed
         delete message.risubardCanonicalReceipt
+        delete message.risubardWikiPending
         if (message.chatId && targetIds.has(message.chatId)) {
             message.risubardMemoryConfirmed = true
             const receipt = job.receipts[message.chatId]
@@ -3800,22 +3912,12 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         && shouldAutomaticallyConfirmNarrativeTurn(
             requestSettings.risuBardAutoWikiEnabled
         )) {
-        // A turn whose analysis failed or whose canon save was rejected stays
-        // unconfirmed; retry the most recent ones before this turn, in order.
-        const pendingTurns = projectUnconfirmedMemoryTurns(
-            generationScope.chat.message,
-            narrativeTurnToConfirm.targetMessageId,
-            { limit: 2 },
-        )
-        for (const turn of [...pendingTurns, narrativeTurnToConfirm]) {
-            void confirmProjectedNarrativeTurn({
-                characterId: currentChar.chaId,
-                chatId: narrativeSessionChatId,
-                ...turn,
-            }).catch((error) => {
-                console.warn('[RisuBard memory confirmation]', error)
-            })
-        }
+        // Turns that failed before stay queued and go first, in story order.
+        void processNarrativeBacklog({
+            characterId: currentChar.chaId,
+            chatId: narrativeSessionChatId,
+            targetMessageId: narrativeTurnToConfirm.targetMessageId,
+        })
     }
 
     return true

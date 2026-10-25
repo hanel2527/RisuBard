@@ -3044,6 +3044,8 @@ export interface Message{
     scriptstateSwipeCheckpoints?: StoredSwipeScriptstateCheckpoint[]
     risubardMemoryConfirmed?: boolean
     risubardCanonicalReceipt?: CanonicalTurnReceipt
+    /** Queued for wiki analysis and not yet confirmed; reason holds the last failure. */
+    risubardWikiPending?: { reason?: string, failedAt?: string }
 }
 
 export interface MessageGenerationInfo{

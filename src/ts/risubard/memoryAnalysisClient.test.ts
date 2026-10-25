@@ -128,29 +128,33 @@ describe('stored response memory analysis', () => {
         ])).toBeNull()
     })
 
-    test('lists earlier unconfirmed turns inside the retry window, oldest first', async () => {
-        const { projectUnconfirmedMemoryTurns } = await import('./memoryAnalysisClient')
-        const turn = (index: number, confirmed?: boolean) => [
+    test('lists queued turns in story order and leaves never-queued history alone', async () => {
+        const { projectMemoryBacklog } = await import('./memoryAnalysisClient')
+        const turn = (index: number, state: { confirmed?: boolean, pending?: { reason?: string } } = {}) => [
             { role: 'user', data: `ask ${index}`, chatId: `user-${index}` },
             { role: 'char', data: `reply ${index}`, chatId: `assistant-${index}`,
-                ...(confirmed === undefined ? {} : { risubardMemoryConfirmed: confirmed }) },
+                ...(state.confirmed === undefined ? {} : { risubardMemoryConfirmed: state.confirmed }),
+                ...(state.pending ? { risubardWikiPending: state.pending } : {}) },
         ]
         const messages = [
-            ...turn(1),            // outside the window: never retried
-            ...turn(2, true),
-            ...turn(3),            // failed earlier: retried
-            ...turn(4, false),     // canonical save failed: retried
-            ...turn(5, true),
-            ...turn(6),            // the turn being confirmed now
+            ...turn(1),                                         // never queued: wiki was off
+            ...turn(2, { confirmed: true }),
+            ...turn(3, { pending: { reason: '공급자 응답 오류' } }), // failed: goes first
+            ...turn(4, { pending: {} }),                        // waited behind turn 3
+            ...turn(5, { confirmed: true }),                    // legacy order from before the cursor
+            ...turn(6),                                         // the turn being confirmed now
             { role: 'user', data: 'ask 7', chatId: 'user-7' },
         ]
 
-        const pending = projectUnconfirmedMemoryTurns(messages, 'assistant-6', { limit: 4 })
+        const backlog = projectMemoryBacklog(messages, 'assistant-6', { limit: 4 })
 
-        expect(pending.map((item) => item.targetMessageId)).toEqual(['assistant-3', 'assistant-4'])
-        expect(pending[0].messages.map((message) => message.messageId)).toEqual(['user-3', 'assistant-3'])
-        expect(projectUnconfirmedMemoryTurns(messages, 'assistant-6', { limit: 0 })).toEqual([])
-        expect(projectUnconfirmedMemoryTurns(messages, 'missing', { limit: 4 })).toEqual([])
+        expect(backlog.map((item) => item.targetMessageId)).toEqual(['assistant-3', 'assistant-4', 'assistant-6'])
+        expect(backlog[0].messages.map((message) => message.messageId)).toEqual(['user-3', 'assistant-3'])
+        expect(projectMemoryBacklog(messages, 'assistant-6', { limit: 2 }).map((item) => item.targetMessageId))
+            .toEqual(['assistant-3', 'assistant-4'])
+        expect(projectMemoryBacklog(messages, undefined).map((item) => item.targetMessageId))
+            .toEqual(['assistant-3', 'assistant-4'])
+        expect(projectMemoryBacklog(messages, 'missing', { limit: 4 })).toEqual([])
     })
 
     test('reselects an already confirmed response only for an explicit force update', async () => {
@@ -1534,7 +1538,7 @@ describe('stored response memory analysis', () => {
         expect(requestModel).not.toHaveBeenCalled()
     })
 
-    test('times out a wiki confirmation when an internal request never settles', async () => {
+    test('keeps a slow wiki confirmation running until it is cancelled', async () => {
         vi.useFakeTimers()
         try {
             let viewStarted!: () => void
@@ -1554,6 +1558,7 @@ describe('stored response memory analysis', () => {
                 onError: vi.fn(),
                 nativeV2Analysis: true,
             })
+            const controller = new AbortController()
             const confirmation = analysis.confirm({
                 characterId: 'character',
                 chatId: 'chat',
@@ -1562,7 +1567,7 @@ describe('stored response memory analysis', () => {
                     role: 'assistant',
                     content: 'The accepted turn.',
                 }],
-            }).then(
+            }, controller.signal).then(
                 () => 'resolved',
                 (error: unknown) => error instanceof Error
                     ? error.name
@@ -1570,12 +1575,14 @@ describe('stored response memory analysis', () => {
             )
 
             await started
-            await vi.advanceTimersByTimeAsync(10 * 60_000)
+            await vi.advanceTimersByTimeAsync(60 * 60_000)
 
             await expect(Promise.race([
                 confirmation,
                 Promise.resolve('still-pending'),
-            ])).resolves.toBe('TimeoutError')
+            ])).resolves.toBe('still-pending')
+            controller.abort()
+            await expect(confirmation).resolves.toBe('AbortError')
         }
         finally {
             vi.useRealTimers()
@@ -1799,7 +1806,7 @@ describe('stored response memory analysis', () => {
         expect(saveSignal?.aborted).toBe(true)
     })
 
-    test('reports the configured analysis token limit in user-readable terms', async () => {
+    test('sends required evidence whole and reports a too-small analysis limit on the receipt', async () => {
         const onError = vi.fn()
         const requestModel = vi.fn(async (request: MemoryAnalysisModelCall) => ({
             type: 'success' as const,
@@ -1850,20 +1857,75 @@ describe('stored response memory analysis', () => {
             nativeV2Analysis: true,
         })
 
-        await analysis.confirm({
+        // The client raises any limit to its 3,072 floor; this turn alone is larger.
+        const evidence = '여러 인물의 지속 정보가 확정되었다. '.repeat(300)
+        const receipt = await analysis.confirm({
             characterId: 'character', chatId: 'chat',
             messages: [{
                 messageId: 'assistant-1', role: 'assistant',
-                content: '여러 인물의 지속 정보가 확정되었다.',
+                content: evidence,
             }],
             analysisTokenLimit: 2_048,
         })
 
-        expect(onError).toHaveBeenCalledWith(expect.objectContaining({
-            message: expect.stringContaining('AI 분석 토큰 상한'),
+        expect(JSON.parse(requestModel.mock.calls[0][0].formated[1].content).confirmedMessages[0].content)
+            .toBe(evidence)
+        expect(receipt?.notes?.some((note) => note.startsWith('분석 상한 초과:'))).toBe(true)
+    })
+
+    test('drops whole lore entries before touching evidence and notes it on the receipt', async () => {
+        const requestModel = vi.fn(async (_request: MemoryAnalysisModelCall) => ({
+            type: 'success' as const,
+            result: JSON.stringify({
+                schemaVersion: 1, title: '도착', establishedEvents: ['사만다가 도착했다.'],
+                stateChanges: [], characterKnowledge: [], persistentFacts: [], openContinuity: [],
+                canonicalUpdateCandidates: [],
+            }),
         }))
-        expect(onError).toHaveBeenCalledOnce()
-        expect(requestModel).toHaveBeenCalledOnce()
+        const analysis = createStoredResponseMemoryAnalysis({
+            requestModel,
+            fetchImpl: vi.fn(async (input) => {
+                const url = String(input)
+                if (url.endsWith('/view')) {
+                    return new Response(JSON.stringify({
+                        mode: 'markdown', wikiPath: 'wiki', documents: [],
+                        health: { danglingLinks: [], unlinkedDocumentIds: [] },
+                    }))
+                }
+                if (url.endsWith('/inquiry')) {
+                    return new Response(JSON.stringify({
+                        mode: 'v2-current', graphRevision: 0, indexRevision: 0,
+                        cacheStatus: 'current', sources: [], metrics: {
+                            candidateCount: 0, inspectedNodeCount: 0, inspectedEdgeCount: 0,
+                            selectedNodeCount: 0, selectedTokens: 0, hopCount: 0, auxiliaryModelCalls: 0,
+                        },
+                    }))
+                }
+                return new Response(JSON.stringify({ id: 'event-1', title: '도착', retrievalMetadata: {} }))
+            }) as unknown as typeof fetch,
+            createAuth: async () => 'test-jwt',
+            onError: vi.fn(),
+            nativeV2Analysis: true,
+        })
+        const evidence = '사만다가 북쪽 성문에 도착했다.'
+        const loreReference = Array.from({ length: 10 }, (_, index) => ({
+            title: `설정 ${index}`, content: `설정 문서 ${index}. `.repeat(60),
+        }))
+
+        const receipt = await analysis.confirm({
+            characterId: 'character', chatId: 'chat',
+            messages: [{ messageId: 'assistant-1', role: 'assistant', content: evidence }],
+            analysisTokenLimit: 3_072,
+            loreReference,
+        })
+
+        const input = JSON.parse(requestModel.mock.calls[0][0].formated[1].content)
+        expect(input.confirmedMessages[0].content).toBe(evidence)
+        const kept = input.settingReference ?? []
+        expect(kept.length).toBeLessThan(loreReference.length)
+        expect(kept).toEqual(loreReference.slice(0, kept.length))
+        expect(receipt?.notes?.[0]).toBe(
+            `분석 입력 조정: 분석 토큰 상한에 맞추려고 로어 참고 ${loreReference.length - kept.length}개를 뺐습니다.`)
     })
 
     test.each([
@@ -1992,11 +2054,17 @@ describe('stored response memory analysis', () => {
         expect(modelCalls[1].logPurpose).toBe('bardwiki-canonical-update')
         expect(modelCalls[0].maxTokens).toBe(outputTokens)
         expect(modelCalls[1].maxTokens).toBe(outputTokens)
+        const evidence = (longEvidence ? '확정된 사건 원문이다. '.repeat(7_000) : '')
+            + '사만다는 생물학자이고 아만다는 감사관이다.'
         const tokenizer = get_encoding('cl100k_base')
         try {
             for (const call of modelCalls) {
-                expect(tokenizer.encode(call.formated.map((message) => message.content).join('\n')).length)
-                    .toBeLessThanOrEqual(analysisTokenLimit)
+                // Confirmed evidence is never shortened; only an oversized turn may exceed the limit.
+                expect(JSON.parse(call.formated[1].content).confirmedMessages[0].content).toBe(evidence)
+                if (!longEvidence) {
+                    expect(tokenizer.encode(call.formated.map((message) => message.content).join('\n')).length)
+                        .toBeLessThanOrEqual(analysisTokenLimit)
+                }
                 if (call.logPurpose === 'bardwiki-canonical-update') {
                     expect(call.maxTokens).toBe(outputTokens)
                 }

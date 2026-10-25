@@ -1,6 +1,8 @@
 import { oocTurnIndices, isOocAssistantTurn } from './oocTurns'
+import { wikiBacklogMessages, type WikiAnalysisPending } from './wikiBacklog'
 import {
     createMemoryAnalysisRunner,
+    type AnalysisInputReport,
     type MemoryAnalysisInput,
     type MemoryAnalysisMessage,
 } from '../../../server/node/risubard-memory-analysis'
@@ -63,6 +65,7 @@ interface StoredMessage {
     isComment?: unknown
     disabled?: unknown
     risubardMemoryConfirmed?: unknown
+    risubardWikiPending?: WikiAnalysisPending
 }
 
 export interface MemoryAnalysisModelResponse extends ModelResponse {
@@ -103,7 +106,6 @@ interface MemoryAnalysisClientOptions {
     nativeV2Analysis?: boolean
 }
 
-const MEMORY_ANALYSIS_TIMEOUT_MS = 10 * 60_000
 // Background analysis does not block a chat response, so it may wait longer
 // than the prompt-time inquiry setting before continuing without references.
 const MEMORY_ANALYSIS_INQUIRY_TIMEOUT_MS = 120_000
@@ -152,94 +154,70 @@ function countAnalysisTokens(value: string): number {
     return analysisTokenizer.encode(value).length
 }
 
+// Optional material, dropped whole and in this order: least useful first.
+// Confirmed messages, reboot turns and canonical targets are evidence and are
+// never shortened; when they alone exceed the limit they are sent in full.
+const OPTIONAL_ANALYSIS_INPUTS: ReadonlyArray<{ key: string; label: string }> = [
+    { key: 'existingNotes', label: '참고 문서' },
+    { key: 'settingReference', label: '로어 참고' },
+    { key: 'previousStoryEvent', label: '직전 사건 요약' },
+]
+// Novelist context windows around the evidence may still be shortened.
+const SHORTENABLE_CONTEXT_KEYS = ['priorContext', 'currentContext']
+
 function fitAnalysisInput(
     system: string,
     input: string,
     limit?: number
-): string {
-    if (!limit || countAnalysisTokens(`${system}\n${input}`) <= limit) {
-        return input
-    }
-    let payload: unknown
+): { input: string; report?: AnalysisInputReport } {
+    const fits = (value: string) => countAnalysisTokens(`${system}\n${value}`) <= limit!
+    if (!limit || fits(input)) return { input }
+    let root: Record<string, unknown>
     try {
-        payload = JSON.parse(input)
+        const payload = JSON.parse(input)
+        if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) throw new Error()
+        root = payload as Record<string, unknown>
     }
     catch {
-        throw new Error(
-            'Memory Wiki 분석 자료가 설정된 ‘AI 분석 토큰 상한’을 초과했습니다. 설정에서 상한을 늘려 주세요.'
-        )
+        return { input, report: { omitted: [], overLimitTokens: countAnalysisTokens(`${system}\n${input}`), limit } }
     }
-    if (typeof payload !== 'object' || payload === null) {
-        throw new Error(
-            'Memory Wiki 분석 자료가 설정된 ‘AI 분석 토큰 상한’을 초과했습니다. 설정에서 상한을 늘려 주세요.'
-        )
+    const omitted: string[] = []
+    let serialized = JSON.stringify(root)
+    for (const { key, label } of OPTIONAL_ANALYSIS_INPUTS) {
+        const value = root[key]
+        if (value === undefined) continue
+        if (Array.isArray(value)) {
+            let dropped = 0
+            while (value.length > 0 && !fits(serialized)) {
+                value.pop()
+                dropped += 1
+                serialized = JSON.stringify(root)
+            }
+            if (value.length === 0) delete root[key]
+            if (dropped > 0) omitted.push(`${label} ${dropped}개`)
+        }
+        else if (!fits(serialized)) {
+            delete root[key]
+            omitted.push(label)
+        }
+        serialized = JSON.stringify(root)
+        if (fits(serialized)) return { input: serialized, report: { omitted, limit } }
     }
-    const root = payload as Record<string, unknown>
-    const requiredMessageIds = new Set(
-        (Array.isArray(root.rebootTurns) ? root.rebootTurns : [])
-            .flatMap((turn) => {
-                if (!turn || typeof turn !== 'object') return []
-                const id = (turn as Record<string, unknown>).assistantMessageId
-                return typeof id === 'string' ? [id] : []
-            })
-    )
-    for (let pass = 0; pass < 48; pass += 1) {
-        const serialized = JSON.stringify(root)
-        if (countAnalysisTokens(`${system}\n${serialized}`) <= limit) {
-            return serialized
-        }
-        const notes = Array.isArray(root.existingNotes)
-            ? root.existingNotes as Array<Record<string, unknown>>
-            : []
-        if (notes.length > 1) {
-            notes.pop()
-            continue
-        }
-        const reducible: Array<{
-            holder: Record<string, unknown>
-            key: string
-            value: string
-            keepEnd: boolean
-        }> = []
-        const inspect = (value: unknown, keepEnd = false) => {
-            if (!value || typeof value !== 'object') return
-            if (Array.isArray(value)) {
-                for (const item of value) inspect(item, keepEnd)
-                return
-            }
-            for (const [key, item] of Object.entries(value)) {
-                const owner = value as Record<string, unknown>
-                if (typeof item === 'string'
-                    && item.length > 256
-                    && ['content', 'markdown', 'confirmedEvent',
-                        'acceptedText', 'removedText', 'priorContext',
-                        'currentContext'].includes(key)
-                    && !(key === 'content'
-                        && typeof owner.messageId === 'string'
-                        && requiredMessageIds.has(owner.messageId))) {
-                    reducible.push({
-                        holder: owner,
-                        key,
-                        value: item,
-                        keepEnd: key === 'content' && 'role' in value,
-                    })
-                }
-                else inspect(item, keepEnd)
-            }
-        }
-        inspect(root)
-        const largest = reducible.sort((left, right) =>
-            right.value.length - left.value.length
-        )[0]
+    for (let pass = 0; pass < 48 && !fits(serialized); pass += 1) {
+        const largest = SHORTENABLE_CONTEXT_KEYS
+            .filter((key) => typeof root[key] === 'string' && (root[key] as string).length > 256)
+            .sort((left, right) => (root[right] as string).length - (root[left] as string).length)[0]
         if (!largest) break
-        const length = Math.max(256, Math.floor(largest.value.length * 0.75))
-        largest.holder[largest.key] = largest.keepEnd
-            ? largest.value.slice(-length)
-            : largest.value.slice(0, length)
+        const value = root[largest] as string
+        root[largest] = value.slice(-Math.max(256, Math.floor(value.length * 0.75)))
+        serialized = JSON.stringify(root)
     }
-    throw new Error(
-        'Memory Wiki 분석 자료가 설정된 ‘AI 분석 토큰 상한’을 초과했습니다. 설정에서 상한을 늘려 주세요.'
-    )
+    return {
+        input: serialized,
+        report: fits(serialized)
+            ? { omitted, limit }
+            : { omitted, overLimitTokens: countAnalysisTokens(`${system}\n${serialized}`), limit },
+    }
 }
 
 const evidenceSchema = {
@@ -556,16 +534,11 @@ function createMemoryAnalysisSignal(parent?: AbortSignal): {
     const onParentAbort = () => controller.abort(parent?.reason)
     if (parent?.aborted) onParentAbort()
     else parent?.addEventListener('abort', onParentAbort, { once: true })
-    const timeout = setTimeout(() => {
-        controller.abort(new DOMException(
-            'BardWiki analysis timed out',
-            'TimeoutError'
-        ))
-    }, MEMORY_ANALYSIS_TIMEOUT_MS)
+    // No time limit: a slow model must not turn into a lost turn. Only the
+    // caller's cancel signal stops an analysis.
     return {
         signal: controller.signal,
         dispose() {
-            clearTimeout(timeout)
             parent?.removeEventListener('abort', onParentAbort)
         },
     }
@@ -735,37 +708,26 @@ export function projectConfirmedMemoryTurn(
 }
 
 /**
- * Earlier assistant turns, within `limit` turns before the target, whose
- * analysis never completed: a failed run or a canonical save that was
- * rejected leaves the turn unconfirmed. Oldest first so retries land in
- * story order ahead of the target turn.
+ * Turns to analyze now, oldest first: every queued turn not yet confirmed, up
+ * to and including the target. The wiki follows story order, so a turn that
+ * keeps failing holds back the ones after it instead of being overtaken.
+ * Turns that were never queued (wiki off, imported history) are not revived.
  */
-export function projectUnconfirmedMemoryTurns(
+export function projectMemoryBacklog(
     storedMessages: readonly StoredMessage[],
-    targetMessageId: string,
+    targetMessageId?: string,
     options: { limit?: number; ignoreOocTurns?: boolean } = {}
 ): { targetMessageId: string; messages: MemoryAnalysisMessage[] }[] {
     const limit = Number.isSafeInteger(options.limit)
         ? Math.max(0, options.limit as number)
-        : 2
-    if (limit === 0) return []
-    const isActive = (message: StoredMessage) =>
-        !message.isComment && !message.disabled
-    const targetIndex = storedMessages.findIndex((message) =>
-        message.role === 'char' && message.chatId === targetMessageId && isActive(message))
-    if (targetIndex < 0) return []
-    const excluded = oocTurnIndices(storedMessages, options.ignoreOocTurns !== false)
-    const pending: { targetMessageId: string; messages: MemoryAnalysisMessage[] }[] = []
-    let inspected = 0
-    for (let index = targetIndex - 1; index >= 0 && inspected < limit; index -= 1) {
-        const message = storedMessages[index]
-        if (message.role !== 'char' || !isActive(message) || excluded.has(index)) continue
-        inspected += 1
-        if (message.risubardMemoryConfirmed === true || typeof message.chatId !== 'string') continue
-        const projected = projectConfirmedMemoryTurn(storedMessages, message.chatId, options)
-        if (projected) pending.unshift(projected)
+        : 4
+    const backlog: { targetMessageId: string; messages: MemoryAnalysisMessage[] }[] = []
+    for (const message of wikiBacklogMessages(storedMessages, targetMessageId, options.ignoreOocTurns)) {
+        if (backlog.length >= limit) break
+        const projected = projectConfirmedMemoryTurn(storedMessages, message.chatId as string, options)
+        if (projected) backlog.push(projected)
     }
-    return pending
+    return backlog
 }
 
 export function createStoredResponseMemoryAnalysis(
@@ -1049,11 +1011,13 @@ export function createStoredResponseMemoryAnalysis(
                 request.system,
                 promptSchemaMessage?.content,
             ].filter(Boolean).join('\n\n')
-            const boundedInput = fitAnalysisInput(
+            const fitted = fitAnalysisInput(
                 requestSystem,
                 request.input,
                 request.inputTokenLimit
             )
+            let inputReport = fitted.report
+            const boundedInput = fitted.input
             const modelCall: MemoryAnalysisModelCall = {
                 formated: [
                     { role: 'system', content: requestSystem },
@@ -1105,6 +1069,12 @@ export function createStoredResponseMemoryAnalysis(
                                     : '',
                                 fallbackMessage.content,
                             ].filter(Boolean).join('\n\n')
+                            const fallbackFit = fitAnalysisInput(
+                                fallbackSystem,
+                                request.input,
+                                request.inputTokenLimit
+                            )
+                            inputReport = fallbackFit.report
                             response = {
                                 ...await requestMemoryModel({
                                     ...modelCall,
@@ -1116,11 +1086,7 @@ export function createStoredResponseMemoryAnalysis(
                                         },
                                         {
                                             role: 'user',
-                                            content: fitAnalysisInput(
-                                                fallbackSystem,
-                                                request.input,
-                                                request.inputTokenLimit
-                                            ),
+                                            content: fallbackFit.input,
                                         },
                                     ],
                                 }, signal),
@@ -1135,7 +1101,10 @@ export function createStoredResponseMemoryAnalysis(
             }
             // Preserve replay restrictions and completion metadata until the
             // runner's semantic validation, not merely until JSON parsing.
-            if (nativeDraft) return requestResponse()
+            if (nativeDraft) {
+                const response = await requestResponse()
+                return inputReport ? { ...response, inputReport } : response
+            }
             return runValidatedModelRequest({
                 request: requestResponse,
                 parse: (text) => {

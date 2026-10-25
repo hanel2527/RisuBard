@@ -282,6 +282,94 @@ describe('memory analysis runner', () => {
         expect(canonicalTurnNeedsRetry(result.canonicalReceipt!)).toBe(true)
     })
 
+    test('skips already saved documents when the same turn is retried after the chat grew', async () => {
+        const documents: Array<Record<string, unknown>> = []
+        let failB = true
+        const saveCanonicalDocument = vi.fn(async (input) => {
+            if (input.title === 'B' && failB) {
+                failB = false
+                throw new Error('fetch failed')
+            }
+            const saved = { ...input, id: `character.${input.title}`, type: 'character' as const,
+                contentHash: `saved-${input.title}`, relativePath: `characters/${input.title}.md`,
+                content: input.markdown, sourceMessageIds: input.sourceMessageIds }
+            documents.push(saved)
+            return saved
+        })
+        const runner = createMemoryAnalysisRunner({
+            memoryService: { loadState: vi.fn(), applyDelta: vi.fn() }, nativeV2Analysis: true,
+            markdownWikiService: {
+                inquire: vi.fn(async () => ({ graphRevision: 0, sources: [] })),
+                loadDocuments: vi.fn(async () => [...documents]) as never,
+                saveConfirmedTurn: vi.fn(async () => undefined), saveCanonicalDocument,
+            },
+            onError: vi.fn(),
+            analyze: async (request) => {
+                if (request.format !== 'memory-draft') {
+                    const titles = JSON.parse(request.input).targets.map((target: { target: { title: string } }) => target.target.title)
+                    return canonicalBatch(...titles.map((title: string) => `## ${title}\n\n### Current State\n\n- Arrived.`))
+                }
+                const applied = new Set(JSON.parse(request.input).alreadyAppliedCanon.map((item: { title: string }) => item.title))
+                return JSON.stringify({ schemaVersion: 1, title: 'Arrival', establishedEvents: ['A and B arrived.'],
+                    stateChanges: [], characterKnowledge: [], persistentFacts: [], openContinuity: [],
+                    canonicalUpdateCandidates: ['A', 'B'].filter((title) => !applied.has(title)).map(title => ({
+                        type: 'character', title, reason: 'Arrived', action: 'create', targetDocumentId: null, confidence: 0.99 })) })
+            },
+        })
+        const turn = { characterId: 'character', chatId: 'chat',
+            messages: [{ messageId: 'assistant-1', role: 'assistant' as const, content: 'A and B arrived.' }] }
+        const first = await runner.run({ ...turn, sourceMessageOrder: [{ chatId: 'assistant-1', role: 'char' }] })
+        expect(canonicalTurnNeedsRetry(first.canonicalReceipt!)).toBe(true)
+        saveCanonicalDocument.mockClear()
+
+        await runner.run({ ...turn, previousCanonicalReceipt: first.canonicalReceipt,
+            sourceMessageOrder: ['assistant-1', 'user-2', 'assistant-2'].map((chatId) => ({ chatId, role: chatId.startsWith('user') ? 'user' : 'char' })) })
+
+        expect(saveCanonicalDocument.mock.calls.map(([input]) => input.title)).toEqual(['B'])
+    })
+
+    test('reports dropped optional input, candidates over the target limit and changed canon units', async () => {
+        const runner = createMemoryAnalysisRunner({
+            memoryService: { loadState: vi.fn(), applyDelta: vi.fn() }, nativeV2Analysis: true,
+            markdownWikiService: {
+                inquire: vi.fn(async () => ({ graphRevision: 0, sources: [] })),
+                loadDocuments: vi.fn(async () => [{
+                    id: 'character.Alice', type: 'character' as const, title: 'Alice', aliases: [],
+                    relativePath: 'characters/Alice.md', sourceMessageIds: [], contentHash: 'alice-old',
+                    content: '## Alice\n\n### Current State\n\n- Home.\n\n### Knowledge\n\n- Knows the gate code.\n- Knows the cellar key.\n- Knows the bell.',
+                }]),
+                saveConfirmedTurn: vi.fn(async () => undefined),
+                saveCanonicalDocument: vi.fn(async (input) => ({ ...input, id: 'character.Alice',
+                    type: 'character' as const, relativePath: 'characters/Alice.md', contentHash: 'alice-new' })),
+            },
+            onError: vi.fn(),
+            analyze: vi.fn(async (request: MemoryAnalysisModelRequest) => ({
+                type: 'success',
+                inputReport: { omitted: ['로어 참고 2개'], limit: 8_192 },
+                result: request.format === 'memory-draft'
+                    ? JSON.stringify({ title: 'Arrival', establishedEvents: ['Alice and Bob arrived.'], stateChanges: [],
+                        characterKnowledge: [], persistentFacts: [], openContinuity: [], canonicalUpdateCandidates: ['Alice', 'Bob'].map((title) => ({
+                            type: 'character', title, reason: 'Arrival', action: title === 'Alice' ? 'update' : 'create',
+                            targetDocumentId: title === 'Alice' ? 'character.Alice' : null, confidence: 1,
+                        })) })
+                    : canonicalPatchBatch([
+                        { heading: 'Current State', operation: 'upsert', content: '- At the gate.' },
+                        { heading: 'Knowledge', operation: 'upsert', content: '- Knows the gate code.\n- Knows the cellar key.' },
+                    ]),
+            })),
+        })
+
+        const result = await runner.run({ characterId: 'character', chatId: 'chat', canonicalTargetLimit: 1,
+            messages: [{ messageId: 'assistant-1', role: 'assistant', content: 'Alice and Bob arrived.' }] })
+
+        expect(result.canonicalReceipt?.warnings).toContain('자동 정본 대상 한도(1개)를 넘어 이번 턴에 반영하지 않은 후보 1개: Bob')
+        expect(canonicalTurnNeedsRetry(result.canonicalReceipt!)).toBe(false)
+        expect(result.canonicalReceipt?.notes).toEqual([
+            '분석 입력 조정: 분석 토큰 상한에 맞추려고 로어 참고 2개를 뺐습니다.',
+            '정본에서 이전 문장이 그대로 남지 않은 항목: Alice (Knowledge 1)',
+        ])
+    })
+
     test('saves a complete 4,000-character section without treating its length as truncation', async () => {
         const saveCanonicalDocument = vi.fn(async (input) => ({
             ...input,

@@ -81,6 +81,7 @@ import {
 } from '../../src/ts/risubard/arcPlotterSettings'
 import {
     MAINTENANCE_COOLDOWN_SOURCES,
+    changedCanonicalUnits,
     maintainCharacterCanon,
     maintenanceCoverDocuments,
 } from './risubard-canonical-maintenance'
@@ -106,6 +107,43 @@ import {
 } from './risubard-story-arc-writer'
 
 let analysisTokenizer: Tiktoken | undefined
+
+/** What the client's input assembler left out or could not fit, per model request. */
+export interface AnalysisInputReport {
+    omitted: string[]
+    /** Tokens of system and input when the required evidence alone exceeds the limit. */
+    overLimitTokens?: number
+    limit?: number
+}
+
+// Optional context sizes are fixed so that a larger analysis limit does not
+// raise the cost of every turn; the limit only decides what optional
+// material is dropped. These equal the former share at the 8,192 default.
+const COMPLETE_CANONICAL_TOKEN_BUDGET = 2_048
+const ANALYSIS_NOTE_CHARACTER_BUDGET = 8_384
+
+function inputReportNotes(reports: readonly AnalysisInputReport[]): string[] {
+    const omitted = new Map<string, number>()
+    let overLimit: AnalysisInputReport | undefined
+    for (const report of reports) {
+        for (const item of report.omitted) {
+            const match = /^(.*?)(?: (\d+)개)?$/u.exec(item)!
+            // Requests of one turn share their optional material; report the largest drop, not a sum.
+            omitted.set(match[1], Math.max(omitted.get(match[1]) ?? 0, Number(match[2] ?? 1)))
+        }
+        if (report.overLimitTokens !== undefined
+            && (overLimit?.overLimitTokens ?? 0) < report.overLimitTokens) overLimit = report
+    }
+    const notes: string[] = []
+    if (omitted.size > 0) {
+        notes.push(`분석 입력 조정: 분석 토큰 상한에 맞추려고 ${[...omitted]
+            .map(([label, count]) => count > 1 ? `${label} ${count}개` : label).join(', ')}를 뺐습니다.`)
+    }
+    if (overLimit) {
+        notes.push(`분석 상한 초과: 확정 원문과 고칠 문서는 줄이지 않고 그대로 보냈습니다 (약 ${overLimit.overLimitTokens!.toLocaleString('ko-KR')}토큰, 상한 ${overLimit.limit?.toLocaleString('ko-KR') ?? '미설정'}토큰).`)
+    }
+    return notes.map((note) => note.slice(0, 512))
+}
 
 const CHARACTER_OVERVIEW_HEADINGS = new Set([
     '개요', 'overview', '프로필', 'profile', '인물 정보', 'character profile',
@@ -1040,13 +1078,11 @@ function documentsNamedIn(
 
 function analysisNotes(
     documents: readonly LoadedCanonicalDocument[],
-    tokenLimit: number,
     query: string
 ): Array<{
     id: string; type: string; title: string; aliases: string[]; content: string
 }> {
-    // Conservative for Korean-heavy text: at most two UTF-16 characters per token.
-    let remainingCharacters = Math.max(0, tokenLimit * 2 - 8_000)
+    let remainingCharacters = ANALYSIS_NOTE_CHARACTER_BUDGET
     const notes: Array<{
         id: string; type: string; title: string; aliases: string[]; content: string
     }> = []
@@ -1118,8 +1154,12 @@ export function createMemoryAnalysisRunner(
                 sessionChatId: snapshot.modelSessionChatId ?? snapshot.chatId,
             }, ...optionalSignalArgument(signal))
         }
+        const inputReports: AnalysisInputReport[] = []
         const analyzeResponse = async (request: MemoryAnalysisModelRequest): Promise<ModelResponse> => {
             const response = await analyzeRaw(request)
+            const report = typeof response === 'object' && response !== null
+                ? (response as { inputReport?: AnalysisInputReport }).inputReport : undefined
+            if (report) inputReports.push(report)
             return typeof response === 'object' && response !== null && 'type' in response
                 ? response : { type: 'success', result: response }
         }
@@ -1153,7 +1193,9 @@ export function createMemoryAnalysisRunner(
             })
         )
         if (options.nativeV2Analysis && options.markdownWikiService) {
-            const { previousCanonicalReceipt: priorReceipt, ...recoveryInput } = snapshot
+            // The chat-wide message order grows with every new turn; hashing it
+            // would make a later retry of the same turn never match its record.
+            const { previousCanonicalReceipt: priorReceipt, sourceMessageOrder: _order, ...recoveryInput } = snapshot
             const recoveryHash = new Sha256()
             recoveryHash.update(JSON.stringify(recoveryInput))
             const inputHash = [...recoveryHash.digestSync()]
@@ -1252,7 +1294,7 @@ export function createMemoryAnalysisRunner(
                 candidateDocuments = documentsNamedIn(analysisQuery, documents, excludedDocumentIds)
             }
             const completeCanonicalDocuments = () => {
-                let remaining = Math.floor((snapshot.analysisTokenLimit ?? 12_000) / 4)
+                let remaining = COMPLETE_CANONICAL_TOKEN_BUDGET
                 const selected: Array<{ id: string; type: string; title: string; completeText: string }> = []
                 for (const document of candidateDocuments.slice(0, 12)) {
                     if (document.type === 'event' || isStoryArcCandidate(document)) continue
@@ -1268,7 +1310,7 @@ export function createMemoryAnalysisRunner(
             const notesForAnalysis = () => {
                 const completeIds = new Set(snapshot.rebootTurns ? []
                     : completeCanonicalDocuments().map((document) => document.id))
-                return analysisNotes(candidateDocuments, snapshot.analysisTokenLimit ?? 12_000, analysisQuery)
+                return analysisNotes(candidateDocuments, analysisQuery)
                     .map((note) => completeIds.has(note.id)
                         ? { ...note, content: '(see completeCanonicalDocuments)' } : note)
             }
@@ -1563,6 +1605,8 @@ export function createMemoryAnalysisRunner(
                 afterHash: string
             }> = []
             const receiptNotes: string[] = []
+            // Before C's unit edits exist, this is the loss signal to watch.
+            const changedUnitSummaries: string[] = []
             const receiptWarnings: string[] = [
                 ...deferred.map((entry) => entry.warning),
                 ...recoveredNewCharacters.map((candidate) =>
@@ -1614,8 +1658,16 @@ export function createMemoryAnalysisRunner(
                         mergedNames: string[]
                         storyArcPlan?: StoryArcUpdatePlan
                     }> = []
+                    const targetLimit = snapshot.canonicalTargetLimit ?? 8
+                    // The reserved arc map waits for a later checkpoint by design.
+                    const overLimit = draft.canonicalUpdateCandidates.slice(targetLimit)
+                        .filter((candidate) => !isStoryArcCandidate(candidate))
+                    if (overLimit.length > 0) {
+                        receiptWarnings.push(`자동 정본 대상 한도(${targetLimit}개)를 넘어 이번 턴에 반영하지 않은 후보 ${overLimit.length}개: ${
+                            overLimit.map((candidate) => candidate.title).join(', ')}`.slice(0, 1024))
+                    }
                     for (const candidate of draft.canonicalUpdateCandidates
-                        .slice(0, snapshot.canonicalTargetLimit ?? 8)) {
+                        .slice(0, targetLimit)) {
                         const titleKey = canonicalIdentityKey(candidate.title)
                         const aliasKeys = new Set(mergeEvidenceBackedAliases(
                             candidate, undefined, snapshot.messages
@@ -1809,9 +1861,11 @@ export function createMemoryAnalysisRunner(
                                 confirmedMessages: snapshot.messages,
                                 ...(snapshot.loreReference ? { settingReference: snapshot.loreReference } : {}),
                             })
+                        // The system prompt shares the limit; leave the rest for the input.
                         const canonicalBatches = splitCanonicalTargets(
                             batchTargets,
-                            snapshot.analysisTokenLimit ?? 12_000,
+                            Math.max(1, (snapshot.analysisTokenLimit ?? 12_000)
+                                - countAnalysisTokens(canonicalSystem)),
                             canonicalInput,
                         )
                         for (const canonicalTargets of canonicalBatches) {
@@ -2070,6 +2124,13 @@ export function createMemoryAnalysisRunner(
                                 await canonicalFailure(entry, new ModelOutputError('invalid-structure', error.message))
                                 continue
                             }
+                            if (entry.target && !entry.storyArcPlan) {
+                                const changed = changedCanonicalUnits(entry.preparedMarkdown, rewritten)
+                                if (changed.length > 0) {
+                                    changedUnitSummaries.push(`${entry.target.title} (${changed
+                                        .map((section) => `${section.heading} ${section.count}`).join(', ')})`)
+                                }
+                            }
                             let maintenanceNote: string | undefined
                             if (entry.target && entry.candidate.type === 'character' && !entry.storyArcPlan
                                 && !snapshot.rebootTurns && !snapshot.historicalReanalysis
@@ -2188,7 +2249,16 @@ export function createMemoryAnalysisRunner(
                 eventIds: savedEvents.map((event) => event.id),
                 changes: receiptChanges,
                 warnings: receiptWarnings,
-                ...(receiptNotes.length > 0 ? { notes: receiptNotes.slice(0, 8) } : {}),
+                ...(() => {
+                    const notes = [
+                        ...inputReportNotes(inputReports),
+                        ...(changedUnitSummaries.length > 0
+                            ? [`정본에서 이전 문장이 그대로 남지 않은 항목: ${changedUnitSummaries.join('; ')}`.slice(0, 512)]
+                            : []),
+                        ...receiptNotes,
+                    ].slice(0, 8)
+                    return notes.length > 0 ? { notes } : {}
+                })(),
                 recordedAt: new Date().toISOString(),
                 recovery: { inputHash, deferred },
             }

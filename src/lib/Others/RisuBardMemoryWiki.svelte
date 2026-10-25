@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount, tick, untrack } from 'svelte'
     import { resolveDynamicMemorySettings } from 'src/ts/risubard/dynamicMemoryBudget'
+    import { summarizeWikiBacklog } from 'src/ts/risubard/wikiBacklog'
     import { painterInsertionRequest } from 'src/ts/bardPainter/selectionState'
     import {
         BookOpenIcon,
@@ -92,6 +93,8 @@
         characterId: string
         chatId: string
         onForceWikiUpdate?: () => Promise<boolean>
+        onRetryWikiBacklog?: () => Promise<void>
+        onSkipWikiBacklogTurn?: (messageId: string) => boolean
         rebootJob?: WikiRebootJob
         onStartWikiReboot?: (
             batchSize: WikiRebootBatchSize,
@@ -115,6 +118,8 @@
         characterId,
         chatId,
         onForceWikiUpdate,
+        onRetryWikiBacklog,
+        onSkipWikiBacklogTurn,
         rebootJob,
         onStartWikiReboot,
         onStopWikiReboot,
@@ -318,6 +323,22 @@
         )
     )
     let currentChat = $derived(currentCharacter?.chats.find((chat) => chat.id === chatId))
+    // Shown only once a waiting turn has actually failed, not while it is being analyzed.
+    let wikiBacklog = $derived(currentChat?.message ? summarizeWikiBacklog(currentChat.message) : { count: 0 })
+    let wikiBacklogBusy = $state(false)
+    async function retryWikiBacklog() {
+        if (!onRetryWikiBacklog || wikiBacklogBusy) return
+        wikiBacklogBusy = true
+        try { await onRetryWikiBacklog() }
+        finally { wikiBacklogBusy = false }
+    }
+    async function skipWikiBacklogTurn() {
+        const messageId = wikiBacklog.oldest?.messageId
+        if (!messageId || !onSkipWikiBacklogTurn
+            || !await alertConfirm(language.risuBardWikiBacklogSkipConfirm, { tier: 'top' })) return
+        onSkipWikiBacklogTurn(messageId)
+        if (wikiBacklog.count > 0) await retryWikiBacklog()
+    }
     let painterChatReady = $derived(!!currentChat && !currentChat._placeholder && Array.isArray(currentChat.message))
     let resolvedChatSettings = $derived(resolveRisuBardChatSettings(
         DBState.db,
@@ -1139,6 +1160,26 @@
             <button type="button" class="status-dismiss" data-dismiss aria-label="알림 닫기" onclick={() => { inlineError = ''; inlineRetry = null }}><XIcon size={14} /></button>
         </div>
     {/if}
+    {#if wikiBacklog.oldest?.reason}
+        <div class="force-update-status failed" role="alert" data-wiki-backlog>
+            <span class="wiki-backlog-copy">
+                <strong>{language.risuBardWikiBacklogStalled(wikiBacklog.count, wikiBacklog.oldest.responseNumber)}</strong>
+                <span data-wiki-backlog-reason>{wikiBacklog.oldest.reason}</span>
+            </span>
+            <span class="wiki-backlog-actions">
+                {#if onNavigateOocMessage}
+                    <button type="button" class="status-action" data-wiki-backlog-view
+                        onclick={() => onNavigateOocMessage(wikiBacklog.oldest!.index)}>{language.risuBardWikiBacklogView}</button>
+                {/if}
+                <button type="button" class="status-action" data-wiki-backlog-retry
+                    disabled={wikiBacklogBusy || $isWikiGenerating || $isAnyGenerating || !!rebootJob || !onRetryWikiBacklog}
+                    onclick={retryWikiBacklog}>{language.risuBardWikiBacklogRetry}</button>
+                <button type="button" class="status-action" data-wiki-backlog-skip
+                    disabled={wikiBacklogBusy || $isWikiGenerating || !!rebootJob || !onSkipWikiBacklogTurn}
+                    onclick={skipWikiBacklogTurn}>{language.risuBardWikiBacklogSkip}</button>
+            </span>
+        </div>
+    {/if}
     <div class="memory-ledger min-h-0">
         {#if forceUpdateStatus}
             <div
@@ -1661,6 +1702,10 @@
     .status-dismiss, .status-action { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; min-height: 1.6rem; padding: 0 .4rem; border-radius: .3rem; color: inherit; }
     .status-dismiss:hover, .status-action:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
     .status-action { text-decoration: underline; }
+    .status-action:disabled { opacity: .5; cursor: not-allowed; text-decoration: none; }
+    .wiki-backlog-copy { display: flex; flex-direction: column; gap: .15rem; min-width: 0; flex: 1 1 16rem; }
+    .wiki-backlog-copy > span { color: color-mix(in srgb, currentColor 80%, transparent); overflow-wrap: anywhere; }
+    .wiki-backlog-actions { display: flex; flex-wrap: wrap; gap: .25rem; }
     .dock-views button span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .dock-views .force-update-button span,
     .dock-views .find-replace-button span,
