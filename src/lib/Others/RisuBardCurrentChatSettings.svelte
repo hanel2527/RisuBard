@@ -10,6 +10,7 @@
         normalizeRisuBardNumberSetting,
         resolveRisuBardChatSettings,
         risuBardNumberSettingBounds,
+        RISUBARD_ANALYSIS_LORE_EXCLUDE_WORDS_MAX_LENGTH,
     } from 'src/ts/risubard/risuBardSettings'
     import { dynamicMemoryGrowth, measureActiveMemoryCharacters, resolveDynamicMemoryBudget } from 'src/ts/risubard/dynamicMemoryBudget'
     import {
@@ -485,6 +486,27 @@
                         onchange={(event) => setValue('risuBardAnalysisExcludeUserMessages', !(event.currentTarget as HTMLInputElement).checked)} />
                     <span>{settings.risuBardAnalysisExcludeUserMessages ? '뺌' : '넣음'}</span>
                 </label>
+            </div>
+            <div class="setting-field" data-chat-setting-field="risuBardAnalysisLoreTokenLimit">
+                {@render settingTitle('risuBardAnalysisLoreTokenLimit', '분석에 넣을 로어북(토큰)', 'bardwiki-analysis-lore-tokens')}
+                {@render numberInput('risuBardAnalysisLoreTokenLimit', 'bardwiki-analysis-lore-tokens')}
+            </div>
+            <div class="setting-field" data-chat-setting-field="risuBardAnalysisLoreIncludeAlwaysActive">
+                {@render settingTitle('risuBardAnalysisLoreIncludeAlwaysActive', '항상 켜진 로어북 넣기', 'bardwiki-analysis-lore-always')}
+                <label class="toggle-control" for="bardwiki-analysis-lore-always">
+                    <input id="bardwiki-analysis-lore-always" type="checkbox" checked={settings.risuBardAnalysisLoreIncludeAlwaysActive}
+                        disabled={settings.risuBardAnalysisLoreTokenLimit === 0}
+                        onchange={(event) => setValue('risuBardAnalysisLoreIncludeAlwaysActive', (event.currentTarget as HTMLInputElement).checked)} />
+                    <span>{settings.risuBardAnalysisLoreIncludeAlwaysActive ? '넣음' : '뺌'}</span>
+                </label>
+            </div>
+            <div class="setting-field wide" data-chat-setting-field="risuBardAnalysisLoreExcludeWords">
+                {@render settingTitle('risuBardAnalysisLoreExcludeWords', '이 단어가 든 로어북 빼기', 'bardwiki-analysis-lore-exclude')}
+                <textarea id="bardwiki-analysis-lore-exclude" rows="3" maxlength={RISUBARD_ANALYSIS_LORE_EXCLUDE_WORDS_MAX_LENGTH}
+                    placeholder="한 줄에 하나씩"
+                    disabled={settings.risuBardAnalysisLoreTokenLimit === 0}
+                    value={settings.risuBardAnalysisLoreExcludeWords}
+                    onchange={(event) => setValue('risuBardAnalysisLoreExcludeWords', (event.currentTarget as HTMLTextAreaElement).value)}></textarea>
             </div>
         </div>
     </section>

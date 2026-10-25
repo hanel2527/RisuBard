@@ -33,11 +33,6 @@
             ? currentChat.GLGlobalVariables
             : DBState.db.globalChatVariables
     )
-    let dirtyDifferences = $derived(getToggleValueDifferences(
-        currentChat?.togglePresetBaseline,
-        currentChat?.GLGlobalVariables ?? {},
-    ))
-    let dirtyKeys = $derived(new Set(dirtyDifferences.map(({ key }) => key)))
     let pinnedPresetName = $derived(currentChat?.togglePresetBaseline?.name ?? language.togglePinManualName)
 
     async function pinToChat() {
@@ -150,6 +145,22 @@
             .map((toggle) => [`toggle_${toggle.key}`, toggle]),
     ))
 
+    // An unset value shows as off (switch) or the first option (select), and the
+    // select binding writes "0" on mount, so those must not count as changes.
+    function shownToggleValue(key: string, value: string): string {
+        const toggle = toggleDefinitions.get(key)
+        if (toggle?.type === 'select') return value || '0'
+        if (toggle && !toggle.type) return value === '1' ? '1' : '0'
+        return value
+    }
+
+    let dirtyDifferences = $derived(getToggleValueDifferences(
+        currentChat?.togglePresetBaseline,
+        currentChat?.GLGlobalVariables ?? {},
+    ).filter(({ key, baselineValue, currentValue }) =>
+        shownToggleValue(key, baselineValue) !== shownToggleValue(key, currentValue)))
+    let dirtyKeys = $derived(new Set(dirtyDifferences.map(({ key }) => key)))
+
     function isToggleDirty(toggle: sidebarToggle): boolean {
         return !!toggle.key && dirtyKeys.has(`toggle_${toggle.key}`)
     }
@@ -198,7 +209,10 @@
         {:else if toggle.type === 'select'}
             <div class="w-full flex gap-2 mt-2 items-center justify-between min-h-10 rounded-md px-1 transition-colors" class:toggle-row--dirty={isToggleDirty(toggle)}>
                 <span class="min-w-0 break-words">{toggle.value}</span>
-                <SelectInput className="w-32 shrink-0" bind:value={toggleVariableTarget[`toggle_${toggle.key}`]}>
+                <SelectInput className="w-32 shrink-0" bind:value={
+                    () => toggleVariableTarget[`toggle_${toggle.key}`] || '0',
+                    (value) => toggleVariableTarget[`toggle_${toggle.key}`] = value
+                }>
                     {#each toggle.options as option, i}
                         <OptionInput value={i.toString()}>{option}</OptionInput>
                     {/each}
@@ -247,8 +261,8 @@
 <div class="text-[11px] text-textcolor2 mt-4 px-1">{language.toggleBindingLabel}</div>
 <div class="flex gap-1 mt-1 items-stretch">
     {#if isPinned}
-        <span class="flex-1 min-w-0 flex" use:tooltip={dirtyDifferences.length > 0 ? `${language.togglePinManage}\n${dirtyTooltip}` : language.togglePinManage}>
-            <ShButton variant={dirtyDifferences.length > 0 ? "destructive" : "binding"} className="w-full min-w-0" onclick={pinToChat}>
+        <span class="flex-1 min-w-0 flex" use:tooltip={dirtyDifferences.length > 0 ? `${language.togglePinManage}\n\n${language.togglePinDirtyNote}\n${dirtyTooltip}` : language.togglePinManage}>
+            <ShButton variant="binding" className="w-full min-w-0" onclick={pinToChat}>
                 <PinIcon size={16} />
                 <span class="truncate">{pinnedPresetName}</span>
                 {#if dirtyDifferences.length > 0}
@@ -278,9 +292,10 @@
 {/if}
 
 <style>
-    .toggle-row--dirty,
-    .toggle-row--dirty :global(*) {
-        color: var(--color-danger) !important;
+    /* Changed from the pinned baseline: a quiet "modified" mark, not an error. */
+    .toggle-row--dirty {
+        background: color-mix(in srgb, var(--color-binding) 45%, transparent);
+        box-shadow: inset 3px 0 0 var(--color-binding-border);
     }
 </style>
 

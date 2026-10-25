@@ -40,6 +40,9 @@ export const risuBardCurrentChatSettingKeys = [
     'risuBardResponseMessageCount',
     'risuBardResponseExcludeUserMessages',
     'risuBardAnalysisExcludeUserMessages',
+    'risuBardAnalysisLoreTokenLimit',
+    'risuBardAnalysisLoreIncludeAlwaysActive',
+    'risuBardAnalysisLoreExcludeWords',
     'risuBardCanonicalWritingStyle',
     'risuBardCanonicalCustomStyle',
     'risuBardWikiWritingLanguage',
@@ -152,6 +155,12 @@ function recommendation(
             return longMessage
                 ? '사용자 입력이 지시문 위주이고 AI 응답만 사실로 남기려면 끄기를 권장합니다. 사용자 대사와 행동도 서사의 일부라면 켜 두세요.'
                 : '보통은 켜 두기를 권장합니다. 사용자 메시지를 사건 근거로 삼지 않는 챗에서만 끄세요.'
+        case 'risuBardAnalysisLoreTokenLimit':
+            return '기본값 1,000을 권장합니다. 원작과 설정이 다른 봇에서 인물 정보가 자주 틀리면 2,000~3,000으로 늘리고, 토큰을 아끼려면 0으로 끄세요.'
+        case 'risuBardAnalysisLoreIncludeAlwaysActive':
+            return '보통은 빼 두기를 권장합니다. 항상 켜진 항목에는 세계관 전체 설명이나 에셋 목록처럼 긴 내용이 많습니다. 핵심 인물 설정이 항상 켜진 항목에만 있을 때만 켜세요.'
+        case 'risuBardAnalysisLoreExcludeWords':
+            return '기본값은 이미지 에셋 문법(<img, {{asset::, {{img::, {{image::)입니다. 봇마다 에셋 항목에 공통으로 들어가는 표시가 있다면 그 단어를 한 줄에 하나씩 더하세요.'
         case 'risuBardCanonicalWritingStyle':
             return '100턴 이상이거나 메시지가 길수록 ‘간결’을 권장합니다. 뉘앙스를 더 보존하려면 ‘표준’, 토큰을 극도로 줄이려면 ‘초간결’을 쓰세요.'
         case 'risuBardCanonicalCustomStyle':
@@ -180,6 +189,9 @@ const roles: Record<RisuBardChatSettingHelpKey, string> = {
     risuBardResponseMessageCount: '최종 답변 모델에 원문 그대로 넣는 최근 AI 응답 수입니다. 답변에 사용자 메시지 넣기가 켜져 있으면 그 응답들 사이의 사용자 메시지도 함께 들어갑니다.',
     risuBardResponseExcludeUserMessages: '켜면 최종 답변에 넣는 최근 원문에 사용자 메시지도 넣습니다. 끄면 AI 응답만 넣으며, 지금 보내는 요청은 항상 들어갑니다.',
     risuBardAnalysisExcludeUserMessages: '켜면 위키 분석이 읽는 확정 턴과 최근 원문에 사용자 메시지도 넣습니다. 끄면 AI 응답만 사건 근거로 삼습니다.',
+    risuBardAnalysisLoreTokenLimit: '위키 분석이 참고할 로어북 본문의 최대 토큰입니다. 분석한 턴까지의 채팅으로 켜지는 로어북 항목을 조건문과 변수까지 평가해 우선순위 순으로 넣고, 한도를 넘는 항목은 통째로 뺍니다. 0이면 로어북을 넣지 않습니다. 로어북은 인물과 설정을 확인하는 참고 자료로만 쓰고, 채팅에 나오지 않은 비밀은 위키에 적지 않습니다.',
+    risuBardAnalysisLoreIncludeAlwaysActive: '켜면 항상 켜진 로어북 항목도 위키 분석에 넣습니다. 끄면 키워드로 켜진 항목만 넣습니다.',
+    risuBardAnalysisLoreExcludeWords: '한 줄에 하나씩 적은 단어가 로어북 항목의 제목이나 본문 원문에 들어 있으면 그 항목을 위키 분석에 넣지 않습니다. 대소문자는 구분하지 않습니다. 모두 지우면 아무것도 빼지 않습니다.',
     risuBardCanonicalWritingStyle: '정본 위키 문서를 얼마나 압축해서 작성할지 정합니다.',
     risuBardCanonicalCustomStyle: '사용자 지정 정본 문체일 때 반복 적용할 짧은 작성 규칙입니다.',
     risuBardWikiWritingLanguage: 'BardWiki 정본 문서가 사용할 언어를 정합니다.',

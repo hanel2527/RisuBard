@@ -184,6 +184,11 @@ export interface MemoryAnalysisMessage {
     content: string
 }
 
+export interface AnalysisLoreReference {
+    title: string
+    content: string
+}
+
 export interface MemoryAnalysisInput {
     characterId: string
     chatId: string
@@ -210,6 +215,8 @@ export interface MemoryAnalysisInput {
         analysis: string
         canonicalRewrite: string
     }
+    /** Lorebook entries the story used around the analyzed turn, already rendered. Reference only, never evidence. */
+    loreReference?: readonly AnalysisLoreReference[]
     additionalAnalysis?: boolean
     historicalReanalysis?: boolean
     excludeCanonicalDocumentIds?: readonly string[]
@@ -448,6 +455,30 @@ function parseWikiPromptGuide(value: unknown): {
     }
 }
 
+function parseLoreReference(value: unknown): AnalysisLoreReference[] | undefined {
+    if (value === undefined) return undefined
+    if (!Array.isArray(value) || value.length > 64) {
+        throw new Error('Analysis lore reference must be an array of at most 64 items')
+    }
+    const entries = value.map((entry) => {
+        if (!isRecord(entry)) throw new Error('Analysis lore reference item must be an object')
+        assertExactKeys(entry, ['title', 'content'], 'analysis lore reference item')
+        if (typeof entry.title !== 'string' || entry.title.length > 200
+            || typeof entry.content !== 'string' || entry.content.length > 64_000) {
+            throw new Error('Analysis lore reference item is invalid')
+        }
+        return { title: entry.title, content: entry.content }
+    }).filter((entry) => entry.content.trim().length > 0)
+    return entries.length > 0 ? entries : undefined
+}
+
+const settingReferenceInstruction = [
+    'settingReference holds lorebook entries the story used around these messages. It is setting reference, not event evidence.',
+    'Use it only to confirm or fill durable setting facts (identity, gender, age, appearance, role, abilities, relationships) of subjects that appear in confirmedMessages. It is not external canon: it overrides source-work knowledge.',
+    'When confirmedMessages conflict with settingReference, follow confirmedMessages.',
+    'Never record facts found only in settingReference as events, state changes, or character knowledge, never reveal its secrets, plans, or hidden truths before confirmedMessages do, and never create a document for a subject that appears only in settingReference.',
+].join('\n')
+
 function combineMemoryDraftGuides(
     analysisGuide: string,
     canonicalRewriteGuide: string
@@ -495,6 +526,7 @@ function snapshotInput(value: MemoryAnalysisInput): MemoryAnalysisInput {
         ...(value.wikiPromptGuide === undefined
             ? []
             : ['wikiPromptGuide']),
+        ...(value.loreReference === undefined ? [] : ['loreReference']),
         ...(value.additionalAnalysis === undefined
             ? []
             : ['additionalAnalysis']),
@@ -605,6 +637,7 @@ function snapshotInput(value: MemoryAnalysisInput): MemoryAnalysisInput {
             'Analysis characterId'
         )
     const wikiPromptGuide = parseWikiPromptGuide(value.wikiPromptGuide)
+    const loreReference = parseLoreReference(value.loreReference)
     if (value.arcPlotterSettings !== undefined) {
         if (!isRecord(value.arcPlotterSettings)) {
             throw new Error('Analysis Archplotter settings must be an object')
@@ -729,6 +762,7 @@ function snapshotInput(value: MemoryAnalysisInput): MemoryAnalysisInput {
             value.arcPlotterSettings
         ),
         ...(wikiPromptGuide ? { wikiPromptGuide } : {}),
+        ...(loreReference ? { loreReference } : {}),
         ...(value.additionalAnalysis === undefined ? {} : {
             additionalAnalysis: value.additionalAnalysis,
         }),
@@ -1257,6 +1291,7 @@ export function createMemoryAnalysisRunner(
                     ? [
                         memoryWriterSystemPrompt,
                         rebootBatchOutputContract,
+                        snapshot.loreReference ? settingReferenceInstruction : '',
                         snapshot.historicalReanalysis
                             ? 'This is a historical-turn reanalysis. Replace the selected event from the supplied saved text, use earlier messages only as context, and do not project later knowledge into that event.'
                             : '',
@@ -1268,6 +1303,7 @@ export function createMemoryAnalysisRunner(
                     : [
                         memoryWriterSystemPrompt,
                         rebootBatchOutputContract,
+                        snapshot.loreReference ? settingReferenceInstruction : '',
                         snapshot.historicalReanalysis
                             ? 'This is a historical-turn reanalysis. Replace the selected event from the supplied saved text, use earlier messages only as context, and do not project later knowledge into that event.'
                             : '',
@@ -1303,6 +1339,7 @@ export function createMemoryAnalysisRunner(
                         ...excludedDocumentIds,
                     ],
                     confirmedMessages: snapshot.messages,
+                    ...(snapshot.loreReference ? { settingReference: snapshot.loreReference } : {}),
                     ...(!snapshot.historicalReanalysis && !snapshot.additionalAnalysis
                         && priorEvents.length > 0 ? {
                             previousStoryEvent: {
@@ -1711,6 +1748,8 @@ export function createMemoryAnalysisRunner(
                                 'Preserve unrelated established identity facts, relationships, knowledge, goals, possessions, constraints, and unresolved continuity unless confirmedMessages explicitly change them.',
                                 'Apply the stateChanges.after values and relevant persistentFacts and openContinuity to the correct subject document. Use characterKnowledge as a coverage checklist: record an item only where the canonical writing policy assigns it, merge it into an existing entry when one already covers the topic, and never append one entry per occasion of learning. Do not copy another character\'s facts into this target.',
                                 'Apply only changes supported by the confirmed messages and event.',
+                                snapshot.loreReference ? settingReferenceInstruction : '',
+                                'Never fill a section from external canon, source-work knowledge, or assumptions, including for a new document. The story may differ from a known source work in gender, age, role, ability, or relationships; follow the story. Omit a detail rather than guess it.',
                                 snapshot.historicalReanalysis
                                     ? `This is a historical correction. Correct history sections, but preserve an existing character ${wikiWritingHeadings[normalizeWikiWritingLanguage(snapshot.wikiWritingLanguage)].currentState} section because it may represent later events.`
                                     : '',
@@ -1768,6 +1807,7 @@ export function createMemoryAnalysisRunner(
                                     ).join('\n\n')
                                     : markdown,
                                 confirmedMessages: snapshot.messages,
+                                ...(snapshot.loreReference ? { settingReference: snapshot.loreReference } : {}),
                             })
                         const canonicalBatches = splitCanonicalTargets(
                             batchTargets,

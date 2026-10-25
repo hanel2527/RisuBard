@@ -12,9 +12,12 @@ import { createUniqueDisplayName } from './displayName'
 import { updateLorebooks } from './characters'
 import { updateInlayScreen } from './process/inlayScreen'
 import type { RisuModule } from './process/modules'
+import { selectSingleFile } from './util'
+import { readUpdateBaseFile } from './characterUpdateBaseFile'
+import { editableText, editedValue, isEditable, loreFolderNames } from './characterUpdateView'
 import {
     CHARACTER_UPDATE, MODULE_UPDATE, applyUpdate, baseSnapshot, findModuleUpdateCandidates, findUpdateCandidates,
-    planUpdate, unresolvedItems, type UpdateCandidate, type UpdatePlan, type UpdateSide, type UpdateSpec,
+    planUpdate, unresolvedItems, type UpdateCandidate, type UpdateChoice, type UpdatePlan, type UpdateSide, type UpdateSpec,
 } from './characterUpdate'
 
 export type UpdateKind = 'character' | 'module'
@@ -27,7 +30,10 @@ export interface CharacterUpdateRequest {
     others: { id: string, name: string }[]
 }
 
-type Decision = { kind: 'new' } | { kind: 'cancel' } | { kind: 'update', id: string, plan: UpdatePlan, choices: Record<string, UpdateSide> }
+type Decision = { kind: 'new' } | { kind: 'cancel' } | { kind: 'update', id: string, plan: UpdatePlan, choices: Record<string, UpdateChoice> }
+
+/** A side, or 'edit' for the text the user wrote (kept in edits). */
+export type UpdatePick = UpdateSide | 'edit'
 
 /** What differs between updating a bot and updating a module. */
 interface Entity<T extends object> {
@@ -83,7 +89,13 @@ class CharacterUpdateDialogState {
     target = $state('')
     targetName = $state('')
     plan = $state.raw<UpdatePlan | null>(null)
-    choices = $state<Record<string, UpdateSide>>({})
+    choices = $state<Record<string, UpdatePick>>({})
+    /** Text the user wrote for items picked as 'edit'. */
+    edits = $state<Record<string, string>>({})
+    /** Lore folder id to title, for grouping entries. */
+    folders = $state.raw<Map<string, string>>(new Map())
+    /** Where the base came from: the install record, an earlier file, or nowhere. */
+    baseSource = $state<{ kind: 'record' | 'file' | 'none', name?: string }>({ kind: 'none' })
     showAll = $state(false)
     /** The target is generating a reply: updating now would race the reply. */
     targetBusy = $state(false)
@@ -102,6 +114,7 @@ function finish(decision: Decision) {
     characterUpdateDialog.request = null
     characterUpdateDialog.plan = null
     characterUpdateDialog.choices = {}
+    characterUpdateDialog.edits = {}
     current?.resolve(decision)
 }
 
@@ -148,7 +161,10 @@ export async function reviewCharacterUpdate() {
         // An entity never opened since install has not had the upgrades yet.
         entity.normalize(value)
         dialog.plan = planUpdate(entity.spec, value, incoming, base)
+        dialog.baseSource = { kind: base ? 'record' : 'none' }
+        dialog.folders = loreFolderNames((value as any).globalLore ?? (value as any).lorebook, (incoming as any).globalLore ?? (incoming as any).lorebook)
         dialog.choices = {}
+        dialog.edits = {}
         dialog.showAll = false
         dialog.targetName = entity.name(value)
         dialog.targetBusy = entity.busy(value)
@@ -167,17 +183,61 @@ export function backToCharacterUpdateTargets() {
     characterUpdateDialog.error = ''
 }
 
-export function setCharacterUpdateChoice(id: string, side: UpdateSide) {
-    characterUpdateDialog.choices = { ...characterUpdateDialog.choices, [id]: side }
+export function setCharacterUpdateChoice(id: string, pick: UpdatePick) {
+    const dialog = characterUpdateDialog
+    if (pick === 'edit' && dialog.edits[id] === undefined) {
+        // Start from the user's version: usually the one they already rewrote.
+        const item = dialog.plan?.items.find(entry => entry.id === id)
+        if (!item || !isEditable(item)) return
+        dialog.edits = { ...dialog.edits, [id]: editableText(item, 'mine') }
+    }
+    dialog.choices = { ...dialog.choices, [id]: pick }
 }
 
-/** Gives every item the user has to decide the same side. */
-export function chooseAllCharacterUpdate(side: UpdateSide) {
-    const plan = characterUpdateDialog.plan
-    if (!plan) return
+export function setCharacterUpdateEdit(id: string, text: string) {
+    characterUpdateDialog.edits = { ...characterUpdateDialog.edits, [id]: text }
+}
+
+/**
+ * Gives the listed items the same side, for a section or a search result.
+ * Items the user rewrote keep their text: a section-wide choice is not meant
+ * to throw that work away.
+ */
+export function chooseCharacterUpdateMany(ids: string[], side: UpdateSide) {
     const next = { ...characterUpdateDialog.choices }
-    for (const item of unresolvedItems(plan)) next[item.id] = side
+    for (const id of ids) if (next[id] !== 'edit') next[id] = side
     characterUpdateDialog.choices = next
+}
+
+/**
+ * Uses an earlier file of this bot or module as the base, for an install that
+ * has no record of the version it came from. Fields the file does not carry
+ * count as unchanged by the user.
+ */
+export async function loadCharacterUpdateBaseFile() {
+    const dialog = characterUpdateDialog
+    if (!pending || dialog.busy) return
+    const file = await selectSingleFile(['charx', 'png', 'json', 'risum', 'jpg', 'jpeg'])
+    if (!file) return
+    if (!pending) return
+    const { entity, incoming } = pending
+    const { value } = find(entity, dialog.target)
+    if (!value) return
+    dialog.busy = true
+    dialog.error = ''
+    try {
+        const parsed = entity.normalize(await readUpdateBaseFile(entity.kind, file) as Partial<typeof value>)
+        const base = { ...baseSnapshot(entity.spec, value), ...parsed }
+        const plan = planUpdate(entity.spec, value, incoming, base)
+        const ids = new Set(plan.items.map(item => item.id))
+        dialog.plan = plan
+        dialog.choices = Object.fromEntries(Object.entries(dialog.choices).filter(([id]) => ids.has(id)))
+        dialog.baseSource = { kind: 'file', name: file.name }
+    } catch (error) {
+        dialog.error = `${language.characterUpdate.baseFileFailed}: ${error instanceof Error ? error.message : String(error)}`
+    } finally {
+        dialog.busy = false
+    }
 }
 
 export function chooseCharacterUpdate(kind: 'new' | 'cancel' | 'update') {
@@ -192,8 +252,14 @@ export function chooseCharacterUpdate(kind: 'new' | 'cancel' | 'update') {
         dialog.targetBusy = true
         return
     }
-    const choices = $state.snapshot(dialog.choices)
-    if (unresolvedItems(plan).some(item => !choices[item.id])) return
+    const picks = $state.snapshot(dialog.choices)
+    if (unresolvedItems(plan).some(item => !picks[item.id])) return
+    const choices: Record<string, UpdateChoice> = {}
+    for (const item of plan.items) {
+        const pick = picks[item.id]
+        if (pick === 'edit') choices[item.id] = { value: editedValue(item, dialog.edits[item.id] ?? editableText(item, 'mine')) }
+        else if (pick) choices[item.id] = pick
+    }
     finish({ kind: 'update', id: dialog.target, plan, choices })
 }
 
@@ -208,6 +274,7 @@ function ask<T extends object>(entity: Entity<T>, incoming: T, candidates: Updat
     dialog.target = candidates[0].id
     dialog.plan = null
     dialog.choices = {}
+    dialog.edits = {}
     dialog.showAll = false
     dialog.targetBusy = false
     dialog.busy = false

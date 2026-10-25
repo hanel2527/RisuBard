@@ -1,6 +1,7 @@
 import { captureGenerationTarget, createGenerationScope, type GenerationTarget } from "./generationTarget";
 import { isOocAssistantTurn, isOocToggleActive } from '../risubard/oocTurns'
 import { captureChatContext } from '../risubard/chatContextCapture'
+import { selectAnalysisLoreReference } from '../risubard/analysisLoreReference'
 import { createRequiredWikiMessage, reserveRequiredWikiBudget } from '../risubard/requiredWikiContext'
 import { createWikiInquiryDiagnostic, formatWikiInquiryDiagnostic, wikiInquiryFailure, type WikiInquiryFailure } from '../risubard/wikiInquiryDiagnostics'
 import { get } from "svelte/store";
@@ -262,6 +263,48 @@ async function confirmProjectedNarrativeTurn(input: {
     }
 }
 
+/**
+ * Lorebook entries active at the analyzed turn, rendered like the main request.
+ * Runs on a copy of the chat cut at that turn, so activation flags written while
+ * matching never reach the real chat. Failure only drops the reference.
+ */
+async function collectAnalysisLoreReference(
+    character: character,
+    chat: Chat,
+    targetMessageId: string | undefined,
+    settings: ReturnType<typeof resolvedRisuBardSettings>,
+) {
+    if (settings.risuBardAnalysisLoreTokenLimit <= 0) return undefined
+    try {
+        const end = targetMessageId === undefined
+            ? -1
+            : chat.message.findIndex((message) => message.chatId === targetMessageId)
+        const preview: Chat = {
+            ...chat,
+            message: end < 0 ? [...chat.message] : chat.message.slice(0, end + 1),
+            scriptstate: { ...chat.scriptstate },
+        }
+        const { actives } = await loadLoreBookV3Prompt({ character, chat: preview })
+        const reference = selectAnalysisLoreReference(actives.map((active) => ({
+            title: active.sourceIdentity.entry.comment?.trim() || active.source,
+            source: active.sourceIdentity.entry.content ?? '',
+            rendered: risuChatParser(active.prompt, { chara: character, chat: preview }),
+            tokens: active.tokens,
+            priority: active.priority,
+            alwaysActive: active.sourceIdentity.entry.alwaysActive === true,
+        })), {
+            tokenLimit: settings.risuBardAnalysisLoreTokenLimit,
+            includeAlwaysActive: settings.risuBardAnalysisLoreIncludeAlwaysActive,
+            excludeWords: settings.risuBardAnalysisLoreExcludeWords,
+        })
+        return reference.length > 0 ? reference : undefined
+    }
+    catch (error) {
+        console.warn('[RisuBard memory analysis] lorebook reference skipped', error)
+        return undefined
+    }
+}
+
 async function runNarrativeConfirmation(
     input: Parameters<typeof confirmProjectedNarrativeTurn>[0],
     key: string,
@@ -321,6 +364,9 @@ async function runNarrativeConfirmation(
                 true
             )
             : confirmedMessages
+        const loreReference = character && chat
+            ? await collectAnalysisLoreReference(character, chat, input.targetMessageId, settings)
+            : undefined
         const receipt = await storedResponseMemoryAnalysis.confirm({
             characterId: input.characterId,
             chatId: input.chatId,
@@ -348,6 +394,7 @@ async function runNarrativeConfirmation(
                     canonicalRewrite: compiledWikiPromptGuide.canonicalRewrite,
                 },
             } : {}),
+            ...(loreReference ? { loreReference } : {}),
             ...(input.additionalAnalysis ? { additionalAnalysis: true } : {}),
             ...(!input.additionalAnalysis && !input.historicalReanalysis && previousCanonicalReceipt
                 ? { previousCanonicalReceipt } : {}),
@@ -730,6 +777,9 @@ async function runWikiReboot(
                     !settings.risuBardAnalysisExcludeUserMessages,
                     ignoreOocTurns
                 )
+                const loreReference = await collectAnalysisLoreReference(
+                    character, chat, batch.at(-1)?.assistantMessageId, settings
+                )
                 const receipt = await storedResponseMemoryAnalysis.confirm({
                     characterId: character.chaId,
                     chatId: job.stagingChatId,
@@ -760,6 +810,7 @@ async function runWikiReboot(
                                 compiledWikiPromptGuide.canonicalRewrite,
                         },
                     } : {}),
+                    ...(loreReference ? { loreReference } : {}),
                     contextMessages,
                     sourceMessageOrder: chat.message.filter(message => message.chatId)
                         .map(({ chatId, role }) => ({ chatId, role })),

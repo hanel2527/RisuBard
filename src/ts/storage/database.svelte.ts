@@ -54,8 +54,11 @@ import {
     normalizeRisuBardDynamicMemoryMaximum,
     type RisuBardDynamicMemoryMode,
     normalizeRisuBardAdditionalSearchLimit,
+    normalizeRisuBardAnalysisLoreExcludeWords,
     normalizeRisuBardAnalysisTokenLimit,
     normalizeRisuBardCanonicalCustomStyle,
+    normalizeRisuBardNumberSetting,
+    RISUBARD_ANALYSIS_LORE_TOKEN_LIMIT_DEFAULT,
     normalizeRisuBardCanonicalTargetLimit,
     normalizeRisuBardCanonicalWritingStyle,
     normalizeRisuBardHistoricalSourceMatchLimit,
@@ -984,6 +987,14 @@ export function setDatabase(data:Database){
         ? Math.min(48, Math.max(8, data.risuBardOocFontSize)) : 14
     data.risuBardAnalysisExcludeUserMessages =
         data.risuBardAnalysisExcludeUserMessages === true
+    data.risuBardAnalysisLoreTokenLimit = normalizeRisuBardNumberSetting(
+        'risuBardAnalysisLoreTokenLimit', data.risuBardAnalysisLoreTokenLimit, RISUBARD_ANALYSIS_LORE_TOKEN_LIMIT_DEFAULT
+    )
+    data.risuBardAnalysisLoreIncludeAlwaysActive =
+        data.risuBardAnalysisLoreIncludeAlwaysActive === true
+    data.risuBardAnalysisLoreExcludeWords = normalizeRisuBardAnalysisLoreExcludeWords(
+        data.risuBardAnalysisLoreExcludeWords
+    )
     delete (data as { risuBardCanonicalMode?: unknown })
         .risuBardCanonicalMode
     data.risuBardAnalysisTokenLimit = normalizeRisuBardAnalysisTokenLimit(
@@ -1964,6 +1975,9 @@ export interface Database{
     risuBardOocMarkdown?: boolean
     risuBardOocFontSize?: number
     risuBardAnalysisExcludeUserMessages?: boolean
+    risuBardAnalysisLoreTokenLimit?: number
+    risuBardAnalysisLoreIncludeAlwaysActive?: boolean
+    risuBardAnalysisLoreExcludeWords?: string
     risuBardAnalysisTokenLimit?: number
     risuBardAdditionalSearchLimit?: number
     risuBardCanonicalTargetLimit?: number

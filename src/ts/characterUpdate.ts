@@ -240,6 +240,8 @@ export type UpdateItemStatus =
     | 'differs'   // no base: who changed it is unknown
 
 export type UpdateSide = 'mine' | 'theirs'
+/** A side, or a value the user wrote while comparing the two. */
+export type UpdateChoice = UpdateSide | { value: unknown }
 
 export interface UpdateItem {
     id: string
@@ -249,6 +251,9 @@ export interface UpdateItem {
     status: UpdateItemStatus
     mine: unknown
     theirs: unknown
+    /** The value as first installed; meaningful only when baseKnown. */
+    base: unknown
+    baseKnown: boolean
     /** Preselected side, or null when the user has to decide. */
     choice: UpdateSide | null
 }
@@ -300,7 +305,7 @@ export function planUpdate<T extends object>(spec: UpdateSpec, mine: T, theirs: 
     const push = (field: string, key: string, values: { b?: unknown, m?: unknown, t?: unknown }, present: { mine: boolean, theirs: boolean, base: boolean }) => {
         const verdict = decide(hasBase, canon(spec, field, values.b), canon(spec, field, values.m), canon(spec, field, values.t), present)
         if (!verdict || spec.silent.has(field)) return
-        items.push({ id: key ? `${field}\u0000${key}` : field, field, key, mine: values.m, theirs: values.t, ...verdict })
+        items.push({ id: key ? `${field}\u0000${key}` : field, field, key, mine: values.m, theirs: values.t, base: values.b, baseKnown: hasBase && present.base, ...verdict })
     }
     for (const field of Object.keys(theirs)) {
         if (spec.preserved.has(field)) continue
@@ -330,7 +335,7 @@ export function unresolvedItems(plan: UpdatePlan): UpdateItem[] {
 }
 
 /** Puts mine-only items back after the item they followed in the user's list. */
-function mergeList(keyOf: (item: any) => string, lore: boolean, mineList: unknown, theirsList: unknown, choices: Map<string, UpdateSide>): unknown[] {
+function mergeList(keyOf: (item: any) => string, lore: boolean, mineList: unknown, theirsList: unknown, choices: Map<string, UpdateChoice>): unknown[] {
     const mineMap = keyed(keyOf, mineList)
     const theirsMap = keyed(keyOf, theirsList)
     const keepId = (chosen: unknown, own: unknown) => lore && own && chosen && typeof chosen === 'object'
@@ -340,6 +345,7 @@ function mergeList(keyOf: (item: any) => string, lore: boolean, mineList: unknow
         const other = theirsMap.get(key)
         const choice = choices.get(key)
         if (!choice) return own ?? other
+        if (typeof choice === 'object') return keepId(choice.value, own)
         return choice === 'mine' ? own : keepId(other, own)
     }
     const result: { key: string, value: unknown }[] = []
@@ -365,8 +371,8 @@ function mergeList(keyOf: (item: any) => string, lore: boolean, mineList: unknow
  * The installed entity with the update applied by the plan's choices. Every
  * unresolved item must have a choice. Preserved fields stay as they are.
  */
-export function applyUpdate<T extends object>(spec: UpdateSpec, mine: T, theirs: T, plan: UpdatePlan, choices: Record<string, UpdateSide> = {}): T {
-    const chosen = new Map<string, Map<string, UpdateSide>>()
+export function applyUpdate<T extends object>(spec: UpdateSpec, mine: T, theirs: T, plan: UpdatePlan, choices: Record<string, UpdateChoice> = {}): T {
+    const chosen = new Map<string, Map<string, UpdateChoice>>()
     for (const item of plan.items) {
         const side = choices[item.id] ?? item.choice
         if (!side) throw new Error(`Update choice missing for ${item.id}`)
@@ -376,7 +382,7 @@ export function applyUpdate<T extends object>(spec: UpdateSpec, mine: T, theirs:
     const result: Record<string, any> = { ...mine }
     for (const field of Object.keys(theirs)) {
         if (spec.preserved.has(field)) continue
-        const fieldChoices = chosen.get(field) ?? new Map<string, UpdateSide>()
+        const fieldChoices = chosen.get(field) ?? new Map<string, UpdateChoice>()
         const m = (mine as any)[field]
         const t = (theirs as any)[field]
         if (has(spec.lists, field)) {
@@ -387,7 +393,7 @@ export function applyUpdate<T extends object>(spec: UpdateSpec, mine: T, theirs:
             const mineMap = mapEntries(m), theirsMap = mapEntries(t)
             for (const key of new Set([...mineMap.keys(), ...theirsMap.keys()])) {
                 const side = silentKeys.has(key) && theirsMap.has(key) ? 'theirs' : fieldChoices.get(key)
-                const value = side === 'theirs' ? theirsMap.get(key) : side === 'mine' ? mineMap.get(key) : mineMap.get(key) ?? theirsMap.get(key)
+                const value = typeof side === 'object' ? side.value : side === 'theirs' ? theirsMap.get(key) : side === 'mine' ? mineMap.get(key) : mineMap.get(key) ?? theirsMap.get(key)
                 if (value !== undefined) out[key] = value
             }
             result[field] = out
@@ -395,7 +401,8 @@ export function applyUpdate<T extends object>(spec: UpdateSpec, mine: T, theirs:
             result[field] = t
         } else {
             const side = fieldChoices.get('')
-            if (side === 'theirs') result[field] = t
+            if (typeof side === 'object') result[field] = side.value
+            else if (side === 'theirs') result[field] = t
             else if (side !== 'mine' && m === undefined) result[field] = t
         }
     }
@@ -412,10 +419,10 @@ export function baseSnapshot<T extends object>(spec: UpdateSpec, value: T): Part
 }
 
 export const planCharacterUpdate = (mine: character, theirs: character, base: Partial<character> | null) => planUpdate(CHARACTER_UPDATE, mine, theirs, base)
-export const applyCharacterUpdate = (mine: character, theirs: character, plan: UpdatePlan, choices: Record<string, UpdateSide> = {}) => applyUpdate(CHARACTER_UPDATE, mine, theirs, plan, choices)
+export const applyCharacterUpdate = (mine: character, theirs: character, plan: UpdatePlan, choices: Record<string, UpdateChoice> = {}) => applyUpdate(CHARACTER_UPDATE, mine, theirs, plan, choices)
 export const updateBaseSnapshot = (char: character) => baseSnapshot(CHARACTER_UPDATE, char)
 
-export function summarizePlan(plan: UpdatePlan, choices: Record<string, UpdateSide> = {}) {
+export function summarizePlan(plan: UpdatePlan, choices: Record<string, UpdateChoice | 'edit'> = {}) {
     const counts = { update: 0, mine: 0, added: 0, removed: 0, mineOnly: 0, conflict: 0, differs: 0, unresolved: 0 }
     for (const item of plan.items) {
         counts[item.status]++

@@ -64,7 +64,7 @@
         progress: (done: number, total: number) => `${count(done)} / ${count(total)}개 옮김`,
         reverting: (done: number, total: number) => `${count(done)} / ${count(total)}개 되돌림`,
         trialDone: (converted: number, verified: number, failed: number) => failed
-            ? `${count(converted)}개를 옮겼고 ${count(failed)}개는 다시 읽기 검증에 실패했습니다. 전체 전환 전에 되돌리고 진단 보고서를 보내 주세요.`
+            ? `${count(converted)}개를 옮겼고 ${count(failed)}개는 다시 읽기 검증에 실패했습니다. 전체 전환 전에 되돌려 주세요.`
             : `${count(converted)}개를 옮기고 모두 다시 읽어 확인했습니다(${count(verified)}개 일치). 문제가 없으면 전체 전환을 진행해 주세요.`,
         allDone: (converted: number) => `${count(converted)}개를 옮겼습니다.`,
         stopped: (converted: number) => `${count(converted)}개를 옮긴 뒤 멈췄습니다. 다시 누르면 이어서 옮깁니다.`,
@@ -96,7 +96,7 @@
         progress: (done: number, total: number) => `${count(done)} / ${count(total)} moved`,
         reverting: (done: number, total: number) => `${count(done)} / ${count(total)} reverted`,
         trialDone: (converted: number, verified: number, failed: number) => failed
-            ? `Moved ${count(converted)}; ${count(failed)} failed the read-back check. Revert and send a diagnostics report before moving all.`
+            ? `Moved ${count(converted)}; ${count(failed)} failed the read-back check. Revert before moving all.`
             : `Moved ${count(converted)} and read every one back (${count(verified)} matched). If all looks fine, move the rest.`,
         allDone: (converted: number) => `Moved ${count(converted)} assets.`,
         stopped: (converted: number) => `Stopped after moving ${count(converted)}. Press again to resume.`,

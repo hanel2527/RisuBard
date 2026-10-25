@@ -380,6 +380,48 @@ describe('memory analysis runner', () => {
         expect(saveCanonicalDocument).toHaveBeenCalledWith(expect.objectContaining({ writingLanguage: 'en' }))
     })
 
+    test.each([false, true])('passes lorebook reference to analysis and rewrite only when supplied (supplied=%s)', async (supplied) => {
+        const requests: MemoryAnalysisModelRequest[] = []
+        const runner = createMemoryAnalysisRunner({
+            memoryService: { loadState: vi.fn(), applyDelta: vi.fn() }, nativeV2Analysis: true,
+            markdownWikiService: {
+                inquire: vi.fn(async () => ({ graphRevision: 0, sources: [] })),
+                saveConfirmedTurn: vi.fn(async (input) => input),
+                saveCanonicalDocument: vi.fn(async (input) => input),
+            }, onError: vi.fn(),
+            analyze: async (request) => {
+                requests.push(request)
+                if (request.format === 'canonical-batch') return canonicalBatch('## Izuku\n\n### Overview\n\n- A first-year student.')
+                return JSON.stringify({
+                    schemaVersion: 1, title: 'Arrival', establishedEvents: ['Izuku arrived.'],
+                    stateChanges: [], characterKnowledge: [], persistentFacts: [], openContinuity: [],
+                    canonicalUpdateCandidates: [{ type: 'character', title: 'Izuku', reason: 'A student arrived.',
+                        action: 'create', targetDocumentId: null, confidence: 1 }],
+                })
+            },
+        })
+        await runner.run({
+            characterId: 'character', chatId: 'chat', wikiWritingLanguage: 'en',
+            messages: [{ messageId: 'turn-1', role: 'assistant', content: 'Izuku arrived.' }],
+            ...(supplied ? { loreReference: [
+                { title: 'Izuku', content: 'Izuku is a girl in class 1-A.' },
+                { title: 'Empty', content: '   ' },
+            ] } : {}),
+        })
+        expect(requests.map((request) => request.format)).toEqual(['memory-draft', 'canonical-batch'])
+        for (const request of requests) {
+            const input = JSON.parse(request.input) as Record<string, unknown>
+            if (supplied) {
+                expect(input.settingReference).toEqual([{ title: 'Izuku', content: 'Izuku is a girl in class 1-A.' }])
+                expect(request.system).toContain('settingReference holds lorebook entries')
+            }
+            else {
+                expect(input).not.toHaveProperty('settingReference')
+                expect(request.system).not.toContain('settingReference')
+            }
+        }
+    })
+
     test('keeps first-message evidence outside reboot checkpoint sources', async () => {
         const beginRebootBatch = vi.fn(async () => ({ canonicalCount: 0 }))
         const recordRebootBatchReceipt = vi.fn(async (input) => input.receipt)

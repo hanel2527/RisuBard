@@ -138,6 +138,15 @@ export async function exportModuleLegacy(module:RisuModule, arg:{
     return apb.buffer
 }
 
+/** The module record of a .risum file, without saving its assets. */
+export async function readModuleMetadata(buf: Buffer): Promise<RisuModule | null> {
+    if (buf.length < 6 || buf.readUInt8(0) !== 111 || buf.readUInt8(1) !== 0) return null
+    const len = buf.readUInt32LE(2)
+    if (6 + len > buf.length) return null
+    const main = JSON.parse(Buffer.from(await decodeRPack(buf.subarray(6, 6 + len))).toString())
+    return main?.type === 'risuModule' && main.module ? main.module : null
+}
+
 export async function readModule(buf:Buffer, transaction?: ImportTransaction):Promise<RisuModule> {
     const saveAsset = importAsset(transaction)
     transaction?.check()

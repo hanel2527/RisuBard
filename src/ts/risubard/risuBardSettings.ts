@@ -18,6 +18,10 @@ export const RISUBARD_HISTORICAL_SOURCE_MATCH_LIMIT_DEFAULT = 8
 export const RISUBARD_CANONICAL_WRITING_STYLE_DEFAULT = 'concise' as const
 export const RISUBARD_CANONICAL_CUSTOM_STYLE_MAX_LENGTH = 1_000
 export const RISUBARD_DYNAMIC_MEMORY_MAXIMUM_DEFAULT = 12_000
+export const RISUBARD_ANALYSIS_LORE_TOKEN_LIMIT_DEFAULT = 1_000
+// Image asset lists are often always-on and thousands of tokens long; they never carry story facts.
+export const RISUBARD_ANALYSIS_LORE_EXCLUDE_WORDS_DEFAULT = ['<img', '{{asset::', '{{img::', '{{image::'].join('\n')
+export const RISUBARD_ANALYSIS_LORE_EXCLUDE_WORDS_MAX_LENGTH = 2_000
 export type RisuBardDynamicMemoryMode = 'off' | 'economy' | 'balanced' | 'recall'
 export const RISUBARD_DYNAMIC_MEMORY_MODE_DEFAULT: RisuBardDynamicMemoryMode = 'economy'
 
@@ -45,6 +49,9 @@ export interface RisuBardChatSettings {
     risuBardResponseMessageCount?: number
     risuBardResponseExcludeUserMessages?: boolean
     risuBardAnalysisExcludeUserMessages?: boolean
+    risuBardAnalysisLoreTokenLimit?: number
+    risuBardAnalysisLoreIncludeAlwaysActive?: boolean
+    risuBardAnalysisLoreExcludeWords?: string
     risuBardCanonicalWritingStyle?: RisuBardCanonicalWritingStyle
     risuBardCanonicalCustomStyle?: string
     risuBardWikiWritingLanguage?: WikiWritingLanguage
@@ -75,6 +82,9 @@ export interface ResolvedRisuBardChatSettings {
     risuBardResponseMessageCount: number
     risuBardResponseExcludeUserMessages: boolean
     risuBardAnalysisExcludeUserMessages: boolean
+    risuBardAnalysisLoreTokenLimit: number
+    risuBardAnalysisLoreIncludeAlwaysActive: boolean
+    risuBardAnalysisLoreExcludeWords: string
     risuBardCanonicalWritingStyle: RisuBardCanonicalWritingStyle
     risuBardCanonicalCustomStyle: string
     risuBardWikiWritingLanguage: WikiWritingLanguage
@@ -112,6 +122,7 @@ export type RisuBardNumberSettingKey =
     | 'risuBardCanonicalTargetLimit'
     | 'risuBardRecentMessageCount'
     | 'risuBardResponseMessageCount'
+    | 'risuBardAnalysisLoreTokenLimit'
 
 /**
  * The bounds resolveRisuBardChatSettings applies to each number setting.
@@ -132,7 +143,9 @@ export function risuBardNumberSettingBounds(
         case 'risuBardInquiryTimeoutMs': return { min: 1, max: 10_000 }
         case 'risuBardHistoricalSourceMatchLimit': return { min: 0, max: 32 }
         case 'risuBardAnalysisTokenLimit': return { min: 3_072, max: Number.MAX_SAFE_INTEGER }
-        case 'risuBardAdditionalSearchLimit': return { min: 0, max: Number.MAX_SAFE_INTEGER }
+        case 'risuBardAdditionalSearchLimit':
+        case 'risuBardAnalysisLoreTokenLimit':
+            return { min: 0, max: Number.MAX_SAFE_INTEGER }
         case 'risuBardCanonicalTargetLimit':
         case 'risuBardRecentMessageCount':
         case 'risuBardResponseMessageCount':
@@ -203,6 +216,14 @@ export function resolveRisuBardChatSettings(
             value('risuBardResponseExcludeUserMessages') === true,
         risuBardAnalysisExcludeUserMessages:
             value('risuBardAnalysisExcludeUserMessages') === true,
+        risuBardAnalysisLoreTokenLimit: bounded(
+            'risuBardAnalysisLoreTokenLimit', value('risuBardAnalysisLoreTokenLimit'), RISUBARD_ANALYSIS_LORE_TOKEN_LIMIT_DEFAULT
+        ),
+        risuBardAnalysisLoreIncludeAlwaysActive:
+            value('risuBardAnalysisLoreIncludeAlwaysActive') === true,
+        risuBardAnalysisLoreExcludeWords: normalizeRisuBardAnalysisLoreExcludeWords(
+            value('risuBardAnalysisLoreExcludeWords')
+        ),
         risuBardCanonicalWritingStyle: normalizeRisuBardCanonicalWritingStyle(
             value('risuBardCanonicalWritingStyle')
         ),
@@ -233,6 +254,18 @@ export function normalizeRisuBardDynamicMemoryMode(value: unknown): RisuBardDyna
 
 export function normalizeRisuBardDynamicMemoryMaximum(value: unknown): number {
     return bounded('risuBardDynamicMemoryMaximumTokens', value, RISUBARD_DYNAMIC_MEMORY_MAXIMUM_DEFAULT)
+}
+
+/** A missing value means the default list; an empty string means the user cleared it. */
+export function normalizeRisuBardAnalysisLoreExcludeWords(value: unknown): string {
+    return typeof value === 'string'
+        ? value.slice(0, RISUBARD_ANALYSIS_LORE_EXCLUDE_WORDS_MAX_LENGTH)
+        : RISUBARD_ANALYSIS_LORE_EXCLUDE_WORDS_DEFAULT
+}
+
+/** One word per line; blank lines are ignored. */
+export function parseRisuBardLoreExcludeWords(value: string): string[] {
+    return [...new Set(value.split('\n').map((word) => word.trim()).filter(Boolean))]
 }
 
 export function normalizeRisuBardAnalysisTokenLimit(value: unknown): number {

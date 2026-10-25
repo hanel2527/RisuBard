@@ -325,6 +325,33 @@ describe('RisuBardCurrentChatSettings', () => {
         expect(field.querySelector('.toggle-control span')?.textContent).toBe('넣음')
     })
 
+    test('stores the lorebook reference settings and disables them at zero tokens', async () => {
+        const chat = chatWithLongMessages()
+        mounted = mount(RisuBardCurrentChatSettings, { target: document.body, props: { chat, global: {} } })
+        const tokens = document.querySelector<HTMLInputElement>('#bardwiki-analysis-lore-tokens')!
+        const always = document.querySelector<HTMLInputElement>('#bardwiki-analysis-lore-always')!
+        const words = document.querySelector<HTMLTextAreaElement>('#bardwiki-analysis-lore-exclude')!
+        expect(tokens.value).toBe('1000')
+        expect(always.checked).toBe(false)
+        expect(words.value).toBe('<img\n{{asset::\n{{img::\n{{image::')
+
+        always.click()
+        words.value = '에셋\n<img'
+        words.dispatchEvent(new Event('change', { bubbles: true }))
+        await tick()
+        expect(chat.risuBardSettings).toMatchObject({
+            risuBardAnalysisLoreIncludeAlwaysActive: true,
+            risuBardAnalysisLoreExcludeWords: '에셋\n<img',
+        })
+
+        tokens.value = '0'
+        tokens.dispatchEvent(new Event('change', { bubbles: true }))
+        await tick()
+        expect(chat.risuBardSettings!.risuBardAnalysisLoreTokenLimit).toBe(0)
+        expect(always.disabled).toBe(true)
+        expect(words.disabled).toBe(true)
+    })
+
     describe('number inputs', () => {
         const change = async (selector: string, value: string) => {
             const input = document.querySelector<HTMLInputElement>(selector)!
@@ -555,7 +582,7 @@ describe('RisuBardCurrentChatSettings', () => {
 
         const fields = [...document.querySelectorAll('[data-chat-setting-field]')]
         const helpButtons = [...document.querySelectorAll('[data-chat-setting-help]')]
-        expect(fields).toHaveLength(14)
+        expect(fields).toHaveLength(17)
         expect(document.querySelector('[data-chat-setting-field^="risuBardBardChan"]')).toBeNull()
         expect(document.querySelector('#bardwiki-ignore-ooc')).toBeNull()
         expect(helpButtons).toHaveLength(fields.length)

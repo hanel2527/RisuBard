@@ -199,3 +199,21 @@ describe('module updates', () => {
         expect(merged.lorebook!.map(entry => entry.content)).toEqual(['new a', 'my b', 'm'])
     })
 })
+describe('editing while comparing', () => {
+    test('an edited value replaces the item, and a lore edit keeps the installed id', () => {
+        const lore = (content: string, id?: string) => ({ key: 'town', secondkey: '', insertorder: 1, comment: 'Town', content, mode: 'normal' as const, alwaysActive: false, selective: false, ...(id ? { id } : {}) })
+        const mine = bot({ desc: 'translated', globalLore: [lore('번역한 마을', 'kept-id')] })
+        const theirs = bot({ desc: 'new original', globalLore: [lore('new town text')] })
+        const base = updateBaseSnapshot(bot({ desc: 'old original', globalLore: [lore('old town text')] }))
+        const plan = planCharacterUpdate(mine, theirs, base)
+        const loreItem = plan.items.find(item => item.field === 'globalLore')!
+        expect(loreItem).toMatchObject({ status: 'conflict', baseKnown: true })
+        expect((loreItem.base as any).content).toBe('old town text')
+        const merged = applyCharacterUpdate(mine, theirs, plan, {
+            desc: { value: '번역 + 새 설정' },
+            [loreItem.id]: { value: { ...(loreItem.mine as object), content: '번역한 마을 + 광장' } },
+        })
+        expect(merged.desc).toBe('번역 + 새 설정')
+        expect(merged.globalLore[0]).toMatchObject({ id: 'kept-id', content: '번역한 마을 + 광장' })
+    })
+})
