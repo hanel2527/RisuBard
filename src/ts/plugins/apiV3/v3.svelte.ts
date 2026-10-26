@@ -37,6 +37,7 @@ import {
     getBardWikiPluginDocuments,
     saveBardWikiPluginDocument,
     setBardWikiPluginDocumentContextMode,
+    setBardWikiPluginDocumentGrade,
     stripBardWikiVirtualMemory,
     stripBardWikiVirtualMemoryFromCharacter,
     stripBardWikiVirtualMemoryFromDatabase,
@@ -1085,6 +1086,19 @@ const makeRisuaiAPIV3 = (iframe:HTMLIFrameElement,plugin:RisuPlugin) => {
                 ...input,
             })
         },
+        _setBardWikiGrade: async (input: {
+            documentId: string
+            grade: number | null
+            gradeBy?: 'user' | 'ai'
+            expectedContentHash: string
+        }) => {
+            const conf = await getPermission('bardWikiWrite')
+            if (!conf) return null
+            return setBardWikiPluginDocumentGrade({
+                ...getCurrentBardWikiScope(),
+                ...input,
+            })
+        },
         _trashBardWikiDocument: async (documentId: string) => {
             const conf = await getPermission('bardWikiWrite')
             if (!conf) return null
@@ -1474,6 +1488,7 @@ const makeRisuaiAPIV3 = (iframe:HTMLIFrameElement,plugin:RisuPlugin) => {
                     'getDocuments': '_getBardWikiDocuments',
                     'saveDocument': '_saveBardWikiDocument',
                     'setContextMode': '_setBardWikiContextMode',
+                    'setGrade': '_setBardWikiGrade',
                     'trashDocument': '_trashBardWikiDocument',
                 }
             }

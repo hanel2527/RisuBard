@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { ArrowDownToLine, ArrowUpToLine, Box, ChevronRight, Copy, Crosshair, Eraser, History as HistoryIcon, ImagePlus, Images, LoaderCircle, Palette, Puzzle, RefreshCw, RotateCcw, SlidersHorizontal, Sparkles, TextSelect, Trash2, Undo2, UserPlus, Users, X } from '@lucide/svelte'
+    import { ArrowDownToLine, ArrowUpToLine, Box, ChevronDown, ChevronRight, ChevronUp, Copy, Crosshair, Eraser, History as HistoryIcon, ImagePlus, Images, LoaderCircle, Palette, Puzzle, RefreshCw, RotateCcw, ScanFace, SlidersHorizontal, Sparkles, TextSelect, Trash2, Undo2, UserPlus, Users, X } from '@lucide/svelte'
     import { tooltip } from 'src/ts/gui/tooltip'
     import { Buffer } from 'buffer'
     import { untrack } from 'svelte'
@@ -15,6 +15,7 @@
     import BardPainterIconButton from './BardPainterIconButton.svelte'
     import BardPainterTools from './BardPainterTools.svelte'
     import BardPainterImagePreset from './BardPainterImagePreset.svelte'
+    import BardPainterAnalyzer from './BardPainterAnalyzer.svelte'
 
     let { characterId, chatId, visible = true }: { characterId: string; chatId: string; visible?: boolean } = $props()
     let session = $state(untrack(() => getPainterSession(characterId, chatId)))
@@ -24,7 +25,9 @@
     let data = $derived(session.data)
     let selection = $derived($painterSelection?.characterId === characterId && $painterSelection.chatId === chatId ? $painterSelection : null)
     let scene = $derived(data.anchor ?? selection?.anchor)
-    let pendingScene = $derived(!!selection?.anchor && JSON.stringify(selection.anchor) !== JSON.stringify(data.anchor))
+    // The fixed scene's text may be edited, so a new selection is judged by where it is, not by its text.
+    const spot = (anchor?: { messageId: string; start: number; end: number }) => anchor ? `${anchor.messageId}:${anchor.start}:${anchor.end}` : ''
+    let pendingScene = $derived(!!selection?.anchor && spot(selection.anchor) !== spot(data.anchor))
     let planned = $derived(!!data.draft?.scene.trim())
     let subjects = $derived(data.draft?.subjects ?? [])
     let subjectLimit = $derived(painterSubjectLimit(session.settings.model))
@@ -42,14 +45,17 @@
     let presetChoices = $derived(session.identities.filter(item => !subjects.some(subject => subject.id === item.id)))
     let globalChoices = $derived(session.unreflectedGlobalIdentities)
     let toolMode = $state<'style' | 'characters' | 'settings' | 'fragments' | null>(null)
-    let confirm = $state<'scene' | 'fresh' | 'clear' | 'reset' | 'discard' | null>(null)
+    let confirm = $state<'fresh' | 'clear' | 'reset' | 'discard' | null>(null)
     let copying = $state(false)
     let expanded = $state(false)
     let broken = $state(false)
     let historyOpen = $state(false)
+    let analyzerOpen = $state(false)
+    let sourcesOpen = $state(false)
+    let sourcesSummary = $state('')
     let editingFragment = $state<string | null>(null)
     let status = $derived(session.state.status === 'prompt' ? '프롬프트를 작성하고 있습니다.' : session.state.status === 'image' ? 'NovelAI에서 이미지를 생성하고 있습니다.' : session.state.status === 'saving' ? '저장하고 있습니다.' : '')
-    $effect(() => { characterId; chatId; toolMode = null; confirm = null; historyOpen = false })
+    $effect(() => { characterId; chatId; toolMode = null; confirm = null; historyOpen = false; analyzerOpen = false })
     $effect(() => { latest?.assetId; expanded = false; broken = false })
 
     function save() { void session.persist() }
@@ -77,15 +83,17 @@
             messageId: insertionTarget?.messageId ?? result.anchor.messageId,
             preferredOffset: insertionTarget?.end,
             insert: anchor => current.insert(result.id, 'after', anchor),
+            replace: target => current.replaceInlay(result.id, target),
             error: () => current.state.error,
         })
     }
     async function useSelection() {
         if (!selection?.anchor || blocked || streaming) return
-        // Replacing a planned scene drops its text, so ask once.
-        if (planned && confirm !== 'scene') { confirm = 'scene'; return }
-        confirm = null
         await session.changeScene(selection.anchor)
+    }
+    function editSceneText(value: string) {
+        // Plain text only: the planner reads this as the passage to illustrate.
+        if (data.anchor) data.anchor.text = value.replace(/ /g, ' ')
     }
     async function prepare(fresh = false) {
         if (!scene || blocked) return
@@ -142,8 +150,11 @@
         <header>
             <h2>바드페인터</h2>
             <span class="spacer"></span>
-            <BardPainterIconButton label="갤러리 열기" text="갤러리" onclick={openGallery}><Images size={15} /></BardPainterIconButton>
-            <BardPainterIconButton label="작업 리셋" text="초기화" disabled={blocked || streaming} expanded={confirm === 'reset'} onclick={() => confirm = confirm === 'reset' ? null : 'reset'}><RotateCcw size={15} /></BardPainterIconButton>
+            <div class="header-actions">
+                <BardPainterIconButton label="캐릭터 분석기" text="캐릭터 분석" disabled={blocked} onclick={() => analyzerOpen = true}><ScanFace size={15} /></BardPainterIconButton>
+                <BardPainterIconButton label="갤러리 열기" text="갤러리" onclick={openGallery}><Images size={15} /></BardPainterIconButton>
+                <BardPainterIconButton label="작업 리셋" text="초기화" disabled={blocked || streaming} expanded={confirm === 'reset'} onclick={() => confirm = confirm === 'reset' ? null : 'reset'}><RotateCcw size={15} /></BardPainterIconButton>
+            </div>
         </header>
         {#if confirm === 'reset'}
             <div class="confirm" role="alert"><p>장면, 초안, 프롬프트 대화와 참고 삽화를 비웁니다. 생성 설정, 프리셋과 갤러리 이미지, 본문에 넣은 그림은 그대로입니다.</p><div class="row"><button type="button" class="danger" disabled={blocked || streaming} onclick={() => void resetWorkspace()}>리셋</button><button type="button" onclick={() => confirm = null}>취소</button></div></div>
@@ -171,15 +182,21 @@
             <BardPainterImagePreset {session} disabled={blocked} />
         </section>
         <BardPainterTools {session} mode={toolMode} onClose={() => toolMode = null} disabled={blocked} />
+        <BardPainterAnalyzer {session} bind:open={analyzerOpen} onOpenGallery={() => { analyzerOpen = false; openGallery() }} />
 
         <section class="block" aria-label="그릴 장면">
             <div class="heading"><h3>장면</h3></div>
             {#if scene}
-                <blockquote class:pending={!data.anchor}>{scene.text}</blockquote>
+                {#if data.anchor}
+                    <textarea class="scene-text" aria-label="장면 글" rows="4" spellcheck="false" disabled={blocked} value={data.anchor.text} oninput={event => editSceneText(event.currentTarget.value)} onblur={save}></textarea>
+                {:else}<blockquote class="pending">{scene.text}</blockquote>{/if}
                 {#if !data.anchor}<p class="hint">아직 정하지 않은 선택입니다. 프롬프트를 작성하면 이 부분을 그립니다.</p>
                 {:else if pendingScene}<p class="hint">본문에서 다른 부분을 선택했습니다. 아래 버튼을 누르면 장면을 바꿉니다.</p>{/if}
             {:else}<p class="empty">본문에서 그리고 싶은 부분을 드래그해 선택하세요.</p>{/if}
             {#if selection?.issue && !scene}<p class="hint">{selection.issue}</p>{/if}
+            <button type="button" class="scene-pick" class:ready={pendingScene} aria-label={data.anchor ? '본문에서 새로 선택한 부분으로 장면 바꾸기' : '본문에서 선택한 부분을 장면으로 정하기'} disabled={!pendingScene || blocked || streaming} onclick={() => void useSelection()}>
+                <TextSelect size={17} aria-hidden="true" /><span class="scene-pick-text"><span>{data.anchor ? '선택한 부분으로 바꾸기' : '선택한 부분을 장면으로'}</span>{#if !pendingScene}<small>본문에서 드래그해 고르세요</small>{/if}</span>
+            </button>
             <div class="toolbar">
                 <span class="bar-label">시점</span>
                 <div class="perspective" role="group" aria-label="그림 시점" use:tooltip={'다음 프롬프트 작성부터 적용합니다. 1인칭은 사용자 캐릭터를 그리지 않습니다.'}>
@@ -187,12 +204,7 @@
                         <button type="button" aria-pressed={(data.settings.perspective ?? 'third-person') === value} disabled={blocked} onclick={() => { data.settings.perspective = value as 'first-person' | 'third-person'; save() }}>{text}</button>
                     {/each}
                 </div>
-                <span class="spacer"></span>
-                <BardPainterIconButton label={data.anchor ? '본문에서 새로 선택한 부분으로 장면 바꾸기' : '본문에서 선택한 부분을 장면으로 정하기'} text={data.anchor ? '선택한 부분으로 바꾸기' : '선택한 부분을 장면으로'} tone={pendingScene ? 'accent' : 'ghost'} disabled={!pendingScene || blocked || streaming} onclick={() => void useSelection()}><TextSelect size={15} /></BardPainterIconButton>
             </div>
-            {#if confirm === 'scene'}
-                <div class="confirm" role="alert"><p>지금 초안의 장면 설명과 대화를 비우고 새로 선택한 부분으로 바꿉니다. 직접 추가했거나 잠근 인물 블록은 남깁니다.</p><div class="row"><button type="button" disabled={blocked || streaming} onclick={() => void useSelection()}>장면 바꾸기</button><button type="button" onclick={() => confirm = null}>취소</button></div></div>
-            {/if}
         </section>
 
         {#if session.state.pendingImage}
@@ -270,32 +282,34 @@
             {/if}
         </section>
 
-        <section class="block">
-            <BardPainterContext {session} disabled={blocked} onOpenGallery={openGallery} />
-        </section>
     </div>
 
     <footer class="composer" aria-label="프롬프트 대화">
         {#if historyOpen && data.conversation?.length}<div class="history" role="log" aria-label="프롬프트 대화 기록">{#each data.conversation.slice(-8) as message (message.id)}<p class:user={message.role === 'user'}>{message.text}</p>{/each}</div>{/if}
         {#if confirm === 'clear'}<div class="confirm" role="alert"><p>이 챗의 프롬프트 대화 기록을 비웁니다. 초안과 삽화는 그대로입니다.</p><div class="row"><button type="button" disabled={blocked} onclick={async () => { if (await session.clearConversation()) { confirm = null; historyOpen = false } }}>비우기</button><button type="button" onclick={() => confirm = null}>취소</button></div></div>{/if}
+        <div class="sources" hidden={!sourcesOpen}><BardPainterContext {session} disabled={blocked} onOpenGallery={openGallery} embedded bind:summary={sourcesSummary} /></div>
         <BardPainterPromptInput aria-label="프롬프트 대화 입력" rows={2} maxlength={6000} placeholder={planned ? '어떻게 다듬을까요? 예: 인물을 더 가까이, 배경은 흐리게' : '원하는 구도나 분위기 (비워도 됩니다)'} bind:value={data.settings.instruction} onblur={save} disabled={blocked} onkeydown={keydown} />
         {#if confirm === 'fresh'}<div class="confirm" role="alert"><p>초안을 처음부터 다시 작성합니다. 직접 추가했거나 잠근 블록은 남기고, 실패하면 지금 초안을 유지합니다.</p><div class="row"><button type="button" disabled={blocked} onclick={() => void prepare(true)}>새로 작성</button><button type="button" onclick={() => confirm = null}>취소</button></div></div>{/if}
         <div class="actions">
-            {#if session.state.status === 'prompt'}
-                <button type="button" class="secondary" onclick={() => session.cancel()}><X size={15} aria-hidden="true" />작성 중지</button>
-            {:else}
-                <button type="button" class="secondary" disabled={blocked || !scene} use:tooltip={'장면과 참고 자료를 읽고 AI가 프롬프트 블록을 채웁니다. 위 입력란의 요청도 함께 보냅니다. Ctrl+Enter로도 보낼 수 있습니다.'} onclick={() => void prepare()}><Sparkles size={15} aria-hidden="true" />{planned ? '초안 개선' : '프롬프트 작성'}</button>
-            {/if}
-            {#if planned}<BardPainterIconButton label="처음부터 새로 작성" text="다시 쓰기" disabled={blocked} expanded={confirm === 'fresh'} onclick={() => confirm = confirm === 'fresh' ? null : 'fresh'}><RefreshCw size={14} /></BardPainterIconButton>{/if}
+            <button type="button" class="sources-toggle" aria-expanded={sourcesOpen} aria-label="AI 참고 자료" onclick={() => sourcesOpen = !sourcesOpen}>
+                {#if sourcesOpen}<ChevronDown size={15} aria-hidden="true" />{:else}<ChevronUp size={15} aria-hidden="true" />{/if}<span>AI 참고 자료</span><small>{sourcesSummary}</small>
+            </button>
             {#if data.conversation?.length}
-                <span class="spacer"></span>
                 <BardPainterIconButton label={`대화 기록 ${data.conversation.length}개 ${historyOpen ? '닫기' : '보기'}`} text={`기록 ${data.conversation.length}`} expanded={historyOpen} onclick={() => historyOpen = !historyOpen}><HistoryIcon size={14} /></BardPainterIconButton>
                 <BardPainterIconButton label="프롬프트 대화 비우기" disabled={blocked} expanded={confirm === 'clear'} onclick={() => confirm = confirm === 'clear' ? null : 'clear'}><Eraser size={14} /></BardPainterIconButton>
             {/if}
         </div>
-        <button type="button" class="generate" aria-label="이미지 생성" disabled={blocked || !data.anchor || !data.draft?.scene.trim()} use:tooltip={'지금 프롬프트 블록 그대로 NovelAI에 보냅니다. 사용량이 차감될 수 있습니다.'} onclick={() => void generate()}>
-            {#if session.state.status === 'image'}<LoaderCircle size={17} class="animate-spin" aria-hidden="true" />{:else}<ImagePlus size={17} aria-hidden="true" />{/if}<span>이미지 생성</span><small>{modelName} / {sizeName}</small>
-        </button>
+        <div class="launch">
+            {#if session.state.status === 'prompt'}
+                <button type="button" class="square" aria-label="작성 중지" onclick={() => session.cancel()}><X size={18} aria-hidden="true" /><span>중지</span></button>
+            {:else}
+                <button type="button" class="square" aria-label={planned ? '초안 개선' : '프롬프트 작성'} disabled={blocked || !scene} use:tooltip={'장면과 참고 자료를 읽고 AI가 프롬프트 블록을 채웁니다. 위 입력란의 요청도 함께 보냅니다. Ctrl+Enter로도 보낼 수 있습니다.'} onclick={() => void prepare()}><Sparkles size={18} aria-hidden="true" /><span>{planned ? '초안 개선' : '초안 작성'}</span></button>
+            {/if}
+            <button type="button" class="square" aria-label="처음부터 새로 작성" aria-expanded={confirm === 'fresh'} disabled={blocked || !planned} use:tooltip={'초안을 처음부터 다시 작성합니다.'} onclick={() => confirm = confirm === 'fresh' ? null : 'fresh'}><RefreshCw size={18} aria-hidden="true" /><span>다시 쓰기</span></button>
+            <button type="button" class="generate" aria-label="이미지 생성" disabled={blocked || !data.anchor || !data.draft?.scene.trim()} use:tooltip={'지금 프롬프트 블록 그대로 NovelAI에 보냅니다. 사용량이 차감될 수 있습니다.'} onclick={() => void generate()}>
+                {#if session.state.status === 'image'}<LoaderCircle size={17} class="animate-spin" aria-hidden="true" />{:else}<ImagePlus size={17} aria-hidden="true" />{/if}<span>이미지 생성</span><small>{modelName} / {sizeName}</small>
+            </button>
+        </div>
         <div class="feedback" role="status" aria-live="polite">
             {#if status}<p><LoaderCircle size={14} class="animate-spin" aria-hidden="true" />{status}</p>
             {:else if session.state.notice}<p>{session.state.notice}</p>{/if}
@@ -308,7 +322,8 @@
 <style>
     .painter { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; color: var(--color-textcolor); font-size: .875rem; }
     .scroll { flex: 1; min-height: 0; overflow: auto; padding: .9rem clamp(.75rem, 3vw, 1.1rem) 1.25rem; display: flex; flex-direction: column; gap: 1.25rem; scrollbar-gutter: stable; }
-    header { display: flex; align-items: center; gap: .35rem; }
+    header { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; }
+    .header-actions { display: flex; flex-wrap: wrap; gap: .35rem; }
     h2 { font-size: 1.05rem; font-weight: 700; line-height: 1.3; }
     .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .frame { display: flex; flex-direction: column; gap: .55rem; min-width: 0; margin-top: -.35rem; container-type: inline-size; }
@@ -323,6 +338,17 @@
     .dim { color: var(--color-textcolor2); font-weight: 400; }
     .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; min-width: 0; }
     .bar-label { color: var(--color-textcolor2); font-size: .75rem; }
+    /* The scene pick starts every illustration, so it carries the same weight as image generation. */
+    .scene-pick { display: flex; align-items: center; justify-content: center; gap: .5rem; width: 100%; min-height: 2.9rem; padding: 0 1rem; border: 1px dashed color-mix(in srgb, var(--color-primary) 55%, var(--color-darkborderc)); border-radius: .55rem; background: color-mix(in srgb, var(--color-primary) 7%, transparent); color: var(--color-textcolor); font-size: .95rem; font-weight: 700; transition: filter .15s ease-out, transform .15s cubic-bezier(.16, 1, .3, 1), background-color .15s ease-out; }
+    .scene-pick-text { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.3; }
+    .scene-pick-text > span { white-space: nowrap; }
+    .scene-pick small { font-size: .72rem; font-weight: 500; color: var(--color-textcolor2); }
+    .scene-pick.ready { border: 1px solid var(--color-primary); background: var(--color-primary); color: var(--color-accenttext); box-shadow: 0 3px 10px -4px color-mix(in srgb, var(--color-primary) 70%, transparent); }
+    .scene-pick.ready:hover:not(:disabled) { filter: brightness(1.08); }
+    .scene-pick.ready:active:not(:disabled) { transform: translateY(1px); }
+    .scene-pick:disabled { cursor: not-allowed; }
+    .scene-pick:disabled:not(.ready) { opacity: .8; }
+    .scene-pick:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
     .block { display: flex; flex-direction: column; gap: .6rem; min-width: 0; }
     .block + .block { padding-top: 1.1rem; border-top: 1px solid var(--color-darkborderc); }
     .heading { display: flex; align-items: center; gap: .3rem; min-height: 2rem; min-width: 0; }
@@ -336,6 +362,8 @@
     .perspective button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
     blockquote { max-height: 8.5rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: .55rem .75rem; border-radius: .5rem; background: var(--color-darkbg); line-height: 1.6; font-size: .84rem; }
     blockquote.pending { opacity: .75; border: 1px dashed var(--color-darkborderc); background: transparent; }
+    .scene-text { width: 100%; min-height: 5.5rem; max-height: 16rem; padding: .55rem .75rem; border: 1px solid var(--color-darkborderc); border-radius: .5rem; background: var(--color-darkbg); color: var(--color-textcolor); font: inherit; font-size: .84rem; line-height: 1.6; resize: vertical; field-sizing: content; }
+    .scene-text:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
     .hint, .empty { color: var(--color-textcolor2); font-size: .78rem; line-height: 1.55; overflow-wrap: anywhere; }
     .empty { font-size: .8rem; }
     .add-preset { width: auto; max-width: 9.5rem; min-height: 2rem; margin-left: .2rem; padding: .15rem 1.6rem .15rem .5rem; border: 1px solid var(--color-darkborderc); border-radius: .4rem; background-color: var(--color-bgcolor); color: var(--color-textcolor); font: inherit; font-size: .75rem; }
@@ -368,12 +396,25 @@
     .row button:hover:not(:disabled), .actions button:hover:not(:disabled) { background: var(--color-darkbutton); }
     button:disabled { opacity: .45; cursor: not-allowed; }
     button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
-    .generate { display: flex; align-items: center; justify-content: center; gap: .5rem; width: 100%; min-height: 2.9rem; padding: 0 1rem; border: 0; border-radius: .55rem; background: var(--color-primary); color: var(--color-accenttext); font-size: .95rem; font-weight: 700; box-shadow: 0 3px 10px -4px color-mix(in srgb, var(--color-primary) 70%, transparent); transition: filter .15s ease-out, transform .15s cubic-bezier(.16, 1, .3, 1); }
+    .launch { display: flex; gap: .4rem; min-width: 0; }
+    .launch .generate { flex: 1; min-width: 0; }
+    /* Same weight as image generation in gray, so the three launch actions read as one row. */
+    .square { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .2rem; flex-shrink: 0; width: 3.6rem; height: 3.6rem; padding: 0; border: 1px solid var(--color-darkborderc); border-radius: .55rem; background: var(--color-darkbutton); color: var(--color-textcolor); font-size: .7rem; font-weight: 700; line-height: 1.15; transition: filter .15s ease-out, transform .15s cubic-bezier(.16, 1, .3, 1); }
+    .square:hover:not(:disabled) { filter: brightness(1.15); }
+    .square:active:not(:disabled) { transform: translateY(1px); }
+    .square[aria-expanded='true'] { border-color: var(--color-primary); }
+    .square:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+    .actions .sources-toggle { display: inline-flex; align-items: center; gap: .4rem; flex: 1; min-width: 0; min-height: 2.1rem; padding: 0 .6rem; border: 1px solid var(--color-darkborderc); border-radius: .45rem; background: transparent; color: var(--color-textcolor); font-size: .8rem; font-weight: 600; }
+    .actions .sources-toggle small { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--color-textcolor2); font-weight: 400; font-size: .74rem; }
+    .actions .sources-toggle:hover { background: var(--color-darkbutton); }
+    .actions .sources-toggle:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+    .sources { max-height: 15rem; overflow: auto; padding: .55rem .65rem; border: 1px solid var(--color-darkborderc); border-radius: .5rem; background: var(--color-darkbg); }
+    .sources[hidden] { display: none; }
+    .generate { display: flex; align-items: center; justify-content: center; gap: .5rem; width: 100%; min-height: 3.6rem; padding: 0 1rem; border: 0; border-radius: .55rem; background: var(--color-primary); color: var(--color-accenttext); font-size: .95rem; font-weight: 700; box-shadow: 0 3px 10px -4px color-mix(in srgb, var(--color-primary) 70%, transparent); transition: filter .15s ease-out, transform .15s cubic-bezier(.16, 1, .3, 1); }
     .generate small { font-size: .72rem; font-weight: 500; opacity: .8; font-variant-numeric: tabular-nums; }
     .generate:hover:not(:disabled) { filter: brightness(1.08); }
     .generate:active:not(:disabled) { transform: translateY(1px); }
     .generate:disabled { box-shadow: none; }
-    .actions .secondary { border-color: color-mix(in srgb, var(--color-primary) 60%, var(--color-darkborderc)); font-weight: 600; }
     .row .danger { color: var(--color-danger); }
     .link { border: 0; padding: .2rem 0; background: transparent; color: var(--color-textcolor2); font-size: .78rem; text-decoration: underline; text-underline-offset: 3px; }
     .link:hover { color: var(--color-textcolor); }
@@ -385,6 +426,6 @@
     .feedback:empty { display: none; }
     .feedback p { display: flex; align-items: center; gap: .4rem; color: var(--color-textcolor2); font-size: .78rem; line-height: 1.5; overflow-wrap: anywhere; }
     .error { padding: .45rem .6rem; border-radius: .4rem; border: 1px solid var(--color-danger); color: var(--color-textcolor); font-size: .78rem; line-height: 1.5; overflow-wrap: anywhere; }
-    @media (pointer: coarse) { .row button, .actions button, .add-preset, .perspective button { min-height: 2.75rem; } .generate { min-height: 3.25rem; } }
+    @media (pointer: coarse) { .row button, .actions button, .add-preset, .perspective button { min-height: 2.75rem; } .generate, .scene-pick { min-height: 3.25rem; } }
     @media (max-width: 360px) { .generate small { display: none; } }
 </style>

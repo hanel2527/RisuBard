@@ -49,8 +49,8 @@ interface ParsedOutfit { kind: 'outfit'; id: string; name: string; clothing: str
 interface ParsedStyle extends Omit<PainterStyle, 'id'> { kind: 'style'; id: string; isDefault: boolean }
 export type ParsedPainterLore = ParsedCharacter | ParsedOutfit | ParsedStyle
 
-const HEADER = /^\[\s*bardpainter\s+(character|outfit|style)\s*:\s*([^\]]+?)\s*\]\s*$/i
-const SECTION = /^\[\s*(appearance|clothing|artist|rendering|negative|outfit\s*:\s*([^|\]]+?)\s*(?:\|\s*([^\]]*?)\s*)?)\s*\]\s*$/i
+export const PAINTER_LORE_HEADER = /^\[\s*bardpainter\s+(character|outfit|style)\s*:\s*([^\]]+?)\s*\]\s*$/i
+export const PAINTER_LORE_SECTION = /^\[\s*(appearance|clothing|artist|rendering|negative|outfit\s*:\s*([^|\]]+?)\s*(?:\|\s*([^\]]*?)\s*)?)\s*\]\s*$/i
 const META = /^([a-z][a-z ]*?)\s*:\s*(.*)$/i
 const VALID_ID = /^[\w.-]+$/
 
@@ -59,9 +59,9 @@ const list = (value: string) => [...new Set(value.split(',').map(item => item.tr
 /** Parse one CBS-evaluated entry. Returns undefined for ordinary lore or an inactive variant. */
 export function parsePainterLoreEntry(text: string): ParsedPainterLore | undefined {
     const lines = text.replace(/\r\n?/g, '\n').split('\n').filter(line => !line.trimStart().startsWith('@@'))
-    const start = lines.findIndex(line => HEADER.test(line.trim()))
+    const start = lines.findIndex(line => PAINTER_LORE_HEADER.test(line.trim()))
     if (start < 0) return undefined
-    const [, kind, rawId] = lines[start].trim().match(HEADER)!
+    const [, kind, rawId] = lines[start].trim().match(PAINTER_LORE_HEADER)!
     const id = rawId.trim()
     if (!VALID_ID.test(id)) throw new Error(`바드페인터 프리셋 ID「${id}」에는 영문, 숫자, _, -, . 만 쓸 수 있습니다.`)
     const meta = new Map<string, string>()
@@ -69,8 +69,8 @@ export function parsePainterLoreEntry(text: string): ParsedPainterLore | undefin
     for (const line of lines.slice(start + 1)) {
         const trimmed = line.trim()
         // A second header ends this preset; one entry holds one preset.
-        if (HEADER.test(trimmed)) break
-        const section = trimmed.match(SECTION)
+        if (PAINTER_LORE_HEADER.test(trimmed)) break
+        const section = trimmed.match(PAINTER_LORE_SECTION)
         if (section) {
             const name = section[1].toLowerCase().startsWith('outfit') ? 'outfit' : section[1].toLowerCase()
             sections.push({ name, id: section[2]?.trim(), label: section[3]?.trim(), text: [] })

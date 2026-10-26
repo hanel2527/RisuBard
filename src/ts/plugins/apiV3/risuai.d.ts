@@ -1268,6 +1268,9 @@ interface BardWikiDocument {
     created?: string;
     authoring?: 'automatic' | 'ai-assisted' | 'manual';
     contextMode: BardWikiContextMode;
+    /** Optional importance score 0-9 (0-1 none, 2-3 D, 4-5 C, 6 B, 7 A, 8 S, 9 EX). */
+    grade?: number;
+    gradeBy?: 'user' | 'ai';
     contentHash: string;
     reviewStatus?: 'unreviewed' | 'reviewed';
     reviewBaseContent?: string;
@@ -1295,6 +1298,15 @@ interface BardWikiContextModeWrite {
     expectedContentHash: string;
 }
 
+interface BardWikiGradeWrite {
+    documentId: string;
+    /** 0-9, or null to clear the grade. */
+    grade: number | null;
+    /** Defaults to 'ai'. A grade set by 'user' is not overwritten by 'ai'. */
+    gradeBy?: 'user' | 'ai';
+    expectedContentHash: string;
+}
+
 interface BardWikiAPI {
     /** Retrieves BardWiki context and the recent-message window for the current chat. */
     getContext(options?: BardWikiContextOptions): Promise<BardWikiContextResult>;
@@ -1304,6 +1316,8 @@ interface BardWikiAPI {
     saveDocument(document: BardWikiDocumentWrite): Promise<BardWikiDocument | null>;
     /** Changes retrieval behavior. Requests BardWiki write permission. */
     setContextMode(input: BardWikiContextModeWrite): Promise<BardWikiDocument | null>;
+    /** Sets or clears the importance grade. Requests BardWiki write permission. */
+    setGrade(input: BardWikiGradeWrite): Promise<BardWikiDocument | null>;
     /** Moves a document to trash. Requests BardWiki write permission. */
     trashDocument(documentId: string): Promise<{ id: string; trashed: true } | null>;
 }

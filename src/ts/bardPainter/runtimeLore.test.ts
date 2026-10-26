@@ -154,3 +154,24 @@ it('uses the bot lorebook default style until the chat picks another style', asy
     expect(session.data.styleChosen).toBe(true)
     expect(await session.setDefaultStyle('lore-style:bot_style')).toBe(false)
 })
+
+it('prefers the personal default style over the bot lorebook default until the chat picks one', async () => {
+    const char = mocks.db.characters[0]
+    char.globalLore.push(lore('style', '', '@@dont_activate\n[bardpainter style: bot_style]\nname: 봇 화풍\ndefault: true\n[artist]\nplaceholder'))
+    const personal = { id: 'mine', name: '내 화풍', artist: 'artist:mine', rendering: '', negative: '', steps: 28, scale: 5, cfgRescale: 0, sampler: 'k_euler_ancestral' }
+    Object.assign(mocks.db, { bardPainterStyles: [personal], bardPainterDefaultStyleId: 'mine' })
+    try {
+        const session = new PainterSession('bot', 'chat')
+        session.data.settings.styleId = 'mine'
+        await session.refreshLorePresets()
+        expect(session.style.id).toBe('mine')
+        expect(session.styles.map(item => item.id)).toEqual(['default', 'lore-style:bot_style', 'mine'])
+        expect(await session.chooseStyle('lore-style:bot_style')).toBe(true)
+        expect(session.style.id).toBe('lore-style:bot_style')
+        mocks.db.bardPainterDefaultStyleId = 'default'
+        session.data.styleChosen = undefined
+        expect(session.style.id).toBe('lore-style:bot_style')
+    } finally {
+        Object.assign(mocks.db, { bardPainterStyles: undefined, bardPainterDefaultStyleId: undefined })
+    }
+})

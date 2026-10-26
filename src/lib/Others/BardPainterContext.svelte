@@ -6,10 +6,14 @@
     import type { PainterContext } from 'src/ts/bardPainter/types'
     import BardPainterIconButton from './BardPainterIconButton.svelte'
 
-    let { session, disabled = false, onOpenGallery }: {
+    let { session, disabled = false, onOpenGallery, embedded = false, summary = $bindable('') }: {
         session: ReturnType<typeof getPainterSession>
         disabled?: boolean
         onOpenGallery: () => void
+        /** Shown inside the composer, which owns the open and close control. */
+        embedded?: boolean
+        /** What is sent, in a few words, for a control outside this component. */
+        summary?: string
     } = $props()
 
     type Toggle = 'surrounding' | 'characterDescription' | 'persona' | 'systemPrompt' | 'characterLorebook' | 'moduleLorebook'
@@ -30,11 +34,12 @@
     let scope = $derived(session.generationSettingsPinned ? '이 봇에 고정' : session.hasGenerationOverrides ? '이 챗 설정' : '전역값')
     let referenceId = $derived(session.data.settings.context.referenceAssetId || session.data.results.find(result => result.id === session.data.settings.context.referenceId)?.assetId || '')
     let referenceBroken = $state(false)
-    let summary = $derived([
+    let picked = $derived([
         context.before ? `이전 ${context.before}` : '', context.after ? `이후 ${context.after}` : '',
         ...toggles.filter(item => context[item.key] || (item.key === 'systemPrompt' && forcedSystemPrompt)).map(item => item.label),
         wikiIds.length ? `바드위키 ${wikiIds.length}` : '', referenceId ? '참고 삽화' : '',
     ].filter(Boolean).join(', ') || '장면 글만 보냄')
+    $effect(() => { summary = picked })
     $effect(() => { session; wikiOpen = false })
     $effect(() => { referenceId; referenceBroken = false })
 
@@ -52,13 +57,7 @@
     const thumbnail = (id: string) => `/api/asset/${Buffer.from(`inlay_thumb/${id}`, 'utf-8').toString('hex')}`
 </script>
 
-<details class="context" aria-label="AI에 보낼 참고 자료">
-    <summary>
-        <ChevronRight size={15} class="chevron" aria-hidden="true" />
-        <span class="title">AI 참고 자료</span>
-        <span class="picked">{summary}</span>
-        <span class="scope" use:tooltip={'선택 항목은 생성 설정의 적용 범위를 따릅니다. 바드위키와 참고 삽화는 이 챗에만 저장됩니다.'}>{scope}</span>
-    </summary>
+{#snippet body()}
     <div class="body">
     <p class="hint">프롬프트를 작성할 때 장면 글과 함께 AI에 보낼 자료입니다. 켠 항목만 보냅니다.</p>
     <div class="chips" role="group" aria-label="참고 자료 선택">
@@ -108,7 +107,24 @@
         </div>
     {/if}
     </div>
+{/snippet}
+
+{#if embedded}
+    <section class="context embedded" aria-label="AI에 보낼 참고 자료">
+        <div class="embedded-head"><span class="title">AI 참고 자료</span><span class="scope" use:tooltip={'선택 항목은 생성 설정의 적용 범위를 따릅니다. 바드위키와 참고 삽화는 이 챗에만 저장됩니다.'}>{scope}</span></div>
+        {@render body()}
+    </section>
+{:else}
+<details class="context" aria-label="AI에 보낼 참고 자료">
+    <summary>
+        <ChevronRight size={15} class="chevron" aria-hidden="true" />
+        <span class="title">AI 참고 자료</span>
+        <span class="picked">{picked}</span>
+        <span class="scope" use:tooltip={'선택 항목은 생성 설정의 적용 범위를 따릅니다. 바드위키와 참고 삽화는 이 챗에만 저장됩니다.'}>{scope}</span>
+    </summary>
+    {@render body()}
 </details>
+{/if}
 
 <style>
     .context { min-width: 0; }
@@ -121,6 +137,8 @@
     .picked { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .75rem; color: var(--color-textcolor2); }
     .scope { flex-shrink: 0; font-size: .72rem; color: var(--color-textcolor2); cursor: help; }
     .body { display: flex; flex-direction: column; gap: .6rem; padding-top: .55rem; }
+    .embedded .body { padding-top: .35rem; }
+    .embedded-head { display: flex; align-items: center; gap: .5rem; justify-content: space-between; }
     .chips { display: flex; flex-wrap: wrap; gap: .35rem; min-width: 0; }
     .chip, .stepper { display: inline-flex; align-items: center; gap: .3rem; min-height: 2rem; padding: 0 .65rem; border: 1px solid var(--color-darkborderc); border-radius: 999px; background: transparent; color: var(--color-textcolor2); font-size: .78rem; white-space: nowrap; transition: background-color .15s ease-out, border-color .15s ease-out, color .15s ease-out; }
     .chip:hover:not(:disabled) { color: var(--color-textcolor); background: var(--color-darkbutton); }

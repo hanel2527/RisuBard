@@ -16,6 +16,36 @@ afterEach(async () => {
 })
 
 describe('Markdown narrative wiki', () => {
+    test('stores an optional importance grade that survives rewrites and rejects bad values', async () => {
+        const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
+        temporaryDirectories.push(root)
+        const wiki = createMarkdownNarrativeWiki(root, { externalEditSweepMs: 0 })
+        const scope = { characterId: 'character', chatId: 'chat' }
+        const alice = await wiki.saveCanonicalDocument({ ...scope, type: 'character', title: 'Alice',
+            sourceMessageIds: ['assistant-1'], markdown: '## Alice\n\nAlice guards the north gate.' })
+        expect(alice.grade).toBeUndefined()
+        const graded = await wiki.setDocumentGrade({ ...scope, documentId: alice.id, grade: 6, gradeBy: 'ai',
+            expectedContentHash: alice.contentHash })
+        expect(graded).toMatchObject({ grade: 6, gradeBy: 'ai', updated: alice.updated })
+        const repeated = await wiki.setDocumentGrade({ ...scope, documentId: alice.id, grade: 6, gradeBy: 'ai',
+            expectedContentHash: graded.contentHash })
+        expect(repeated.contentHash).toBe(graded.contentHash)
+        await expect(wiki.setDocumentGrade({ ...scope, documentId: alice.id, grade: 10, expectedContentHash: graded.contentHash }))
+            .rejects.toThrow('Invalid wiki grade')
+        await expect(wiki.setDocumentGrade({ ...scope, documentId: alice.id, grade: 3, gradeBy: 'ai', expectedContentHash: 'stale' }))
+            .rejects.toThrow('changed')
+        const user = await wiki.setDocumentGrade({ ...scope, documentId: alice.id, grade: 8, gradeBy: 'user',
+            expectedContentHash: graded.contentHash })
+        await expect(wiki.setDocumentGrade({ ...scope, documentId: alice.id, grade: 2, gradeBy: 'ai', expectedContentHash: user.contentHash }))
+            .rejects.toThrow('user')
+        const rewritten = await wiki.saveCanonicalDocument({ ...scope, type: 'character', title: 'Alice', documentId: alice.id,
+            sourceMessageIds: ['assistant-2'], markdown: '## Alice\n\nAlice left the gate.', expectedContentHash: user.contentHash })
+        expect(rewritten).toMatchObject({ grade: 8, gradeBy: 'user' })
+        const cleared = await wiki.setDocumentGrade({ ...scope, documentId: alice.id, grade: null, gradeBy: 'user',
+            expectedContentHash: rewritten.contentHash })
+        expect(cleared.grade).toBeUndefined()
+    })
+
     test('answers recall from the catalog and picks up external edits for the next recall', async () => {
         const root = await fs.mkdtemp(join(tmpdir(), 'risubard-md-wiki-'))
         temporaryDirectories.push(root)

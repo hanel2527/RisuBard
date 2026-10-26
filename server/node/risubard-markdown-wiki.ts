@@ -35,6 +35,9 @@ export interface MarkdownWikiDocument {
     sequence?: number
     authoring?: 'automatic' | 'ai-assisted' | 'manual'
     contextMode: MarkdownWikiContextMode
+    /** Optional importance score 0-9 (0-1 none, 2-3 D, 4-5 C, 6 B, 7 A, 8 S, 9 EX). */
+    grade?: number
+    gradeBy?: 'user' | 'ai'
     contentHash: string
     reviewStatus?: 'unreviewed' | 'reviewed'
     reviewBaseContent?: string
@@ -42,6 +45,11 @@ export interface MarkdownWikiDocument {
 }
 
 export type MarkdownWikiContextMode = 'always' | 'auto' | 'never'
+
+function isGradeScore(value: unknown): value is number {
+    return typeof value === 'number' && Number.isInteger(value)
+        && value >= 0 && value <= 9
+}
 
 export type MarkdownWikiDocumentType = 'event' | 'character' | 'location'
     | 'scene' | 'faction' | 'creature' | 'item' | 'concept' | 'other'
@@ -406,6 +414,12 @@ function serializeDocument(
             ? [`review_status: ${document.reviewStatus}`]
             : []),
         `context: ${document.contextMode}`,
+        ...(document.grade !== undefined
+            ? [`grade: ${document.grade}`]
+            : []),
+        ...(document.grade !== undefined && document.gradeBy
+            ? [`grade_by: ${document.gradeBy}`]
+            : []),
         'aliases:',
         ...document.aliases.map((alias) => `  - ${yamlString(alias)}`),
         'source_messages:',
@@ -473,6 +487,15 @@ function parseDocument(
     const authoring = optionalScalar('authoring')
     const context = optionalScalar('context')
     const reviewStatus = optionalScalar('review_status')
+    const gradeRaw = optionalScalar('grade')
+    const gradeScore = typeof gradeRaw === 'number' ? gradeRaw : Number(gradeRaw)
+    const grade = gradeRaw !== undefined && isGradeScore(gradeScore)
+        ? gradeScore
+        : undefined
+    const gradeByRaw = optionalScalar('grade_by')
+    const gradeBy = grade !== undefined && (gradeByRaw === 'user' || gradeByRaw === 'ai')
+        ? gradeByRaw
+        : undefined
     const retrievalMetadata = normalizeMemoryRetrievalMetadata(
         optionalScalar('retrieval_metadata')
     )
@@ -521,6 +544,8 @@ function parseDocument(
             reviewStatus: reviewStatus as 'unreviewed' | 'reviewed',
         } : {}),
         ...(retrievalMetadata ? { retrievalMetadata } : {}),
+        ...(grade !== undefined ? { grade } : {}),
+        ...(gradeBy ? { gradeBy } : {}),
     }
 }
 
@@ -1599,6 +1624,8 @@ export function createMarkdownNarrativeWiki(
                 authoring: 'automatic',
                 contextMode: 'auto',
                 retrievalMetadata,
+                ...(existingEvent?.grade !== undefined ? { grade: existingEvent.grade } : {}),
+                ...(existingEvent?.gradeBy ? { gradeBy: existingEvent.gradeBy } : {}),
             })
             await writeAtomically(
                 fileSystem,
@@ -1736,6 +1763,8 @@ export function createMarkdownNarrativeWiki(
                     ? 'always'
                     : existing?.contextMode ?? 'auto',
                 retrievalMetadata,
+                ...(existing?.grade !== undefined ? { grade: existing.grade } : {}),
+                ...(existing?.gradeBy ? { gradeBy: existing.gradeBy } : {}),
             })
             await writeAtomically(fileSystem, file, prepared.contents)
             await rebuildIndex(input.characterId, input.chatId, writingLanguage, [relativePath])
@@ -1925,6 +1954,8 @@ export function createMarkdownNarrativeWiki(
                     ? 'always'
                     : existing?.contextMode ?? 'auto',
                 retrievalMetadata,
+                ...(existing?.grade !== undefined ? { grade: existing.grade } : {}),
+                ...(existing?.gradeBy ? { gradeBy: existing.gradeBy } : {}),
             })
             await writeAtomically(fileSystem, file, prepared.contents)
             if (oldFile && oldFile !== file) {
@@ -2003,6 +2034,69 @@ export function createMarkdownNarrativeWiki(
                 ...stored,
                 contextMode: input.contextMode,
                 updated: operationTime,
+            })
+            await writeAtomically(fileSystem, file, prepared.contents)
+            await rebuildIndex(input.characterId, input.chatId)
+            return prepared.document
+        },
+
+        async setDocumentGrade(input: {
+            characterId: string
+            chatId: string
+            documentId: string
+            /** 0-9, or null to clear the grade. */
+            grade: number | null
+            gradeBy?: 'user' | 'ai'
+            expectedContentHash?: string
+        }): Promise<MarkdownWikiDocument> {
+            const workspace = workspaceFor(input.characterId, input.chatId)
+            const document = (await loadDocuments(
+                input.characterId,
+                input.chatId
+            )).find((item) => item.id === required(
+                input.documentId,
+                'Document ID'
+            ))
+            if (!document) {
+                throw new Error('Canonical wiki document does not exist')
+            }
+            if (input.grade !== null && !isGradeScore(input.grade)) {
+                throw new Error('Invalid wiki grade')
+            }
+            if (input.gradeBy !== undefined
+                && input.gradeBy !== 'user' && input.gradeBy !== 'ai') {
+                throw new Error('Invalid wiki grade source')
+            }
+            if (input.expectedContentHash
+                && document.contentHash !== input.expectedContentHash) {
+                throw new Error(
+                    'Wiki document changed since the draft was created'
+                )
+            }
+            // A user-set grade is never overwritten by an AI grade.
+            if (document.gradeBy === 'user' && input.gradeBy === 'ai') {
+                throw new Error('Wiki grade was set by the user')
+            }
+            const gradeBy = input.gradeBy ?? 'ai'
+            if (input.grade === null
+                ? document.grade === undefined
+                : document.grade === input.grade && document.gradeBy === gradeBy) {
+                return document
+            }
+            // Grading is metadata: no history snapshot and no `updated` bump.
+            const file = join(
+                workspace.directory,
+                ...document.relativePath.split('/')
+            )
+            const {
+                contentHash: _contentHash,
+                grade: _grade,
+                gradeBy: _gradeBy,
+                ...stored
+            } = document
+            const prepared = prepareDocument({
+                ...stored,
+                ...(input.grade === null ? {} : { grade: input.grade, gradeBy }),
             })
             await writeAtomically(fileSystem, file, prepared.contents)
             await rebuildIndex(input.characterId, input.chatId)
