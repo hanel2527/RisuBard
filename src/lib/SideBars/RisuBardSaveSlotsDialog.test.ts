@@ -4,6 +4,13 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { mount, unmount } from 'svelte'
 import RisuBardSaveSlotsDialog from './RisuBardSaveSlotsDialog.svelte'
 import type { MemorySaveSlotSummary } from 'src/ts/risubard/memorySaveSlots'
+import type { StoryHistoryState } from 'src/ts/risubard/storyHistoryTypes'
+
+const legacyState: StoryHistoryState = {
+    mode: 'legacy', revision: 0, epoch: 0, headId: null, branchId: null,
+    wikiCommitId: null, workingSnapshotId: null, quickSaveId: null, anchorMessageId: null,
+    bindings: {}, pendingWiki: null, pendingCheckout: null, branches: [], backups: [],
+}
 
 const mocks = vi.hoisted(() => ({
     listMemorySaveSlots: vi.fn(),
@@ -13,8 +20,12 @@ const mocks = vi.hoisted(() => ({
     alertConfirm: vi.fn(),
     alertInput: vi.fn(),
     createAuth: vi.fn(async () => 'auth'),
+    getStoryHistory: vi.fn(),
 }))
 
+vi.mock('src/ts/stores.svelte', () => ({
+    DBState: { db: { risuBardAutosaveInterval: 5, risuBardAutosaveRetention: 3 } },
+}))
 vi.mock('src/ts/risubard/memorySaveSlots', () => ({
     listMemorySaveSlots: mocks.listMemorySaveSlots,
     previewMemorySaveSlot: mocks.previewMemorySaveSlot,
@@ -22,6 +33,18 @@ vi.mock('src/ts/risubard/memorySaveSlots', () => ({
     deleteMemorySaveSlot: mocks.deleteMemorySaveSlot,
     shouldConfirmMemorySaveLoad: (currentLatestMessageId: string, slots: Array<{ latestMessageId?: string }>) =>
         currentLatestMessageId !== slots[0]?.latestMessageId,
+}))
+vi.mock('src/ts/risubard/storyHistory', () => ({
+    getStoryHistory: mocks.getStoryHistory,
+    subscribeStoryHistory: vi.fn(() => () => {}),
+    captureStoryChat: vi.fn(),
+    previewStoryBackup: vi.fn(),
+    quickStorySave: vi.fn(),
+    renameStoryBackup: vi.fn(),
+    retryStoryWiki: vi.fn(),
+    keepStoryWiki: vi.fn(),
+    migrateStoryHistory: vi.fn(),
+    rollbackStoryHistory: vi.fn(),
 }))
 vi.mock('src/ts/alert', () => ({
     alertConfirm: mocks.alertConfirm,
@@ -38,6 +61,7 @@ let mounted: ReturnType<typeof mount> | undefined
 describe('RisuBardSaveSlotsDialog', () => {
     beforeEach(() => {
         localStorage.clear()
+        mocks.getStoryHistory.mockReset().mockResolvedValue(legacyState)
         mocks.listMemorySaveSlots.mockReset().mockResolvedValue([{
             saveId: 'save-1', sourceChatId: 'chat-1',
             sourceChatName: '성문 앞',
@@ -76,6 +100,8 @@ describe('RisuBardSaveSlotsDialog', () => {
                 currentChatId: 'chat-1',
                 currentChatName: '성문 앞',
                 currentLatestMessageId: 'unsaved-message',
+                currentChat: { id: 'chat-1', name: '성문 앞', message: [], note: '', localLore: [] },
+                onHistoryLoad: vi.fn(async () => undefined),
                 onOpenChange: vi.fn(),
                 onLoad,
                 ...saveProps,
@@ -353,6 +379,8 @@ describe('RisuBardSaveSlotsDialog', () => {
                 currentChatId: 'chat-1',
                 currentChatName: '성문 앞',
                 currentLatestMessageId: 'assistant-1',
+                currentChat: { id: 'chat-1', name: '성문 앞', message: [], note: '', localLore: [] },
+                onHistoryLoad: vi.fn(async () => undefined),
                 onOpenChange: vi.fn(),
                 onLoad,
             },

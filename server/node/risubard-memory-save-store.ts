@@ -1,6 +1,10 @@
 import * as nodeFs from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import fileStore from './file-store.cjs'
+import type { Dirent } from 'node:fs'
+
+const { atomicWriteFile } = fileStore
 
 // Content-addressed page store for save slots. A slot lists its files as
 // { path, hash }; unchanged pages are shared between slots, so a save only
@@ -96,7 +100,13 @@ async function writeBlobOnce(
     contents: Uint8Array
 ): Promise<void> {
     const target = blobPath(store, hash)
+    await assertSafeSaveStorePath(fileSystem, dirname(target), store)
     await fileSystem.mkdir(dirname(target), { recursive: true })
+    if (fileSystem === nodeFs) {
+        atomicWriteFile(store, `${hash.slice(0, 2)}/${hash}`, contents)
+        knownIn(store).add(hash)
+        return
+    }
     const temporary = `${target}.${randomUUID()}.tmp`
     await fileSystem.writeFile(temporary, contents, { flag: 'wx', mode: 0o600 })
     try {
@@ -185,6 +195,63 @@ export function serializeSavedFiles(entries: readonly SavedFileEntry[]): string 
     return JSON.stringify({ schemaVersion: 1, files: entries })
 }
 
+/** Check managed directories only; OS aliases above the trusted root are allowed. */
+export async function assertSafeSaveStorePath(
+    fileSystem: SaveStoreFileSystem,
+    path: string,
+    root: string
+): Promise<void> {
+    const target = resolve(path)
+    const boundary = resolve(root)
+    const relation = relative(boundary, target)
+    if (relation === '..' || relation.startsWith('../') || relation.startsWith('..\\') || isAbsolute(relation)) {
+        throw new Error('Memory save store path escapes its root')
+    }
+    const parent = dirname(target)
+    if (target !== boundary) await assertSafeSaveStorePath(fileSystem, parent, boundary)
+    try {
+        const status = await fileSystem.lstat(target)
+        if (status.isSymbolicLink() || !status.isDirectory()) {
+            throw new Error('Memory save store path is unsafe')
+        }
+    }
+    catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+}
+
+/** Generic CAS bytes shared by wiki pages, messages, and flat history manifests. */
+export async function putSaveBlob(
+    fileSystem: SaveStoreFileSystem,
+    store: string,
+    contents: Uint8Array
+): Promise<string> {
+    const hash = createHash('sha256').update(contents).digest('hex')
+    await assertSafeSaveStorePath(fileSystem, dirname(blobPath(store, hash)), store)
+    if (!await blobExists(fileSystem, store, hash)) {
+        await writeBlob(fileSystem, store, hash, contents)
+    }
+    return hash
+}
+
+export async function readSaveBlob(
+    fileSystem: SaveStoreFileSystem,
+    store: string,
+    hash: string
+): Promise<Buffer> {
+    const path = blobPath(store, hash)
+    await assertSafeSaveStorePath(fileSystem, dirname(path), store)
+    const status = await fileSystem.lstat(path)
+    if (status.isSymbolicLink() || !status.isFile()) {
+        throw new Error('Memory save page store is unsafe')
+    }
+    const contents = Buffer.from(await fileSystem.readFile(path))
+    if (createHash('sha256').update(contents).digest('hex') !== hash) {
+        throw new Error('Memory save page is damaged')
+    }
+    return contents
+}
+
 /** Rebuilds a workspace from a slot's file list, verifying every page. */
 export async function restoreWorkspaceFromStore(
     fileSystem: SaveStoreFileSystem,
@@ -192,10 +259,10 @@ export async function restoreWorkspaceFromStore(
     store: string,
     destination: string
 ): Promise<void> {
-    for (const entry of entries) {
-        const contents = await fileSystem.readFile(blobPath(store, entry.hash))
-        if (contents.byteLength !== entry.size
-            || createHash('sha256').update(contents).digest('hex') !== entry.hash) {
+    const safeEntries = parseSavedFiles(serializeSavedFiles(entries))
+    for (const entry of safeEntries) {
+        const contents = await readSaveBlob(fileSystem, store, entry.hash)
+        if (contents.byteLength !== entry.size) {
             throw new Error('Memory save page is damaged')
         }
         const target = join(destination, ...entry.path.split('/'))
@@ -244,8 +311,48 @@ export async function releaseStorePages(
         }
         if (pending.size === 0) return
     }
+    // History retains all records, including deactivated rollback archives and
+    // in-flight wiki/checkout recovery manifests. Fail closed on damaged pins.
+    const historyRoot = join(dirname(store), 'story-history')
+    await assertSafeSaveStorePath(fileSystem, historyRoot, dirname(store))
+    let histories: Dirent[]
+    try {
+        histories = await fileSystem.readdir(historyRoot, { withFileTypes: true })
+    }
+    catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        histories = []
+    }
+    for (const entry of histories) {
+        if (!entry.isDirectory() || entry.isSymbolicLink()) {
+            throw new Error('Story history pin directory is unsafe')
+        }
+        const statePath = join(historyRoot, entry.name, 'state.json')
+        const status = await fileSystem.lstat(statePath)
+        if (!status.isFile() || status.isSymbolicLink()) {
+            throw new Error('Story history pin file is unsafe')
+        }
+        const contents = await fileSystem.readFile(statePath, 'utf8')
+        const checksumPath = `${statePath}.sha256`
+        const checksumStatus = await fileSystem.lstat(checksumPath)
+        if (!checksumStatus.isFile() || checksumStatus.isSymbolicLink()
+            || (await fileSystem.readFile(checksumPath, 'utf8')).trim()
+                !== createHash('sha256').update(contents).digest('hex')) {
+            throw new Error('Story history pin checksum is damaged')
+        }
+        const state = JSON.parse(contents)
+        if (state.schemaVersion !== 1 || !Array.isArray(state.pinnedHashes)
+            || state.pinnedHashes.some((hash: unknown) =>
+                typeof hash !== 'string' || !HASH_PATTERN.test(hash))) {
+            throw new Error('Story history pins are damaged')
+        }
+        for (const hash of state.pinnedHashes) pending.delete(hash)
+        if (pending.size === 0) return
+    }
     for (const hash of pending) {
-        await fileSystem.rm(blobPath(store, hash), { force: true })
+        const path = blobPath(store, hash)
+        await Promise.all(['', '.sha256', '.bak', '.bak.sha256'].map(suffix =>
+            fileSystem.rm(`${path}${suffix}`, { force: true })))
         knownIn(store).delete(hash)
     }
 }

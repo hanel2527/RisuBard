@@ -174,7 +174,11 @@ function validCanonicalReceipt(value) {
 }
 
 function createRisuBardMemoryJsonParser(express) {
-    return express.json({ limit: '512kb', strict: true })
+    const ordinary = express.json({ limit: '512kb', strict: true })
+    const history = express.json({ limit: '100mb', strict: true })
+    return (req, res, next) => (req.path.startsWith('/history/')
+        || req.path.startsWith('/api/risubard/memory/history/')
+        ? history : ordinary)(req, res, next)
 }
 
 function requestHeader(req, name) {
@@ -191,7 +195,131 @@ function decodeBoundedHeaderText(value) {
     return decoded.length > 0 && decoded.length <= 512 ? decoded : undefined
 }
 
+function validHistoryRequest(action, body) {
+    if (!isRecord(body) || !hasBoundedId(body.characterId)
+        || !hasBoundedId(body.chatId)) return false
+    const fields = {
+        status: [],
+        preview: ['backupId', 'sourceOperationId'],
+        capture: ['operationId', 'expectedRevision', 'kind', 'delta', 'anchorMessageId'],
+        'begin-wiki': ['operationId', 'sourceBackupId', 'targetMessageId', 'sourceMessageIds'],
+        'finish-wiki': ['operationId', 'outcome', 'error'],
+        checkout: ['backupId', 'asNewChat', 'destinationChatId', 'expectedRevision'],
+        'complete-checkout': ['forkToken', 'action', 'destinationChatId'],
+        rename: ['backupId', 'branchId', 'name'],
+        quick: ['backupId'],
+        migrate: ['chat', 'operationId', 'dryRun'],
+        rollback: ['chat', 'operationId', 'dryRun'],
+    }[action]
+    if (!fields || Object.keys(body).some((key) =>
+        !['characterId', 'chatId', ...fields].includes(key))) return false
+    for (const key of ['operationId', 'backupId', 'branchId', 'sourceBackupId',
+        'targetMessageId', 'forkToken', 'destinationChatId', 'sourceOperationId']) {
+        if (body[key] !== undefined && !hasBoundedId(body[key])) return false
+    }
+    if (body.expectedRevision !== undefined && (!Number.isSafeInteger(body.expectedRevision)
+        || body.expectedRevision < 0)) return false
+    if (body.anchorMessageId !== undefined && body.anchorMessageId !== null
+        && !hasBoundedId(body.anchorMessageId)) return false
+    if (body.asNewChat !== undefined && typeof body.asNewChat !== 'boolean') return false
+    if (body.dryRun !== undefined && typeof body.dryRun !== 'boolean') return false
+    if (body.error !== undefined && (typeof body.error !== 'string'
+        || body.error.length > 8_192)) return false
+    switch (action) {
+    case 'status': return true
+    case 'preview':
+    case 'checkout': return hasBoundedId(body.backupId)
+    case 'quick': return hasBoundedId(body.backupId)
+    case 'rename': return hasBoundedId(body.backupId) && body.branchId === undefined
+        && hasBoundedName(body.name)
+    case 'complete-checkout': return hasBoundedId(body.forkToken)
+        && ['finalize', 'discard'].includes(body.action)
+    case 'begin-wiki': return hasBoundedId(body.operationId)
+        && hasBoundedId(body.targetMessageId)
+        && Array.isArray(body.sourceMessageIds)
+        && body.sourceMessageIds.length > 0 && body.sourceMessageIds.length <= 100_000
+        && body.sourceMessageIds.every(hasBoundedId)
+    case 'finish-wiki': return hasBoundedId(body.operationId)
+        && ['applied', 'unchanged', 'kept', 'failed', 'cancelled'].includes(body.outcome)
+    case 'migrate': return hasBoundedId(body.operationId)
+        && isRecord(body.chat) && Array.isArray(body.chat.message)
+    case 'rollback': return hasBoundedId(body.operationId)
+        && (body.chat === undefined || (isRecord(body.chat) && Array.isArray(body.chat.message)))
+    case 'capture': {
+        const delta = body.delta
+        return hasBoundedId(body.operationId)
+            && ['working', 'chat-edit', 'manual'].includes(body.kind)
+            && hasExactKeys(delta, ['baseSnapshotId', 'order', 'messages', 'state'])
+            && (delta.baseSnapshotId === null || hasBoundedId(delta.baseSnapshotId))
+            && Array.isArray(delta.order) && delta.order.length <= 1_000_000
+            && delta.order.every(hasBoundedId)
+            && new Set(delta.order).size === delta.order.length
+            && Array.isArray(delta.messages) && delta.messages.length <= delta.order.length
+            && delta.messages.every((item) => hasExactKeys(item, ['id', 'value'])
+                && hasBoundedId(item.id) && isRecord(item.value))
+            && new Set(delta.messages.map((item) => item.id)).size === delta.messages.length
+            && isRecord(delta.state)
+    }
+    default: return false
+    }
+}
+
+function sendHistoryError(error, res, next) {
+    const code = typeof error?.code === 'string' ? error.code : undefined
+    const explicit = error?.statusCode || error?.status
+    const status = Number.isInteger(explicit) && explicit >= 400 && explicit < 600
+        ? explicit : /conflict|pending|changed|busy|legacy|migration|checkout/i.test(`${code || ''} ${error?.message || ''}`)
+            ? 409 : /invalid|required|unknown|not found|does not exist/i.test(error?.message || '')
+                ? 400 : 500
+    if (status === 500) return next(error)
+    res.status(status).send({ error: error.message, ...(code ? { code } : {}) })
+}
+
+function canonicalHistoryInput(req) {
+    const operationId = requestHeader(req, 'x-risubard-history-operation-id')
+    if (operationId !== undefined && !hasBoundedId(operationId)) {
+        throw Object.assign(new Error('Invalid story history operation ID'), { status: 400 })
+    }
+    return operationId === undefined ? req.body : {
+        ...req.body, historyOperationId: operationId,
+    }
+}
+
 function registerRisuBardMemoryRoutes(app, options) {
+    const historyActions = {
+        status: 'storyHistoryStatus', preview: 'previewStoryHistory',
+        capture: 'captureStoryHistory', 'begin-wiki': 'beginStoryWiki',
+        'finish-wiki': 'finishStoryWiki', checkout: 'checkoutStoryHistory',
+        'complete-checkout': 'completeStoryCheckout', rename: 'renameStoryHistory',
+        quick: 'quickStoryHistory', migrate: 'migrateStoryHistory',
+        rollback: 'rollbackStoryHistory',
+    }
+    for (const [action, method] of Object.entries(historyActions)) {
+        app.post(`/api/risubard/memory/history/${action}`, async (req, res, next) => {
+            try {
+                if (!await options.auth(req, res)) return
+                if (!hasBoundedId(requestHeader(req, 'x-session-id'))) {
+                    res.status(423).send({
+                        error: 'A writer session identity is required for story history',
+                        code: 'SESSION_ID_REQUIRED',
+                    })
+                    return
+                }
+                if (typeof options.activeSession !== 'function') {
+                    throw Object.assign(new Error('Story history session validation is unavailable'), {
+                        status: 503, code: 'SESSION_VALIDATION_UNAVAILABLE',
+                    })
+                }
+                if (!options.activeSession(req, res)) return
+                if (!validHistoryRequest(action, req.body)) {
+                    res.status(400).send({ error: `Invalid story history ${action} request` })
+                    return
+                }
+                res.send(await options.service[method](req.body))
+            }
+            catch (error) { sendHistoryError(error, res, next) }
+        })
+    }
     app.post('/api/risubard/memory/save-slot', async (req, res, next) => {
         try {
             if (!await options.auth(req, res)) return
@@ -789,7 +917,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                 res.status(400).send({ error: 'Invalid Markdown wiki update' })
                 return
             }
-            res.send(await options.service.saveMarkdownWikiTurn(req.body))
+            res.send(await options.service.saveMarkdownWikiTurn(canonicalHistoryInput(req)))
         }
         catch (error) {
             next(error)
@@ -855,7 +983,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                     return
                 }
                 res.send(await options.service.saveCanonicalWikiDocument(
-                    req.body
+                    canonicalHistoryInput(req)
                 ))
             }
             catch (error) {
@@ -970,7 +1098,7 @@ function registerRisuBardMemoryRoutes(app, options) {
                     return
                 }
                 res.send(await options.service
-                    .reviewCanonicalWikiDocument(req.body))
+                    .reviewCanonicalWikiDocument(canonicalHistoryInput(req)))
             }
             catch (error) {
                 next(error)
@@ -1454,6 +1582,9 @@ function registerRisuBardMemoryRoutes(app, options) {
         catch (error) {
             next(error)
         }
+    })
+    app.use('/api/risubard/memory', (error, _req, res, next) => {
+        sendHistoryError(error, res, next)
     })
 }
 

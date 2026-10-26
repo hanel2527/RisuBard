@@ -8,6 +8,7 @@ import Chat from './Chat.svelte'
 import Chats from './Chats.svelte'
 import { DBState, selIdState } from 'src/ts/stores.svelte'
 import { ParseMarkdown } from 'src/ts/parser/parser.svelte'
+import type { Chat as ChatData } from 'src/ts/storage/database.svelte'
 
 vi.mock('src/ts/stores.svelte', () => ({
     DBState: { db: {} },
@@ -140,6 +141,48 @@ describe('message edit button', () => {
         } finally {
             window.innerWidth = originalWidth
         }
+    })
+    test('edits immediately after replacing a chat with a same-ID snapshot', async () => {
+        const initial = DBState.db.characters[0].chats[0]
+        initial.id = 'room'
+        initial.message.push({ role: 'char', data: 'Following reply', chatId: 'following', risubardMemoryConfirmed: true })
+        initial.scriptstate = { turn: 2 }
+        const state = new SvelteMap<string, ChatData>([['chat', initial]])
+        const character = {
+            ...DBState.db.characters[0],
+            get chats() { return [state.get('chat')!] },
+        }
+        DBState.db.characters[0] = character
+        mounted = mount(Chats, {
+            target: document.body,
+            props: {
+                get messages() { return state.get('chat')!.message },
+                currentCharacter: character,
+                onReroll: vi.fn(), unReroll: vi.fn(),
+                currentUsername: 'User', userIcon: '', pageStart: 0,
+                get pageEnd() { return state.get('chat')!.message.length },
+            },
+        })
+        await tick(); await tick(); await tick()
+        const previous = document.querySelector('[data-chat-index="0"]')!
+        const restored = { ...initial, message: initial.message.map(message => ({ ...message })) }
+        state.set('chat', restored)
+        await tick(); await tick(); await tick()
+        const replacement = document.querySelector('[data-chat-index="0"]')!
+        expect(replacement).not.toBe(previous)
+        expect(previous.isConnected).toBe(false)
+        replacement.querySelector<HTMLButtonElement>('.button-icon-edit')!.click()
+        await tick()
+        const editor = replacement.querySelector<HTMLTextAreaElement>('.message-edit-area')!
+        expect(editor).not.toBeNull()
+        editor.value = 'Edited restored message'
+        editor.dispatchEvent(new Event('input', { bubbles: true }))
+        editor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }))
+        await tick(); await tick()
+        expect(restored.message[0].data).toBe('Edited restored message')
+        expect(restored.message[1]).toEqual(initial.message[1])
+        expect(restored.scriptstate).toEqual({ turn: 2 })
+        expect(initial.message[0].data).toBe('editable message')
     })
     test.each(['normal', 'ambiguous', 'streaming'] as const)('removes only the chosen inlay and active swipe safely (%s)', async (mode) => {
         const data = 'Before {{inlay::scene}} middle {{inlay::scene}} after'

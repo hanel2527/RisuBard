@@ -11,6 +11,8 @@ export interface CanonicalTurnReceiptChange {
 }
 
 export interface CanonicalTurnReceipt {
+    /** Explicit publication result; absent only on legacy receipts. */
+    outcome?: 'applied' | 'unchanged' | 'failed' | 'cancelled'
     sourceMessageIds: string[]
     eventIds: string[]
     changes: CanonicalTurnReceiptChange[]
@@ -63,6 +65,9 @@ export function formatCanonicalDeferredWarning(title: string, reason: string): s
 export function canonicalTurnFailureWarning(receipt: CanonicalTurnReceipt): string | undefined {
     return canonicalTurnRetryWarning(receipt)
         ?? receipt.warnings.find((warning) => warning.startsWith(CANONICAL_DEFERRED_PREFIX))
+        ?? (receipt.outcome === 'failed' || receipt.outcome === 'cancelled'
+            ? receipt.warnings.at(-1) ?? '위키 정본 확정이 완료되지 않았습니다.'
+            : undefined)
 }
 
 function canonicalValidationHint(error: unknown): string | undefined {
@@ -126,6 +131,13 @@ export function canonicalTurnNeedsRetry(
     return canonicalTurnRetryWarning(receipt) !== undefined
 }
 
+/** Deferred/partial writes are not a successful wiki publication, even when automatic replay is exhausted. */
+export function canonicalTurnFailed(receipt: CanonicalTurnReceipt): boolean {
+    return receipt.outcome === 'failed' || receipt.outcome === 'cancelled'
+        || canonicalTurnFailureWarning(receipt) !== undefined
+        || (receipt.recovery?.deferred.length ?? 0) > 0
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -142,12 +154,14 @@ export function parseCanonicalTurnReceipt(
         || Object.keys(value).length !== 5
             + (value.recovery === undefined ? 0 : 1)
             + (value.notes === undefined ? 0 : 1)
+            + (value.outcome === undefined ? 0 : 1)
         || !['sourceMessageIds', 'eventIds', 'changes', 'warnings',
             'recordedAt'].every((key) => Object.hasOwn(value, key))
         || !Array.isArray(value.sourceMessageIds)
         || !value.sourceMessageIds.every((id) => typeof id === 'string')
         || !Array.isArray(value.eventIds)
         || !value.eventIds.every((id) => typeof id === 'string')
+        || (value.outcome !== undefined && !['applied', 'unchanged', 'failed', 'cancelled'].includes(value.outcome as string))
         || !Array.isArray(value.warnings)
         || !value.warnings.every((warning) => typeof warning === 'string')
         || (value.notes !== undefined && (!Array.isArray(value.notes) || value.notes.length > 8
@@ -200,6 +214,7 @@ export function parseCanonicalTurnReceipt(
         warnings: [...value.warnings] as string[],
         ...(value.notes === undefined ? {} : { notes: [...(value.notes as string[])] }),
         recordedAt: value.recordedAt,
+        ...(value.outcome === undefined ? {} : { outcome: value.outcome as CanonicalTurnReceipt['outcome'] }),
         ...(recovery ? { recovery } : {}),
     }
 }

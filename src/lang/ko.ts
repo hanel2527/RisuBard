@@ -757,8 +757,6 @@ export const languageKorean = {
   risuBardShowSaveLoadShortcuts: "세이브 / 로드 바로가기 버튼 보이기",
   risuBardSaveLoadShortcutClose: "세이브/로드 바로가기 닫기",
   risuBardSaveLoadShortcutHideConfirm: "세이브/로드 버튼을 끌까요? Bardwiki / 공통 옵션에서 다시 켤 수 있습니다",
-  risuBardAutosaveInterval: "자동저장 간격 (턴)",
-  risuBardAutosaveRetention: "자동저장 최대 보관 수",
   chatUploadChunkSize: "채팅 업로드 청크 크기 (MiB)",
   chatUploadChunkEnabled: "채팅 청크 업로드 사용",
   risuBardArcaChatExporter: "아카라이브 챗 추출기",

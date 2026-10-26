@@ -108,3 +108,27 @@ it.each(['chat', 'patch', 'database'])('waits for a slow %s save response withou
     expect(storage.pendingSaveRequests).toBe(1)
     expect(request).toHaveBeenCalledTimes(1)
 })
+
+it('uses the existing authenticated writer session for every history action', async () => {
+    const storage = new NodeStorage()
+    Reflect.set(storage, 'checkAuth', async () => {})
+    vi.spyOn(storage, 'createAuth').mockResolvedValue('history-token')
+    const requests: Array<{ url: string; headers: Headers }> = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        requests.push({ url: String(input), headers: new Headers(init?.headers) })
+        return Response.json({ ok: true })
+    }))
+    const actions = ['status', 'capture', 'begin-wiki', 'finish-wiki', 'preview', 'checkout',
+        'rename', 'quick', 'migrate', 'rollback']
+    for (const action of actions) {
+        await storage.requestStoryHistory(action, { characterId: 'owner', chatId: 'chat' })
+    }
+    const session = Reflect.get(NodeStorage, 'sessionId')
+    expect(typeof session).toBe('string')
+    expect(session).not.toBe('')
+    expect(requests.map(request => request.url)).toEqual(actions.map(action => `/api/risubard/memory/history/${action}`))
+    for (const { headers } of requests) {
+        expect(headers.get('risu-auth')).toBe('history-token')
+        expect(headers.get('x-session-id')).toBe(session)
+    }
+})

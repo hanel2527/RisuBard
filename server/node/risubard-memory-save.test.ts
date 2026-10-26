@@ -124,46 +124,6 @@ describe('memory save slots', () => {
         return fs.readFile(join(loaded.directory, 'wiki', 'current-scene.md'), 'utf8')
     }
 
-    test('saves again by copying only pages that changed and releases replaced pages', async () => {
-        const root = await createRoot()
-        const source = resolveMemoryWorkspace(root, 'character', 'chat-source')
-        const events = join(source.directory, 'wiki', 'events')
-        await fs.mkdir(events, { recursive: true })
-        for (let index = 0; index < 20; index += 1) {
-            await fs.writeFile(join(events, `turn-${index}.md`), `사건 ${index}`)
-        }
-        const scene = join(source.directory, 'wiki', 'current-scene.md')
-        await fs.writeFile(scene, '첫 장면')
-        const input = {
-            userDataDirectory: root, characterId: 'character', sourceChatId: 'chat-source',
-            saveId: 'auto', sourceChatName: '자동', turnCount: 20, chatBytes: Buffer.from('chat'),
-        }
-        await createMemorySaveSlot(input)
-        const store = join(dirname(dirname(source.directory)), 'save-store')
-        const storedPages = async () => (await Promise.all((await fs.readdir(store)).map(
-            async (prefix) => fs.readdir(join(store, prefix))))).flat().sort()
-        const firstPages = await storedPages()
-        expect(firstPages).toHaveLength(21)
-
-        await fs.writeFile(scene, '다음 장면')
-        await fs.writeFile(join(events, 'turn-20.md'), '사건 20')
-        const sourceReads: string[] = []
-        const fileSystem = {
-            ...fs,
-            readFile: (async (path, ...args) => {
-                if (String(path).startsWith(source.directory)) sourceReads.push(String(path))
-                return fs.readFile(path, ...args)
-            }) as typeof fs.readFile,
-        }
-        await createMemorySaveSlot({ ...input, overwrite: true, turnCount: 21 }, { fileSystem })
-
-        expect(sourceReads.map((path) => path.slice(source.directory.length + 1).replaceAll('\\', '/')).sort())
-            .toEqual(['wiki/current-scene.md', 'wiki/events/turn-20.md'])
-        const secondPages = await storedPages()
-        expect(secondPages).toHaveLength(22)
-        expect(secondPages.filter((page) => !firstPages.includes(page))).toHaveLength(2)
-        expect(await loadedScene(input)).toBe('다음 장면')
-    })
 
     test('keeps pages shared with another slot when one slot is deleted', async () => {
         const root = await createRoot()

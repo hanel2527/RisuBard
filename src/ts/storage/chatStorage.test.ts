@@ -18,6 +18,7 @@ vi.mock('./database.svelte', () => ({
         && chat._stub === true
         && !Array.isArray(chat.message),
 }))
+vi.mock('../risubard/storyHistory', () => ({ captureStoryChat: vi.fn() }))
 
 const {
     chatToStub,

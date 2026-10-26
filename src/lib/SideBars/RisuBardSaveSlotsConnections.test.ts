@@ -137,16 +137,6 @@ describe('chat file save slot connections', () => {
         expect(defaultChatSource).toContain('DBState.db.showRisuBardSaveLoadShortcuts')
     })
 
-    test('exposes bounded autosave interval and retention in common settings', () => {
-        expect(commonSettingsSource).toContain("id: 'risubard.common.autosaveInterval'")
-        expect(commonSettingsSource).toContain("bindKey: 'risuBardAutosaveInterval'")
-        expect(commonSettingsSource).toContain("id: 'risubard.common.autosaveRetention'")
-        expect(commonSettingsSource).toContain("bindKey: 'risuBardAutosaveRetention'")
-        expect(databaseSource).toContain('risuBardAutosaveInterval?: number')
-        expect(databaseSource).toContain('risuBardAutosaveRetention?: number')
-        expect(databaseSource).toContain('normalizeAutosaveInterval(')
-        expect(databaseSource).toContain('normalizeAutosaveRetention(')
-    })
 
     test('orchestrates one quick slot and rotating autosaves per chat', () => {
         expect(chatScreenSource).toContain('quickSaveId(chat.id)')
@@ -174,6 +164,7 @@ describe('chat file save slot connections', () => {
         expect(autosaveEffect).not.toContain('risubardMemoryConfirmed')
         expect(autosaveEffect).not.toContain('wikiReady')
     })
+
 
     test('keeps BardWiki when a RisuBard chat is exported and reimported locally', () => {
         expect(charactersSource).toContain('sourceCharacterId: char.chaId')

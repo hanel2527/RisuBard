@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module'
-import { access, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test, vi } from 'vitest'
@@ -10,6 +10,139 @@ import { resolveMarkdownWikiWorkspace } from './risubard-markdown-wiki'
 const require = createRequire(import.meta.url)
 
 describe('RisuBard memory CommonJS runtime', () => {
+    test('scans empty checkout recovery under storage exclusion without user mutation permission', async () => {
+        const { createRuntimeMemoryService } = require('./risubard-memory-runtime.cjs')
+        const root = await mkdtemp(join(tmpdir(), 'risubard-recovery-gate-'))
+        const storageGate = vi.fn(async () => {
+            throw Object.assign(new Error('External changes await review'), {
+                code: 'EXTERNAL_CHANGES_PENDING',
+            })
+        })
+        const recoveryGate = vi.fn(async (operation: () => Promise<unknown>) => operation())
+        const service = createRuntimeMemoryService(root, { storageGate, recoveryGate })
+        await expect(service.recoverStoryCheckouts()).resolves.toBeUndefined()
+        expect(recoveryGate).toHaveBeenCalledOnce()
+        expect(storageGate).not.toHaveBeenCalled()
+        await expect(service.storyHistoryStatus({ characterId: 'c', chatId: 'chat' }))
+            .rejects.toMatchObject({ code: 'EXTERNAL_CHANGES_PENDING' })
+    })
+
+    test('publishes manual wiki history and persists checkout without browser finalization', async () => {
+        const { createRuntimeMemoryService } = require('./risubard-memory-runtime.cjs')
+        const { createUserDataRepository } = require('./user-data-repository.cjs')
+        const userDataDirectory = await mkdtemp(join(tmpdir(), 'risubard-runtime-history-'))
+        const chat = { id: 'chat', name: 'Story', message: [
+            { chatId: 'm1', role: 'char', data: 'Original text' },
+        ] }
+        const database = { characters: [{ chaId: 'c', name: 'Character', type: 'character', chats: [chat] }] }
+        const repository = createUserDataRepository({ dataRoot: userDataDirectory })
+        repository.importLegacyDatabase(database)
+        const service = createRuntimeMemoryService(userDataDirectory, {
+            persistStoryChat: async ({ chat: restored }: { chat: typeof chat }) => {
+                database.characters[0].chats[0] = restored
+                repository.importLegacyDatabase(database)
+            },
+        })
+        const migrated = await service.migrateStoryHistory({
+            characterId: 'c', chatId: 'chat', chat, operationId: 'migrate',
+        })
+        const rootId = migrated.state.headId
+        const originalWiki = migrated.state.wikiCommitId
+        await service.saveManualWikiDocument({
+            characterId: 'c', chatId: 'chat', type: 'other',
+            title: 'A note', markdown: 'Manual canonical content',
+        })
+        const saved = await service.storyHistoryStatus({ characterId: 'c', chatId: 'chat' })
+        expect(saved.wikiCommitId).not.toBe(originalWiki)
+        expect(saved.backups).toHaveLength(migrated.state.backups.length + 1)
+        await expect(service.createMemorySave({
+            characterId: 'c', sourceChatId: 'chat', saveId: 'quick',
+            sourceChatName: 'Story', turnCount: 1, chatBytes: Buffer.from('legacy'),
+        })).rejects.toMatchObject({ status: 409 })
+        const loaded = await service.checkoutStoryHistory({
+            characterId: 'c', chatId: 'chat', backupId: rootId,
+            expectedRevision: saved.revision,
+        })
+        expect(loaded.state.pendingCheckout).toBeNull()
+        expect(loaded.state.headId).toBe(rootId)
+        expect(repository.loadChat('c', 'chat').message[0].data).toBe('Original text')
+        expect((await service.loadCatalog('c', 'chat')).documents).toHaveLength(0)
+        // A new runtime reads durable references, not a browser completion flag.
+        const restarted = createRuntimeMemoryService(userDataDirectory)
+        expect((await restarted.storyHistoryStatus({ characterId: 'c', chatId: 'chat' })).headId).toBe(rootId)
+        await service.beginStoryWiki({
+            characterId: 'c', chatId: 'chat', operationId: 'auto-wiki',
+            sourceBackupId: rootId, targetMessageId: 'm1', sourceMessageIds: ['m1'],
+        })
+        await expect(service.saveManualWikiDocument({
+            characterId: 'c', chatId: 'chat', type: 'other',
+            title: 'Blocked manual note', markdown: 'Must not be written',
+        })).rejects.toThrow()
+        await service.finishStoryWiki({
+            characterId: 'c', chatId: 'chat', operationId: 'auto-wiki', outcome: 'kept',
+        })
+        await expect(service.saveCanonicalWikiDocument({
+            characterId: 'c', chatId: 'chat', historyOperationId: 'auto-wiki',
+            type: 'other', title: 'Late model response', sourceMessageIds: ['m1'],
+            markdown: 'Must not become a manual edit after keeping the old wiki',
+        })).rejects.toMatchObject({ status: 409 })
+        expect((await service.loadCatalog('c', 'chat')).documents).toHaveLength(0)
+    })
+
+    test('versions grades and rejects changes until a pending wiki operation is resolved', async () => {
+        const { createRuntimeMemoryService } = require('./risubard-memory-runtime.cjs')
+        const root = await mkdtemp(join(tmpdir(), 'risubard-grade-history-'))
+        try {
+            const service = createRuntimeMemoryService(root, { persistStoryChat: async () => {} })
+            const identity = { characterId: 'c', chatId: 'chat' }
+            const chat = { id: 'chat', name: 'Story', message: [
+                { chatId: 'm1', role: 'char', data: 'An established fact' },
+            ] }
+            const migrated = await service.migrateStoryHistory({
+                ...identity, chat, operationId: 'migrate',
+            })
+            await service.captureStoryHistory({
+                ...identity, operationId: 'capture', kind: 'working',
+                delta: {
+                    baseSnapshotId: migrated.state.workingSnapshotId,
+                    order: ['m1'],
+                    messages: chat.message.map(value => ({ id: value.chatId, value })),
+                    state: { id: chat.id, name: chat.name },
+                },
+            })
+            const document = await service.saveManualWikiDocument({
+                ...identity, type: 'other', title: 'A fact', markdown: '## A fact\n\nEstablished.',
+            })
+            const beforeGrade = await service.storyHistoryStatus(identity)
+            const graded = await service.setWikiDocumentGrade({
+                ...identity, documentId: document.id, grade: 7, gradeBy: 'user',
+                expectedContentHash: document.contentHash,
+            })
+            const savedGrade = await service.storyHistoryStatus(identity)
+            expect(graded.updated).toBe(document.updated)
+            expect(savedGrade.wikiCommitId).not.toBe(beforeGrade.wikiCommitId)
+            await service.beginStoryWiki({
+                ...identity, operationId: 'wiki', targetMessageId: 'm1', sourceMessageIds: ['m1'],
+            })
+            const changeGrade = () => service.setWikiDocumentGrade({
+                ...identity, documentId: document.id, grade: 8, gradeBy: 'user',
+            })
+            await expect(changeGrade()).rejects.toThrow('pending')
+            await service.finishStoryWiki({ ...identity, operationId: 'wiki', outcome: 'failed' })
+            await expect(changeGrade()).rejects.toThrow('pending')
+            expect((await service.loadCatalog('c', 'chat')).documents[0].grade).toBe(7)
+            await service.finishStoryWiki({ ...identity, operationId: 'wiki', outcome: 'kept' })
+            await expect(changeGrade()).resolves.toMatchObject({ grade: 8 })
+            await service.checkoutStoryHistory({ ...identity, backupId: savedGrade.headId })
+            expect((await service.loadCatalog('c', 'chat')).documents[0].grade).toBe(7)
+            await service.checkoutStoryHistory({ ...identity, backupId: beforeGrade.headId })
+            expect((await service.loadCatalog('c', 'chat')).documents[0].grade).toBeUndefined()
+        }
+        finally {
+            await rm(root, { recursive: true, force: true })
+        }
+    })
+
     test('wires save creation, listing, and prepared loading to storage', async () => {
         const { createRuntimeMemoryService } = require(
             './risubard-memory-runtime.cjs'

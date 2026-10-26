@@ -46,8 +46,10 @@ import {
     projectMemoryAnalysisEvidence,
     projectRecentMemoryMessages,
     type MemoryAnalysisMessage,
+    type ProjectedMemoryTurn,
 } from "../risubard/memoryAnalysisClient";
 import { enqueueNarrativeConfirmation } from '../risubard/narrativeConfirmationQueue';
+import { beginStoryWiki, captureStoryChat, finishStoryWiki, getStoryHistory, keepStoryWiki, previewStoryBackup, registerStoryWikiRetry, requireStoryWikiReady, retryStoryWiki } from '../risubard/storyHistory';
 import { projectActiveNarrativeSources } from "../risubard/sourceProjection";
 import {
     createNarrativeSourcesPrompt,
@@ -110,7 +112,7 @@ import type { WikiSemanticMatch } from '../risubard/wikiEmbeddingIndex';
 import { normalizeArcPlotterRuntimeSettings } from '../risubard/arcPlotterSettings';
 import {
     canonicalTurnNeedsRetry,
-    canonicalTurnRetryWarning,
+    canonicalTurnFailed,
     canonicalTurnFailureWarning,
     mergeCanonicalTurnReceipts,
 } from '../risubard/canonicalTurnReceipt';
@@ -227,6 +229,7 @@ const storedResponseMemoryAnalysis = createStoredResponseMemoryAnalysis({
     nativeV2Analysis: true,
 })
 const narrativeConfirmations = new Set<string>()
+const narrativeConfirmationJobs = new Map<string, Set<Promise<boolean>>>()
 const REQUIRED_WIKI_RETRY_TIMEOUT_MS = 60_000
 const WIKI_REBOOT_BATCH_RETRIES = 2
 const WIKI_REBOOT_RETRY_DELAY_MS = 5_000
@@ -239,6 +242,8 @@ async function confirmProjectedNarrativeTurn(input: {
     additionalAnalysis?: boolean
     historicalReanalysis?: boolean
     excludeCanonicalDocumentIds?: readonly string[]
+    historyOperationId?: string
+    sourceBackupId?: string
 }): Promise<boolean> {
     const key = JSON.stringify([
         input.characterId,
@@ -252,12 +257,21 @@ async function confirmProjectedNarrativeTurn(input: {
         // canon against a stale content hash and lose that turn's update.
         // A cancel while this one waits in the queue drops it as well.
         const epoch = wikiCancellationEpoch()
-        return await enqueueNarrativeConfirmation(
-            JSON.stringify([input.characterId, input.chatId]),
+        const lane = JSON.stringify([input.characterId, input.chatId])
+        const job = enqueueNarrativeConfirmation(
+            lane,
             () => wikiCancellationEpoch() === epoch
                 ? runNarrativeConfirmation(input, key)
                 : Promise.resolve(false),
         )
+        const jobs = narrativeConfirmationJobs.get(lane) ?? new Set<Promise<boolean>>()
+        jobs.add(job)
+        narrativeConfirmationJobs.set(lane, jobs)
+        try { return await job }
+        finally {
+            jobs.delete(job)
+            if (jobs.size === 0) narrativeConfirmationJobs.delete(lane)
+        }
     }
     finally {
         narrativeConfirmations.delete(key)
@@ -312,6 +326,7 @@ async function runNarrativeConfirmation(
 ): Promise<boolean> {
     const generationOperation = `analysis:${key}`
     const generationSignal = beginWikiGeneration(generationOperation)
+    let historyOperationId: string | undefined
     try {
         const character = DBState.db.characters.find(
             (item) => item.chaId === input.characterId
@@ -319,6 +334,32 @@ async function runNarrativeConfirmation(
         const chat = character?.chats.find(
             (item) => item.id === input.chatId
         )
+        const history = await getStoryHistory(input.characterId, input.chatId)
+        let sourceBackupId = input.sourceBackupId
+        if (!sourceBackupId && history.mode === 'history') {
+            const backups = new Map(history.backups.map(backup => [backup.id, backup]))
+            let cursor = history.headId
+            while (cursor) {
+                const backup = backups.get(cursor)
+                if (!backup) break
+                if (backup.latestMessageId === input.targetMessageId
+                    && ['working', 'chat-edit', 'manual'].includes(backup.kind)) {
+                    sourceBackupId = backup.id
+                    break
+                }
+                cursor = backup.parentId
+            }
+        }
+        const analysisChat = history.mode === 'history' && sourceBackupId
+            ? (await previewStoryBackup(input.characterId, input.chatId, sourceBackupId, input.historyOperationId)).chat
+            : chat
+        if (analysisChat && analysisChat !== chat) {
+            const selected = new Map(input.messages.map(message => [message.messageId, message.content]))
+            for (const message of analysisChat.message) {
+                const content = message.chatId ? selected.get(message.chatId) : undefined
+                if (content !== undefined) message.data = content
+            }
+        }
         const settings = resolvedRisuBardSettings(chat, true)
         const previousCanonicalReceipt = chat?.message.find(
             (item) => item.chatId === input.targetMessageId
@@ -335,27 +376,27 @@ async function runNarrativeConfirmation(
                 characterGuide: risuChatParser(character?.risuBardWikiGuide ?? '', {
                     chara: character,
                 }),
-                chatGuide: risuChatParser(chat?.risuBardWikiGuide ?? '', {
+                chatGuide: risuChatParser(analysisChat?.risuBardWikiGuide ?? '', {
                     chara: character,
                 }),
                 analysisMode: input.historicalReanalysis
                     ? 'historical'
                     : 'normal',
-            }), character, chat)
+            }), character, analysisChat)
             : undefined
-        const firstMessageEvidence = character && chat
+        const firstMessageEvidence = character && analysisChat
             ? await resolveNarrativeFirstMessageEvidence(
                 character,
-                chat,
+                analysisChat,
                 input.chatId
             )
             : undefined
         const confirmedMessages = settings.risuBardAnalysisExcludeUserMessages
             ? input.messages.filter((message) => message.role !== 'user')
             : [...input.messages]
-        const contextMessages = chat
+        const contextMessages = analysisChat
             ? projectRecentMemoryMessages(
-                chat.message,
+                analysisChat.message,
                 normalizeNarrativeWorkingMessageLimit(
                     settings.risuBardRecentMessageCount
                 ),
@@ -365,17 +406,34 @@ async function runNarrativeConfirmation(
                 true
             )
             : confirmedMessages
-        const loreReference = character && chat
-            ? await collectAnalysisLoreReference(character, chat, input.targetMessageId, settings)
+        const loreReference = character && analysisChat
+            ? await collectAnalysisLoreReference(character, analysisChat, input.targetMessageId, settings)
             : undefined
+        const evidence = projectMemoryAnalysisEvidence(confirmedMessages, contextMessages, firstMessageEvidence)
+        if (history.mode === 'history' && history.bindings[input.targetMessageId]
+            && !input.additionalAnalysis && !input.historicalReanalysis && !input.historyOperationId) {
+            const target = chat?.message.find(message => message.chatId === input.targetMessageId)
+            if (target) target.risubardMemoryConfirmed = true
+            delete target?.risubardWikiPending
+            return true
+        }
+        if (history.mode === 'history') {
+            const operationId = input.historyOperationId ?? v4()
+            const begun = await beginStoryWiki({
+                characterId: input.characterId, chatId: input.chatId,
+                operationId,
+                ...(sourceBackupId ? { sourceBackupId } : {}),
+                targetMessageId: input.targetMessageId,
+                sourceMessageIds: [...new Set([...evidence, ...contextMessages].map(message => message.messageId))],
+            })
+            if (!begun.pendingWiki) return true
+            historyOperationId = operationId
+        }
         const receipt = await storedResponseMemoryAnalysis.confirm({
             characterId: input.characterId,
             chatId: input.chatId,
-            messages: projectMemoryAnalysisEvidence(
-                confirmedMessages,
-                contextMessages,
-                firstMessageEvidence
-            ),
+            messages: evidence,
+            ...(historyOperationId ? { historyOperationId } : {}),
             analysisTokenLimit: settings.risuBardAnalysisTokenLimit,
             additionalSearchLimit: settings.risuBardAdditionalSearchLimit,
             canonicalTargetLimit: settings.risuBardCanonicalTargetLimit,
@@ -397,15 +455,15 @@ async function runNarrativeConfirmation(
             } : {}),
             ...(loreReference ? { loreReference } : {}),
             ...(input.additionalAnalysis ? { additionalAnalysis: true } : {}),
-            ...(!input.additionalAnalysis && !input.historicalReanalysis && previousCanonicalReceipt
+            ...(!input.additionalAnalysis && !input.historicalReanalysis && !input.historyOperationId && previousCanonicalReceipt
                 ? { previousCanonicalReceipt } : {}),
             ...(input.historicalReanalysis ? { historicalReanalysis: true } : {}),
             ...(input.excludeCanonicalDocumentIds ? {
                 excludeCanonicalDocumentIds:
                     input.excludeCanonicalDocumentIds,
             } : {}),
-            ...(chat ? { contextMessages,
-                sourceMessageOrder: chat.message.filter(message => message.chatId)
+            ...(analysisChat ? { contextMessages,
+                sourceMessageOrder: analysisChat.message.filter(message => message.chatId)
                     .map(({ chatId, role }) => ({ chatId, role })),
             } : {}),
         }, generationSignal)
@@ -421,6 +479,18 @@ async function runNarrativeConfirmation(
                 message: retryWarning,
             })
         }
+        const needsRetry = !receipt || (history.mode === 'history'
+            ? canonicalTurnFailed(receipt)
+            : canonicalTurnNeedsRetry(receipt))
+        if (historyOperationId) {
+            await finishStoryWiki({
+                characterId: input.characterId, chatId: input.chatId, operationId: historyOperationId,
+                outcome: generationSignal.aborted ? 'cancelled' : needsRetry ? 'failed'
+                    : receipt?.outcome === 'unchanged' ? 'unchanged' : 'applied',
+                ...(needsRetry ? { error: retryWarning ?? '위키 분석 결과가 확정되지 않았습니다.' } : {}),
+            })
+            historyOperationId = undefined
+        }
         const message = chat?.message.find(
             (item) => item.chatId === input.targetMessageId
         )
@@ -434,10 +504,10 @@ async function runNarrativeConfirmation(
         if (message
             && accepted?.role === 'assistant'
             && message.data === accepted.content) {
-            if (receipt && canonicalTurnNeedsRetry(receipt)) {
+            if (needsRetry || generationSignal.aborted) {
                 delete message.risubardMemoryConfirmed
                 message.risubardWikiPending = {
-                    reason: canonicalTurnRetryWarning(receipt)?.slice(0, 512),
+                    reason: retryWarning?.slice(0, 512),
                     failedAt: new Date().toISOString(),
                 }
             }
@@ -452,9 +522,16 @@ async function runNarrativeConfirmation(
                 )
             }
         }
-        return true
+        return !needsRetry && !generationSignal.aborted
     }
     catch (error) {
+        if (historyOperationId) {
+            await finishStoryWiki({
+                characterId: input.characterId, chatId: input.chatId, operationId: historyOperationId,
+                outcome: generationSignal.aborted ? 'cancelled' : 'failed',
+                error: boundedMemoryAnalysisError(error) || '위키 확정이 중단되었습니다.',
+            })
+        }
         if (generationSignal.aborted) return false
         const reason = (error instanceof Error
             ? error.message
@@ -556,6 +633,7 @@ async function runNarrativeBacklog(input: {
                     ...followUp,
                 }).catch((error: unknown) => console.warn('[RisuBard memory confirmation]', error))
             }
+            if (message?.risubardMemoryConfirmed !== true) break
         }
     }
 }
@@ -565,18 +643,27 @@ export async function retryNarrativeBacklog(): Promise<void> {
     const character = DBState.db.characters[get(selectedCharID)]
     const chat = character?.chats[character.chatPage]
     if (!character || !chat) return
-    await processNarrativeBacklog({
-        characterId: character.chaId,
-        chatId: ensureNarrativeSessionChatId(chat, v4),
-    })
+    const chatId = ensureNarrativeSessionChatId(chat, v4)
+    const history = await getStoryHistory(character.chaId, chatId)
+    if (history.pendingWiki && !await retryStoryWiki(character.chaId, chatId)) return
+    await processNarrativeBacklog({ characterId: character.chaId, chatId })
 }
 
 /** Leaves one waiting turn out of the wiki so that the turns after it can proceed. */
-export function skipNarrativeBacklogTurn(messageId: string): boolean {
+export async function skipNarrativeBacklogTurn(messageId: string): Promise<boolean> {
     const character = DBState.db.characters[get(selectedCharID)]
     const chat = character?.chats[character.chatPage]
-    const message = chat?.message.find((item) => item.chatId === messageId && item.role === 'char')
+    if (!character || !chat) return false
+    const message = chat.message.find((item) => item.chatId === messageId && item.role === 'char')
     if (!message || message.risubardMemoryConfirmed === true) return false
+    const chatId = ensureNarrativeSessionChatId(chat, v4)
+    const history = await getStoryHistory(character.chaId, chatId)
+    if (history.pendingWiki) {
+        if (history.pendingWiki.targetMessageId !== messageId) {
+            throw new Error('먼저 보류 중인 턴의 위키 확정을 처리해 주세요.')
+        }
+        if (!await keepStoryWiki(character.chaId, chatId)) return false
+    }
     delete message.risubardWikiPending
     message.risubardMemoryConfirmed = true
     message.risubardCanonicalReceipt = mergeCanonicalTurnReceipts(message.risubardCanonicalReceipt, {
@@ -600,12 +687,25 @@ export async function confirmCurrentNarrativeMessage(
         ignoreOocTurns: true,
     })
     if (!projected) return false
+    await captureStoryChat(character.chaId, chat, 'working')
     return confirmProjectedNarrativeTurn({
         characterId: character.chaId,
         chatId,
         ...projected,
     })
 }
+
+registerStoryWikiRetry(async (characterId, chatId, pending) => {
+    const source = await previewStoryBackup(characterId, chatId, pending.sourceBackupId, pending.operationId)
+    const projected = projectConfirmedMemoryTurn(source.chat.message, pending.targetMessageId, {
+        includeConfirmed: true, ignoreOocTurns: true,
+    })
+    if (!projected) throw new Error('저장된 위키 확정 대상 메시지를 찾을 수 없습니다.')
+    return confirmProjectedNarrativeTurn({
+        characterId, chatId, ...projected,
+        historyOperationId: pending.operationId, sourceBackupId: pending.sourceBackupId,
+    })
+})
 
 function renderWikiPromptGuide(
     guide: CompiledWikiPromptGuide,
@@ -1384,6 +1484,8 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     previewPrompt?:boolean
     target?: GenerationTarget
     requestSettings?: Database
+    confirmationTarget?: ProjectedMemoryTurn | null
+    replacementMessage?: Pick<Message, 'chatId' | 'risubardMemoryConfirmed' | 'risubardCanonicalReceipt'>
 } = {}):Promise<boolean> {
     const requestSettings = arg.requestSettings ?? { ...DBState.db }
     const target = arg.target ?? captureGenerationTarget(DBState.db.characters[get(selectedCharID)])
@@ -1509,6 +1611,18 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         ? ensureNarrativeSessionChatId(guardChat, v4)
         : undefined
     const genKey = chatGenKey(realChatId)
+    if (!arg.preview && !arg.previewPrompt && realChatId && !isChatGenerating(genKey)) {
+        try {
+            const jobs = narrativeConfirmationJobs.get(JSON.stringify([generationScope.character.chaId, realChatId]))
+            if (jobs) await Promise.allSettled([...jobs])
+            await requireStoryWikiReady(generationScope.character.chaId, realChatId)
+            // Preserve the preceding response's variables before input scripts run.
+            await captureStoryChat(generationScope.character.chaId, generationScope.chat, 'working')
+        } catch (error) {
+            notifyError(error instanceof Error ? error.message : String(error))
+            return false
+        }
+    }
 
     if(isChatGenerating(genKey)){
         if(chatProcessIndex === -1){
@@ -1516,6 +1630,11 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         }
     }
     const generationId = v4()
+    const responseIdentity = arg.replacementMessage ?? (arg.continue ? generationScope.chat.message.at(-1) : undefined)
+    const responseMetadata = {
+        ...(responseIdentity?.risubardMemoryConfirmed !== undefined ? { risubardMemoryConfirmed: responseIdentity.risubardMemoryConfirmed } : {}),
+        ...(responseIdentity?.risubardCanonicalReceipt ? { risubardCanonicalReceipt: responseIdentity.risubardCanonicalReceipt } : {}),
+    }
     startGeneration(genKey, generationId)
     if(chatProcessIndex === -1 && requestSettings.presetChain){
         const names = requestSettings.presetChain.split(',').map((v) => v.trim())
@@ -1599,10 +1718,19 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     const narrativeSessionChatId = realChatId
         ?? ensureNarrativeSessionChatId(currentChat, v4)
     generationScope.chat = currentChat
-    const narrativeTurnToConfirm = projectConfirmedMemoryTurn(
+    const narrativeTurnToConfirm = arg.confirmationTarget ?? projectConfirmedMemoryTurn(
         currentChat.message, undefined,
         { ignoreOocTurns: true }
     )
+    async function captureCompletedNarrativeResponse() {
+        await captureStoryChat(nowChatroom.chaId, generationScope.chat, 'working')
+        if (narrativeTurnToConfirm && shouldAutomaticallyConfirmNarrativeTurn(requestSettings.risuBardAutoWikiEnabled)) {
+            await processNarrativeBacklog({
+                characterId: nowChatroom.chaId, chatId: narrativeSessionChatId,
+                targetMessageId: narrativeTurnToConfirm.targetMessageId,
+            })
+        }
+    }
     let maxContextTokens = requestSettings.maxContext
     // Output-token reservation for the context budget. Defaults to the legacy
     // global db.maxResponse (the "[채팅 봇]" max response size), overridden below
@@ -3325,7 +3453,8 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                 time: Date.now(),
                 generationInfo,
                 promptInfo,
-                chatId: generationId,
+                ...responseMetadata,
+                chatId: responseIdentity?.chatId ?? generationId,
             })
         }
         outputMessageId = generationScope.chat.message[msgIndex]?.chatId
@@ -3508,6 +3637,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             messageIndex: findMessageIndexByChatId(currentChat, outputMessageId),
         })
         attachOutputScriptstateCheckpoint()
+        await captureStoryChat(currentChar.chaId, generationScope.chat, 'working')
         if(requestSettings.ttsAutoSpeech){
             await sayTTS(currentChar, result)
         }
@@ -3549,6 +3679,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                     // Keep the original message identity: older jobs match on it
                     // (jobRecovery secondary match) — see the continue restamp note.
                     chatId: generationScope.chat.message[msgIndex]?.chatId ?? generationId,
+                    ...responseMetadata,
                 }       
                 if(inlayResult.promise){
                     const p = await inlayResult.promise
@@ -3563,7 +3694,8 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                     time: Date.now(),
                     generationInfo,
                     promptInfo,
-                    chatId: generationId,
+                    ...responseMetadata,
+                    chatId: responseIdentity?.chatId ?? generationId,
                 })
                 const ind = generationScope.chat.message.length - 1
                 if(inlayResult.promise){
@@ -3603,6 +3735,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             messageIndex: findMessageIndexByChatId(currentChat, outputMessageId),
         })
         attachOutputScriptstateCheckpoint()
+        await captureStoryChat(currentChar.chaId, generationScope.chat, 'working')
     }
 
     let needsAutoContinue = false
@@ -3625,7 +3758,8 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             chatAdditonalTokens: arg.chatAdditonalTokens,
             continue: true,
             signal: abortSignal,
-            usedContinueTokens: resultTokens
+            usedContinueTokens: resultTokens,
+            confirmationTarget: narrativeTurnToConfirm,
         })
     }
 
@@ -3640,6 +3774,9 @@ export async function sendChat(chatProcessIndex = -1,arg:{
 
         generationScope.chat.message[generationScope.chat.message.length - 1].data += rq
     }
+    // Output triggers, plugins, variable checkpoints and continuation are complete.
+    // Do not defer this to a selected-screen effect or an auxiliary image request.
+    await captureCompletedNarrativeResponse()
 
     stageTimings.stage3Duration = Date.now() - stageTimings.stage3Start
 
@@ -3668,7 +3805,8 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         return await sendChat(chatProcessIndex, {
             target,
             requestSettings,
-            signal: abortSignal
+            signal: abortSignal,
+            confirmationTarget: narrativeTurnToConfirm,
         })
     }
 
@@ -3925,17 +4063,6 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         generationScope.chat.message[lastMessageIndex].generationInfo = generationInfo
     }
 
-    if (narrativeTurnToConfirm
-        && shouldAutomaticallyConfirmNarrativeTurn(
-            requestSettings.risuBardAutoWikiEnabled
-        )) {
-        // Turns that failed before stay queued and go first, in story order.
-        void processNarrativeBacklog({
-            characterId: currentChar.chaId,
-            chatId: narrativeSessionChatId,
-            targetMessageId: narrativeTurnToConfirm.targetMessageId,
-        })
-    }
 
     return true
 }

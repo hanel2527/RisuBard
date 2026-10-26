@@ -896,17 +896,19 @@ import { isMobile } from 'src/ts/platform'
         }
         const lastMsg = getLastCharMsg()
         if (!lastMsg) return
+        const target = captureGenerationTarget(DBState.db.characters[$selectedCharID])
+        const rerollChat = resolveGenerationTarget(DBState.db.characters, target).chat
 
         // Save existing swipes before clone replaces the array
         const savedSwipes = lastMsg.swipes ? [...lastMsg.swipes] : [lastMsg.data]
         const savedSwipeCheckpoints = getSwipeScriptstateCheckpoints(lastMsg, savedSwipes.length)
         const originalScriptstate = snapshotChatScriptstate(
-            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate,
+            rerollChat.scriptstate,
         )
 
         // Generate new response
         // Preserve trailing comment/disabled messages (e.g. branch comments)
-        let cha = safeStructuredClone(DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message)
+        let cha = safeStructuredClone(rerollChat.message)
         const originalMessages = safeStructuredClone(cha)
         if(cha.length === 0) return
         openMenu = false
@@ -928,18 +930,18 @@ import { isMobile } from 'src/ts/platform'
             if(!msg) return
         }
         restoreScriptstateBeforeReroll(
-            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage],
+            rerollChat,
             lastMsg,
         )
-        DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message = cha
-        const generated = await sendChatMain()
+        rerollChat.message = cha
+        const generated = await sendChatMain(false, target, undefined, lastMsg)
 
-        const currentMsgs = DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message
+        const currentChat = resolveGenerationTarget(DBState.db.characters, target).chat
+        const currentMsgs = currentChat.message
 
         // If generation failed, restore original messages
         if (!generated) {
-            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message = originalMessages
-            const currentChat = DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage]
+            currentChat.message = originalMessages
             if(originalScriptstate === null) delete currentChat.scriptstate
             else currentChat.scriptstate = { ...originalScriptstate }
             return
@@ -948,11 +950,11 @@ import { isMobile } from 'src/ts/platform'
         // Restore trailing comments after the new message
         if (trailingComments.length > 0) {
             currentMsgs.push(...trailingComments)
-            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message = currentMsgs
+            currentChat.message = currentMsgs
         }
 
         // Save new response to swipes
-        const newLastMsg = getLastCharMsg()
+        const newLastMsg = currentMsgs.findLast(message => message.role === 'char' && !message.isComment && !message.disabled)
         if (newLastMsg && !newLastMsg.swipes) {
             newLastMsg.swipes = [...savedSwipes, newLastMsg.data]
             newLastMsg.swipeId = newLastMsg.swipes.length - 1
@@ -1039,7 +1041,7 @@ import { isMobile } from 'src/ts/platform'
     // Chat generation and the input assistant never run at the same time.
     let inputAssistBlocked = $derived(Boolean(currentChatGenerating || sendingChat || preparingInput || $doingChat))
 
-    async function sendChatMain(continued:boolean = false, target?: GenerationTarget, requestSettings?: Database) {
+    async function sendChatMain(continued:boolean = false, target?: GenerationTarget, requestSettings?: Database, replacementMessage?: Message) {
         if (sendingChat) return false
         target ??= captureGenerationTarget(DBState.db.characters[$selectedCharID])
         const destination = resolveGenerationTarget(DBState.db.characters, target)
@@ -1063,6 +1065,7 @@ import { isMobile } from 'src/ts/platform'
                 continue:continued,
                 target,
                 requestSettings,
+                replacementMessage,
             })
         } catch (error) {
             console.error(error)

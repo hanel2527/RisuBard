@@ -2,11 +2,13 @@ import { expect, it, vi } from 'vitest'
 import { createGenerationSaveTracker } from './generationSaveTracking'
 
 const persisted = vi.hoisted(() => new Map<string, string>())
+const captureHistory = vi.hoisted(() => vi.fn())
 vi.mock('../globalApi.svelte', () => ({forageStorage:{realStorage:{
     saveChatContent: async (owner:string, _index:number, id:string, chat:unknown) => {persisted.set(`${owner}/${id}`,JSON.stringify(chat))},
     fetchChatContent: async (owner:string, _index:number, id:string) => JSON.parse(persisted.get(`${owner}/${id}`)!),
 }}}))
 vi.mock('./database.svelte', () => ({isChatStub:(chat:any)=>chat?._stub===true && !Array.isArray(chat.message)}))
+vi.mock('../risubard/storyHistory', () => ({ captureStoryChat: captureHistory }))
 import { saveChatToServer, ensureChatHydrated, chatToStub, stubToPlaceholder } from './chatStorage'
 
 it('tracks and saves unselected streaming A including the final update after generation ends', async () => {
@@ -33,5 +35,8 @@ it('tracks and saves unselected streaming A including the final update after gen
     expect(reloaded[0].message[1].data).toBe('complete A')
     expect(reloaded[1].message).toEqual(b.message)
     expect(reloaded.map(c=>c.id)).toEqual(['A','B'])
+    expect(captureHistory.mock.calls.map(([owner, chat, kind]) => [owner, chat.id, kind]))
+        .toEqual([['bot', 'B', 'chat-edit'], ['bot', 'A', 'chat-edit']])
+    expect(a.message.every((message: { chatId?: string }) => typeof message.chatId === 'string' && message.chatId.length > 0)).toBe(true)
     expect(await save([])).toEqual([])
 })

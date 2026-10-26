@@ -17,7 +17,10 @@ test.each([
     const { registerRisuBardMemoryRoutes } = createRequire(import.meta.url)('./risubard-memory-routes.cjs')
     const routes = new Map()
     const save = vi.fn(async () => ({ id: 'document' }))
-    registerRisuBardMemoryRoutes({ post: (path: string, handler: unknown) => routes.set(path, handler) }, {
+    registerRisuBardMemoryRoutes({
+        post: (path: string, handler: unknown) => routes.set(path, handler),
+        use: vi.fn(),
+    }, {
         auth: async () => true, service: { [method]: save },
     })
     const body = {

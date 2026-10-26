@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { untrack } from 'svelte'
     import { ArrowDownIcon, ArrowUpIcon, Clock3Icon, LoaderCircleIcon, PencilIcon, PlusIcon, SaveIcon, Trash2Icon, ZapIcon } from '@lucide/svelte'
     import loadIcon from 'src/assets/solar-bold/undo-left-square-bold.svg'
     import { alertConfirm, alertInput } from 'src/ts/alert'
@@ -17,6 +18,12 @@
     import CheckInput from '../UI/GUI/CheckInput.svelte'
     import ShDialog from '../UI/GUI/ShDialog.svelte'
     import SolarAssetIcon from '../UI/Icons/SolarAssetIcon.svelte'
+    import type { Chat } from 'src/ts/storage/database.svelte'
+    import type { StoryHistoryState } from 'src/ts/risubard/storyHistoryTypes'
+    import { getStoryHistory, migrateStoryHistory, rollbackStoryHistory, subscribeStoryHistory } from 'src/ts/risubard/storyHistory'
+    import RisuBardStoryHistory from './RisuBardStoryHistory.svelte'
+    import { DBState } from 'src/ts/stores.svelte'
+    import { chatGenKey, generationStates } from 'src/ts/process/generationState'
 
     interface Props {
         open: boolean
@@ -25,6 +32,8 @@
         currentChatId: string
         currentChatName?: string
         currentLatestMessageId?: string
+        currentChat: Chat
+        onHistoryLoad(backupId: string, asNewChat: boolean): Promise<void>
         mode?: 'save' | 'load'
         onOpenChange(open: boolean): void
         onLoad(saveId: string, asNewChat: boolean): Promise<void>
@@ -38,6 +47,8 @@
         currentChatId,
         currentChatName = '',
         currentLatestMessageId,
+        currentChat,
+        onHistoryLoad,
         mode = $bindable('load'),
         onOpenChange,
         onLoad,
@@ -53,6 +64,9 @@
     let previewLoadingId = $state('')
     let previewCache = $state<Record<string, MemorySavePreviewMessage[]>>({})
     let error = $state('')
+    let history = $state<StoryHistoryState | null>(null)
+    let transitionBusy = $state('')
+    let transitionReport = $state('')
     let requestSequence = 0
     let previewSequence = 0
     let workspaceElement = $state<HTMLElement | null>(null)
@@ -107,16 +121,21 @@
         return [...next].sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]?.saveId ?? ''
     }
 
-    async function refresh(): Promise<void> {
+    async function refresh(preserveHistory = false): Promise<void> {
         const sequence = ++requestSequence
         ++previewSequence
         slots = []
         selectedId = ''
         previewCache = {}
         previewLoadingId = ''
-        loading = true
+        loading = !preserveHistory || history?.mode !== 'history'
+        if (!preserveHistory) history = null
         error = ''
         try {
+            const state = await getStoryHistory(characterId, currentChatId)
+            if (sequence !== requestSequence) return
+            history = state
+            if (state.mode === 'history') return
             const next = await listMemorySaveSlots({ characterId, sourceChatId: currentChatId, fetchImpl: fetch, createAuth: () => forageStorage.createAuth() })
             if (sequence !== requestSequence) return
             slots = next
@@ -238,8 +257,49 @@
         setPreviewShare(previewShare + (event.key === 'ArrowUp' ? 5 : -5))
     }
 
+    async function transition(toHistory: boolean): Promise<void> {
+        if (transitionBusy || currentChat._placeholder) return
+        if (currentChat.isStreaming || (currentChat.id && $generationStates.has(chatGenKey(currentChat.id)))) {
+            error = '응답 생성이 끝난 뒤 저장 형식을 변환해 주세요.'
+            return
+        }
+        const character = characterId
+        const chat = currentChat
+        const sequence = requestSequence
+        transitionBusy = '변환 전 데이터와 공간을 검사하는 중…'
+        error = ''
+        transitionReport = ''
+        try {
+            const action = toHistory ? migrateStoryHistory : rollbackStoryHistory
+            const inspection = await action(character, chat, { dryRun: true })
+            if (sequence !== requestSequence || !open) return
+            const report = inspection.report
+            const details = `기존 슬롯 ${report.legacySlots}개 · 이력 ${report.backups}개 · 예상 ${Math.ceil(report.estimatedBytes / 1024 / 1024)} MiB`
+            if (!await alertConfirm(toHistory
+                ? `기존 슬롯과 현재 채팅을 보존하여 새 이력으로 이관할까요?\n${details}\n부모 관계를 알 수 없는 기존 슬롯은 독립 root가 됩니다.`
+                : `전환 이후의 모든 분기·채팅 전용 백업까지 고유한 구형 수동 슬롯으로 변환할까요?\n${details}\n디스크 사용량이 증가할 수 있습니다. 정확한 분기와 bind는 이력 아카이브에 보존됩니다.`)) return
+            if (sequence !== requestSequence || !open) return
+            if (chat.isStreaming || (chat.id && $generationStates.has(chatGenKey(chat.id)))) throw new Error('응답 생성이 끝난 뒤 저장 형식을 변환해 주세요.')
+            transitionBusy = toHistory ? '원본을 보존하고 이관·검증하는 중…' : '모든 이력을 구형 슬롯으로 변환·검증하는 중…'
+            const result = await action(character, chat)
+            if (sequence !== requestSequence) return
+            transitionReport = `변환 완료 · 슬롯 ${result.report.legacySlots}개 · 이력 ${result.report.backups}개${result.report.archivePath ? ` · 원본/분기 보존: ${result.report.archivePath}` : ''}`
+            await refresh()
+        } catch (cause) {
+            if (sequence === requestSequence) error = cause instanceof Error ? cause.message : String(cause)
+        } finally { transitionBusy = '' }
+    }
+
     $effect(() => {
-        if (open && characterId && currentChatId) void refresh()
+        if (!open) return
+        return subscribeStoryHistory((detail) => {
+            if (detail.characterId !== characterId || detail.chatId !== currentChatId) return
+            if (detail.error) error = String(detail.error)
+            if (detail.state) history = detail.state
+        })
+    })
+    $effect(() => {
+        if (open && characterId && currentChatId) untrack(() => void refresh())
         return () => { ++requestSequence; ++previewSequence }
     })
 </script>
@@ -260,22 +320,37 @@
     </li>
 {/snippet}
 
-<ShDialog {open} onOpenChange={onOpenChange} size="xl" tier="base" contentClass="save-slot-dialog" bodyClass="save-slot-dialog__body" ariaLabel="채팅 저장 및 불러오기">
+<ShDialog {open} onOpenChange={(next) => { if (!transitionBusy) onOpenChange(next) }} size="xl" tier="base" contentClass="save-slot-dialog" bodyClass="save-slot-dialog__body" ariaLabel="채팅 저장 및 불러오기">
     {#snippet headerActions()}
         <div class="save-dialog-header">
-            <div data-save-mode-switcher role="group" aria-label="저장 및 불러오기 전환" class="save-dialog-header__modes">
+            {#if history?.mode !== 'history'}<div data-save-mode-switcher role="group" aria-label="저장 및 불러오기 전환" class="save-dialog-header__modes">
                 <ShButton data-save-mode="save" size="sm" variant={mode === 'save' ? 'primary' : 'outline'} aria-pressed={mode === 'save'} disabled={Boolean(loadingId) || !onSave} onclick={() => { mode = 'save' }}>저장하기</ShButton>
                 <ShButton data-save-mode="load" size="sm" variant={mode === 'load' ? 'primary' : 'outline'} aria-pressed={mode === 'load'} disabled={Boolean(loadingId)} onclick={() => { mode = 'load' }}>불러오기</ShButton>
-            </div>
+            </div>{:else}<strong>STORY HISTORY</strong>{/if}
             <strong data-save-dialog-context>{characterName || characterId}<span>/</span>{currentChatName || currentChatId}</strong>
         </div>
     {/snippet}
 
     <div class="save-ledger">
-        {#if error}<p class="save-ledger__error">{error}</p>{/if}
-        {#if loading && slots.length === 0}
+        {#if error}<p role="alert" class="save-ledger__error">{error}</p>{/if}
+        {#if transitionReport}<p role="status" class="save-transition-report">{transitionReport}</p>{/if}
+        {#if transitionBusy}
+            <div role="status" aria-live="polite" class="save-ledger__empty"><LoaderCircleIcon size={20} class="animate-spin" />{transitionBusy}</div>
+        {:else if loading}
             <div class="save-ledger__empty"><LoaderCircleIcon size={20} class="animate-spin" />저장된 파일을 읽는 중…</div>
+        {:else if history?.mode === 'history'}
+            {#key `${characterId}/${currentChatId}`}
+                <RisuBardStoryHistory {characterId} chat={currentChat} {history} onRefresh={() => refresh(true)} onLoad={onHistoryLoad} onRollback={() => transition(false)} />
+            {/key}
+        {:else if !history}
+            <ShButton size="sm" onclick={() => void refresh()}>저장 모드 다시 읽기</ShButton>
         {:else}
+            <div class="save-migration">
+                <span>구형 슬롯 모드 · 새 이력은 순환 덮어쓰기 없이 모든 분기를 보관합니다.</span>
+                <ShButton size="sm" disabled={Boolean(loadingId) || currentChat.isStreaming === true || Boolean(currentChat._placeholder)} onclick={() => void transition(true)}>기존 슬롯 이관 / 이력 시작</ShButton>
+                <label>구형 자동저장 간격 (턴) <input type="number" min="1" max="100" step="1" bind:value={DBState.db.risuBardAutosaveInterval} /></label>
+                <label>구형 순환 슬롯 수 <input type="number" min="1" max="20" step="1" bind:value={DBState.db.risuBardAutosaveRetention} /></label>
+            </div>
             <div data-save-file-workspace class="save-workspace" style={workspaceStyle} bind:this={workspaceElement}>
                 <div class="slot-browser">
                     <section class="slot-section slot-section--auto" aria-labelledby="autosave-heading">
@@ -354,6 +429,10 @@
     .save-dialog-header > strong span { color: var(--color-textcolor2); font-weight: 400; }
     .save-ledger { display: flex; height: 100%; min-height: 0; flex-direction: column; padding-top: .75rem; border-top: 1px solid var(--color-darkborderc); }
     .save-ledger__error { margin: 0 0 .5rem; color: var(--color-danger); font-size: .76rem; }
+    .save-migration { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; padding-bottom: .65rem; font-size: .75rem; }
+    .save-transition-report { margin-bottom: .5rem; font-size: .75rem; overflow-wrap: anywhere; }
+    .save-migration label { display: flex; gap: .3rem; align-items: center; }
+    .save-migration input { width: 4rem; padding: .25rem; background: var(--color-darkbg); border: 1px solid var(--color-darkborderc); border-radius: .25rem; }
     .save-ledger__empty, .save-preview__empty { display: flex; min-height: 8rem; align-items: center; justify-content: center; gap: .45rem; color: var(--color-textcolor2); font-size: .78rem; }
     .save-ledger__empty { flex: 1; border: 1px dashed var(--color-darkborderc); border-radius: .5rem; }
     .save-workspace { display: grid; flex: 1; min-height: 0; }

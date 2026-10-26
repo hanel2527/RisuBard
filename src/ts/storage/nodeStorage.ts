@@ -494,6 +494,14 @@ export class NodeStorage{
         return response
     }
 
+    requestStoryHistory(action: string, body: Record<string, unknown>): Promise<Response> {
+        return this.authFetch(`/api/risubard/memory/history/${action}`, {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+        })
+    }
+
     async setItem(key:string, value:Uint8Array, etag?:string): Promise<string | null> {
         const headers: Record<string, string> = {
             'content-type': 'application/octet-stream',

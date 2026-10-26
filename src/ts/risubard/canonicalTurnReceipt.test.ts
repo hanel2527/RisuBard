@@ -5,6 +5,7 @@ import {
     formatCanonicalDeferredWarning,
     parseCanonicalTurnReceipt,
     canonicalTurnNeedsRetry,
+    canonicalTurnFailed,
     formatCanonicalUpdateFailureWarning,
     mergeCanonicalTurnReceipts,
     type CanonicalTurnReceipt,
@@ -126,6 +127,17 @@ describe('canonical turn retry receipt', () => {
         })).toBe(false)
     })
 
+    test('does not publish typed failures even without localized warning text', () => {
+        const receipt: CanonicalTurnReceipt = {
+            sourceMessageIds: ['assistant-1'], eventIds: [], changes: [], warnings: [],
+            recordedAt: '2026-10-27T00:00:00.000Z', outcome: 'failed',
+        }
+        expect(canonicalTurnFailed(receipt)).toBe(true)
+        expect(parseCanonicalTurnReceipt(receipt)).toEqual(receipt)
+        expect(canonicalTurnFailed({ ...receipt, outcome: 'cancelled' })).toBe(true)
+        expect(canonicalTurnFailed({ ...receipt, outcome: 'unchanged' })).toBe(false)
+        expect(() => parseCanonicalTurnReceipt({ ...receipt, outcome: 'unknown' })).toThrow()
+    })
     test('retains a bounded semantic validation reason', () => {
         const error = Object.assign(
             new Error('AI 응답 형식이 올바르지 않습니다.'),

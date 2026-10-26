@@ -1,5 +1,5 @@
 <script lang="ts">
-    import type { character, Message, StreamingDisplayOptimizationMode } from 'src/ts/storage/database.svelte';
+    import type { character, Chat as ChatData, Message, StreamingDisplayOptimizationMode } from 'src/ts/storage/database.svelte';
     import { mount, onDestroy, unmount } from 'svelte';
     import Chat from './Chat.svelte';
     import { getCharImage } from 'src/ts/characters';
@@ -72,6 +72,7 @@
         }) => void
     }
     let mountInstances: Map<number, ChatInstance> = new Map();
+    let renderedChat: ChatData | undefined
 
     //Non-cryptographic hash function to generate a unique hash for each message
     function hashCode(str:string):number {
@@ -100,6 +101,16 @@
         let loadStart = pageEnd - 1
         let loadEnd = pageStart
         const currentChat = currentCharacter.chats?.[currentCharacter.chatPage]
+        // Restoring a snapshot replaces the Chat object, even for the same ID.
+        // Its imperative children belong to the old object and must not survive
+        // that replacement. In-place edits and streaming retain their DOM.
+        if (renderedChat !== currentChat) {
+            mountInstances.forEach(instance => { void unmount(instance) })
+            mountInstances.clear()
+            hashes.clear()
+            chatBody.replaceChildren()
+            renderedChat = currentChat
+        }
         const configuredPerformanceMode = DBState.db.streamingDisplayOptimizationMode ?? 'off';
         const performanceMode = currentChat?.isStreaming
             ? currentChat.activeStreamingDisplayOptimizationMode ?? configuredPerformanceMode

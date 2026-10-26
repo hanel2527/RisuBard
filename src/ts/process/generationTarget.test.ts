@@ -20,6 +20,22 @@ describe('generation target identity', () => {
         expect(scope.chatIndex).toBe(2)
         expect(b).toEqual({id:'B',message:[]})
     })
+    it('keeps delayed postprocessed output and variables in the captured chat after selection changes', async () => {
+        const { char, scope, b } = fixture()
+        const completed: Chat = {
+            ...scope.chat,
+            message: [{ role: 'char', data: 'Completed A', chatId: 'response-A' }],
+            scriptstate: { turn: 1 },
+        }
+        const publication = Promise.resolve(completed).then(chat => { scope.chat = chat })
+        char.chatPage = 1
+        char.chats.reverse()
+        await publication
+        expect(scope.chat.id).toBe('A')
+        expect(scope.chat.message).toEqual(completed.message)
+        expect(scope.chat.scriptstate).toEqual({ turn: 1 })
+        expect(char.chats.find(chat => chat.id === 'B')).toEqual(b)
+    })
     it('rejects a missing target rather than writing to its former slot', () => {
         const {char,scope,b,a} = fixture()
         char.chats.shift()

@@ -634,14 +634,16 @@ export function projectMemoryAnalysisEvidence(
     return [firstMessage, ...confirmedMessages]
 }
 
+export interface ProjectedMemoryTurn {
+    targetMessageId: string
+    messages: MemoryAnalysisMessage[]
+}
+
 export function projectConfirmedMemoryTurn(
     storedMessages: readonly StoredMessage[],
     targetMessageId?: string,
     options: { includeConfirmed?: boolean; ignoreOocTurns?: boolean } = {}
-): {
-    targetMessageId: string
-    messages: MemoryAnalysisMessage[]
-} | null {
+): ProjectedMemoryTurn | null {
     const isActive = (message: StoredMessage) =>
         !message.isComment && !message.disabled
     let assistantIndex = -1
@@ -737,6 +739,14 @@ export function createStoredResponseMemoryAnalysis(
     options: MemoryAnalysisClientOptions
 ) {
     const documentBodyCache = new Map<string, Map<string, NarrativeMemoryWikiDocument>>()
+    const historyOperations = new WeakMap<AbortSignal, string>()
+    const wikiFetch: typeof fetch = (resource, init) => {
+        const operationId = init?.signal ? historyOperations.get(init.signal) : undefined
+        if (!operationId) return options.fetchImpl(resource, init)
+        const headers = new Headers(init?.headers)
+        headers.set('x-risubard-history-operation-id', operationId)
+        return options.fetchImpl(resource, { ...init, headers })
+    }
     async function requestMemoryModel(
         request: MemoryAnalysisModelCall,
         signal?: AbortSignal
@@ -956,7 +966,7 @@ export function createStoredResponseMemoryAnalysis(
         }, signal?: AbortSignal) {
             return saveCanonicalWikiDocument({
                 ...input,
-                fetchImpl: options.fetchImpl,
+                fetchImpl: wikiFetch,
                 createAuth: options.createAuth,
                 signal,
             })
@@ -971,7 +981,7 @@ export function createStoredResponseMemoryAnalysis(
             retrievalMetadata?: import('../../../server/node/risubard-memory-metadata').MemoryRetrievalMetadata
         }, signal?: AbortSignal) {
             const document = await readJson(await postJson(
-                options.fetchImpl,
+                wikiFetch,
                 options.createAuth,
                 '/api/risubard/memory/wiki/save',
                 input,
@@ -1146,13 +1156,20 @@ export function createStoredResponseMemoryAnalysis(
 
     return {
         run: runner.run,
-        async confirm(input: MemoryAnalysisInput, signal?: AbortSignal) {
-            if (input.messages.length === 0) return undefined
+        async confirm(input: MemoryAnalysisInput & { historyOperationId?: string }, signal?: AbortSignal) {
+            if (input.messages.length === 0) return {
+                outcome: 'unchanged' as const, sourceMessageIds: [], eventIds: [],
+                changes: [], warnings: [], recordedAt: new Date().toISOString(),
+            }
             const operation = createMemoryAnalysisSignal(signal)
+            // Authorization belongs to the transport, not the runner's exact-key
+            // analysis schema or the frozen model/source input.
+            const { historyOperationId, ...analysisInput } = input
+            if (historyOperationId) historyOperations.set(operation.signal, historyOperationId)
             try {
                 operation.signal.throwIfAborted()
                 const result = await abortable(
-                    runner.run(input, operation.signal),
+                    runner.run(analysisInput, operation.signal),
                     operation.signal
                 )
                 announceRisuBardMemoryUpdated({
@@ -1162,6 +1179,7 @@ export function createStoredResponseMemoryAnalysis(
                 return result.canonicalReceipt
             }
             finally {
+                historyOperations.delete(operation.signal)
                 operation.dispose()
             }
         },

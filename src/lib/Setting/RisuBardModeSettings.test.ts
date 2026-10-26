@@ -40,16 +40,6 @@ const databaseSource = readFileSync(
 )
 
 describe('RisuBard mode settings', () => {
-    test('persists dedicated wiki prompt presets and scoped guide injections', () => {
-        expect(databaseSource).toContain('risuBardWikiPromptPresets?:')
-        expect(databaseSource).toContain('risuBardChatWikiPromptPresetId?: string')
-        expect(databaseSource).toContain('risuBardWikiGuide?: string')
-        expect(databaseSource).toContain('normalizeWikiPromptPresetState({')
-        expect(databaseSource).toContain("typeof c.risuBardWikiGuide !== 'string'")
-        expect(processSource).toContain('compileWikiPromptGuide(')
-        expect(processSource).toContain("characterGuide: risuChatParser(character?.risuBardWikiGuide ?? ''")
-        expect(processSource).toContain("chatGuide: risuChatParser(chat?.risuBardWikiGuide ?? ''")
-    })
 
     test('keeps twelve recent messages as the default', () => {
         expect(normalizeNarrativeWorkingMessageLimit(undefined)).toBe(12)

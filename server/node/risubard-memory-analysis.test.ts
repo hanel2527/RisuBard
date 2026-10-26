@@ -280,6 +280,7 @@ describe('memory analysis runner', () => {
         expect(result.canonicalReceipt?.changes.map(change => change.documentId)).toEqual(['character.A'])
         expect(result.canonicalReceipt?.warnings).toContain('정본 문서 저장 실패: B')
         expect(canonicalTurnNeedsRetry(result.canonicalReceipt!)).toBe(true)
+        expect(result.canonicalReceipt?.outcome).toBe('failed')
     })
 
     test('skips already saved documents when the same turn is retried after the chat grew', async () => {
@@ -522,6 +523,7 @@ describe('memory analysis runner', () => {
             .toContain('A'.repeat(4_000))
         expect(result.canonicalReceipt?.warnings).toEqual([])
         expect(canonicalTurnNeedsRetry(result.canonicalReceipt!)).toBe(false)
+        expect(result.canonicalReceipt?.outcome).toBe('applied')
     })
 
     test.each([false, true])('keeps English through analysis, rewrite and saves (reboot=%s)', async (reboot) => {
@@ -2537,7 +2539,7 @@ describe('memory analysis runner', () => {
         expect(saveCanonicalDocument).not.toHaveBeenCalled()
     })
 
-    test('does not protect an ordinary turn with no durable change', async () => {
+    test('reports an ordinary no-change turn as an explicit unchanged receipt', async () => {
         const recordRebootBatchReceipt = vi.fn(async (input) => input.receipt)
         const runner = createMemoryAnalysisRunner({
             memoryService: { loadState: vi.fn(), applyDelta: vi.fn() },
@@ -2561,7 +2563,10 @@ describe('memory analysis runner', () => {
             messages: [{ messageId: 'assistant-1', role: 'assistant',
                 content: '아무 변화도 없었다.' }],
         })
-        expect(result.canonicalReceipt).toBeUndefined()
+        expect(result.canonicalReceipt).toMatchObject({
+            outcome: 'unchanged', sourceMessageIds: ['assistant-1'],
+            eventIds: [], changes: [], warnings: [],
+        })
         expect(recordRebootBatchReceipt).not.toHaveBeenCalled()
     })
 

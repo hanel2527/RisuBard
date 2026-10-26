@@ -94,7 +94,7 @@
         chatId: string
         onForceWikiUpdate?: () => Promise<boolean>
         onRetryWikiBacklog?: () => Promise<void>
-        onSkipWikiBacklogTurn?: (messageId: string) => boolean
+        onSkipWikiBacklogTurn?: (messageId: string) => Promise<boolean>
         rebootJob?: WikiRebootJob
         onStartWikiReboot?: (
             batchSize: WikiRebootBatchSize,
@@ -330,14 +330,20 @@
         if (!onRetryWikiBacklog || wikiBacklogBusy) return
         wikiBacklogBusy = true
         try { await onRetryWikiBacklog() }
+        catch (error) { alertError(error instanceof Error ? error.message : String(error)) }
         finally { wikiBacklogBusy = false }
     }
     async function skipWikiBacklogTurn() {
         const messageId = wikiBacklog.oldest?.messageId
-        if (!messageId || !onSkipWikiBacklogTurn
+        if (!messageId || !onSkipWikiBacklogTurn || wikiBacklogBusy
             || !await alertConfirm(language.risuBardWikiBacklogSkipConfirm, { tier: 'top' })) return
-        onSkipWikiBacklogTurn(messageId)
-        if (wikiBacklog.count > 0) await retryWikiBacklog()
+        wikiBacklogBusy = true
+        try {
+            if (!await onSkipWikiBacklogTurn(messageId)) return
+            if (wikiBacklog.count > 0) await onRetryWikiBacklog?.()
+        }
+        catch (error) { alertError(error instanceof Error ? error.message : String(error)) }
+        finally { wikiBacklogBusy = false }
     }
     let painterChatReady = $derived(!!currentChat && !currentChat._placeholder && Array.isArray(currentChat.message))
     let resolvedChatSettings = $derived(resolveRisuBardChatSettings(

@@ -44,6 +44,9 @@ const { createProjectionShadow } = require('./projection-shadow.cjs');
 const { generateStorageDiagnosticReport } = require('./storage-diagnostic-report.cjs');
 const { commitTransaction, moveToTrash, observeWrites } = require('./file-store.cjs');
 const { createRuntimeMemoryService } = require('./risubard-memory-runtime.cjs');
+const { visitRetainedStoryContent } = require('./risubard-story-history.ts');
+const { applyMemorySavePromptSettings } = require('../../src/ts/risubard/memorySavePromptSettings.ts');
+const { rebindPainterChatScope } = require('../../src/ts/bardPainter/chatScope.ts');
 const { openServerBrowser } = require('./open-server-browser.cjs');
 const { releaseToUpdateInfo } = require('./release-update.cjs');
 const { createChatContentPage, createChatPreview } = require('./chat-content-page.cjs');
@@ -126,8 +129,13 @@ function computeDatabaseEtagFromObject(databaseObject) {
 }
 
 let storageOperationQueue = Promise.resolve();
+let storageRecoveryHook = null;
 function queueStorageOperation(operation) {
-    const operationRun = storageOperationQueue.then(operation, operation);
+    const run = async () => {
+        if (storageRecoveryHook) await storageRecoveryHook();
+        return operation();
+    };
+    const operationRun = storageOperationQueue.then(run, run);
     storageOperationQueue = operationRun.catch(() => {});
     return operationRun;
 }
@@ -1223,7 +1231,7 @@ function persistCanonicalProjection(databaseObject, observationContext = {}) {
             try {
                 const cleanup = reclaimDeletedCharacterAssets({
                     candidates: result.deletedAssetCandidates,
-                    database: databaseObject,
+                    database: databaseWithHistoryAssetReferences(databaseObject),
                     listKeys: kvList,
                     read: kvGet,
                     remove: kvDelManyAndCollect,
@@ -2839,6 +2847,9 @@ async function validateStagedBackupDatabase(databasePath) {
 // ─── Shared backup import logic ─────────────────────────────────────────────
 // Accepts any async iterable of Buffer chunks (HTTP request body, file stream, etc.)
 async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0, onProgress = null, onPhase = null } = {}) {
+    // Finish operations accepted before restore acquired the replacement gate.
+    // New history/workspace operations are rejected while importInProgress.
+    await queueStorageOperation(async () => {});
     let hasDatabase = false;
     let databaseEntryPath = null;
     let encryptionMetadataPath = null;
@@ -3143,6 +3154,9 @@ async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0
         pluginStorageColdFailed = migration.pluginStorageColdFailed || 0;
         initChatStore(dbObj);
     }
+    await queueStorageOperation(() => narrativeMemoryService.recoverStoryCheckouts({
+        reload: true, withinStorageGate: true,
+    }));
 
     console.log(`[Backup Import] Complete: ${assetsRestored} assets restored, ${(bytesReceived / 1024 / 1024).toFixed(1)}MB processed`);
     if (coldStorageFailed > 0) {
@@ -4493,6 +4507,9 @@ app.get('/api/remove', async (req, res, next) => {
             }
             if (key.startsWith('inlay/')) {
                 const id = key.slice('inlay/'.length)
+                if (retainedStoryAssets().inlays.has(id)) {
+                    return res.status(409).json({ error: 'This inlay is retained by story history', code: 'STORY_ASSET_RETAINED' });
+                }
                 await deleteInlayFile(id)
                 kvDel(key);
                 kvDel(`inlay_thumb/${id}`);
@@ -4501,7 +4518,13 @@ app.get('/api/remove', async (req, res, next) => {
                 return;
             }
             if (key.startsWith('inlay_info/')) {
+                if (retainedStoryAssets().inlays.has(key.slice('inlay_info/'.length))) {
+                    return res.status(409).json({ error: 'This inlay metadata is retained by story history', code: 'STORY_ASSET_RETAINED' });
+                }
                 await fs.unlink(getInlaySidecarPath(key.slice('inlay_info/'.length))).catch(() => {});
+            }
+            if (key.startsWith('assets/') && retainedStoryAssets().assets.has(path.basename(key))) {
+                return res.status(409).json({ error: 'This asset is retained by story history', code: 'STORY_ASSET_RETAINED' });
             }
             kvDel(key);
             res.send({ success: true });
@@ -4632,7 +4655,7 @@ require('./character-package-routes.cjs').registerCharacterPackageRoutes(app, {
     repository: userDataRepository,
     assets: characterAssets,
     readSource: kvGet,
-    kv: { retireAssets, restoreRetiredAssets, retiredStatus, assetStoreShare },
+    kv: { retireAssets: retireUnretainedAssets, restoreRetiredAssets, retiredStatus, assetStoreShare },
     prepare: async () => {
         if (externalEditSession.isActive() || !canonicalProjectionReady || canonicalProjectionSync.hasExternalChanges()) return null;
         await flushPendingDbWithinQueue({ materialize: false });
@@ -4655,7 +4678,7 @@ require('./module-asset-routes.cjs').registerModuleAssetRoutes(app, {
     queue: queueStorageOperation,
     recordTransition: event => saveObservation.record(event),
     assets: characterAssets,
-    kv: { retireAssets, restoreRetiredAssets, retiredStatus, retiredSummary, assetStoreShare },
+    kv: { retireAssets: retireUnretainedAssets, restoreRetiredAssets, retiredStatus, retiredSummary, assetStoreShare },
     prepare: async () => {
         if (externalEditSession.isActive() || !canonicalProjectionReady || canonicalProjectionSync.hasExternalChanges()) return null;
         await flushPendingDbWithinQueue({ materialize: false });
@@ -4681,9 +4704,72 @@ app.delete('/api/logs', async (req, res, next) => {
 // endpoints use.
 const requestLogs = createRequestLogs({ saveDir: savePath });
 requestLogs.registerRoutes(app, { auth: checkAuth, activeSession: checkActiveSession });
-const narrativeMemoryService = createRuntimeMemoryService(savePath);
+const narrativeMemoryService = createRuntimeMemoryService(savePath, {
+    recoveryGate: operation => queueStorageOperation(operation),
+    storageGate: operation => queueStorageOperation(async () => {
+        if (importInProgress || risuAccountImport.isBlocking()) {
+            throw Object.assign(new Error('A full data import is in progress'), {
+                status: 409, code: 'STORAGE_IMPORT_ACTIVE',
+            });
+        }
+        if (externalEditSession.isActive() || externalChangesAwaitingReview()) {
+            throw Object.assign(new Error('Finish reviewing external file changes before using story history'), {
+                status: 409, code: 'EXTERNAL_CHANGES_PENDING',
+            });
+        }
+        return operation();
+    }),
+    persistStoryChat: async ({ characterId, chatId, sourceChatId, chat }) => {
+        // A recovery scan without a checkout is read-only and may run while
+        // external files await review. Actual canonical recovery must not
+        // overwrite those edits or an active external editor's work.
+        if (externalEditSession.isActive() || externalChangesAwaitingReview()) {
+            throw Object.assign(new Error('Review external file changes before recovering story checkout'), {
+                status: 409, code: 'EXTERNAL_CHANGES_PENDING',
+            });
+        }
+        await flushPendingDbWithinQueue({ materialize: false });
+        const database = userDataRepository.exportLegacyDatabase();
+        const character = database.characters.find(entry => entry.chaId === characterId);
+        if (!character) {
+            throw Object.assign(new Error('Story character does not exist'), { status: 400 });
+        }
+        const index = character.chats.findIndex(entry => entry.id === chatId);
+        const currentChat = character.chats.find(entry => entry.id === (sourceChatId || chatId));
+        chat.id = chatId;
+        applyMemorySavePromptSettings(chat, currentChat);
+        delete chat.risuBardWikiReboot;
+        delete chat._placeholder;
+        delete chat.activeStreamingDisplayOptimizationMode;
+        chat.isStreaming = false;
+        if (typeof chat.note !== 'string') chat.note = '';
+        if (!Array.isArray(chat.localLore)) chat.localLore = [];
+        rebindPainterChatScope(chat, characterId);
+        const restored = chat;
+        if (index < 0) character.chats.push(restored);
+        else character.chats[index] = restored;
+        // This is the normal canonical JSON/JSONL writer and file-store journal,
+        // not the browser compatibility payload or a shadow chat.bin.
+        persistCanonicalProjection(database, {
+            trigger: 'story-history-checkout',
+            deferCompatibility: true,
+            ...(index < 0 ? {} : { directCollection: {
+                kind: 'chatState', chats: [{ characterId, chatId }], characterIds: [],
+            } }),
+        });
+        invalidateDbCache();
+        canonicalProjectionReady = true;
+        canonicalProjectionSync.accept();
+        liveCharacterFiles.invalidate();
+        liveFilesRevision = nodeCrypto.randomUUID();
+    },
+});
+// Canonical readers and non-history writers must finish interrupted checkout
+// publication too; recovery cannot depend on a later memory UI request.
+storageRecoveryHook = () => narrativeMemoryService.recoverStoryCheckouts({ withinStorageGate: true });
 registerRisuBardMemoryRoutes(app, {
     auth: checkAuth,
+    activeSession: checkActiveSession,
     service: narrativeMemoryService,
 });
 
@@ -4744,6 +4830,9 @@ app.post('/api/write', async (req, res, next) => {
 
             if (key.startsWith('inlay/')) {
                 const id = key.slice('inlay/'.length)
+                if (retainedStoryAssets().inlays.has(id)) {
+                    return res.status(409).json({ error: 'Use a new inlay ID; this image is retained by story history', code: 'STORY_ASSET_RETAINED' });
+                }
                 const parsed = JSON.parse(Buffer.from(fileContent).toString('utf-8'));
                 const type = typeof parsed?.type === 'string' ? parsed.type : 'image';
                 const ext = normalizeInlayExt(parsed?.ext);
@@ -4762,6 +4851,9 @@ app.post('/api/write', async (req, res, next) => {
                 kvDel(`inlay_info/${id}`);
             } else if (key.startsWith('inlay_info/')) {
                 const id = key.slice('inlay_info/'.length)
+                if (retainedStoryAssets().inlays.has(id)) {
+                    return res.status(409).json({ error: 'This inlay metadata is retained by story history', code: 'STORY_ASSET_RETAINED' });
+                }
                 const parsed = JSON.parse(Buffer.from(fileContent).toString('utf-8'));
                 await writeInlaySidecar(id, parsed);
                 kvDel(key);
@@ -4856,6 +4948,12 @@ app.post('/api/write', async (req, res, next) => {
                     activeCompatibilityPersists -= 1;
                 }
             } else {
+                if (key.startsWith('assets/') && retainedStoryAssets().assets.has(path.basename(key))) {
+                    const previous = kvGet(key);
+                    if (!previous || !Buffer.from(previous).equals(Buffer.from(fileContent))) {
+                        return res.status(409).json({ error: 'Use a new asset ID; this asset is retained by story history', code: 'STORY_ASSET_RETAINED' });
+                    }
+                }
                 kvSet(key, fileContent);
             }
 
@@ -5318,6 +5416,8 @@ app.get('/api/backup/export/settings-estimate', async (req, res, next) => {
 app.get('/api/backup/export', async (req, res, next) => {
     if(!await checkBackupDownloadAuth(req, res)){ return; }
     try {
+        await queueStorageOperation(async () => {
+        await narrativeMemoryService.recoverStoryCheckouts({ withinStorageGate: true });
         // ?target=upstream is the lossy original-RisuAI format: it excludes
         // inlays plus RisuBard's canonical BardWiki/manuscript files. Ordinary
         // exports keep those canonical files under reversible flat names, so
@@ -5329,7 +5429,7 @@ app.get('/api/backup/export', async (req, res, next) => {
         const settingsOnly = req.query.mode === 'settings';
         const includeModuleAssets = req.query.moduleAssets !== '0';
         // Flush any pending patches to ensure export includes latest data
-        await flushPendingDb();
+        await flushPendingDbWithinQueue();
 
         // Settings-only re-encodes a trimmed DB up front, and the trimmed
         // object drives the asset filter below. Safe to hold in memory — with
@@ -5465,6 +5565,7 @@ app.get('/api/backup/export', async (req, res, next) => {
             }
         }
         if (!closed) res.end();
+        });
     } catch (error) {
         next(error);
     }
@@ -5684,7 +5785,9 @@ app.post('/api/backup/server/save', async (req, res, next) => {
     if (!await checkAuth(req, res)) { return; }
     if (!checkActiveSession(req, res)) return;
     try {
-        await flushPendingDb();
+        await queueStorageOperation(async () => {
+        await narrativeMemoryService.recoverStoryCheckouts({ withinStorageGate: true });
+        await flushPendingDbWithinQueue();
 
         // Pre-flight disk check — bail before streaming if the target dir
         // can't fit the backup. Avoids wasted minutes + half-written tmp files.
@@ -5797,6 +5900,7 @@ app.post('/api/backup/server/save', async (req, res, next) => {
             }
             throw innerError;
         }
+        });
     } catch (error) {
         if (!res.headersSent) {
             next(error);
@@ -6673,6 +6777,34 @@ function buildUncleanableSet(dbObj, { includeModuleAssets = true } = {}) {
     return collectDatabaseAssetReferences(dbObj, { includeModuleAssets });
 }
 
+function retainedStoryAssets() {
+    const assets = new Set();
+    const inlays = new Set();
+    visitRetainedStoryContent(savePath, value => {
+        collectNestedAssetReferences(value, assets);
+        const pending = [value];
+        while (pending.length) {
+            const item = pending.pop();
+            if (typeof item === 'string') {
+                for (const match of item.matchAll(/\{\{inlay(?:ed|eddata)?::([^}]+)\}\}/g)) inlays.add(match[1]);
+            } else if (item && typeof item === 'object') {
+                if (typeof item.assetId === 'string') inlays.add(item.assetId);
+                pending.push(...Object.values(item));
+            }
+        }
+    });
+    return { assets, inlays };
+}
+
+function databaseWithHistoryAssetReferences(database) {
+    return { ...database, storyHistoryAssets: [...retainedStoryAssets().assets].map(name => `assets/${name}`) };
+}
+
+function retireUnretainedAssets(owner, candidates) {
+    const retained = retainedStoryAssets().assets;
+    return retireAssets(owner, candidates.filter(entry => !retained.has(path.basename(entry.key))));
+}
+
 function statSafe(p) {
     try { return require('fs').statSync(p); } catch { return null; }
 }
@@ -7072,7 +7204,7 @@ app.post('/api/assets/import-rollback', async (req, res, next) => {
                 ? { count: 0, reclaimed: 0, retained: keys.length }
                 : reclaimDeletedCharacterAssets({
                 candidates: keys.map(key => key.slice('assets/'.length)),
-                database: userDataRepository.exportLegacyDatabase(),
+                database: databaseWithHistoryAssetReferences(userDataRepository.exportLegacyDatabase()),
                 listKeys: kvList, read: kvGet, remove: kvDelManyAndCollect,
                 retainIfUnloaded: true,
             });
@@ -7097,6 +7229,7 @@ app.post('/api/db/orphans/cleanup', async (req, res, next) => {
             const referencedAssets = collectDatabaseAssetReferences(database);
             collectNestedAssetReferences(database, referencedAssets);
             collectNestedAssetReferences(fullChatStore, referencedAssets);
+            for (const name of retainedStoryAssets().assets) referencedAssets.add(name);
             for (const key of kvList('cache/plugin-storage/')) {
                 if (!key.endsWith('.json')) continue;
                 const value = kvGet(key);
@@ -7364,6 +7497,7 @@ const COMPRESS_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'bmp']);
 
 app.post('/api/inlays/compress', sessionAuthMiddleware, async (req, res) => {
     if (!checkActiveSession(req, res)) return;
+    if (importInProgress) return res.status(409).json({ error: 'A full data import is in progress' });
     const quality = typeof req.body?.quality === 'number' ? req.body.quality : 85;
 
     res.writeHead(200, {
@@ -7377,6 +7511,7 @@ app.post('/api/inlays/compress', sessionAuthMiddleware, async (req, res) => {
     };
 
     try {
+        await queueStorageOperation(async () => {
         const files = await listInlayFiles();
         const imageFiles = [];
 
@@ -7393,9 +7528,15 @@ app.post('/api/inlays/compress', sessionAuthMiddleware, async (req, res) => {
         let totalSaved = 0;
 
         const vips = await getVips()
+        const retainedInlays = retainedStoryAssets().inlays;
 
         for (let i = 0; i < imageFiles.length; i++) {
             const entry = imageFiles[i];
+            if (retainedInlays.has(entry.id)) {
+                skipped++;
+                send({ type: 'progress', current: i + 1, total, compressed, skipped, totalSaved, retainedByHistory: entry.id });
+                continue;
+            }
             try {
                 const original = await fs.readFile(entry.filePath);
                 const img = vips.Image.newFromBuffer(original)
@@ -7427,6 +7568,7 @@ app.post('/api/inlays/compress', sessionAuthMiddleware, async (req, res) => {
         }
 
         send({ type: 'done', total, compressed, skipped, totalSaved });
+        });
     } catch (err) {
         send({ type: 'error', message: err?.message || 'Unknown error' });
     }
@@ -7958,6 +8100,7 @@ async function startServer() {
     try {
         await migrateInlaysToFilesystem();
         await migrateRemoteBlocksIfNeeded();
+        await narrativeMemoryService.recoverStoryCheckouts();
         const port = process.env.PORT || DEFAULT_PORT;
         const httpsOptions = await getHttpsOptions();
         let server;

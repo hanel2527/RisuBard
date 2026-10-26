@@ -16,7 +16,7 @@
     import RisuBardSaveSlotsDialog from '../SideBars/RisuBardSaveSlotsDialog.svelte';
     import RisuBardGallery from '../SideBars/RisuBardGallery.svelte';
     import { ensureChatHydrated } from 'src/ts/storage/chatStorage';
-    import { alertConfirm, notifyInfo, notifySuccess } from 'src/ts/alert';
+    import { alertConfirm, notifyError, notifyInfo, notifySuccess } from 'src/ts/alert';
     import { changeChatTo, createChatCopyName, forageStorage, requestImmediateSave } from 'src/ts/globalApi.svelte';
     import { completeMemoryWikiFork } from 'src/ts/risubard/memoryWikiFork';
     import { countChatTurns, createMemorySaveSlot, deleteMemorySaveSlot, latestChatMessageId, listMemorySaveSlots, prepareMemorySaveLoad, shouldConfirmMemorySaveLoad, type MemorySaveSlotSummary } from 'src/ts/risubard/memorySaveSlots';
@@ -27,11 +27,14 @@
     import { activateWikiEmbeddings, activateHistoricalSourceEmbeddings, refreshHistoricalSourceEmbeddings, stopHistoricalSourceEmbeddings, wikiEmbeddingRuntime } from 'src/ts/risubard/wikiEmbeddingService';
     import { resolveRisuBardChatSettings } from 'src/ts/risubard/risuBardSettings';
     import { RISUBARD_MEMORY_UPDATED_EVENT, type RisuBardMemoryUpdatedDetail } from 'src/ts/risubard/memoryEvents';
+    import { getStoryHistory, loadStoryBackup, quickStorySave, subscribeStoryHistory } from 'src/ts/risubard/storyHistory';
+    import type { StoryHistoryState } from 'src/ts/risubard/storyHistoryTypes';
     let openChatList = $state(false)
     let openModuleList = $state(false)
     let saveSlotsOpen = $state(false)
     let saveSlotsMode = $state<'save' | 'load'>('load')
     let savingSlot = $state(false)
+    let activeHistory = $state<StoryHistoryState | null>(null)
     let currentCharacter = $derived(
         $selectedCharID >= 0 ? DBState.db.characters[$selectedCharID] : undefined
     )
@@ -69,11 +72,58 @@
             window.removeEventListener(RISUBARD_MEMORY_UPDATED_EVENT, refresh)
         }
     })
+    $effect(() => {
+        const characterId = currentCharacter?.chaId
+        const chatId = currentCharacter?.chats[currentCharacter.chatPage]?.id
+        activeHistory = null
+        if (!characterId || !chatId) return
+        let active = true
+        void getStoryHistory(characterId, chatId).then((state) => {
+            if (active) activeHistory = state
+        }).catch((error) => { console.warn('[RisuBard history status]', error) })
+        const unsubscribe = subscribeStoryHistory((detail) => {
+            if (active && detail.characterId === characterId && detail.chatId === chatId && detail.state) activeHistory = detail.state
+        })
+        return () => { active = false; unsubscribe() }
+    })
 
-    function openSaveSlots(mode: 'save' | 'load'): void {
-        if(savingSlot) return
-        saveSlotsMode = mode
-        saveSlotsOpen = true
+    async function loadHistoryChat(backupId: string, asNewChat = false): Promise<void> {
+        const character = currentCharacter
+        const currentChat = character?.chats[character.chatPage]
+        if (!character?.chaId || !currentChat?.id || currentChat._placeholder || savingSlot) throw new Error('현재 채팅을 불러올 수 없습니다.')
+        if (currentChat.isStreaming || $generationStates.has(chatGenKey(currentChat.id))) throw new Error('응답 생성이 끝난 뒤 저장 이력을 불러와 주세요.')
+        const sourceChatId = currentChat.id
+        savingSlot = true
+        try {
+            const loaded = await loadStoryBackup(character.chaId, currentChat, backupId, asNewChat)
+            const sourceIndex = character.chats.findIndex((chat) => chat.id === sourceChatId)
+            if (sourceIndex < 0) throw new Error('원본 채팅이 삭제되어 불러온 채팅을 설치할 수 없습니다.')
+            if (asNewChat) {
+                loaded.name = createChatCopyName(loaded.name, 'Copy')
+                character.chats.unshift(loaded)
+            } else character.chats[sourceIndex] = loaded
+            character.chats = character.chats
+            await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })
+            changeChatTo(asNewChat ? 0 : sourceIndex)
+            saveSlotsOpen = false
+            notifySuccess('채팅·위키·변수와 이력 위치를 불러왔습니다.')
+        } finally { savingSlot = false }
+    }
+
+    async function openSaveSlots(mode: 'save' | 'load'): Promise<void> {
+        if (savingSlot) return
+        const character = currentCharacter
+        const chatIndex = character?.chatPage
+        if (!character || chatIndex === undefined) return
+        savingSlot = true
+        try {
+            if (character.chats[chatIndex]?._placeholder) await ensureChatHydrated(character.chats, chatIndex, character.chaId)
+            if (character !== currentCharacter || character.chatPage !== chatIndex) return
+            if (!character.chats[chatIndex] || character.chats[chatIndex]._placeholder) throw new Error('채팅 전체 내용을 불러오지 못했습니다.')
+            saveSlotsMode = mode
+            saveSlotsOpen = true
+        } catch (error) { notifyError(error) }
+        finally { savingSlot = false }
     }
 
     async function saveCurrentChat(
@@ -99,6 +149,8 @@
             if(!character.chaId || !chat.id){
                 throw new Error('채팅 저장에는 안정적인 캐릭터와 채팅 ID가 필요합니다.')
             }
+            const history = await getStoryHistory(character.chaId, chat.id)
+            if (history.mode !== 'legacy') throw new Error('이력 모드에서는 덮어쓰기 대신 북마크를 사용해 주세요.')
             const saved = await createMemorySaveSlot({
                 characterId: character.chaId,
                 chat,
@@ -133,6 +185,15 @@
         const character = currentCharacter
         const chat = character?.chats[character.chatPage]
         if(!character?.chaId || !chat?.id || chat._placeholder || savingSlot) return
+        const history = await getStoryHistory(character.chaId, chat.id)
+        if (history.mode === 'history') {
+            savingSlot = true
+            try {
+                await quickStorySave(character.chaId, chat)
+                notifySuccess('퀵 북마크를 저장했습니다. 이전 이력은 보존됩니다.')
+            } finally { savingSlot = false }
+            return
+        }
         const saveId = quickSaveId(chat.id)
         const slots = await currentSaveSlots(character.chaId, chat.id)
         await saveCurrentChat(
@@ -147,6 +208,13 @@
         const character = currentCharacter
         const chat = character?.chats[character.chatPage]
         if(!character?.chaId || !chat?.id || chat._placeholder || savingSlot) return
+        const history = await getStoryHistory(character.chaId, chat.id)
+        if (history.mode === 'history') {
+            if (!history.quickSaveId) { notifyInfo('아직 퀵 북마크가 없습니다.'); return }
+            if (!await alertConfirm('현재 작업을 보존한 뒤 퀵 북마크로 이동할까요?')) return
+            await loadHistoryChat(history.quickSaveId)
+            return
+        }
         const saveId = quickSaveId(chat.id)
         const slots = await currentSaveSlots(character.chaId, chat.id)
         const quickSlot = slots.find((slot) => slot.saveId === saveId)
@@ -170,6 +238,8 @@
         const chat = character?.chats[character.chatPage]
         if(!character || character.chaId !== characterId || chat?.id !== chatId
             || chat._placeholder || chat.isStreaming || savingSlot) return
+        const history = await getStoryHistory(characterId, chatId)
+        if (history.mode !== 'legacy') return
         const previousTurn = chat.risuBardLastAutosaveTurn
         chat.risuBardLastAutosaveTurn = turnCount
         try {
@@ -218,6 +288,8 @@
         if(currentChat.isStreaming){
             throw new Error('응답 생성이 끝난 뒤 저장 파일을 불러와 주세요.')
         }
+        const history = await getStoryHistory(character.chaId, currentChat.id)
+        if (history.mode !== 'legacy') throw new Error('구형 슬롯은 이력 모드에서 불러올 수 없습니다.')
         const destinationChatId = asNewChat ? v4() : currentChat.id
         const prepared = await prepareMemorySaveLoad({
             characterId: character.chaId,
@@ -291,6 +363,7 @@
     $effect(() => {
         const character = currentCharacter
         const chat = character?.chats[character.chatPage]
+        if (activeHistory?.mode !== 'legacy') return
         if(!character?.chaId || !chat?.id || chat._placeholder || chat.isStreaming
             || savingSlot || $isWikiGenerating
             || $generationStates.has(chatGenKey(chat.id))) return
@@ -407,7 +480,7 @@
     <ModuleChatMenu close={() => {openModuleList = false}}/>
 {/if}
 
-{#if currentCharacter?.chaId}
+{#if currentCharacter?.chaId && currentCharacter.chats[currentCharacter.chatPage]}
     <RisuBardSaveSlotsDialog
         open={saveSlotsOpen}
         bind:mode={saveSlotsMode}
@@ -415,6 +488,8 @@
         characterName={currentCharacter.name}
         currentChatId={currentCharacter.chats[currentCharacter.chatPage]?.id}
         currentChatName={currentCharacter.chats[currentCharacter.chatPage]?.name}
+        currentChat={currentCharacter.chats[currentCharacter.chatPage]}
+        onHistoryLoad={loadHistoryChat}
         currentLatestMessageId={latestChatMessageId(
             currentCharacter.chats[currentCharacter.chatPage]?.message ?? []
         )}

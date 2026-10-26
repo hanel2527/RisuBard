@@ -1768,9 +1768,10 @@ describe('stored response memory analysis', () => {
         expect(saveSignal?.aborted).toBe(true)
     })
 
-    test('cancels a pending canonical wiki write transport', async () => {
+    test('authorizes history writes by operation ID and cancels a pending canonical transport', async () => {
         let saveStarted!: () => void
         let saveSignal: AbortSignal | undefined
+        const historyWriteHeaders: Array<string | null> = []
         const started = new Promise<void>((resolve) => {
             saveStarted = resolve
         })
@@ -1809,6 +1810,9 @@ describe('stored response memory analysis', () => {
             })),
             fetchImpl: vi.fn(async (input, init) => {
                 const url = String(input)
+                if (url.endsWith('/wiki/save') || url.endsWith('/document/save')) {
+                    historyWriteHeaders.push(new Headers(init?.headers).get('x-risubard-history-operation-id'))
+                }
                 if (url.endsWith('/view')) {
                     return new Response(JSON.stringify({
                         mode: 'markdown', wikiPath: 'wiki', documents: [],
@@ -1840,17 +1844,22 @@ describe('stored response memory analysis', () => {
         const controller = new AbortController()
         const confirmation = analysis.confirm({
             characterId: 'character', chatId: 'chat',
+            historyOperationId: 'history-operation',
             messages: [{
                 messageId: 'assistant-1', role: 'assistant',
                 content: '사만다는 생물학자다.',
             }],
-        }, controller.signal).catch(() => undefined)
+        }, controller.signal)
 
-        await started
+        await Promise.race([
+            started,
+            confirmation.then(() => { throw new Error('Confirmation finished before the canonical write started') }),
+        ])
         controller.abort()
-        await confirmation
+        await expect(confirmation).rejects.toMatchObject({ name: 'AbortError' })
 
         expect(saveSignal?.aborted).toBe(true)
+        expect(historyWriteHeaders).toEqual(['history-operation', 'history-operation'])
     })
 
     test('sends required evidence whole and reports a too-small analysis limit on the receipt', async () => {

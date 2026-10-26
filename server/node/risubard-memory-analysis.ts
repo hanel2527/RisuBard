@@ -1493,12 +1493,12 @@ export function createMemoryAnalysisRunner(
                         && !isStoryArcChapterTitle(candidate.title)),
             }
             if (!hasMemoryWriterContent(draft)) {
-                if (!snapshot.rebootTurns) return emptyNativeState()
                 const canonicalReceipt: CanonicalTurnReceipt = {
+                    outcome: deferred.length > 0 ? 'failed' : 'unchanged',
                     sourceMessageIds,
                     eventIds: [],
                     changes: [],
-                    warnings: [],
+                    warnings: deferred.map(entry => entry.warning),
                     recordedAt: new Date().toISOString(),
                 }
                 if (rebootRecoveryStarted) {
@@ -1679,11 +1679,13 @@ export function createMemoryAnalysisRunner(
                     ? ['상태 변화의 캐릭터 정본 대상을 하나로 확정하지 못했습니다.']
                     : []),
             ]
+            let canonicalWriteFailed = deferred.length > 0 || recoveredStateCandidates.ambiguousCount > 0
             const reportedCanonicalErrors = new Set<string>()
             const canonicalFailure = async (entry: {
                 candidate: MemoryWriterDraft['canonicalUpdateCandidates'][number]
                 target: LoadedCanonicalDocument | undefined
             }, error: unknown, inputFailure = false) => {
+                canonicalWriteFailed = true
                 const title = entry.target?.title ?? entry.candidate.title
                 signal?.throwIfAborted()
                 // A reboot retries transient failures, but a deterministic model or
@@ -1754,6 +1756,7 @@ export function createMemoryAnalysisRunner(
                             && !excludedDocumentIds.has(document.id)
                             && canonicalIdentityKeys(document).includes(titleKey)
                         ).length > 1) {
+                            canonicalWriteFailed = true
                             receiptWarnings.push(
                                 `이름 충돌: ${candidate.title}이(가) 여러 문서의 이름이나 별칭과 같아 새 문서를 만들지 않았습니다.`
                             )
@@ -1788,6 +1791,7 @@ export function createMemoryAnalysisRunner(
                                 && (entry.identityKeys.has(titleKey)
                                     || aliasKeys.has(canonicalIdentityKey(entry.candidate.title))))
                         if (sameTarget.length > 1) {
+                            canonicalWriteFailed = true
                             receiptWarnings.push(
                                 `이름 충돌: ${candidate.title}이(가) 여러 갱신 후보의 이름이나 별칭과 같아 새 문서를 만들지 않았습니다.`
                             )
@@ -2173,6 +2177,7 @@ export function createMemoryAnalysisRunner(
                             }
                             if (patches.length === 0) {
                                 if (!entry.target) {
+                                    canonicalWriteFailed = true
                                     receiptWarnings.push(
                                         `새 정본의 초기 절 누락: ${entry.candidate.title}`
                                     )
@@ -2327,6 +2332,7 @@ export function createMemoryAnalysisRunner(
                                 if (maintenanceNote) receiptNotes.push(maintenanceNote)
                             }
                             catch (error) {
+                                canonicalWriteFailed = true
                                 signal?.throwIfAborted()
                                 await reportError(error)
                                 if (rebootRecoveryStarted) throw error
@@ -2337,6 +2343,7 @@ export function createMemoryAnalysisRunner(
                     }
                 }
                 catch (error) {
+                    canonicalWriteFailed = true
                     signal?.throwIfAborted()
                     await reportError(error)
                     if (rebootRecoveryStarted) throw error
@@ -2346,6 +2353,8 @@ export function createMemoryAnalysisRunner(
                 }
             }
             const canonicalReceipt: CanonicalTurnReceipt = {
+                outcome: canonicalWriteFailed ? 'failed'
+                    : savedEvents.length > 0 || receiptChanges.length > 0 ? 'applied' : 'unchanged',
                 sourceMessageIds,
                 eventIds: savedEvents.map((event) => event.id),
                 changes: [...chapterChanges.map((change) => ({ ...change, type: 'other' as const, action: 'create' as const })),

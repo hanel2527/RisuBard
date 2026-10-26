@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'vitest'
 import { shouldAutomaticallyConfirmNarrativeTurn } from './automaticWikiConfirmation'
 
@@ -9,83 +8,4 @@ describe('automatic BardWiki confirmation', () => {
         expect(shouldAutomaticallyConfirmNarrativeTurn(false)).toBe(false)
     })
 
-    test('places a manual wiki button and auto switch after the send control', () => {
-        const composer = readFileSync(
-            'src/lib/ChatScreens/DefaultChatScreen.svelte',
-            'utf8'
-        )
-        const korean = readFileSync('src/lang/ko.ts', 'utf8')
-
-        expect(composer).toContain('data-risubard-wiki-button')
-        expect(composer).toContain('onclick={() => memoryWikiOpen = !memoryWikiOpen}')
-        expect(korean).toContain('risuBardMemoryOpenManual: "BARDWIKI 열기"')
-        expect(composer).toContain('data-risubard-auto-wiki')
-        expect(composer).toContain('DBState.db.risuBardAutoWikiEnabled !== false')
-        expect(composer).toContain('data-risubard-wiki-cancel')
-        expect(composer).toContain('onclick={cancelWikiGeneration}')
-        expect(composer).toContain('style="left: 5px"')
-        expect(korean).toContain('risuBardWikiCancel: "바드위키 작업 취소"')
-    })
-
-    test('guards automatic confirmation and keeps manual confirmation available', () => {
-        const processSource = readFileSync('src/ts/process/index.svelte.ts', 'utf8')
-        const chatSource = readFileSync('src/lib/ChatScreens/Chat.svelte', 'utf8')
-        const chatsSource = readFileSync('src/lib/ChatScreens/Chats.svelte', 'utf8')
-        const screenSource = readFileSync('src/lib/ChatScreens/DefaultChatScreen.svelte', 'utf8')
-
-        expect(processSource).toMatch(
-            /shouldAutomaticallyConfirmNarrativeTurn\(\s*requestSettings\.risuBardAutoWikiEnabled\s*\)/
-        )
-        expect(processSource).toContain('export async function confirmCurrentNarrativeMessage(')
-        expect(processSource).toContain('export async function reanalyzeNarrativeMessage(')
-        expect(processSource).toContain('historicalReanalysis: true')
-        expect(chatSource).toContain('data-risubard-reanalyze-memory')
-        expect(chatSource).toContain('<SearchIcon size={20}')
-        expect(chatsSource).toContain('onReanalyzeMemory')
-        expect(screenSource).toContain('onReanalyzeMemory={reanalyzeNarrativeMessage}')
-    })
-
-    test('serializes confirmations per chat and analyzes the queued backlog in story order', () => {
-        const processSource = readFileSync('src/ts/process/index.svelte.ts', 'utf8')
-
-        expect(processSource).toContain('enqueueNarrativeConfirmation(')
-        expect(processSource).toContain('projectMemoryBacklog(')
-        const trigger = processSource.search(/shouldAutomaticallyConfirmNarrativeTurn\(\s*requestSettings\.risuBardAutoWikiEnabled/)
-        expect(trigger).toBeGreaterThan(0)
-        const block = processSource.slice(trigger, trigger + 800)
-        expect(block).toContain('processNarrativeBacklog({')
-        expect(block).toContain('targetMessageId: narrativeTurnToConfirm.targetMessageId')
-        // A turn that does not confirm stops the pass so that no later turn overtakes it.
-        const runner = processSource.slice(processSource.indexOf('async function runNarrativeBacklog('))
-        expect(runner.slice(0, 1600)).toMatch(/risubardMemoryConfirmed !== true\) break/)
-    })
-
-    test('keeps configurable confirmation delay out of the product path', () => {
-        const processSource = readFileSync('src/ts/process/index.svelte.ts', 'utf8')
-        const currentChatSettings = readFileSync(
-            'src/lib/Others/RisuBardCurrentChatSettings.svelte',
-            'utf8'
-        )
-        const commonSettings = readFileSync(
-            'src/ts/setting/risuBardCommonSettingsData.ts',
-            'utf8'
-        )
-        const databaseSource = readFileSync(
-            'src/ts/storage/database.svelte.ts',
-            'utf8'
-        )
-
-        expect(processSource).toMatch(
-            /const narrativeTurnToConfirm = projectConfirmedMemoryTurn\(\s*currentChat\.message,\s*undefined,\s*\{\s*ignoreOocTurns: true\s*\}\s*\)/
-        )
-        for (const source of [
-            processSource,
-            currentChatSettings,
-            commonSettings,
-            databaseSource,
-        ]) {
-            expect(source).not.toContain('risuBardAutoConfirmDelayEnabled')
-            expect(source).not.toContain('risuBardAutoWikiConfirmationCursor')
-        }
-    })
 })

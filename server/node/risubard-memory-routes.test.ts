@@ -19,6 +19,7 @@ function createHarness() {
         post(path: string, handler: Handler) {
             routes.set(path, handler)
         },
+        use: vi.fn(),
     }
     const response = {
         statusCode: 200,
@@ -41,6 +42,80 @@ function createHarness() {
 }
 
 describe('RisuBard memory routes', () => {
+    test('validates history deltas and relays pending conflicts as JSON', async () => {
+        const { registerRisuBardMemoryRoutes } = require('./risubard-memory-routes.cjs')
+        const harness = createHarness()
+        const captureStoryHistory = vi.fn(async () => {
+            throw Object.assign(new Error('Wiki finalization is pending'), {
+                status: 409, code: 'STORY_HISTORY_PENDING',
+            })
+        })
+        registerRisuBardMemoryRoutes(harness.app, {
+            auth: async () => true, activeSession: () => true,
+            service: { captureStoryHistory },
+        })
+        const route = harness.routes.get('/api/risubard/memory/history/capture')!
+        const body = {
+            characterId: 'c', chatId: 'chat', operationId: 'capture-1',
+            kind: 'chat-edit', delta: {
+                baseSnapshotId: 'snapshot', order: ['message'],
+                messages: [{ id: 'message', value: { chatId: 'message', data: 'edited' } }],
+                state: { id: 'chat' },
+            },
+        }
+        await route({ body, headers: { 'x-session-id': 'writer-session' } }, harness.response, vi.fn())
+        expect(harness.response.statusCode).toBe(409)
+        expect(harness.response.body).toEqual({
+            error: 'Wiki finalization is pending', code: 'STORY_HISTORY_PENDING',
+        })
+        await route({ body: { ...body, delta: { ...body.delta, order: ['message', 'message'] } },
+            headers: { 'x-session-id': 'writer-session' } },
+            harness.response, vi.fn())
+        expect(harness.response.statusCode).toBe(400)
+        expect(captureStoryHistory).toHaveBeenCalledOnce()
+    })
+
+    test('authenticates preview and forwards frozen-source operation identity', async () => {
+        const { registerRisuBardMemoryRoutes } = require('./risubard-memory-routes.cjs')
+        const harness = createHarness()
+        const previewStoryHistory = vi.fn(async () => ({ chat: {}, documents: [] }))
+        registerRisuBardMemoryRoutes(harness.app, {
+            auth: async () => true, activeSession: () => true, service: { previewStoryHistory },
+        })
+        const body = { characterId: 'c', chatId: 'chat', backupId: 'backup', sourceOperationId: 'wiki-1' }
+        await harness.routes.get('/api/risubard/memory/history/preview')!(
+            { body, headers: { 'x-session-id': 'writer-session' } }, harness.response, vi.fn())
+        expect(previewStoryHistory).toHaveBeenCalledWith(body)
+        expect(harness.response.statusCode).toBe(200)
+    })
+
+    test('rejects missing and stale history writer identities before invoking storage', async () => {
+        const { registerRisuBardMemoryRoutes } = require('./risubard-memory-routes.cjs')
+        const harness = createHarness()
+        const captureStoryHistory = vi.fn()
+        const activeSession = vi.fn((req, res) => {
+            if (req.headers['x-session-id'] === 'current-writer') return true
+            res.status(423).send({ error: 'Session deactivated' })
+            return false
+        })
+        registerRisuBardMemoryRoutes(harness.app, {
+            auth: async () => true, activeSession, service: { captureStoryHistory },
+        })
+        const route = harness.routes.get('/api/risubard/memory/history/capture')!
+        const body = { characterId: 'c', chatId: 'chat' }
+        for (const headers of [undefined, {}, { 'x-session-id': '' }, { 'x-session-id': '   ' }]) {
+            await route({ body, headers }, harness.response, vi.fn())
+            expect(harness.response.statusCode).toBe(423)
+            expect(harness.response.body).toMatchObject({ code: 'SESSION_ID_REQUIRED' })
+        }
+        expect(activeSession).not.toHaveBeenCalled()
+        await route({ body, headers: { 'x-session-id': 'stale-writer' } }, harness.response, vi.fn())
+        expect(activeSession).toHaveBeenCalledOnce()
+        expect(harness.response.statusCode).toBe(423)
+        expect(harness.response.body).toEqual({ error: 'Session deactivated' })
+        expect(captureStoryHistory).not.toHaveBeenCalled()
+    })
+
     test('accepts query-free required selection and validates selection modes', async () => {
         const { registerRisuBardMemoryRoutes } = require('./risubard-memory-routes.cjs')
         const harness = createHarness()

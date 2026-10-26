@@ -29,6 +29,8 @@ const {
 } = require('./risubard-memory-save.ts')
 const { revealLocalFile } = require('./reveal-local-file.cjs')
 const { inheritWikiWorkspace, importWikiWorkspace } = require('./risubard-wiki-transfer.ts')
+const { createStoryHistoryService } = require('./risubard-story-history.ts')
+const { createStoryHistoryMigration } = require('./risubard-story-history-migration.ts')
 
 function createRuntimeMemoryService(userDataDirectory, options = {}) {
     const memory = createNarrativeMemoryService(userDataDirectory)
@@ -52,6 +54,88 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
     const previewSaveSlot = options.previewSaveSlot || readMemorySaveChat
     const renameSaveSlot = options.renameSaveSlot || renameMemorySaveSlot
     const deleteSaveSlot = options.deleteSaveSlot || deleteMemorySaveSlot
+    const history = options.history || createStoryHistoryService(userDataDirectory)
+    const migration = options.migration || createStoryHistoryMigration(userDataDirectory, history, {
+        persistChat: async (input) => {
+            if (!options.persistStoryChat) throw new Error('Canonical story chat writer is unavailable')
+            await options.persistStoryChat(input)
+        },
+    })
+    const conflict = (message) => Object.assign(new Error(message), {
+        status: 409, code: 'STORY_HISTORY_CONFLICT',
+    })
+    const persistCheckout = async (prepared, characterId) => {
+        if (typeof options.persistStoryChat !== 'function') {
+            throw new Error('Canonical story chat writer is unavailable')
+        }
+        await options.persistStoryChat({
+            characterId,
+            chatId: prepared.destinationChatId,
+            sourceChatId: prepared.sourceChatId,
+            chat: prepared.chat,
+        })
+        const state = await history.completeCheckout({
+            characterId,
+            chatId: prepared.destinationChatId,
+            forkToken: prepared.forkToken,
+            action: 'finalize',
+        })
+        wiki.invalidateCache(characterId, prepared.destinationChatId)
+        return { ...prepared, state }
+    }
+    // The core pending record is published before wiki replacement. It is the
+    // recovery journal for both canonical chat persistence and reference publication.
+    let recoveryNeeded = true
+    let recovering = null
+    const recoverCheckouts = () => {
+        if (!recoveryNeeded) return Promise.resolve()
+        if (recovering) return recovering
+        recovering = (async () => {
+            for (const scope of await history.listPendingCheckouts()) {
+                const prepared = await history.recoverCheckout(scope)
+                if (prepared) await persistCheckout(prepared, scope.characterId)
+            }
+            recoveryNeeded = false
+        })().finally(() => { recovering = null })
+        return recovering
+    }
+    const storageOperation = (operation) => {
+        const run = async () => {
+            await recoverCheckouts()
+            return operation()
+        }
+        return options.storageGate ? options.storageGate(run) : run()
+    }
+    const assertLegacy = async (characterId, chatId) => {
+        if ((await history.status({ characterId, chatId })).mode === 'history') {
+            throw conflict('This chat uses story history; legacy slot writes and loads are disabled')
+        }
+    }
+    const manualWiki = async (input, operation, reason) => {
+        await history.assertWritable(input)
+        const result = await operation()
+        if (!input.chatId.startsWith('reboot-')) {
+            await history.commitManualWiki({
+                characterId: input.characterId, chatId: input.chatId, reason,
+            })
+        }
+        return result
+    }
+    const canonicalWiki = async (input, operation, reason) => {
+        const state = await history.status(input)
+        if (input.historyOperationId && state.pendingWiki?.operationId !== input.historyOperationId) {
+            throw conflict('The wiki history operation is no longer active')
+        }
+        await history.assertWritable(input, { operationId: input.historyOperationId })
+        const result = await operation()
+        // Automatic analysis publishes once in finishWiki, never per document.
+        if (!state.pendingWiki && !input.chatId.startsWith('reboot-')) {
+            await history.commitManualWiki({
+                characterId: input.characterId, chatId: input.chatId, reason,
+            })
+        }
+        return result
+    }
     // Per-workspace reader/writer lanes: a write waits for every earlier
     // operation; a read waits only for earlier writes, so views and save
     // copies of the same chat do not queue behind each other.
@@ -82,7 +166,7 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
             const lane = laneFor(key)
             if (lane.write) previous.push(lane.write)
         }
-        const current = Promise.all(previous).then(operation)
+        const current = Promise.all(previous).then(() => storageOperation(operation))
         const settled = current.then(() => undefined, () => undefined)
         for (const key of writeKeys) {
             const lane = laneFor(key)
@@ -103,7 +187,7 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
     }
     const serializedMany = (pairs, operation) => scheduled([], pairs, operation)
     const serialized = (characterId, chatId, operation) => serializedMany(
-        [[characterId, chatId]],
+        [[characterId, chatId], [characterId, SAVE_STORE_LANE]],
         operation
     )
     const readSerialized = (characterId, chatId, operation) => scheduled(
@@ -113,12 +197,81 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
     )
     return {
         ...memory,
+        loadState: (characterId, chatId) => readSerialized(characterId, chatId,
+            () => memory.loadState(characterId, chatId)),
+        recoverStoryCheckouts: (input = {}) => {
+            if (input.reload) recoveryNeeded = true
+            if (input.withinStorageGate) return recoverCheckouts()
+            // Recovery needs the storage exclusion lane, not permission for a
+            // new user mutation. Merely inspecting an empty journal must not
+            // block startup when external files await review.
+            const gate = options.recoveryGate || options.storageGate
+            return gate ? gate(recoverCheckouts) : recoverCheckouts()
+        },
+        storyHistoryStatus: (input) => serialized(input.characterId, input.chatId, async () => {
+            const state = await history.status(input)
+            if (state.pendingWiki && state.pendingWiki.status !== 'writing') {
+                wiki.invalidateCache(input.characterId, input.chatId)
+            }
+            return state
+        }),
+        previewStoryHistory: (input) => serialized(input.characterId, input.chatId,
+            () => history.preview(input)),
+        captureStoryHistory: (input) => serialized(input.characterId, input.chatId,
+            () => history.capture(input)),
+        beginStoryWiki: (input) => serialized(input.characterId, input.chatId, async () => {
+            try { return await history.beginWiki(input) }
+            finally { wiki.invalidateCache(input.characterId, input.chatId) }
+        }),
+        finishStoryWiki: (input) => serialized(input.characterId, input.chatId, async () => {
+            try { return await history.finishWiki(input) }
+            finally { wiki.invalidateCache(input.characterId, input.chatId) }
+        }),
+        checkoutStoryHistory: (input) => serializedMany([
+            [input.characterId, input.chatId],
+            [input.characterId, input.destinationChatId || input.chatId],
+            [input.characterId, SAVE_STORE_LANE],
+        ], async () => {
+            recoveryNeeded = true
+            const prepared = await history.prepareCheckout(input)
+            const result = await persistCheckout(prepared, input.characterId)
+            recoveryNeeded = false
+            return result
+        }),
+        completeStoryCheckout: (input) => serializedMany([
+            [input.characterId, input.chatId],
+            [input.characterId, input.destinationChatId || input.chatId],
+            [input.characterId, SAVE_STORE_LANE],
+        ], () => {
+            // HTTP checkout already publishes durably. A late browser discard
+            // cannot roll canonical data back after the server committed it.
+            if (input.action === 'discard') {
+                throw conflict('Story checkout is already durable and cannot be discarded')
+            }
+            return history.completeCheckout(input)
+        }),
+        renameStoryHistory: (input) => serialized(input.characterId, input.chatId,
+            () => history.rename(input)),
+        quickStoryHistory: (input) => serialized(input.characterId, input.chatId,
+            () => history.setQuick(input)),
+        migrateStoryHistory: (input) => serialized(input.characterId, input.chatId,
+            () => migration.migrate(input)),
+        rollbackStoryHistory: (input) => serialized(input.characterId, input.chatId,
+            async () => {
+                await history.assertWritable(input)
+                return migration.rollback(input)
+            }),
         inheritWiki: (input) => serializedMany([
             [input.characterId, input.sourceChatId],
             [input.characterId, input.destinationChatId],
-        ], () => inheritWikiWorkspace({ userDataDirectory, ...input })),
+        ], () => manualWiki({
+            characterId: input.characterId, chatId: input.destinationChatId,
+        }, () => inheritWikiWorkspace({ userDataDirectory, ...input }), 'wiki-inherit')),
         importWiki: (input) => serialized(input.characterId, input.chatId, async () => {
-            try { return await importWikiWorkspace({ userDataDirectory, ...input }) }
+            try {
+                return await manualWiki(input,
+                    () => importWikiWorkspace({ userDataDirectory, ...input }), 'wiki-import')
+            }
             finally { wiki.invalidateCache(input.characterId, input.chatId) }
         }),
         applyDelta: (input) => serialized(
@@ -130,14 +283,22 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
             [input.characterId, input.sourceChatId],
             [input.destinationCharacterId || input.characterId,
                 input.destinationChatId],
-        ], () => forkWorkspace({
-            userDataDirectory,
-            ...input,
-        })),
+        ], async () => {
+            await history.assertWritable({
+                characterId: input.destinationCharacterId || input.characterId,
+                chatId: input.destinationChatId,
+            })
+            return forkWorkspace({ userDataDirectory, ...input })
+        }),
         replaceMemory: (input) => serializedMany([
             [input.characterId, input.sourceChatId],
             [input.characterId, input.destinationChatId],
-        ], () => replaceWorkspace({ userDataDirectory, ...input })),
+        ], async () => {
+            await history.assertWritable({
+                characterId: input.characterId, chatId: input.destinationChatId,
+            })
+            return replaceWorkspace({ userDataDirectory, ...input })
+        }),
         removeRebootMemory: (input) => serialized(
             input.characterId,
             input.chatId,
@@ -154,6 +315,9 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
             input.characterId,
             input.destinationChatId,
             async () => {
+                await history.assertWritable({
+                    characterId: input.characterId, chatId: input.destinationChatId,
+                })
                 const completed = await completeForkWorkspace({
                     userDataDirectory,
                     ...input,
@@ -162,6 +326,12 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
                     input.characterId,
                     input.destinationChatId
                 )
+                if (input.action === 'finalize' && !input.destinationChatId.startsWith('reboot-')) {
+                    await history.commitManualWiki({
+                        characterId: input.characterId, chatId: input.destinationChatId,
+                        reason: 'workspace-replacement', operationId: `workspace:${input.forkToken}`,
+                    })
+                }
                 return completed
             }
         ),
@@ -171,6 +341,7 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
             [input.characterId, memorySaveWorkspaceId(input.saveId)],
             [input.characterId, SAVE_STORE_LANE],
         ], async () => {
+            await assertLegacy(input.characterId, input.sourceChatId)
             const latest = await wiki.latestActiveEvent(
                 input.characterId,
                 input.sourceChatId
@@ -191,10 +362,8 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
                 } : {}),
             })
         }),
-        listMemorySaves: (input) => listSaveSlots({
-            userDataDirectory,
-            ...input,
-        }),
+        listMemorySaves: (input) => serialized(input.characterId, input.sourceChatId,
+            () => listSaveSlots({ userDataDirectory, ...input })),
         previewMemorySave: (input) => serialized(
             input.characterId,
             memorySaveWorkspaceId(input.saveId),
@@ -213,12 +382,12 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
             [input.characterId, memorySaveWorkspaceId(input.saveId)],
             [input.characterId, input.destinationChatId],
             [input.characterId, SAVE_STORE_LANE],
-        ], () => prepareSaveLoad({
-            userDataDirectory,
-            ...input,
-        })),
-        loadGraphState: (characterId, chatId) =>
-            graph.loadState(characterId, chatId),
+        ], async () => {
+            await assertLegacy(input.characterId, input.destinationChatId)
+            return prepareSaveLoad({ userDataDirectory, ...input })
+        }),
+        loadGraphState: (characterId, chatId) => readSerialized(characterId, chatId,
+            () => graph.loadState(characterId, chatId)),
         applyGraphDelta: (input) => serialized(
             input.characterId,
             input.chatId,
@@ -234,24 +403,26 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
             chatId,
             () => graph.hydrateIndex(characterId, chatId)
         ),
-        readGraphForInquiry: (characterId, chatId) =>
-            graph.readForInquiry(characterId, chatId),
-        inquireNarrative: (input) => wiki.inquire(input),
-        embeddingCatalog: (input) => wiki.embeddingCatalog(input),
+        readGraphForInquiry: (characterId, chatId) => readSerialized(characterId, chatId,
+            () => graph.readForInquiry(characterId, chatId)),
+        inquireNarrative: (input) => readSerialized(input.characterId, input.chatId,
+            () => wiki.inquire(input)),
+        embeddingCatalog: (input) => readSerialized(input.characterId, input.chatId,
+            () => wiki.embeddingCatalog(input)),
         saveMarkdownWikiTurn: (input) => serialized(
             input.characterId,
             input.chatId,
-            () => wiki.saveConfirmedTurn(input)
+            () => canonicalWiki(input, () => wiki.saveConfirmedTurn(input), 'wiki-turn')
         ),
         saveCanonicalWikiDocument: (input) => serialized(
             input.characterId,
             input.chatId,
-            () => wiki.saveCanonicalDocument(input)
+            () => canonicalWiki(input, () => wiki.saveCanonicalDocument(input), 'wiki-document')
         ),
         reviewCanonicalWikiDocument: (input) => serialized(
             input.characterId,
             input.chatId,
-            () => wiki.reviewCanonicalDocument(input)
+            () => canonicalWiki(input, () => wiki.reviewCanonicalDocument(input), 'wiki-review')
         ),
         beginBardChatUndo: (input) => serialized(
             input.characterId,
@@ -271,42 +442,42 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
         restoreBardChatUndo: (input) => serialized(
             input.characterId,
             input.chatId,
-            () => wiki.restoreBardChatUndo(input)
+            () => manualWiki(input, () => wiki.restoreBardChatUndo(input), 'bardchat-undo')
         ),
         saveManualWikiDocument: (input) => serialized(
             input.characterId,
             input.chatId,
-            () => wiki.saveManualDocument(input)
+            () => manualWiki(input, () => wiki.saveManualDocument(input), 'manual-document')
         ),
         replaceWikiText: (input) => serialized(
             input.characterId,
             input.chatId,
-            () => wiki.replaceAllText(input)
+            () => manualWiki(input, () => wiki.replaceAllText(input), 'replace-text')
         ),
         setWikiDocumentContextMode: (input) => serialized(
             input.characterId,
             input.chatId,
-            () => wiki.setDocumentContextMode(input)
+            () => manualWiki(input, () => wiki.setDocumentContextMode(input), 'context-mode')
         ),
         setWikiDocumentGrade: (input) => serialized(
             input.characterId,
             input.chatId,
-            () => wiki.setDocumentGrade(input)
+            () => manualWiki(input, () => wiki.setDocumentGrade(input), 'document-grade')
         ),
         trashWikiDocument: (input) => serialized(
             input.characterId,
             input.chatId,
-            () => wiki.trashDocument(input)
+            () => manualWiki(input, () => wiki.trashDocument(input), 'trash-document')
         ),
         retractWikiEvent: (input) => serialized(
             input.characterId,
             input.chatId,
-            () => wiki.retractEvent(input)
+            () => manualWiki(input, () => wiki.retractEvent(input), 'retract-event')
         ),
         retractWikiEventsBySourceMessages: (input) => serialized(
             input.characterId,
             input.chatId,
-            () => wiki.retractEventsBySourceMessages(input)
+            () => manualWiki(input, () => wiki.retractEventsBySourceMessages(input), 'retract-events')
         ),
         revealWikiDocument: (input) => serialized(
             input.characterId,
@@ -334,7 +505,7 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
         completeWikiRebootBatch: (input) => serialized(
             input.characterId,
             input.chatId,
-            () => wiki.completeRebootBatch(input)
+            () => manualWiki(input, () => wiki.completeRebootBatch(input), 'wiki-reboot')
         ),
         recordGraphAnalysis: (characterId, chatId, result) => serialized(
             characterId,
@@ -343,6 +514,7 @@ function createRuntimeMemoryService(userDataDirectory, options = {}) {
         ),
         async applyWriterCommand(input) {
             return serialized(input.characterId, input.chatId, async () => {
+                await history.assertWritable(input)
                 const snapshot = structuredClone(input)
                 try {
                     return await graph.applyWriterCommand(snapshot)

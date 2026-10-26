@@ -2,6 +2,8 @@ import { forageStorage } from "../globalApi.svelte"
 import { type Chat, type ChatStub, type ChatOrStub, isChatStub } from "./database.svelte"
 import { tick } from "svelte"
 import type { ChatPreviewPayload } from "./chatContentPage"
+import { v4 } from 'uuid'
+import { captureStoryChat } from '../risubard/storyHistory'
 
 // ── Stub ↔ Placeholder conversion ───────────────────────────────────────────
 
@@ -136,8 +138,14 @@ export async function fetchChatPreviewFromServer(chaId: string, chatIndex: numbe
 }
 
 export async function saveChatToServer(chaId: string, chatIndex: number, chatId: string, chat: Chat): Promise<void> {
+    for (const message of chat.message) message.chatId ||= v4()
     const storage = forageStorage.realStorage
     await storage.saveChatContent(chaId, chatIndex, chatId, chat)
+    // All persisted mutations share this boundary, including commands, scripts,
+    // and unselected chats. Streaming chunks are not story revisions.
+    if (!chat.isStreaming && !chat._placeholder) {
+        await captureStoryChat(chaId, chat, 'chat-edit')
+    }
 }
 
 // ── Hydration ───────────────────────────────────────────────────────────────
