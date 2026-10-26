@@ -58,9 +58,11 @@ beforeEach(() => {
 afterEach(() => { component?.$destroy(); component = undefined; document.body.replaceChildren() })
 
 describe('BardPainter workspace', () => {
-    test('uses icon tools with accessible names and cleans up blank presets once on open', async () => {
+    test('shows the preset frame as labeled tiles and cleans up blank presets once on open', async () => {
         mount(); await tick()
-        expect([...document.querySelectorAll('nav[aria-label="바드페인터 도구"] button')].map(el => el.getAttribute('aria-label'))).toEqual(['화풍 프리셋', '캐릭터 프리셋', '생성 설정', '작업 리셋'])
+        expect([...document.querySelectorAll('nav[aria-label="바드페인터 도구"] button')].map(el => el.getAttribute('aria-label'))).toEqual(['화풍 프리셋', '캐릭터 프리셋', '생성 설정'])
+        expect(document.querySelector('nav[aria-label="바드페인터 도구"]')?.textContent).toContain('잉크')
+        expect(button('작업 리셋').textContent?.trim()).toBe('초기화')
         expect(runtime.current.autoPruneBlankIdentities).toHaveBeenCalledOnce()
         expect(document.querySelector('[aria-label="이전 메시지 수"]')).toBeNull()
     })
