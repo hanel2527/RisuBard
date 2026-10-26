@@ -2198,7 +2198,7 @@ export const languageKorean = {
   externalChangeKeep: "앱 내용 유지",
   externalChangeAcceptHint: "바뀐 캐릭터와 로어북만 외부 내용으로 바꿉니다. 이 창에서 같은 항목을 고친 내용은 브라우저 복구 기록에 보관합니다.",
   externalChangeAcceptReloadHint: "바뀐 파일을 모두 외부 내용으로 불러온 뒤 페이지를 새로고침합니다. 이 창에서 아직 저장하지 않은 편집은 사라집니다.",
-  externalChangeKeepHint: "외부 파일은 데이터 폴더의 trash에 백업한 뒤 앱 내용으로 덮어씁니다.",
+  externalChangeKeepHint: "외부 파일은 데이터 폴더의 trash에 백업한 뒤 앱 내용으로 덮어씁니다. 백업은 14일 뒤 자동으로 지워집니다.",
   externalChangeCharacter: "캐릭터",
   externalChangeLorebook: "전역 로어북",
   externalChangeSettings: "설정",

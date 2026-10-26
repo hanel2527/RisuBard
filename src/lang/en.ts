@@ -2099,7 +2099,7 @@ export const languageEnglish = {
     externalChangeKeep: "Keep the app version",
     externalChangeAcceptHint: "Only the changed characters and lorebooks are replaced. Edits to the same items made in this window are kept in the browser recovery record.",
     externalChangeAcceptReloadHint: "All changed files are loaded from disk, then the page reloads. Unsaved edits in this window are lost.",
-    externalChangeKeepHint: "The external files are backed up in the data folder's trash, then overwritten with the app version.",
+    externalChangeKeepHint: "The external files are backed up in the data folder's trash, then overwritten with the app version. Backups are removed automatically after 14 days.",
     externalChangeCharacter: "Character",
     externalChangeLorebook: "Global lorebook",
     externalChangeSettings: "Settings",
