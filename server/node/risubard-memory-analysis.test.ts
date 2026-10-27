@@ -1146,6 +1146,34 @@ describe('memory analysis runner', () => {
         expect(result.canonicalReceipt?.warnings).toHaveLength(failed ? 2 : 0)
     })
 
+    test('splits a truncated canonical batch in halves instead of one call per document', async () => {
+        const saveCanonicalDocument = vi.fn(async (input) => ({ ...input, id: `character.${input.title}`, contentHash: 'hash', relativePath: `${input.title}.md` }))
+        const batchSizes: number[] = []
+        const analyze = vi.fn(async (request: MemoryAnalysisModelRequest) => {
+            if (request.format === 'memory-draft') return JSON.stringify({
+                schemaVersion: 1, title: 'Arrival', establishedEvents: ['A, B, C and D arrived.'],
+                stateChanges: [], characterKnowledge: [], persistentFacts: [], openContinuity: [],
+                canonicalUpdateCandidates: ['A', 'B', 'C', 'D'].map((title) => ({ type: 'character', title, reason: 'Arrived', action: 'create', targetDocumentId: null, confidence: 0.99 })),
+            })
+            const { targets } = JSON.parse(request.input)
+            batchSizes.push(targets.length)
+            if (targets.length > 2) throw new ModelOutputError('truncated')
+            return JSON.stringify({ schemaVersion: 1, documents: targets.map((target: { target: { title: string } }, candidateIndex: number) => ({
+                candidateIndex, sections: [{ heading: 'Current State', operation: 'upsert', content: `- ${target.target.title} arrived.`, add: [], replace: [], remove: [] }],
+            })) })
+        })
+        const runner = createMemoryAnalysisRunner({
+            memoryService: { loadState: vi.fn(), applyDelta: vi.fn() }, nativeV2Analysis: true,
+            markdownWikiService: { inquire: vi.fn(async () => ({ graphRevision: 0, sources: [] })),
+                loadDocuments: vi.fn(async () => []), saveConfirmedTurn: vi.fn(async () => undefined), saveCanonicalDocument },
+            onError: vi.fn(), analyze,
+        })
+        const result = await runner.run({ characterId: 'character', chatId: 'chat', messages: [{ messageId: 'assistant-1', role: 'assistant', content: 'A, B, C and D arrived.' }] })
+        expect(batchSizes).toEqual([4, 2, 2])
+        expect(saveCanonicalDocument).toHaveBeenCalledTimes(4)
+        expect(result.canonicalReceipt?.warnings).toEqual([])
+    })
+
     test('recovers a malformed single canonical target with Markdown sections', async () => {
         const saveCanonicalDocument = vi.fn(async (input) => ({
             ...input,

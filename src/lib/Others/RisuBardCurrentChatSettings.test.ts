@@ -450,7 +450,7 @@ describe('RisuBardCurrentChatSettings', () => {
         const fieldText = (key: string) => document.querySelector(`[data-chat-setting-field="${key}"] .setting-heading label`)?.textContent
         expect(fieldText('risuBardResponseMessageCount')).toBe('답변에 그대로 넣을 최근 응답 수')
         expect(fieldText('risuBardRecentMessageCount')).toBe('위키 분석이 읽을 최근 응답 수')
-        expect(fieldText('risuBardCanonicalTargetLimit')).toBe('한 번에 고칠 위키 문서 수')
+        expect(fieldText('risuBardCanonicalTargetLimit')).toBeUndefined()
         expect(fieldText('risuBardAdditionalSearchLimit')).toBe('근거 부족 시 다시 찾기 횟수')
         expect(fieldText('risuBardAnalysisTokenLimit')).toBe('위키 분석 최대 길이(토큰)')
         expect(document.body.textContent).not.toContain('·')
@@ -586,7 +586,7 @@ describe('RisuBardCurrentChatSettings', () => {
         scale('large').click()
         await tick()
         expect(chat.risuBardSettings).toEqual({
-            risuBardAnalysisTokenLimit: 65_536, risuBardCanonicalTargetLimit: 12, risuBardAnalysisLoreTokenLimit: 2_000,
+            risuBardAnalysisTokenLimit: 65_536, risuBardAnalysisLoreTokenLimit: 2_000,
         })
         chat.risuBardSettings.risuBardAnalysisTokenLimit = 40_000
         document.querySelector<HTMLButtonElement>('[data-wiki-settings-view="advanced"]')!.click()
@@ -608,7 +608,7 @@ describe('RisuBardCurrentChatSettings', () => {
 
         const fields = [...document.querySelectorAll('[data-chat-setting-field]')]
         const helpButtons = [...document.querySelectorAll('[data-chat-setting-help]')]
-        expect(fields).toHaveLength(18)
+        expect(fields).toHaveLength(17)
         expect(document.querySelector('[data-chat-setting-field^="risuBardBardChan"]')).toBeNull()
         expect(document.querySelector('#bardwiki-ignore-ooc')).toBeNull()
         expect(helpButtons).toHaveLength(fields.length)

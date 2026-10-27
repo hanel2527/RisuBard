@@ -102,7 +102,7 @@ describe('RisuBard mode settings', () => {
         expect(settingsData).toContain('risuBardInquiryMaximumTokenBudget')
         expect(settingsData).toContain("bindKey: 'risuBardAnalysisTokenLimit'")
         expect(settingsData).toContain("bindKey: 'risuBardAdditionalSearchLimit'")
-        expect(settingsData).toContain("bindKey: 'risuBardCanonicalTargetLimit'")
+        expect(settingsData).not.toContain("bindKey: 'risuBardCanonicalTargetLimit'")
         expect(settingsData).not.toContain("bindKey: 'risuBardCanonicalMode'")
         expect(memoryWiki).not.toContain('RisuBardCanonicalAudit')
         expect(memoryWiki).not.toContain('unreviewedCount')

@@ -3848,7 +3848,7 @@ export const languageEnglish = {
     risuBardWikiScaleStandard: "Standard",
     risuBardWikiScaleRoomy: "Roomy",
     risuBardWikiScaleLarge: "Large",
-    risuBardWikiScaleSummary: "Analysis {analysis} tokens, {targets} documents per rewrite, {lore} lorebook tokens",
+    risuBardWikiScaleSummary: "Analysis {analysis} tokens, {lore} lorebook tokens",
     risuBardWikiScaleCustom: "Using values adjusted in Advanced ({summary}). Pick a scale above to replace them.",
     risuBardInquiryMaximumTokenBudget: "Wiki inquiry absolute token limit",
     risuBardInquiryTimeoutMs: "Wiki inquiry timeout (ms)",

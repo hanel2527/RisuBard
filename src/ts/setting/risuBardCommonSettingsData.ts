@@ -245,16 +245,6 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
         keywords: ['wiki', 'search', 'fallback', '위키', '추가 검색'],
     },
     {
-        id: 'risubard.chat.canonicalTargetLimit',
-        condition: showAdvancedWikiSettings,
-        type: 'number',
-        labelKey: 'risuBardCanonicalTargetLimit',
-        helpKey: 'risuBardCanonicalTargetLimit',
-        bindKey: 'risuBardCanonicalTargetLimit',
-        options: { min: 1, step: 1 },
-        keywords: ['canonical', 'target', 'limit', '정본', '대상', '한도'],
-    },
-    {
         id: 'risubard.common.arcPlotter',
         type: 'header',
         labelKey: 'risuBardArcPlotter',

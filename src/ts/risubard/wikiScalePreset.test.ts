@@ -20,7 +20,6 @@ describe('wiki scale presets', () => {
         }
         expect(values.map((value) => formatWikiScaleTokens(value.risuBardAnalysisTokenLimit))).toEqual(['24K', '32K', '48K', '64K'])
         for (let index = 1; index < values.length; index += 1) {
-            expect(values[index].risuBardCanonicalTargetLimit).toBeGreaterThan(values[index - 1].risuBardCanonicalTargetLimit)
             expect(values[index].risuBardAnalysisLoreTokenLimit).toBeGreaterThan(values[index - 1].risuBardAnalysisLoreTokenLimit)
         }
     })

@@ -4086,7 +4086,7 @@ export const languageKorean = {
   risuBardWikiScaleStandard: "보통",
   risuBardWikiScaleRoomy: "넉넉",
   risuBardWikiScaleLarge: "크게",
-  risuBardWikiScaleSummary: "분석 {analysis}토큰, 한 번에 고칠 문서 {targets}개, 분석용 로어북 {lore}토큰",
+  risuBardWikiScaleSummary: "분석 {analysis}토큰, 분석용 로어북 {lore}토큰",
   risuBardWikiScaleCustom: "고급에서 직접 조정한 값을 쓰는 중입니다 ({summary}). 위에서 하나를 고르면 그 값으로 바뀝니다.",
   risuBardInquiryMaximumTokenBudget: "위키 조회 토큰 절대 상한",
   risuBardInquiryTimeoutMs: "위키 조회 제한 시간(ms)",

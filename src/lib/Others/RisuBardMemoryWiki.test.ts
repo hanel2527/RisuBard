@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
         }
         risuBardMemoryDockRatio?: number
         risuBardMemoryWorkspaceHeight?: number
+        risuBardWikiSettingsView?: 'simple' | 'advanced'
         risuBardModelMode?: 'memory' | 'model'
         risuBardRecentMessageCount?: number
         risuBardResponseMessageCount?: number

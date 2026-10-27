@@ -205,23 +205,31 @@ function countAnalysisTokens(value: string): number {
     return analysisTokenizer.encode(value).length
 }
 
+// One rewrite call answers with changed sections only; this keeps the summed
+// estimate inside what common providers return in one response.
+const CANONICAL_OUTPUT_TOKEN_BUDGET = 12_000
+
 function splitCanonicalTargets<T>(
     targets: readonly T[],
     tokenLimit: number,
     serializeInput: (batch: readonly T[]) => string,
-    maxTargets = Infinity,
+    estimateOutput: (target: T) => number = () => 0,
 ): T[][] {
     const batches: T[][] = []
     let current: T[] = []
+    let output = 0
     for (const target of targets) {
         const next = [...current, target]
-        if (current.length > 0 && (current.length >= maxTargets
+        const size = estimateOutput(target)
+        if (current.length > 0 && (output + size > CANONICAL_OUTPUT_TOKEN_BUDGET
             || countAnalysisTokens(serializeInput(next)) > tokenLimit)) {
             batches.push(current)
             current = [target]
+            output = size
         }
         else {
             current = next
+            output += size
         }
     }
     if (current.length > 0) batches.push(current)
@@ -1729,9 +1737,8 @@ export function createMemoryAnalysisRunner(
                         mergedNames: string[]
                         storyArcPlan?: StoryArcUpdatePlan
                     }> = []
-                    // The limit sizes each rewrite call; every candidate of this
-                    // analysis is written, the extra ones in further calls.
-                    const targetLimit = snapshot.canonicalTargetLimit ?? 8
+                    // Every candidate of this analysis is written; the calls are
+                    // sized by the documents themselves, not by a count.
                     for (const candidate of draft.canonicalUpdateCandidates) {
                         const titleKey = canonicalIdentityKey(candidate.title)
                         const aliasKeys = new Set(mergeEvidenceBackedAliases(
@@ -1956,7 +1963,13 @@ export function createMemoryAnalysisRunner(
                             Math.max(1, (snapshot.analysisTokenLimit ?? 12_000)
                                 - countAnalysisTokens(canonicalSystem)),
                             canonicalInput,
-                            targetLimit,
+                            // A rewrite returns whole documents for the arc map and
+                            // scenes; elsewhere only changed sections, rarely all of a card.
+                            (entry) => entry.storyArcPlan || entry.candidate.type === 'scene'
+                                ? countAnalysisTokens(entry.preparedMarkdown) + 200
+                                : entry.target
+                                    ? Math.min(countAnalysisTokens(entry.preparedMarkdown), 1_200) + 200
+                                    : 800,
                         )
                         for (const canonicalTargets of canonicalBatches) {
                             const suppliedIds = new Set(completeCanonicalDocuments().map((entry) => entry.id))
@@ -2112,6 +2125,41 @@ export function createMemoryAnalysisRunner(
                                     await canonicalFailure(target, failure)
                                 }
                             }
+                            // A truncated or malformed batch is retried in halves, so a
+                            // long batch costs a few calls instead of one per document.
+                            const recoverHalves = async (indices: number[], error: ModelOutputError): Promise<void> => {
+                                if (indices.length === 1) {
+                                    await recoverSingle(indices[0], error)
+                                    return
+                                }
+                                const middle = Math.ceil(indices.length / 2)
+                                for (const half of [indices.slice(0, middle), indices.slice(middle)]) {
+                                    // A lone document takes the established single-target recovery.
+                                    if (half.length === 1) {
+                                        await recoverSingle(half[0], error)
+                                        continue
+                                    }
+                                    try {
+                                        const result = await generateBatch(half.map((index) => pending[index]), 1, error)
+                                        batch.documents.push(...result.documents.map((document) => ({
+                                            ...document, candidateIndex: half[document.candidateIndex],
+                                        })))
+                                        for (const failure of result.failures) {
+                                            if (failure.error instanceof ModelOutputError && !failure.error.retryable) {
+                                                await canonicalFailure(pending[half[failure.candidateIndex]], failure.error)
+                                            }
+                                            else await recoverSingle(half[failure.candidateIndex], failure.error)
+                                        }
+                                    }
+                                    catch (halfError) {
+                                        signal?.throwIfAborted()
+                                        if (halfError instanceof ModelOutputError && halfError.retryable) {
+                                            await recoverHalves(half, halfError)
+                                        }
+                                        else for (const index of half) await canonicalFailure(pending[index], halfError)
+                                    }
+                                }
+                            }
                             let generated: ReturnType<typeof parseCanonicalBatchIsolated> | undefined
                             try {
                                 generated = pending.length > 0
@@ -2122,12 +2170,10 @@ export function createMemoryAnalysisRunner(
                                 signal?.throwIfAborted()
                                 // Ambiguous envelopes cannot be salvaged. Provider
                                 // errors do not fan out into more provider requests.
-                                for (const [candidateIndex, target] of pending.entries()) {
-                                    if (error instanceof ModelOutputError && error.retryable && pending.length > 1) {
-                                        await recoverSingle(candidateIndex, error)
-                                    }
-                                    else await canonicalFailure(target, error)
+                                if (error instanceof ModelOutputError && error.retryable && pending.length > 1) {
+                                    await recoverHalves([...pending.keys()], error)
                                 }
+                                else for (const target of pending) await canonicalFailure(target, error)
                             }
                             if (generated) {
                                 batch = { schemaVersion: 1, documents: [...generated.documents] }

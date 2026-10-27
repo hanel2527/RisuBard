@@ -104,7 +104,6 @@
         if (!chat) return
         const values = wikiScalePresetValues(id)
         setValue('risuBardAnalysisTokenLimit', values.risuBardAnalysisTokenLimit)
-        setValue('risuBardCanonicalTargetLimit', values.risuBardCanonicalTargetLimit)
         setValue('risuBardAnalysisLoreTokenLimit', values.risuBardAnalysisLoreTokenLimit)
     }
 
@@ -357,7 +356,7 @@
                 class="help-button"
                 data-chat-setting-help="risuBardWikiScale"
                 aria-label="작업 규모 도움말"
-                use:helpTooltip={'위키 분석이 한 번에 읽는 분량입니다. 정리 중에 쌓인 턴을 한 번에 묶을 수 있는 양도 이 값으로 정해집니다.\n\n크게 할수록 긴 응답과 여러 턴을 잘라 내지 않고 한 번에 분석하지만, 호출 하나가 무거워집니다. 모델의 입력 한도가 작으면 가볍게를 고르세요.\n\n한 번에 고칠 문서 수와 분석에 넣을 로어북 양도 함께 맞춰집니다.'}
+                use:helpTooltip={'위키 분석이 한 번에 읽는 분량입니다. 정리 중에 쌓인 턴을 한 번에 묶을 수 있는 양도 이 값으로 정해집니다.\n\n크게 할수록 긴 응답과 여러 턴을 잘라 내지 않고 한 번에 분석하지만, 호출 하나가 무거워집니다. 모델의 입력 한도가 작으면 가볍게를 고르세요.\n\n분석에 넣을 로어북 양도 함께 맞춰집니다.'}
             >?</button>
         </legend>
         <div class="scale-options">
@@ -372,11 +371,11 @@
         </div>
         {#if scaleSelection === 'custom'}
             <small class="scale-summary" data-wiki-scale-custom>
-                고급에서 직접 조정한 값을 쓰는 중입니다 (분석 {formatNumber(settings.risuBardAnalysisTokenLimit)}토큰, 문서 {settings.risuBardCanonicalTargetLimit}개, 로어북 {formatNumber(settings.risuBardAnalysisLoreTokenLimit)}토큰). 위에서 하나를 고르면 그 값으로 바뀝니다.
+                고급에서 직접 조정한 값을 쓰는 중입니다 (분석 {formatNumber(settings.risuBardAnalysisTokenLimit)}토큰, 로어북 {formatNumber(settings.risuBardAnalysisLoreTokenLimit)}토큰). 위에서 하나를 고르면 그 값으로 바뀝니다.
             </small>
         {:else}
             <small class="scale-summary">
-                분석 {formatNumber(settings.risuBardAnalysisTokenLimit)}토큰, 한 번에 고칠 문서 {settings.risuBardCanonicalTargetLimit}개, 분석용 로어북 {formatNumber(settings.risuBardAnalysisLoreTokenLimit)}토큰
+                분석 {formatNumber(settings.risuBardAnalysisTokenLimit)}토큰, 분석용 로어북 {formatNumber(settings.risuBardAnalysisLoreTokenLimit)}토큰
             </small>
         {/if}
     </fieldset>
@@ -564,10 +563,6 @@
                 {@render settingTitle('risuBardAdditionalSearchLimit', '근거 부족 시 다시 찾기 횟수', 'bardwiki-search-count')}
                 {@render numberInput('risuBardAdditionalSearchLimit', 'bardwiki-search-count')}
             </div>
-            <div class="setting-field" data-chat-setting-field="risuBardCanonicalTargetLimit">
-                {@render settingTitle('risuBardCanonicalTargetLimit', '한 번에 고칠 위키 문서 수', 'bardwiki-target-limit')}
-                {@render numberInput('risuBardCanonicalTargetLimit', 'bardwiki-target-limit')}
-            </div>
             <div class="setting-field" data-chat-setting-field="risuBardRecentMessageCount">
                 {@render settingTitle('risuBardRecentMessageCount', '위키 분석이 읽을 최근 응답 수', 'bardwiki-analysis-messages')}
                 {@render numberInput('risuBardRecentMessageCount', 'bardwiki-analysis-messages')}
@@ -654,19 +649,20 @@
     .view-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 2px; border: 1px solid var(--risu-theme-darkborderc); border-radius: .45rem; background: color-mix(in srgb, var(--risu-theme-darkbg) 80%, var(--risu-theme-bgcolor)); }
     .view-switch button { min-height: 2rem; border: 0; border-radius: .34rem; background: transparent; color: var(--risu-theme-textcolor2); font-size: .82rem; font-weight: 650; cursor: pointer; transition: background-color .15s ease-out, color .15s ease-out; }
     .view-switch button:hover { color: var(--risu-theme-textcolor); }
-    .view-switch button[aria-pressed='true'] { color: var(--risu-theme-textcolor); background: color-mix(in srgb, var(--risu-theme-primary) 22%, var(--risu-theme-darkbg)); }
+    .view-switch button[aria-pressed='true'] { color: var(--risu-theme-textcolor); background: color-mix(in srgb, var(--risu-theme-primary) 30%, var(--risu-theme-darkbg)); }
     .scale-field { display: grid; gap: .32rem; min-width: 0; margin: 0; padding: .38rem; border: 1px solid color-mix(in srgb, var(--risu-theme-darkborderc) 72%, transparent); border-radius: .36rem; background: color-mix(in srgb, var(--risu-theme-darkbg) 76%, var(--color-bgcolor)); }
     .scale-field legend { float: left; width: 100%; margin-bottom: .1rem; padding: 0; }
     .scale-field legend span { font-size: .78rem; font-weight: 650; }
     .scale-options { clear: both; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .3rem; }
-    .scale-option { position: relative; display: grid; justify-items: center; gap: .05rem; min-height: 2.9rem; padding: .35rem .2rem; border: 1px solid var(--risu-theme-darkborderc); border-radius: .36rem; color: var(--risu-theme-textcolor2); background: color-mix(in srgb, var(--risu-theme-darkbg) 92%, var(--color-bgcolor)); cursor: pointer; transition: border-color .15s ease-out, background-color .15s ease-out; }
+    .scale-option { position: relative; display: grid; justify-items: center; gap: .05rem; min-height: 3rem; padding: .4rem .25rem; border: 1px solid color-mix(in srgb, var(--risu-theme-primary) 24%, var(--risu-theme-darkborderc)); border-radius: .4rem; color: var(--risu-theme-textcolor); background: color-mix(in srgb, var(--risu-theme-primary) 8%, var(--risu-theme-darkbg)); cursor: pointer; transition: border-color .15s ease-out, background-color .15s ease-out; }
     .scale-option input { position: absolute; opacity: 0; pointer-events: none; }
-    .scale-option:hover { border-color: color-mix(in srgb, var(--risu-theme-primary) 50%, var(--risu-theme-darkborderc)); }
-    .scale-option:has(input:checked) { border-color: var(--risu-theme-primary); color: var(--risu-theme-textcolor); background: color-mix(in srgb, var(--risu-theme-primary) 16%, var(--risu-theme-darkbg)); }
+    .scale-option:hover { border-color: color-mix(in srgb, var(--risu-theme-primary) 55%, var(--risu-theme-darkborderc)); background: color-mix(in srgb, var(--risu-theme-primary) 15%, var(--risu-theme-darkbg)); }
+    .scale-option:has(input:checked) { border-color: color-mix(in srgb, var(--risu-theme-primary) 80%, var(--risu-theme-darkborderc)); color: var(--risu-theme-textcolor); background: color-mix(in srgb, var(--risu-theme-primary) 32%, var(--risu-theme-darkbg)); }
+    .scale-option:has(input:checked) .scale-tokens { color: var(--risu-theme-textcolor); }
     .scale-option:has(input:focus-visible) { outline: 2px solid var(--risu-theme-primary); outline-offset: 2px; }
     .scale-option:has(input:disabled) { opacity: .5; cursor: default; }
     .scale-name { font-size: .8rem; font-weight: 700; }
-    .scale-tokens { font-size: .75rem; font-variant-numeric: tabular-nums; color: var(--risu-theme-textcolor2); }
+    .scale-tokens { font-size: .75rem; font-weight: 650; font-variant-numeric: tabular-nums; color: color-mix(in srgb, var(--risu-theme-primary) 70%, var(--risu-theme-textcolor)); }
     .scale-summary { color: var(--risu-theme-textcolor2); font-size: .75rem; line-height: 1.45; overflow-wrap: anywhere; }
     .simple-note { margin: 0; padding: 0 .2rem; color: var(--risu-theme-textcolor2); font-size: .75rem; line-height: 1.45; }
     .link-button { padding: 0; border: 0; background: none; color: var(--risu-theme-primary); font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
@@ -675,9 +671,9 @@
     .dynamic-note { display: block; color: var(--color-textcolor2); }
     .editing-hint { display: block; color: var(--color-textcolor2); font-size: .75rem; margin-top: .2rem; }
     .number-note { display: block; grid-column: 1 / -1; margin-top: .1rem; color: var(--color-danger, var(--risu-theme-textcolor2)); font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; }
-    .settings-form { display: grid; gap: .48rem; min-width: 0; margin: 0; padding: 0; border: 0; }
+    .settings-form { display: grid; align-content: start; gap: .48rem; min-width: 0; margin: 0; padding: 0; border: 0; }
     .settings-form:disabled { opacity: .6; }
-    .chat-settings { container: chat-settings / inline-size; display: grid; gap: .48rem; min-width: 0; padding: .05rem; }
+    .chat-settings { container: chat-settings / inline-size; display: grid; align-content: start; gap: .48rem; min-width: 0; padding: .05rem; }
     .settings-head { position: sticky; z-index: 2; top: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .3rem .75rem; padding: .18rem .12rem .48rem; border-bottom: 1px solid var(--risu-theme-darkborderc); background: var(--risu-theme-bgcolor); }
     .settings-title { display: grid; min-width: 0; gap: .12rem; }
     .settings-head strong { color: var(--risu-theme-textcolor); font-size: calc(.78rem + 4px); }
