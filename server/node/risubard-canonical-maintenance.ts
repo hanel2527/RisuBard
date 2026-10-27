@@ -4,7 +4,6 @@ import { applyCanonicalSectionPatches, listCanonicalSections, readCanonicalSecti
 import type { CanonicalSectionPatch } from './risubard-memory-writer'
 
 export const MAINTENANCE_COOLDOWN_SOURCES = 8
-export const CARD_CEILING_RATIO = 0.8
 export const CARD_GROWTH_RATIO = 1.25
 export const CARD_MIN_REDUCTION_RATIO = 0.9
 const MAX_COVER_DOCUMENTS = 24
@@ -56,10 +55,9 @@ function readUnits(markdown: string, role: MaintainedRole | MoveRole): SectionUn
     return section ? { heading: section.heading, ...splitSectionUnits(section.body) } : undefined
 }
 
-/** The card is maintained only near the point where retrieval would have to cut it. */
+/** The card is maintained only once retrieval would have to cut it: past its per-page share. */
 export function cardMaintenanceDue(input: { tokens: number; perSourceTokens: number; baselineTokens?: number }): boolean {
-    const ceiling = Math.floor(input.perSourceTokens * CARD_CEILING_RATIO)
-    return input.tokens > Math.max(ceiling, (input.baselineTokens ?? 0) * CARD_GROWTH_RATIO)
+    return input.tokens > Math.max(input.perSourceTokens, (input.baselineTokens ?? 0) * CARD_GROWTH_RATIO)
 }
 
 export function maintenanceCoverDocuments(

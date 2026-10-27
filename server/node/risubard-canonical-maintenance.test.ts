@@ -20,7 +20,7 @@ const disposition = (role: string, old: number, action: string, extra: Record<st
     role, old, action, newIndex: null, moveTo: null, movedText: null, documentId: null, ...extra,
 })
 const chars = (value: string) => [...value].length
-const dueInput = { countTokens: chars, perSourceTokens: 400 }
+const dueInput = { countTokens: chars, perSourceTokens: 320 }
 const card = [
     '## 미오', '',
     '### 인물 핵심', '', '- 우산을 든 소녀.', '',
@@ -48,12 +48,12 @@ const apply = (response: unknown) => applyMaintenanceResponse({
 })
 
 describe('canonical maintenance', () => {
-    test('is due only near the retrieval ceiling or after outgrowing the last baseline', () => {
-        expect(cardMaintenanceDue({ tokens: 1700, perSourceTokens: 2000 })).toBe(true)
-        expect(cardMaintenanceDue({ tokens: 1500, perSourceTokens: 2000 })).toBe(false)
-        expect(cardMaintenanceDue({ tokens: 1700, perSourceTokens: 2000, baselineTokens: 1500 })).toBe(false)
-        expect(cardMaintenanceDue({ tokens: 1900, perSourceTokens: 2000, baselineTokens: 1500 })).toBe(true)
-        expect(cardMaintenanceDue({ tokens: 1700, perSourceTokens: 2000, baselineTokens: 1000 })).toBe(true)
+    test('is due only past the per-page retrieval share or after outgrowing the last baseline', () => {
+        expect(cardMaintenanceDue({ tokens: 1100, perSourceTokens: 1000 })).toBe(true)
+        expect(cardMaintenanceDue({ tokens: 1000, perSourceTokens: 1000 })).toBe(false)
+        expect(cardMaintenanceDue({ tokens: 1100, perSourceTokens: 1000, baselineTokens: 1000 })).toBe(false)
+        expect(cardMaintenanceDue({ tokens: 1300, perSourceTokens: 1000, baselineTokens: 1000 })).toBe(true)
+        expect(cardMaintenanceDue({ tokens: 1100, perSourceTokens: 1000, baselineTokens: 600 })).toBe(true)
     })
 
     test('does not call the model while the card is not due', async () => {

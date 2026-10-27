@@ -89,7 +89,6 @@ import {
     type CanonicalUnitResolution,
 } from './risubard-canonical-unit-edit'
 import {
-    CARD_CEILING_RATIO,
     MAINTENANCE_COOLDOWN_SOURCES,
     changedCanonicalUnits,
     maintainCharacterCanon,
@@ -1140,7 +1139,7 @@ export function createMemoryAnalysisRunner(
     options: MemoryAnalysisRunnerOptions
 ) {
     // Per session only: a reload forgets baselines and cooldowns, costing at most one extra attempt per card.
-    const maintenanceState = new Map<string, { baselineTokens?: number; failedSources?: ReadonlySet<string> }>()
+    const maintenanceState = new Map<string, { baselineTokens?: number; restingSources?: ReadonlySet<string> }>()
     const reportError = async (error: unknown): Promise<void> => {
         try {
             await options.onError(error)
@@ -2280,10 +2279,11 @@ export function createMemoryAnalysisRunner(
                                 // Stored documents keep only their last source IDs, so count IDs unseen at the last attempt.
                                 const currentSources = new Set([...entry.target.sourceMessageIds, ...sourceMessageIds])
                                 const state = maintenanceState.get(attemptKey)
-                                const failedSources = state?.failedSources
-                                // A model error, or a card over the retrieval ceiling that cannot shrink, waits for new sources.
-                                if (failedSources === undefined
-                                    || [...currentSources].filter((id) => !failedSources.has(id)).length >= MAINTENANCE_COOLDOWN_SOURCES) {
+                                const restingSources = state?.restingSources
+                                // Every attempt, applied or not, waits for new sources, which bounds
+                                // upkeep calls per card; retrieval cuts any overflow meanwhile.
+                                if (restingSources === undefined
+                                    || [...currentSources].filter((id) => !restingSources.has(id)).length >= MAINTENANCE_COOLDOWN_SOURCES) {
                                     // Upkeep keeps a card within its retrieval share, so recall rarely cuts it.
                                     const perSourceTokens = wikiPageTokenCap({
                                         target: snapshot.inquiryTokenBudget?.target ?? RISUBARD_INQUIRY_TARGET_TOKEN_BUDGET_DEFAULT,
@@ -2309,17 +2309,17 @@ export function createMemoryAnalysisRunner(
                                     })
                                     signal?.throwIfAborted()
                                     if (maintained.outcome === 'applied') {
-                                        maintenanceState.set(attemptKey, { baselineTokens: maintained.tokensAfter })
+                                        maintenanceState.set(attemptKey, { baselineTokens: maintained.tokensAfter, restingSources: currentSources })
                                     }
                                     else if (maintained.outcome === 'no-reduction') {
                                         // Raising the baseline above the ceiling would let the card outgrow retrieval for good.
-                                        maintenanceState.set(attemptKey, (maintained.tokensBefore ?? 0) > Math.floor(perSourceTokens * CARD_CEILING_RATIO)
-                                            ? { baselineTokens: state?.baselineTokens, failedSources: currentSources }
+                                        maintenanceState.set(attemptKey, (maintained.tokensBefore ?? 0) > perSourceTokens
+                                            ? { baselineTokens: state?.baselineTokens, restingSources: currentSources }
                                             : { baselineTokens: maintained.tokensBefore })
                                     }
                                     else if (maintained.outcome === 'error') {
                                         maintenanceState.set(attemptKey, {
-                                            baselineTokens: state?.baselineTokens, failedSources: currentSources,
+                                            baselineTokens: state?.baselineTokens, restingSources: currentSources,
                                         })
                                     }
                                     if (maintained.markdown) rewritten = maintained.markdown

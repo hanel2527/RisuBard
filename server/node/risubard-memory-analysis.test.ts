@@ -3941,6 +3941,14 @@ describe('canonical maintenance during turn analysis', () => {
         expect(canonicalTurnNeedsRetry(result.canonicalReceipt!)).toBe(false)
     })
 
+    test('rests after an applied consolidation until 8 new sources arrive', async () => {
+        const { run, analyze } = setup(async () => merged)
+        for (let index = 1; index <= 8; index++) await run(`assistant-${index}`)
+        expect(maintenanceCalls(analyze)).toBe(1)
+        await run('assistant-9')
+        expect(maintenanceCalls(analyze)).toBe(2)
+    })
+
     test('waits for new sources before trying the same document again', async () => {
         const { run, analyze } = setup(async () => 'not json')
         await run('assistant-1')
