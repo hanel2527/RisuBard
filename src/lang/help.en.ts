@@ -466,7 +466,7 @@ export const helpEn = {
         risuBardInquiryMaximumTokenBudget:
             "Absolute token limit for one wiki inquiry, including detailed retrieval and required documents. A lower maximum also clamps the target.",
         risuBardInquiryTimeoutMs:
-            "Time limit for each wiki inquiry round. The default and maximum are 10,000 ms; the minimum is 1 ms.",
+            "Time limit for each wiki inquiry round. With semantic search on, the query embedding is also awaited this long; a remote embedding model slower than this is left out of that response, and the wiki inquiry diagnostic says why. The default and maximum are 10,000 ms; the minimum is 1 ms.",
         risuBardHistoricalSourceMatchLimit:
             "Maximum historical chat excerpts admitted from lexical candidates and exact source IDs of selected events. Relevance and token budgets may select fewer. The default is 8, the safety ceiling is 32, and 0 disables historical chat recall.",
         risuBardAdditionalSearchLimit:

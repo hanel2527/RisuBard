@@ -23,7 +23,10 @@ export interface WikiVectorCache {
 }
 
 type IndexedChunk = { chunk: WikiEmbeddingChunk; vector: number[] }
-const emptyResult = () => ({ matches: [] as WikiSemanticMatch[], evidenceQuery: '', evidenceHints: {} as Record<string, string> })
+/** Why a search returned nothing although semantic search is on, for the inquiry diagnostic. */
+export type WikiSemanticSkip = 'not-ready' | 'timeout' | 'error'
+const emptyResult = (skipped?: WikiSemanticSkip) => ({ matches: [] as WikiSemanticMatch[], evidenceQuery: '', evidenceHints: {} as Record<string, string>,
+    ...(skipped ? { skipped } : {}) })
 
 export function buildWikiEmbeddingQueries(current: string, recent: string): string[] {
     const query = current.trim().slice(0, 2048)
@@ -154,7 +157,9 @@ export class WikiEmbeddingIndex {
     async search(current: string, recent: string, timeoutMs = 2000, options: { maximumDocuments?: number; maximumPassagesPerDocument?: number; allowedDocumentIds?: ReadonlySet<string> } = {}) {
         const entries = options.allowedDocumentIds ? this.entries.filter(entry => options.allowedDocumentIds!.has(entry.chunk.documentId)) : this.entries
         const queries = buildWikiEmbeddingQueries(current, recent)
-        if (!this.ready || !entries.length || !queries.length) return emptyResult()
+        if (!queries.length) return emptyResult()
+        if (!this.ready) return emptyResult('not-ready')
+        if (!entries.length) return emptyResult()
         let timer: ReturnType<typeof setTimeout> | undefined
         const controller = new AbortController()
         const abort = () => controller.abort()
@@ -167,7 +172,7 @@ export class WikiEmbeddingIndex {
                 }),
             ])
             if (vectors.length !== queries.length || !vectors.every(validVector)
-                || vectors.some(vector => vector.length !== entries[0].vector.length)) return emptyResult()
+                || vectors.some(vector => vector.length !== entries[0].vector.length)) return emptyResult('error')
             const bestByDocument = new Map<string, IndexedChunk & { score: number; order: number }>()
             const passages: (IndexedChunk & { score: number; order: number })[] = []
             entries.forEach((entry, order) => {
@@ -205,7 +210,9 @@ export class WikiEmbeddingIndex {
                 evidenceQuery: selected.slice(0, 3).map(item => item.chunk.text).join('\n').slice(0, 3072),
                 evidenceHints: Object.fromEntries([...winners].map(([id, items]) => [id, items.map(item => item.chunk.text).join('\n').slice(0, 3072)])),
             }
-        } catch { return emptyResult() }
+        } catch (error) {
+            return emptyResult(error instanceof Error && error.message === 'Embedding query timeout' ? 'timeout' : 'error')
+        }
         finally {
             if (timer !== undefined) clearTimeout(timer)
             controller.abort()

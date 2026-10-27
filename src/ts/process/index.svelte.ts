@@ -107,7 +107,7 @@ import {
 } from '../risubard/historicalSourceRecall';
 import { activateWikiEmbeddings, refreshHistoricalSourceEmbeddings, searchHistoricalSourceEmbeddings, stopHistoricalSourceEmbeddings, wikiEmbeddingRuntime } from '../risubard/wikiEmbeddingService';
 import { mergeHistoricalSourceMatches } from '../risubard/historicalSourceEmbedding';
-import type { WikiSemanticMatch } from '../risubard/wikiEmbeddingIndex';
+import type { WikiSemanticMatch, WikiSemanticSkip } from '../risubard/wikiEmbeddingIndex';
 import { normalizeArcPlotterRuntimeSettings } from '../risubard/arcPlotterSettings';
 import {
     canonicalTurnNeedsRetry,
@@ -1831,6 +1831,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     })
     let wikiInquiryAttempted = false
     let wikiInquiryError: WikiInquiryFailure | undefined
+    let wikiSemanticSkip: WikiSemanticSkip | undefined
     let wikiInquirySources: Awaited<ReturnType<typeof loadNarrativeInquiry>>['sources'] = []
     let requiredWikiSources: typeof wikiInquirySources = []
     let requiredWikiDocumentCount = 0
@@ -1968,13 +1969,17 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                             !inquirySettings.risuBardResponseExcludeUserMessages,
                             true,
                         ))
-                    const embedded = await wikiEmbeddingRuntime.search(currentInput, retrievalRecentContext)
+                    // A remote embedding model can take several seconds; wait as long as the wiki lookup may.
+                    const embedded = await wikiEmbeddingRuntime.search(currentInput, retrievalRecentContext,
+                        inquirySettings.risuBardInquiryTimeoutMs)
+                    wikiSemanticSkip = embedded.skipped
                     // Refresh does not delay this response; inquiry verifies old ranges against live hashes.
                     wikiEmbeddingRuntime.refresh()
                     const historicalOptions = {
                         ignoreOocTurns: true,
                         excludeRecentMessages: normalizeNarrativeWorkingMessageLimit(inquirySettings.risuBardResponseMessageCount),
                         maximumMatches: inquirySettings.risuBardHistoricalSourceMatchLimit,
+                        timeoutMs: inquirySettings.risuBardInquiryTimeoutMs,
                     }
                     const historicalMatches = mergeHistoricalSourceMatches(
                         findHistoricalSourceMatches({ ...historicalOptions, currentInput, messages: currentChat.message }),
@@ -3232,6 +3237,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                     candidateCount: narrativeContextObservation.candidateCount,
                 } : {}),
                 failure: wikiInquiryError,
+                ...(wikiSemanticSkip ? { semanticSkip: wikiSemanticSkip } : {}),
                 sources: wikiInquirySources,
                 messages: formated,
             }),

@@ -77,6 +77,14 @@ describe('automatic BardWiki confirmation', () => {
         expect(processSource).toMatch(/wikiChatCancellationEpoch\(chatKey\) === chatEpoch/)
     })
 
+    test('semantic recall waits as long as the user\'s wiki lookup time and records why it was left out', () => {
+        const processSource = readFileSync('src/ts/process/index.svelte.ts', 'utf8')
+        // A fixed 2-second wait dropped every remote embedding model that answers in several seconds.
+        expect(processSource).toMatch(/wikiEmbeddingRuntime\.search\(currentInput, retrievalRecentContext,\s*inquirySettings\.risuBardInquiryTimeoutMs\)/)
+        expect(processSource).toMatch(/timeoutMs: inquirySettings\.risuBardInquiryTimeoutMs/)
+        expect(processSource).toContain('semanticSkip: wikiSemanticSkip')
+    })
+
     test('keeps configurable confirmation delay out of the product path', () => {
         const processSource = readFileSync('src/ts/process/index.svelte.ts', 'utf8')
         const currentChatSettings = readFileSync(

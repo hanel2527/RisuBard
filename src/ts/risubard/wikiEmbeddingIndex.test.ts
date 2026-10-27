@@ -192,6 +192,23 @@ describe('optional wiki embedding index', () => {
         expect((await index.search('query', '', 5)).matches).toEqual([])
     })
 
+    it('reports why a search contributed nothing, and waits as long as it is told to', async () => {
+        const embed = vi.fn(async (texts: string[]) => texts.map(() => [1, 0]))
+        const index = new WikiEmbeddingIndex({ identity: 'local', embed }, cache())
+        expect((await index.search('query', '')).skipped).toBe('not-ready')
+        await index.refresh(page())
+        embed.mockRejectedValueOnce(new Error('offline'))
+        expect((await index.search('query', '')).skipped).toBe('error')
+        embed.mockImplementationOnce(() => new Promise(() => {}))
+        expect((await index.search('query', '', 5)).skipped).toBe('timeout')
+        // A remote model answering after 30 ms still counts when the caller allows 1,000 ms.
+        embed.mockImplementationOnce((texts: string[]) => new Promise((resolve) =>
+            setTimeout(() => resolve(texts.map(() => [1, 0])), 30)))
+        const slow = await index.search('query', '', 1_000)
+        expect(slow.skipped).toBeUndefined()
+        expect(slow.matches.length).toBeGreaterThan(0)
+    })
+
     it('rejects malformed vector batches and never publishes a partial revision', async () => {
         const index = new WikiEmbeddingIndex({ identity: 'local', embed: async () => [[NaN]] }, cache())
         await expect(index.refresh(page())).rejects.toThrow()

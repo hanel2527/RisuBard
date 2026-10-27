@@ -7,6 +7,8 @@ export interface HistoricalSearchOptions {
     ignoreOocTurns?: boolean
     excludeRecentMessages?: number
     maximumMatches: number
+    /** How long to wait for the shared query embedding. */
+    timeoutMs?: number
 }
 
 /** Query vectors are shared only in memory, never persisted with credentials. */
@@ -77,7 +79,7 @@ export class HistoricalSourceEmbeddingIndex {
         const allowedDocumentIds = new Set(eligibleHistoricalSources(messages, options.ignoreOocTurns, options.excludeRecentMessages)
             .filter(({message}) => snapshots.get(message.chatId as string)?.data === message.data)
             .map(({message}) => message.chatId as string))
-        const result = await this.index.search(current, recent, 2000, {maximumDocuments:32, allowedDocumentIds})
+        const result = await this.index.search(current, recent, options.timeoutMs ?? 2000, {maximumDocuments:32, allowedDocumentIds})
         if (this.disposed || snapshots !== this.snapshots) return []
         const eligible = resolveHistoricalSourceMatchesById({ ...options, messages,
             messageIds:result.matches.map(match => match.documentId) })
