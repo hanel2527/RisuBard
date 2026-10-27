@@ -848,10 +848,15 @@ export function inquireMarkdownDocuments(
             labels.length > 0 ? `${labels.join('\n')}\n${content}` : content,
             perSource,
         )
+        // When the scene's original text comes along, the label and title are enough to place it.
+        const heading = candidate.document.type === 'event'
+            ? [...labels, `## ${candidate.document.title}`, '[Summary omitted: the original text of this scene follows]'].join('\n')
+            : undefined
         return {
             ...candidate,
             content: boundedContent,
             tokens: countInquiryTokens(boundedContent),
+            ...(heading ? { heading, headingTokens: countInquiryTokens(heading) } : {}),
         }
     })
     const detailedIntent = /(?:자세히|상세히|모든\s+근거|근거까지|전부|모두|in detail|all evidence)/i
@@ -1009,16 +1014,33 @@ export function inquireMarkdownDocuments(
     // the best-matching scene arrives whole before weaker summaries use the room.
     // Pages never give way here; their own lane is the target budget.
     for (const candidate of eventCandidates) {
-        if (!addOptionalIfFits(candidate, 'event')) continue
-        for (const messageId of candidate.document.sourceMessageIds) {
-            if (selectedEventSources.has(messageId)) continue
+        const newSourceIds = candidate.document.sourceMessageIds
+            .filter((messageId) => !selectedEventSources.has(messageId))
+        for (const messageId of newSourceIds) {
             selectedEventSources.set(messageId, candidate.document.title)
             if (semanticPassages.has(candidate.document.id)) {
                 semanticEventSourceDocuments.set(messageId, candidate.document.id)
             }
-            const match = suppliedSources.get(messageId)
-            if (match) addSource(prepareSource(match))
         }
+        const originals = newSourceIds.flatMap((messageId) => {
+            const match = suppliedSources.get(messageId)
+            return match ? [prepareSource(match)] : []
+        })
+        // A scene whose original fits arrives as heading plus original, so two
+        // scenes' originals fit where one summary and one original did before.
+        const originalTokens = originals.reduce((sum, source) => sum + source.tokens, 0)
+        // A semantic passage of the summary is kept: it is the part that matched, not a repeat of the original.
+        const compact = originals.length > 0 && candidate.heading !== undefined
+            && !semanticPassages.has(candidate.document.id)
+            && selectedSourceMatches.length + originals.length <= sourceLimit
+            && selectedTokens + candidate.headingTokens! + originalTokens <= tokenBudget.maximum
+            ? { ...candidate, content: candidate.heading, tokens: candidate.headingTokens! }
+            : undefined
+        if (!addOptionalIfFits(compact ?? candidate, 'event')) {
+            for (const messageId of newSourceIds) selectedEventSources.delete(messageId)
+            continue
+        }
+        for (const source of originals) addSource(source)
     }
     const evidenceRequests = [...selectedEventSources]
         .slice(0, sourceLimit)

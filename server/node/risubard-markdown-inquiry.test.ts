@@ -691,6 +691,28 @@ describe('progressive Markdown inquiry', () => {
         expect(names.filter((_, index) => context.includes(`현재마커${index}:`))).toEqual(names)
     })
 
+    test('a scene whose original comes along keeps only its heading, so two scenes fit whole', () => {
+        const scene = (id: string, title: string, messageId: string) => document({ id, type: 'event', title,
+            relativePath: `events/${id}.md`, sourceMessageIds: [messageId],
+            content: `## ${title}\n\n` + `- ${title} 장면에서 꽃다발 이야기가 길게 이어졌다.`.repeat(12) })
+        const original = (messageId: string, occurredAt: number, text: string) => ({
+            messageId, role: 'assistant' as const, occurredAt, score: 1_000, content: `${text} `.repeat(15) })
+        const result = inquireMarkdownDocuments({
+            currentInput: '던진 꽃다발이 다음 날 아침 어디 있었는지 기억나? 던진 꽃다발 다음 날 아침',
+            documents: [scene('throw', '던진 꽃다발', 'turn-1'), scene('morning', '다음 날 아침 꽃다발', 'turn-7')],
+            sourceMatches: [original('turn-1', 1, '폐품상은 꽃다발을 바닥에 던졌다.'),
+                original('turn-7', 7, '눈을 뜨니 배 위에 꽃다발이 올려져 있었다.')],
+            tokenBudget: { target: 200, events: 2_000, perSource: 1_000, maximum: 1_100 },
+        })
+        const ids = result.sources.map((source) => source.id)
+        expect(ids).toContain('narrative-memory:source:turn-1:1')
+        expect(ids).toContain('narrative-memory:source:turn-7:7')
+        for (const event of result.sources.filter((source) => source.id.includes(':wiki:events/'))) {
+            expect(event.content).toContain('[Summary omitted: the original text of this scene follows]')
+        }
+        expect(result.metrics.selectedTokens).toBeLessThanOrEqual(1_100)
+    })
+
     test('a long canon page gives way to the original text of the selected event', () => {
         const result = inquireMarkdownDocuments({
             currentInput: '유메미, 마지막 식량 섭취 때 내가 뭘 먹었지?',
