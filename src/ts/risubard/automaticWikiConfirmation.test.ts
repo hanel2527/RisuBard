@@ -60,6 +60,23 @@ describe('automatic BardWiki confirmation', () => {
         expect(runner.slice(0, runner.search(/\r?\n\}\r?\n/))).toMatch(/risubardMemoryConfirmed !== true\)+ break/)
     })
 
+    test('a user retry or additional analysis replaces the chat\'s analysis in flight instead of queueing behind it', () => {
+        const processSource = readFileSync('src/ts/process/index.svelte.ts', 'utf8')
+        const body = (name: string) => {
+            const start = processSource.indexOf(`export async function ${name}(`)
+            const rest = processSource.slice(start)
+            return rest.slice(0, rest.search(/\r?\n\}\r?\n/))
+        }
+        for (const name of ['retryNarrativeBacklog', 'forceCurrentNarrativeWikiUpdate']) {
+            const source = body(name)
+            const restart = source.indexOf('await restartChatWikiAnalysis(')
+            expect(restart, name).toBeGreaterThan(0)
+            expect(restart, name).toBeLessThan(source.search(/processNarrativeBacklog\(|confirmProjectedNarrativeTurn\(/))
+        }
+        // Queued analyses of that chat are dropped too, so they cannot hang on the same provider again.
+        expect(processSource).toMatch(/wikiChatCancellationEpoch\(chatKey\) === chatEpoch/)
+    })
+
     test('keeps configurable confirmation delay out of the product path', () => {
         const processSource = readFileSync('src/ts/process/index.svelte.ts', 'utf8')
         const currentChatSettings = readFileSync(

@@ -47,7 +47,7 @@ import {
     projectRecentMemoryMessages,
     type MemoryAnalysisMessage,
 } from "../risubard/memoryAnalysisClient";
-import { enqueueNarrativeConfirmation } from '../risubard/narrativeConfirmationQueue';
+import { enqueueNarrativeConfirmation, narrativeConfirmationsSettled } from '../risubard/narrativeConfirmationQueue';
 import { groupNarrativeBacklog, NARRATIVE_BACKLOG_TURNS_PER_RUN, withoutRepeatedMessages } from '../risubard/narrativeBacklogBatch';
 import { projectActiveNarrativeSources } from "../risubard/sourceProjection";
 import {
@@ -132,8 +132,10 @@ import {
 import { completeMemoryWikiFork } from '../risubard/memoryWikiFork';
 import {
     beginWikiGeneration,
+    cancelChatWikiGeneration,
     endWikiGeneration,
     wikiCancellationEpoch,
+    wikiChatCancellationEpoch,
 } from '../risubard/wikiGenerationState';
 import { composePromptBlockOverlay } from '../promptBlockOverlay';
 import {
@@ -254,10 +256,12 @@ async function confirmProjectedNarrativeTurn(input: {
         // Analyses of one chat run one at a time; a parallel run would save
         // canon against a stale content hash and lose that turn's update.
         // A cancel while this one waits in the queue drops it as well.
+        const chatKey = JSON.stringify([input.characterId, input.chatId])
         const epoch = wikiCancellationEpoch()
+        const chatEpoch = wikiChatCancellationEpoch(chatKey)
         return await enqueueNarrativeConfirmation(
-            JSON.stringify([input.characterId, input.chatId]),
-            () => wikiCancellationEpoch() === epoch
+            chatKey,
+            () => wikiCancellationEpoch() === epoch && wikiChatCancellationEpoch(chatKey) === chatEpoch
                 ? runNarrativeConfirmation(input, key)
                 : Promise.resolve(false),
         )
@@ -571,14 +575,29 @@ async function runNarrativeBacklog(input: {
     }
 }
 
+/**
+ * A retry the user asks for replaces this chat's analysis still in flight. A
+ * provider that never answers holds the request for minutes per attempt, and a
+ * retry queued behind it would only wait with it.
+ */
+async function restartChatWikiAnalysis(characterId: string, chatId: string): Promise<void> {
+    const key = JSON.stringify([characterId, chatId])
+    cancelChatWikiGeneration(key, `analysis:${key.slice(0, -1)},`)
+    await narrativeConfirmationsSettled(key)
+    // The cancelled run releases its duplicate guard just after the queue settles.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
 /** Runs the current chat's waiting wiki turns now, from the oldest. */
 export async function retryNarrativeBacklog(): Promise<void> {
     const character = DBState.db.characters[get(selectedCharID)]
     const chat = character?.chats[character.chatPage]
     if (!character || !chat) return
+    const chatId = ensureNarrativeSessionChatId(chat, v4)
+    await restartChatWikiAnalysis(character.chaId, chatId)
     await processNarrativeBacklog({
         characterId: character.chaId,
-        chatId: ensureNarrativeSessionChatId(chat, v4),
+        chatId,
     })
 }
 
@@ -675,9 +694,11 @@ export async function forceCurrentNarrativeWikiUpdate(): Promise<boolean> {
         { includeConfirmed: true, ignoreOocTurns: true }
     )
     if (!projected) return false
+    const chatId = ensureNarrativeSessionChatId(chat, v4)
+    await restartChatWikiAnalysis(character.chaId, chatId)
     return confirmProjectedNarrativeTurn({
         characterId: character.chaId,
-        chatId: ensureNarrativeSessionChatId(chat, v4),
+        chatId,
         additionalAnalysis: true,
         excludeCanonicalDocumentIds: target.risubardCanonicalReceipt
             ?.changes
