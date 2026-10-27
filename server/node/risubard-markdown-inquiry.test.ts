@@ -679,6 +679,46 @@ describe('progressive Markdown inquiry', () => {
         ])
     })
 
+    test('a long canon page gives way to the original text of the selected event', () => {
+        const result = inquireMarkdownDocuments({
+            currentInput: '유메미, 마지막 식량 섭취 때 내가 뭘 먹었지?',
+            documents: [
+                document({ id: 'yumemi', type: 'character', title: '유메미', relativePath: 'characters/yumemi.md',
+                    content: '## 유메미\n\n' + '유메미는 플라네타리움의 해설원 로봇이다. '.repeat(200) }),
+                document({ id: 'meal', type: 'event', title: '마지막 식량 섭취', relativePath: 'events/meal.md',
+                    sourceMessageIds: ['turn-5'], content: '## 마지막 식량 섭취\n\n- 배낭의 마지막 식량을 먹었다.' }),
+                document({ id: 'store', type: 'event', title: '식량 이야기', relativePath: 'events/store.md',
+                    sourceMessageIds: ['turn-9'], content: '## 식량 이야기\n\n- 식량이 바닥났다.' }),
+            ],
+            // Lexical recall scored the asked-for turn low; a requested turn came back at the resolver's score.
+            sourceMatches: [
+                { messageId: 'turn-9', role: 'assistant', occurredAt: 9, score: 1_000, content: '식량 창고는 비어 있었다. '.repeat(20) },
+                { messageId: 'turn-5', role: 'assistant', occurredAt: 5, score: 2, content: '정수기로 거른 물에서 녹 냄새가 났다. '.repeat(12) + '마지막 알루미늄 팩의 하드 비스킷을 물과 함께 삼켰다.' },
+            ],
+            sourceLimit: 1,
+            tokenBudget: { target: 700, events: 700, perSource: 400, maximum: 1_200 },
+        })
+        const sources = result.sources.map(source => source.id)
+        expect(sources).toContain('narrative-memory:source:turn-5:5')
+        expect(sources).not.toContain('narrative-memory:source:turn-9:9')
+        expect(sources).toContain('narrative-memory:wiki:events/meal.md')
+        expect(result.sources.find(source => source.id === 'narrative-memory:wiki:characters/yumemi.md')?.tokens ?? 0)
+            .toBeLessThan(400)
+    })
+
+    test('long canon pages placed before events leave room for the matching event', () => {
+        const page = (id: string, title: string) => document({ id, type: 'character', title,
+            relativePath: `characters/${id}.md`, content: `## ${title}\n\n` + `${title}는 프로그램 카드를 기억한다. `.repeat(200) })
+        const result = inquireMarkdownDocuments({
+            currentInput: '유메미, 폐품상에게 뽑아 준 프로그램 카드에 찍힌 제목은?',
+            documents: [page('yumemi', '유메미'), page('junker', '폐품상'), document({
+                id: 'card', type: 'event', title: '프로그램 카드 출력', relativePath: 'events/card.md',
+                content: '## 프로그램 카드 출력\n\n- 이번 달 투영 제목이 찍힌 프로그램 카드를 뽑아 주었다.' })],
+            tokenBudget: { target: 800, events: 800, perSource: 400, maximum: 1_200 },
+        })
+        expect(result.sources.map(source => source.id)).toContain('narrative-memory:wiki:events/card.md')
+    })
+
     test('labels event sources with their canonical title and stable ID', () => {
         const result = inquireMarkdownDocuments({
             currentInput: '네 처녀의 실종을 확인한다.',

@@ -887,14 +887,15 @@ export function inquireMarkdownDocuments(
         candidate: (typeof prepared)[number],
         lane: 'map' | 'event',
         allowTrim = false,
+        laneLimit?: number,
     ) => {
         const isEvent = candidate.document.type === 'event'
         const laneTokens = lane === 'event'
             ? selectedEventLaneTokens
             : selectedMapTokens
-        const laneBudget = lane === 'event'
+        const laneBudget = laneLimit ?? (lane === 'event'
             ? tokenBudget.events
-            : selectedMapTokenBudget
+            : selectedMapTokenBudget)
         if (selectedIds.has(candidate.document.id)
             || selected.length >= optionalDocumentLimit) {
             return false
@@ -930,7 +931,9 @@ export function inquireMarkdownDocuments(
         !requiredIds.has(item.document.id)
         && item.document.type !== 'event'
     ).slice(0, MAX_MAP_ANCHORS_BEFORE_EVENTS)) {
-        addOptionalIfFits(candidate, 'map')
+        // Pages placed before events keep half of the map lane free, so one or two
+        // long canon pages cannot crowd every event out; the rest return trimmed last.
+        addOptionalIfFits(candidate, 'map', false, Math.floor(selectedMapTokenBudget / 2))
     }
     if (eventEvidenceIntent) {
         for (const candidate of prepared.filter((item) =>
@@ -978,6 +981,7 @@ export function inquireMarkdownDocuments(
             }
         }
     }
+    const eventRank = new Map([...selectedEventSources.keys()].map((messageId, index) => [messageId, index]))
     const evidenceRequests = [...selectedEventSources]
         .slice(0, sourceLimit)
         .map(([messageId, eventTitle]) => ({ messageId, eventTitle,
@@ -1033,16 +1037,38 @@ export function inquireMarkdownDocuments(
             || match.retrieval === 'semantic' || strongLexicalSourceIds.has(match.messageId))
         .sort((left, right) =>
             Number(right.routed) - Number(left.routed)
+            // Routed sources follow the rank of the event that asked for them,
+            // whether the text arrived from lexical recall or by request.
+            || (left.routed ? (eventRank.get(left.messageId) ?? 0) - (eventRank.get(right.messageId) ?? 0) : 0)
             || right.effectiveScore - left.effectiveScore
             || right.occurredAt - left.occurredAt
             || left.messageId.localeCompare(right.messageId))
     const selectedSourceMatches: typeof preparedSourceMatches = []
     const selectedSourceIds = new Set<string>()
+    const fitsSource = (tokens: number) => selectedTokens + tokens <= tokenBudget.maximum
+        && selectedMapTokens + tokens <= selectedMapTokenBudget
+    // A selected event's original text outranks whole canon pages: pages that
+    // crowd it out give way here and come back trimmed in the final pass.
+    const makeRoomForSource = (tokens: number): boolean => {
+        const pages = selected.filter((item) => item.document.type !== 'event'
+            && !requiredIds.has(item.document.id))
+        const needed = Math.max(selectedTokens + tokens - tokenBudget.maximum,
+            selectedMapTokens + tokens - selectedMapTokenBudget)
+        if (pages.reduce((sum, page) => sum + page.tokens, 0) < needed) return false
+        while (!fitsSource(tokens)) {
+            const page = pages.pop()!
+            selected.splice(selected.indexOf(page), 1)
+            selectedIds.delete(page.document.id)
+            selectedTokens -= page.tokens
+            selectedMapTokens -= page.tokens
+        }
+        return true
+    }
     for (const match of preparedSourceMatches) {
         if (selectedSourceMatches.length >= sourceLimit
             || selectedSourceIds.has(match.messageId)
-            || selectedTokens + match.tokens > tokenBudget.maximum
-            || selectedMapTokens + match.tokens > selectedMapTokenBudget) continue
+            || (!fitsSource(match.tokens)
+                && !(match.routed && makeRoomForSource(match.tokens)))) continue
         selectedSourceMatches.push(match)
         selectedSourceIds.add(match.messageId)
         selectedTokens += match.tokens
