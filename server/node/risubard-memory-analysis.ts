@@ -1,3 +1,4 @@
+import { wikiPageTokenCap } from '../../src/ts/risubard/wikiRetrievalLimits'
 import type {
     EvidenceRef,
     NarrativeMemoryState,
@@ -60,6 +61,7 @@ import {
 
 import {
     RISUBARD_INQUIRY_SOURCE_TOKEN_BUDGET_DEFAULT,
+    RISUBARD_INQUIRY_TARGET_TOKEN_BUDGET_DEFAULT,
     buildRisuBardCanonicalWritingPolicy,
     buildRisuBardEventWritingPolicy,
     normalizeRisuBardAdditionalSearchLimit,
@@ -2282,8 +2284,11 @@ export function createMemoryAnalysisRunner(
                                 // A model error, or a card over the retrieval ceiling that cannot shrink, waits for new sources.
                                 if (failedSources === undefined
                                     || [...currentSources].filter((id) => !failedSources.has(id)).length >= MAINTENANCE_COOLDOWN_SOURCES) {
-                                    const perSourceTokens = snapshot.inquiryTokenBudget?.perSource
-                                        ?? RISUBARD_INQUIRY_SOURCE_TOKEN_BUDGET_DEFAULT
+                                    // Upkeep keeps a card within its retrieval share, so recall rarely cuts it.
+                                    const perSourceTokens = wikiPageTokenCap({
+                                        target: snapshot.inquiryTokenBudget?.target ?? RISUBARD_INQUIRY_TARGET_TOKEN_BUDGET_DEFAULT,
+                                        perSource: snapshot.inquiryTokenBudget?.perSource ?? RISUBARD_INQUIRY_SOURCE_TOKEN_BUDGET_DEFAULT,
+                                    })
                                     const maintained = await maintainCharacterCanon({
                                         markdown: rewritten,
                                         title: entry.target.title,

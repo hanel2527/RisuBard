@@ -679,6 +679,18 @@ describe('progressive Markdown inquiry', () => {
         ])
     })
 
+    test('a scene with several named characters keeps each one\'s current state', () => {
+        const names = ['미도리야', '바쿠고', '토도로키', '우라라카']
+        const documents = names.map((name, index) => document({ id: `character.${index}`, type: 'character', title: name,
+            relativePath: `characters/${index}.md`, content: [`## ${name}`, '', '### 현재 상태', '', `- 현재마커${index}: 훈련장에서 대기 중이다.`, '',
+                '### 지식과 비밀', '', ...Array.from({ length: 80 }, (_, turn) => `- ${turn + 1}번째 훈련에서 새 기술을 익혔다.`)].join('\n') }))
+        const result = inquireMarkdownDocuments({ documents, contextSelection: 'auto',
+            currentInput: `${names.join(', ')} 모두 훈련장에 모였다. 다들 지금 몸 상태가 어때?`,
+            tokenBudget: { target: 4_000, events: 3_000, perSource: 2_000, maximum: 7_500 } })
+        const context = result.sources.map((source) => source.content).join('\n')
+        expect(names.filter((_, index) => context.includes(`현재마커${index}:`))).toEqual(names)
+    })
+
     test('a long canon page gives way to the original text of the selected event', () => {
         const result = inquireMarkdownDocuments({
             currentInput: '유메미, 마지막 식량 섭취 때 내가 뭘 먹었지?',
@@ -1257,30 +1269,38 @@ describe('progressive Markdown inquiry', () => {
         }))
         const isSource = (source: { id: string }) => source.id.startsWith('narrative-memory:source:')
 
-        test('trims it to the room that is left instead of dropping it', () => {
+        test('gives each named page a share of the page lane and trims the last to what is left', () => {
             const input = { documents, currentInput: '미오와 하루가 함께 걷는다.' }
-            const trimmed = inquireMarkdownDocuments({
+            // A 1,200-token lane holds pages of at most 512 tokens, so both characters fit.
+            const shared = inquireMarkdownDocuments({
                 ...input, tokenBudget: { target: 1200, events: 256, perSource: 1000, maximum: 3000 },
             })
-            expect(trimmed.sources).toHaveLength(2)
-            const [first, second] = trimmed.sources
-            expect(first.content.startsWith('[Partial canon excerpt')).toBe(false)
-            expect(first.tokens).toBeGreaterThanOrEqual(900)
-            expect(second.content.startsWith(marker)).toBe(true)
-            expect(second.content).toContain('### 현재 상태')
-            expect(second.tokens).toBe(tokens(second.content))
-            expect(second.tokens).toBeLessThanOrEqual(1200 - first.tokens)
-            expect(trimmed.metrics.selectedTokens).toBeLessThanOrEqual(1200)
+            expect(shared.sources).toHaveLength(2)
+            for (const source of shared.sources) {
+                expect(source.tokens).toBeLessThanOrEqual(512)
+                expect(source.content).toContain('### 현재 상태')
+            }
+            expect(shared.metrics.selectedTokens).toBeLessThanOrEqual(1200)
 
-            // Less than 256 tokens of room is not worth a fragment.
             const tight = inquireMarkdownDocuments({
                 ...input, tokenBudget: { target: 1000, events: 256, perSource: 1000, maximum: 3000 },
             })
-            expect(tight.sources).toHaveLength(1)
-            expect(tight.sources[0].content.startsWith('[Partial canon excerpt')).toBe(false)
+            expect(tight.sources).toHaveLength(2)
+            const [first, second] = tight.sources
+            expect(first.content.startsWith('[Partial canon excerpt')).toBe(false)
+            expect(second.content.startsWith(marker)).toBe(true)
+            expect(second.content).toContain('### 현재 상태')
+            expect(second.tokens).toBe(tokens(second.content))
+            expect(second.tokens).toBeLessThanOrEqual(1000 - first.tokens)
+
+            // Less than 256 tokens of room is not worth a fragment.
+            const tiny = inquireMarkdownDocuments({
+                ...input, tokenBudget: { target: 700, events: 256, perSource: 1000, maximum: 3000 },
+            })
+            expect(tiny.sources).toHaveLength(1)
         })
 
-        test('only fills what is left after whole documents and original evidence are packed', () => {
+        test('original evidence uses the rest of the cap and never takes room from pages', () => {
             const input = {
                 documents, currentInput: '미오와 하루, 그때 무슨 말을 했는지 자세히 떠올려 줘.',
                 sourceMatches: [{
@@ -1288,25 +1308,22 @@ describe('progressive Markdown inquiry', () => {
                     content: '미오는 북문 앞에서 하루에게 약속을 지키겠다고 말했다. '.repeat(3).trim(),
                 }],
             }
-            const trimmed = inquireMarkdownDocuments({
-                ...input, tokenBudget: { target: 1400, events: 256, perSource: 1000, maximum: 3000 },
+            const result = inquireMarkdownDocuments({
+                ...input, tokenBudget: { target: 1100, events: 256, perSource: 1000, maximum: 1600 },
             })
-            const evidence = trimmed.sources.filter(isSource)
-            const canonSources = trimmed.sources.filter((source) => !isSource(source))
+            const evidence = result.sources.filter(isSource)
+            const pages = result.sources.filter((source) => !isSource(source))
             expect(evidence).toHaveLength(1)
-            expect(canonSources).toHaveLength(2)
-            expect(canonSources[0].content.startsWith('[Partial canon excerpt')).toBe(false)
-            expect(canonSources[1].content.startsWith(marker)).toBe(true)
-            expect(canonSources[1].tokens).toBeLessThanOrEqual(1400 - canonSources[0].tokens - evidence[0].tokens)
-            expect(trimmed.metrics.selectedTokens).toBeLessThanOrEqual(1400)
+            expect(pages).toHaveLength(2)
+            expect(pages.reduce((sum, source) => sum + source.tokens, 0)).toBeLessThanOrEqual(1100)
+            expect(result.metrics.selectedTokens).toBeLessThanOrEqual(1600)
 
-            // Without room for a fragment the evidence stays and the second document is absent.
-            const tight = inquireMarkdownDocuments({
-                ...input, tokenBudget: { target: 1100, events: 256, perSource: 1000, maximum: 3000 },
+            // With no room left under the cap, the pages stay and the evidence is left out.
+            const full = inquireMarkdownDocuments({
+                ...input, tokenBudget: { target: 1100, events: 256, perSource: 1000, maximum: 1050 },
             })
-            expect(tight.sources.filter(isSource)).toHaveLength(1)
-            expect(tight.sources.filter((source) => !isSource(source))).toHaveLength(1)
-            expect(tight.sources.some((source) => source.content.startsWith('[Partial canon excerpt'))).toBe(false)
+            expect(full.sources.filter(isSource)).toHaveLength(0)
+            expect(full.sources.filter((source) => !isSource(source)).length).toBeGreaterThan(0)
         })
     })
 })
