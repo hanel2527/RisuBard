@@ -2270,8 +2270,9 @@ export function createMemoryAnalysisRunner(
                                 }
                             }
                             let maintenanceNote: string | undefined
+                            // A reboot replays the whole story, so its cards need the same upkeep as live turns.
                             if (entry.target && entry.candidate.type !== 'scene' && !entry.storyArcPlan
-                                && !snapshot.rebootTurns && !snapshot.historicalReanalysis
+                                && !snapshot.historicalReanalysis
                                 && !snapshot.additionalAnalysis) {
                                 const attemptKey = `${snapshot.characterId}\u0000${snapshot.chatId}\u0000${entry.target.id}`
                                 // Stored documents keep only their last source IDs, so count IDs unseen at the last attempt.

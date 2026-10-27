@@ -3831,7 +3831,7 @@ describe('canonical maintenance during turn analysis', () => {
         dispositions: knowledge.map((_, old) => ({ role: 'knowledge', old, action: 'merged', newIndex: 0,
             moveTo: null, movedText: null, documentId: null })),
     })
-    const setup = (maintenance: () => Promise<string>, options: { sources?: string[]; saveFails?: boolean } = {}) => {
+    const setup = (maintenance: () => Promise<string>, options: { sources?: string[]; saveFails?: boolean; reboot?: boolean } = {}) => {
         const targetSources = options.sources ?? ['old-1']
         const saveCanonicalDocument = vi.fn(async (input) => {
             if (options.saveFails) throw new Error('disk full')
@@ -3839,8 +3839,11 @@ describe('canonical maintenance during turn analysis', () => {
                 type: 'character' as const, relativePath: 'characters/mio.md', contentHash: 'mio-new' }
         })
         const analyze = vi.fn(async (request: MemoryAnalysisModelRequest) => {
-            if (request.format === 'memory-draft') return JSON.stringify({
-                title: '비', establishedEvents: ['비가 그쳤다.'], stateChanges: [], characterKnowledge: [],
+            if (request.format === 'memory-draft' || request.format === 'reboot-batch') return JSON.stringify({
+                ...(options.reboot
+                    ? { schemaVersion: 1, turns: [{ title: '비', establishedEvents: ['비가 그쳤다.'] }] }
+                    : { title: '비', establishedEvents: ['비가 그쳤다.'] }),
+                stateChanges: [], characterKnowledge: [],
                 persistentFacts: [], openContinuity: [], canonicalUpdateCandidates: [{
                     type: 'character', title: '미오', reason: '날씨', action: 'update',
                     targetDocumentId: 'character.mio', confidence: 1,
@@ -3859,6 +3862,8 @@ describe('canonical maintenance during turn analysis', () => {
                 }]),
                 saveConfirmedTurn: vi.fn(async () => undefined),
                 saveCanonicalDocument,
+                beginRebootBatch: vi.fn(async () => ({ canonicalCount: 0 })),
+                recordRebootBatchReceipt: vi.fn(async (input) => input.receipt),
             },
             onError: vi.fn(), analyze,
         })
@@ -3889,6 +3894,13 @@ describe('canonical maintenance during turn analysis', () => {
         expect(result.canonicalReceipt?.warnings).toEqual([])
         expect(result.canonicalReceipt?.notes).toHaveLength(1)
         expect(result.canonicalReceipt?.notes?.[0]).toMatch(/^정본 정리: 미오 지식과 비밀 14→1항목 \(\d+→\d+토큰\)$/u)
+    })
+
+    test('maintains an oversized card during a wiki reboot as well', async () => {
+        const { run, analyze, saveCanonicalDocument } = setup(async () => merged, { reboot: true })
+        await run('assistant-1', { rebootTurns: [{ assistantMessageId: 'assistant-1', sourceMessageIds: ['assistant-1'] }] })
+        expect(maintenanceCalls(analyze)).toBe(1)
+        expect(saveCanonicalDocument.mock.calls[0][0].markdown).toContain('### 지식과 비밀\n\n- [[하루]]에게 마을 규칙을 들었다.')
     })
 
     test('does not maintain a card that stays below the retrieval ceiling', async () => {
