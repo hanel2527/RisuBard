@@ -31,7 +31,7 @@ interface CharacterVaultCloneOptions {
 
 type VaultDatabase = Pick<
     Database,
-    'characters' | 'characterOrder' | 'characterVault'
+    'characters' | 'characterOrder' | 'characterVault' | 'risuBardNewChatHistory'
 >
 
 function folderIds(db: VaultDatabase): Set<string> {
@@ -112,7 +112,10 @@ export function createCharacterVaultClones(
             )
         }
         else {
-            clone.chats = [emptyCloneChat(options.createId())]
+            clone.chats = [{
+                ...emptyCloneChat(options.createId()),
+                ...(db.risuBardNewChatHistory ? { risuBardInitializeHistory: true } : {}),
+            }]
             clone.chatFolders = []
             clone.chatPage = 0
         }

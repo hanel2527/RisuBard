@@ -74,11 +74,12 @@
     })
     $effect(() => {
         const characterId = currentCharacter?.chaId
-        const chatId = currentCharacter?.chats[currentCharacter.chatPage]?.id
+        const chat = currentCharacter?.chats[currentCharacter.chatPage]
+        const chatId = chat?.id
         activeHistory = null
         if (!characterId || !chatId) return
         let active = true
-        void getStoryHistory(characterId, chatId).then((state) => {
+        void untrack(() => getStoryHistory(characterId, chatId, chat)).then((state) => {
             if (active) activeHistory = state
         }).catch((error) => { console.warn('[RisuBard history status]', error) })
         const unsubscribe = subscribeStoryHistory((detail) => {
@@ -149,7 +150,7 @@
             if(!character.chaId || !chat.id){
                 throw new Error('채팅 저장에는 안정적인 캐릭터와 채팅 ID가 필요합니다.')
             }
-            const history = await getStoryHistory(character.chaId, chat.id)
+            const history = await getStoryHistory(character.chaId, chat.id, chat)
             if (history.mode !== 'legacy') throw new Error('이력 모드에서는 덮어쓰기 대신 북마크를 사용해 주세요.')
             const saved = await createMemorySaveSlot({
                 characterId: character.chaId,
@@ -185,7 +186,7 @@
         const character = currentCharacter
         const chat = character?.chats[character.chatPage]
         if(!character?.chaId || !chat?.id || chat._placeholder || savingSlot) return
-        const history = await getStoryHistory(character.chaId, chat.id)
+        const history = await getStoryHistory(character.chaId, chat.id, chat)
         if (history.mode === 'history') {
             savingSlot = true
             try {
@@ -208,7 +209,7 @@
         const character = currentCharacter
         const chat = character?.chats[character.chatPage]
         if(!character?.chaId || !chat?.id || chat._placeholder || savingSlot) return
-        const history = await getStoryHistory(character.chaId, chat.id)
+        const history = await getStoryHistory(character.chaId, chat.id, chat)
         if (history.mode === 'history') {
             if (!history.quickSaveId) { notifyInfo('아직 퀵 북마크가 없습니다.'); return }
             if (!await alertConfirm('현재 작업을 보존한 뒤 퀵 북마크로 이동할까요?')) return
@@ -238,7 +239,7 @@
         const chat = character?.chats[character.chatPage]
         if(!character || character.chaId !== characterId || chat?.id !== chatId
             || chat._placeholder || chat.isStreaming || savingSlot) return
-        const history = await getStoryHistory(characterId, chatId)
+        const history = await getStoryHistory(characterId, chatId, chat)
         if (history.mode !== 'legacy') return
         const previousTurn = chat.risuBardLastAutosaveTurn
         chat.risuBardLastAutosaveTurn = turnCount
@@ -288,7 +289,7 @@
         if(currentChat.isStreaming){
             throw new Error('응답 생성이 끝난 뒤 저장 파일을 불러와 주세요.')
         }
-        const history = await getStoryHistory(character.chaId, currentChat.id)
+        const history = await getStoryHistory(character.chaId, currentChat.id, currentChat)
         if (history.mode !== 'legacy') throw new Error('구형 슬롯은 이력 모드에서 불러올 수 없습니다.')
         const destinationChatId = asNewChat ? v4() : currentChat.id
         const prepared = await prepareMemorySaveLoad({

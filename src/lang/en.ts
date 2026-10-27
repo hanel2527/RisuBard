@@ -688,6 +688,7 @@ export const languageEnglish = {
     risuBardQuickSave: "Quicksave",
     risuBardQuickLoad: "Quickload",
     risuBardShowSaveLoadShortcuts: "Show save / load shortcut buttons",
+    risuBardNewChatHistory: "Use Wiki VCS for new chats",
     risuBardSaveLoadShortcutClose: "Close save/load shortcuts",
     risuBardSaveLoadShortcutHideConfirm: "Turn off the save/load buttons? You can turn them back on under BardWiki / Common options.",
     chatUploadChunkSize: "Chat upload chunk size (MiB)",

@@ -66,7 +66,6 @@
     let error = $state('')
     let history = $state<StoryHistoryState | null>(null)
     let transitionBusy = $state('')
-    let transitionReport = $state('')
     let requestSequence = 0
     let previewSequence = 0
     let workspaceElement = $state<HTMLElement | null>(null)
@@ -132,7 +131,7 @@
         if (!preserveHistory) history = null
         error = ''
         try {
-            const state = await getStoryHistory(characterId, currentChatId)
+            const state = await getStoryHistory(characterId, currentChatId, currentChat)
             if (sequence !== requestSequence) return
             history = state
             if (state.mode === 'history') return
@@ -268,22 +267,19 @@
         const sequence = requestSequence
         transitionBusy = '변환 전 데이터와 공간을 검사하는 중…'
         error = ''
-        transitionReport = ''
         try {
             const action = toHistory ? migrateStoryHistory : rollbackStoryHistory
             const inspection = await action(character, chat, { dryRun: true })
             if (sequence !== requestSequence || !open) return
-            const report = inspection.report
-            const details = `기존 슬롯 ${report.legacySlots}개 · 이력 ${report.backups}개 · 예상 ${Math.ceil(report.estimatedBytes / 1024 / 1024)} MiB`
+            const space = `예상 공간: ${Math.ceil(inspection.report.estimatedBytes / 1024 / 1024)} MiB`
             if (!await alertConfirm(toHistory
-                ? `기존 슬롯과 현재 채팅을 보존하여 새 이력으로 이관할까요?\n${details}\n부모 관계를 알 수 없는 기존 슬롯은 독립 root가 됩니다.`
-                : `전환 이후의 모든 분기·채팅 전용 백업까지 고유한 구형 수동 슬롯으로 변환할까요?\n${details}\n디스크 사용량이 증가할 수 있습니다. 정확한 분기와 bind는 이력 아카이브에 보존됩니다.`)) return
+                ? `저장 방식을 위키 VCS로 바꿀까요?\n${space}`
+                : `모든 이력을 구형 슬롯으로 변환할까요?\n${space}`)) return
             if (sequence !== requestSequence || !open) return
             if (chat.isStreaming || (chat.id && $generationStates.has(chatGenKey(chat.id)))) throw new Error('응답 생성이 끝난 뒤 저장 형식을 변환해 주세요.')
-            transitionBusy = toHistory ? '원본을 보존하고 이관·검증하는 중…' : '모든 이력을 구형 슬롯으로 변환·검증하는 중…'
-            const result = await action(character, chat)
+            transitionBusy = '저장 형식 변환 중…'
+            await action(character, chat)
             if (sequence !== requestSequence) return
-            transitionReport = `변환 완료 · 슬롯 ${result.report.legacySlots}개 · 이력 ${result.report.backups}개${result.report.archivePath ? ` · 원본/분기 보존: ${result.report.archivePath}` : ''}`
             await refresh()
         } catch (cause) {
             if (sequence === requestSequence) error = cause instanceof Error ? cause.message : String(cause)
@@ -333,7 +329,6 @@
 
     <div class="save-ledger">
         {#if error}<p role="alert" class="save-ledger__error">{error}</p>{/if}
-        {#if transitionReport}<p role="status" class="save-transition-report">{transitionReport}</p>{/if}
         {#if transitionBusy}
             <div role="status" aria-live="polite" class="save-ledger__empty"><LoaderCircleIcon size={20} class="animate-spin" />{transitionBusy}</div>
         {:else if loading}
@@ -346,7 +341,6 @@
             <ShButton size="sm" onclick={() => void refresh()}>저장 모드 다시 읽기</ShButton>
         {:else}
             <div class="save-migration">
-                <span>구형 슬롯 모드 · 새 이력은 순환 덮어쓰기 없이 모든 분기를 보관합니다.</span>
                 <ShButton size="sm" disabled={Boolean(loadingId) || currentChat.isStreaming === true || Boolean(currentChat._placeholder)} onclick={() => void transition(true)}>기존 슬롯 이관 / 이력 시작</ShButton>
                 <label>구형 자동저장 간격 (턴) <input type="number" min="1" max="100" step="1" bind:value={DBState.db.risuBardAutosaveInterval} /></label>
                 <label>구형 순환 슬롯 수 <input type="number" min="1" max="20" step="1" bind:value={DBState.db.risuBardAutosaveRetention} /></label>
@@ -430,7 +424,6 @@
     .save-ledger { display: flex; height: 100%; min-height: 0; flex-direction: column; padding-top: .75rem; border-top: 1px solid var(--color-darkborderc); }
     .save-ledger__error { margin: 0 0 .5rem; color: var(--color-danger); font-size: .76rem; }
     .save-migration { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; padding-bottom: .65rem; font-size: .75rem; }
-    .save-transition-report { margin-bottom: .5rem; font-size: .75rem; overflow-wrap: anywhere; }
     .save-migration label { display: flex; gap: .3rem; align-items: center; }
     .save-migration input { width: 4rem; padding: .25rem; background: var(--color-darkbg); border: 1px solid var(--color-darkborderc); border-radius: .25rem; }
     .save-ledger__empty, .save-preview__empty { display: flex; min-height: 8rem; align-items: center; justify-content: center; gap: .45rem; color: var(--color-textcolor2); font-size: .78rem; }

@@ -49,7 +49,10 @@ async function request<T>(action: string, input: { characterId: string; chatId: 
         throw error
     }
 }
-export async function getStoryHistory(characterId: string, chatId: string): Promise<StoryHistoryState> {
+export async function getStoryHistory(characterId: string, chatId: string, chat?: Chat): Promise<StoryHistoryState> {
+    if (chat?.risuBardInitializeHistory && !chat._placeholder && !chat.isStreaming) {
+        return captureStoryChat(characterId, chat)
+    }
     if (!isNodeServer) return {
         mode: 'legacy', revision: 0, epoch: 0, headId: null, branchId: null,
         wikiCommitId: null, workingSnapshotId: null, quickSaveId: null, anchorMessageId: null,
@@ -65,11 +68,12 @@ function chatState(chat: Chat): Record<string, unknown> {
     applyMemorySavePromptSettings(state)
     delete state._placeholder
     delete state.risuBardWikiReboot
+    delete state.risuBardInitializeHistory
     delete state.activeStreamingDisplayOptimizationMode
     state.isStreaming = false
     return state as unknown as Record<string, unknown>
 }
-/** Legacy capture is deliberately a no-op until explicit migration; ordinary chat persistence is unchanged. */
+/** Existing legacy chats stay unchanged; new chats may opt into VCS at creation. */
 export function captureStoryChat(characterId: string, chat: Chat, kind: StoryCaptureInput['kind'] = 'working', options: { anchorMessageId?: string | null; operationId?: string } = {}): Promise<StoryHistoryState> {
     chat.id ||= v4()
     for (const message of chat.message) message.chatId ||= v4()
@@ -80,8 +84,16 @@ export function captureStoryChat(characterId: string, chat: Chat, kind: StoryCap
     const stateValue = chatState(chat)
     const encodedState = JSON.stringify(stateValue)
     return serial(characterId, chatId, async () => {
-        const current = await getStoryHistory(characterId, chatId)
-        if (current.mode === 'legacy') return current
+        let current = await getStoryHistory(characterId, chatId)
+        if (current.mode === 'legacy') {
+            if (!isNodeServer || !chat.risuBardInitializeHistory) return current
+            const initialized = await request<StoryTransitionResult>('migrate', {
+                characterId, chatId, operationId: `new-chat:${chatId}`,
+                chat: { ...stateValue, message: encoded.map(value => JSON.parse(value)) },
+            })
+            current = initialized.state
+        }
+        delete chat.risuBardInitializeHistory
         const key = identity(characterId, chatId)
         const cached = baselines.get(key)
         const baseline = cached?.snapshotId === current.workingSnapshotId ? cached : undefined

@@ -18,7 +18,7 @@ vi.mock('./memoryEvents', () => ({
     RISUBARD_MEMORY_UPDATED_EVENT: 'risubard-memory-updated',
     announceRisuBardMemoryUpdated: memoryUpdated,
 }))
-import { beginStoryWiki, captureStoryChat, finishStoryWiki, keepStoryWiki, loadStoryBackup, migrateStoryHistory, registerStoryWikiRetry, requireStoryWikiReady, retryStoryWiki } from './storyHistory'
+import { beginStoryWiki, captureStoryChat, finishStoryWiki, getStoryHistory, keepStoryWiki, loadStoryBackup, migrateStoryHistory, registerStoryWikiRetry, requireStoryWikiReady, retryStoryWiki } from './storyHistory'
 
 function initialState(): StoryHistoryState {
     return { mode: 'history', revision: 1, epoch: 0, headId: null, branchId: null,
@@ -31,7 +31,7 @@ function pending(status: StoryPendingWiki['status']): StoryPendingWiki {
         parentCommitId: 'wiki', epoch: 0, status, ...(status === 'failed' ? { error: 'partial write' } : {}) }
 }
 let state: StoryHistoryState
-let calls: Array<{ action: string; body: { delta: StoryChatDelta; operationId: string; outcome: string; destinationChatId: string } }>
+let calls: Array<{ action: string; body: { delta: StoryChatDelta; operationId: string; outcome: string; destinationChatId: string; chat?: Chat } }>
 let restored: Chat
 beforeEach(() => {
     state = initialState()
@@ -44,6 +44,10 @@ beforeEach(() => {
         const action = url.split('/').at(-1)!
         const body = JSON.parse(init.body as string)
         calls.push({ action, body })
+        if (action === 'migrate') {
+            state = initialState()
+            return Response.json({ state, report: {} })
+        }
         if (action === 'capture') state = { ...state, revision: state.revision + 1,
             headId: `backup-${state.revision}`, workingSnapshotId: `snapshot-${state.revision}` }
         if (action === 'begin-wiki') state = { ...state, pendingWiki: pending('writing') }
@@ -92,6 +96,38 @@ describe('incremental story history client', () => {
         state.mode = 'legacy'
         expect((await captureStoryChat('owner', chat('legacy'))).mode).toBe('legacy')
         expect(calls.some(call => call.action === 'capture')).toBe(false)
+    })
+    it('starts an opted-in chat once without re-enabling VCS after a legacy rollback', async () => {
+        state.mode = 'legacy'
+        const current = chat('new-history')
+        current.risuBardInitializeHistory = true
+        expect((await getStoryHistory('owner', current.id!, current)).mode).toBe('history')
+        expect(current.risuBardInitializeHistory).toBeUndefined()
+        const initial = calls.find(call => call.action === 'migrate')!.body.chat!
+        expect(initial.risuBardInitializeHistory).toBeUndefined()
+        expect(initial.message).toEqual(current.message)
+        expect(initial.scriptstate).toEqual({ turn: 2 })
+        state.mode = 'legacy'
+        expect((await captureStoryChat('owner', current)).mode).toBe('legacy')
+        expect(calls.filter(call => call.action === 'migrate')).toHaveLength(1)
+    })
+    it('keeps new-chat initialization pending after a failure and resumes it on the next capture', async () => {
+        state.mode = 'legacy'
+        const current = chat('failed-initialization')
+        current.risuBardInitializeHistory = true
+        const originalFetch = fetch
+        let fail = true
+        vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+            if (url.endsWith('/migrate') && fail) {
+                fail = false
+                return Response.json({ error: 'Disk unavailable' }, { status: 503 })
+            }
+            return originalFetch(url, init)
+        })
+        await expect(captureStoryChat('owner', current)).rejects.toThrow('Disk unavailable')
+        expect(current.risuBardInitializeHistory).toBe(true)
+        expect((await captureStoryChat('owner', current)).mode).toBe('history')
+        expect(current.risuBardInitializeHistory).toBeUndefined()
     })
     it('installs a committed checkout without an acknowledgment and preserves prompt settings and baseline', async () => {
         const current = chat('checkout')

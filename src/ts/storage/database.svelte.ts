@@ -938,6 +938,7 @@ export function setDatabase(data:Database){
             ? data.risuBardWikiMarkdownPreview
             : false
     data.showRisuBardSaveLoadShortcuts ??= true
+    data.risuBardNewChatHistory = data.risuBardNewChatHistory === true
     data.chatUploadChunkMiB = normalizeChatUploadChunkMiB(data.chatUploadChunkMiB)
     data.chatUploadChunkEnabled = data.chatUploadChunkEnabled === true
     data.externalChangeReview = data.externalChangeReview === true
@@ -1197,11 +1198,12 @@ export function newChatModelDefaults(
         | 'GLGlobalVariables' | 'togglePresetBaseline'> | null,
 ): Partial<Pick<Chat, 'useModelPreset' | 'modelBinding' | 'supaMemory' | 'bindedPersona'
     | 'bindedBotPreset' | 'usePromptPresetParams' | 'useLocallySetGlobalVariables'
-    | 'GLGlobalVariables' | 'togglePresetBaseline'>> {
+    | 'GLGlobalVariables' | 'togglePresetBaseline' | 'risuBardInitializeHistory'>> {
     const db = getDatabase()
     const defaults: ReturnType<typeof newChatModelDefaults> = {
         supaMemory: false,
         bindedPersona: getNewChatPersonaBinding(db, character, previousChat),
+        ...(db.risuBardNewChatHistory ? { risuBardInitializeHistory: true } : {}),
     }
     // A new chat keeps the previous chat's prompt binding, matching chat copy,
     // branch and wiki continuation.
@@ -1943,6 +1945,7 @@ export interface Database{
     risuBardMemoryCommandExpanded?: boolean
     risuBardMemoryEditorFieldsExpanded?: boolean
     showRisuBardSaveLoadShortcuts?: boolean
+    risuBardNewChatHistory?: boolean
     risuBardAutosaveInterval?: number
     chatUploadChunkMiB?: number
     chatUploadChunkEnabled?: boolean
@@ -2934,6 +2937,8 @@ export interface Chat{
     risuBardSettings?: import('../risubard/risuBardSettings').RisuBardChatSettings
     risuBardWikiReboot?: import('../risubard/wikiReboot').WikiRebootJob
     risuBardLastAutosaveTurn?: number
+    /** One-shot VCS initialization selected when this chat was created. */
+    risuBardInitializeHistory?: boolean
     sdData?:string
     suggestMessages?:string[]
     isStreaming?:boolean

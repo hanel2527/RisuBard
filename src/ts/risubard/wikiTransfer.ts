@@ -72,6 +72,7 @@ export async function startChatWithWiki(input: { characterId: string; chatId: st
     const source = owner?.chats.find(item => item.id === input.chatId)
     if (!owner || !source) throw new Error('원본 챗을 찾을 수 없습니다.')
     const chat = buildWikiContinuationChat(safeStructuredClone(source), v4())
+    if (DBState.db.risuBardNewChatHistory) chat.risuBardInitializeHistory = true
     const baseName = chat.name
     let suffix = 2
     while (owner.chats.some(item => item.name === chat.name)) chat.name = `${baseName} ${suffix++}`

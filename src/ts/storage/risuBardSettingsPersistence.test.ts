@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from 'vitest'
+import type { Database } from './database.svelte'
 
 vi.mock('../stores.svelte', () => ({
     DBState: { db: {} },
@@ -109,6 +110,26 @@ describe('RisuBard settings persistence', () => {
         expect(normalizeChat({ message: [], note: '', name: '', localLore: [] })).toMatchObject({
             supaMemory: false,
         })
+    })
+
+    test('snapshots the VCS default only into newly created chats', () => {
+        const existing = normalizeChat({ id: 'existing', message: [], note: '', name: 'Old', localLore: [] })
+        // setDatabase fills the remaining fields of this persisted-data fixture.
+        const saved = {
+            characters: [{ chaId: 'bot', name: 'Bot', chats: [existing] }],
+            formatingOrder: ['main'], loreBook: [], personas: [], username: 'User', userIcon: '', userNote: '',
+            risuBardNewChatHistory: true,
+        } as unknown as Database
+        setDatabase(saved)
+        const created = { id: 'new', message: [], note: '', name: 'New', localLore: [], ...newChatModelDefaults() }
+        getDatabase().characters[0].chats.push(created)
+        setDatabase(JSON.parse(JSON.stringify(getDatabase())))
+        expect(getDatabase().risuBardNewChatHistory).toBe(true)
+        expect(getDatabase().characters[0].chats[0].risuBardInitializeHistory).toBeUndefined()
+        expect(getDatabase().characters[0].chats[1].risuBardInitializeHistory).toBe(true)
+        setDatabase({ ...getDatabase(), risuBardNewChatHistory: false })
+        expect(newChatModelDefaults().risuBardInitializeHistory).toBeUndefined()
+        expect(getDatabase().characters[0].chats[1].risuBardInitializeHistory).toBe(true)
     })
 
     test('defaults persona pinning for new chats to on', () => {

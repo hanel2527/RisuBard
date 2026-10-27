@@ -156,7 +156,6 @@
         <ShButton size="sm" variant="outline" disabled={locked || !history.quickSaveId || Boolean(pending)} onclick={() => { const id = history.quickSaveId; if (id) void run('퀵로드 중…', () => onLoad(id, false)) }}>퀵로드</ShButton>
         <ShButton size="sm" variant="outline" disabled={locked || Boolean(pending)} onclick={() => void onRollback()}>모든 이력을 구형 슬롯으로 변환</ShButton>
     </div>
-    <p class="history-help">모든 분기를 보관합니다. 과거를 불러온 뒤 첫 변경 시 같은 채팅 안에서 분기하며 원래 미래는 남습니다. 채팅 전용 백업은 새 위키 확정이 아닙니다.</p>
     {#if pending}
         <section class="history-pending" role="status" aria-label="위키 확정 대기">
             <strong>위키 {pending.status === 'writing' ? '확정 중' : '확정 대기'} · 대상 {pending.targetMessageId}</strong>
@@ -213,7 +212,7 @@
 <style>
     .history { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: .6rem; }
     .history-toolbar { display: flex; flex-wrap: wrap; gap: .35rem; }
-    .history-help, .history-meta { font-size: .75rem; color: var(--color-textcolor2); overflow-wrap: anywhere; }
+    .history-meta { font-size: .75rem; color: var(--color-textcolor2); overflow-wrap: anywhere; }
     .history-error { color: var(--color-danger); }
     .history-pending { padding: .7rem; border: 1px solid var(--color-borderc); border-radius: .5rem; font-size: .8rem; }
     .history-pending p { margin: .35rem 0; overflow-wrap: anywhere; }

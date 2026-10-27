@@ -406,6 +406,14 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
         keywords: ['save', 'load', 'shortcut', 'floating', '세이브', '로드', '바로가기'],
     },
     {
+        id: 'risubard.common.newChatHistory',
+        type: 'check',
+        labelKey: 'risuBardNewChatHistory',
+        helpKey: 'risuBardNewChatHistory',
+        bindKey: 'risuBardNewChatHistory',
+        keywords: ['save', 'new chat', 'VCS', 'history', 'legacy', '새 채팅', '저장', '이력', '구형 슬롯'],
+    },
+    {
         id: 'risubard.common.chatUploadChunkEnabled',
         type: 'check',
         labelKey: 'chatUploadChunkEnabled',
