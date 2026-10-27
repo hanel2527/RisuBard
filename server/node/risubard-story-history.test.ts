@@ -13,7 +13,7 @@ afterEach(async () => { await Promise.all(roots.splice(0).map(root => fs.rm(root
 const identity = { characterId: 'hero', chatId: 'story' }
 const message = (id: string, data = id) => ({ chatId: id, role: 'char', data })
 
-async function fixture() {
+async function fixture(currentChat: Record<string, unknown> = { id: identity.chatId, message: [], scriptstate: { turn: 0 } }) {
     const root = await fs.mkdtemp(join(tmpdir(), 'story-history-'))
     roots.push(root)
     const directory = resolveMemoryWorkspace(root, identity.characterId, identity.chatId).directory
@@ -21,7 +21,7 @@ async function fixture() {
     await fs.writeFile(join(directory, 'wiki.md'), 'original wiki')
     const service = createStoryHistoryService(root)
     const state = await service.importLegacy({ ...identity, operationId: 'migration', imports: [],
-        currentChat: { id: identity.chatId, message: [], scriptstate: { turn: 0 } } })
+        currentChat })
     return { root, directory, service, state, store: join(dirname(dirname(directory)), 'save-store') }
 }
 function delta(state: StoryHistoryState, ids: string[], changed: Array<Record<string, unknown>>, turn: number): StoryChatDelta {
@@ -65,6 +65,39 @@ describe('durable story history', () => {
             delta: delta(committed, ['a', 'b', 'c'], [message('c')], 3) })
         expect((await resumed.preview({ ...identity, backupId: third.headId! })).chat.message).toEqual([message('a'), message('b'), message('c')])
         expect(third.bindings.a).toBe(committed.wikiCommitId)
+    })
+
+    test('confirms the last imported response after later turns without losing its saved variables', async () => {
+        const { service, state } = await fixture({
+            id: identity.chatId, message: [message('a')], scriptstate: { turn: 1 },
+        })
+        const user = { chatId: 'u2', role: 'user', data: 'Continue' }
+        const nextInput = await service.capture({ ...identity, operationId: 'input-b', kind: 'working',
+            delta: delta(state, ['a', 'u2'], [user], 1) })
+        const later = await service.capture({ ...identity, operationId: 'capture-b', kind: 'working',
+            delta: delta(nextInput, ['a', 'u2', 'b'], [message('b')], 2) })
+        const pending = await service.beginWiki({ ...identity, operationId: 'wiki-a',
+            targetMessageId: 'a', sourceMessageIds: ['a'] })
+        expect(pending.pendingWiki?.sourceBackupId).toBe(state.headId)
+        const committed = await service.finishWiki({ ...identity, operationId: 'wiki-a', outcome: 'unchanged' })
+        expect(committed.bindings.a).toBe(committed.wikiCommitId)
+        expect(committed.workingSnapshotId).toBe(later.workingSnapshotId)
+        const preview = await service.preview({ ...identity, backupId: committed.headId! })
+        expect(preview.chat.message).toEqual([message('a')])
+        expect(preview.chat.scriptstate).toEqual({ turn: 1 })
+        expect((await service.beginWiki({ ...identity, operationId: 'wiki-b',
+            targetMessageId: 'b', sourceMessageIds: ['u2', 'b'] })).pendingWiki?.sourceBackupId).toBe(later.headId)
+    })
+
+    test('does not invent a historical turn boundary inside an imported chat', async () => {
+        const { service, state } = await fixture({
+            id: identity.chatId, message: [message('a'), message('b')], scriptstate: { turn: 2 },
+        })
+        await expect(service.beginWiki({ ...identity, operationId: 'wiki-a',
+            targetMessageId: 'a', sourceMessageIds: ['a'] })).rejects.toThrow('Completed target-turn capture not found')
+        await expect(service.beginWiki({ ...identity, operationId: 'wiki-a-explicit', sourceBackupId: state.headId!,
+            targetMessageId: 'a', sourceMessageIds: ['a'] })).rejects.toThrow('Completed target-turn capture not found')
+        expect((await service.status(identity)).pendingWiki).toBeNull()
     })
 
     test('editing one message preserves future messages, wiki and bindings, and immutable prior blobs', async () => {

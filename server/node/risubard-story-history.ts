@@ -529,7 +529,7 @@ export function createStoryHistoryService(userDataDirectory: string): StoryHisto
             }
             const source = input.sourceBackupId ? ancestry.find(value => value.id === input.sourceBackupId)
                 : ancestry.find(value => value.latestMessageId === target
-                    && ['working', 'chat-edit', 'manual'].includes(value.kind))
+                    && ['working', 'chat-edit', 'manual', 'import'].includes(value.kind))
             if (!source || source.latestMessageId !== target) throw new Error('Completed target-turn capture not found')
             const original = await get<Snapshot>(input, source.chatSnapshotId)
             if (!Array.isArray(input.sourceMessageIds) || input.sourceMessageIds.some(id =>

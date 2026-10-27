@@ -343,7 +343,7 @@ async function runNarrativeConfirmation(
                 const backup = backups.get(cursor)
                 if (!backup) break
                 if (backup.latestMessageId === input.targetMessageId
-                    && ['working', 'chat-edit', 'manual'].includes(backup.kind)) {
+                    && ['working', 'chat-edit', 'manual', 'import'].includes(backup.kind)) {
                     sourceBackupId = backup.id
                     break
                 }
