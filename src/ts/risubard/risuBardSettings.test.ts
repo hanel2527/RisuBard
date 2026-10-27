@@ -53,7 +53,7 @@ describe('RisuBard analysis settings', () => {
     )
 
     test('uses conservative defaults for missing and invalid values', () => {
-        expect(RISUBARD_ANALYSIS_TOKEN_LIMIT_DEFAULT).toBe(8_192)
+        expect(RISUBARD_ANALYSIS_TOKEN_LIMIT_DEFAULT).toBe(32_768)
         expect(normalizeRisuBardAnalysisTokenLimit(undefined))
             .toBe(RISUBARD_ANALYSIS_TOKEN_LIMIT_DEFAULT)
         expect(normalizeRisuBardAdditionalSearchLimit('2'))

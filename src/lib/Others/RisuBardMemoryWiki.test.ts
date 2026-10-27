@@ -1021,6 +1021,7 @@ describe('RisuBardMemoryWiki', () => {
             wikiPath: 'C:\\wiki',
             documents: [],
         })
+        mocks.db.risuBardWikiSettingsView = 'advanced'
         mocks.db.characters = [{ chaId: 'character', chats: [{ id: 'chat', message: [] }] }]
         const target = document.createElement('div')
         document.body.appendChild(target)

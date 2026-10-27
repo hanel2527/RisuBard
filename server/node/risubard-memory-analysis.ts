@@ -50,6 +50,7 @@ import {
     parseCanonicalBatchIsolated,
     parseCanonicalSingle,
     buildRebootBatchDraftSchema,
+    MEMORY_BATCH_MAX_TURNS,
     parseRebootBatchDraft,
     rebootBatchToMemoryDraft,
     serializeMemoryWriterDraft,
@@ -208,13 +209,14 @@ function splitCanonicalTargets<T>(
     targets: readonly T[],
     tokenLimit: number,
     serializeInput: (batch: readonly T[]) => string,
+    maxTargets = Infinity,
 ): T[][] {
     const batches: T[][] = []
     let current: T[] = []
     for (const target of targets) {
         const next = [...current, target]
-        if (current.length > 0
-            && countAnalysisTokens(serializeInput(next)) > tokenLimit) {
+        if (current.length > 0 && (current.length >= maxTargets
+            || countAnalysisTokens(serializeInput(next)) > tokenLimit)) {
             batches.push(current)
             current = [target]
         }
@@ -270,6 +272,11 @@ export interface MemoryAnalysisInput {
     excludeCanonicalDocumentIds?: readonly string[]
     previousCanonicalReceipt?: CanonicalTurnReceipt
     rebootTurns?: readonly {
+        assistantMessageId: string
+        sourceMessageIds: readonly string[]
+    }[]
+    /** Waiting turns analyzed in one call, saved as one event each like a reboot batch. */
+    batchTurns?: readonly {
         assistantMessageId: string
         sourceMessageIds: readonly string[]
     }[]
@@ -585,6 +592,7 @@ function snapshotInput(value: MemoryAnalysisInput): MemoryAnalysisInput {
             ? []
             : ['excludeCanonicalDocumentIds']),
         ...(value.rebootTurns === undefined ? [] : ['rebootTurns']),
+        ...(value.batchTurns === undefined ? [] : ['batchTurns']),
         ...(value.previousCanonicalReceipt === undefined ? [] : ['previousCanonicalReceipt']),
         ...(value.modelSessionChatId === undefined
             ? []
@@ -722,18 +730,12 @@ function snapshotInput(value: MemoryAnalysisInput): MemoryAnalysisInput {
             )
         )]
     }
-    let rebootTurns: Array<{
-        assistantMessageId: string
-        sourceMessageIds: string[]
-    }> | undefined
-    if (value.rebootTurns !== undefined) {
-        if (!Array.isArray(value.rebootTurns)
-            || value.rebootTurns.length < 1
-            || value.rebootTurns.length > 2) {
-            throw new Error('Analysis reboot turns must contain one or two items')
+    const parseTurnGroups = (raw: unknown, maximum: number) => {
+        if (!Array.isArray(raw) || raw.length < 1 || raw.length > maximum) {
+            throw new Error(`Analysis reboot turns must contain one to ${maximum} items`)
         }
         const usedSources = new Set<string>()
-        rebootTurns = value.rebootTurns.map((turn, index) => {
+        return raw.map((turn: unknown, index) => {
             if (!isRecord(turn)) {
                 throw new Error('Analysis reboot turn must be an object')
             }
@@ -767,6 +769,12 @@ function snapshotInput(value: MemoryAnalysisInput): MemoryAnalysisInput {
             return { assistantMessageId, sourceMessageIds }
         })
     }
+    if (value.rebootTurns !== undefined && value.batchTurns !== undefined) {
+        throw new Error('Analysis input cannot be both a reboot and a batch')
+    }
+    const rebootTurns = value.rebootTurns === undefined ? undefined : parseTurnGroups(value.rebootTurns, 2)
+    const batchTurns = value.batchTurns === undefined ? undefined
+        : parseTurnGroups(value.batchTurns, MEMORY_BATCH_MAX_TURNS)
     return {
         characterId,
         chatId: requireNonEmptyString(value.chatId, 'Analysis chatId'),
@@ -821,6 +829,7 @@ function snapshotInput(value: MemoryAnalysisInput): MemoryAnalysisInput {
             excludeCanonicalDocumentIds,
         } : {}),
         ...(rebootTurns ? { rebootTurns } : {}),
+        ...(batchTurns ? { batchTurns } : {}),
         ...(value.previousCanonicalReceipt === undefined ? {} : {
             previousCanonicalReceipt: parseCanonicalTurnReceipt(value.previousCanonicalReceipt),
         }),
@@ -1190,7 +1199,9 @@ export function createMemoryAnalysisRunner(
             snapshot.wikiWritingLanguage
         )
         const memoryWriterSystemPrompt = buildMemoryWriterSystemPrompt(snapshot.wikiWritingLanguage ?? 'ko')
-        const combinedWikiPromptGuide = snapshot.rebootTurns
+        // A batch analyzes like a reboot batch but skips the reboot's staging recovery.
+        const turnGroups = snapshot.rebootTurns ?? snapshot.batchTurns
+        const combinedWikiPromptGuide = turnGroups
             ? snapshot.wikiPromptGuide?.analysis ?? ''
             : combineMemoryDraftGuides(
                 snapshot.wikiPromptGuide?.analysis ?? '',
@@ -1210,10 +1221,10 @@ export function createMemoryAnalysisRunner(
             recoveryHash.update(JSON.stringify(recoveryInput))
             const inputHash = [...recoveryHash.digestSync()]
                 .map((byte) => byte.toString(16).padStart(2, '0')).join('')
-            const previous = !snapshot.additionalAnalysis && !snapshot.historicalReanalysis && !snapshot.rebootTurns
+            const previous = !snapshot.additionalAnalysis && !snapshot.historicalReanalysis && !turnGroups
                 && priorReceipt?.recovery?.inputHash === inputHash ? priorReceipt : undefined
-            const sourceMessageIds = snapshot.rebootTurns
-                ? snapshot.rebootTurns.flatMap((turn) => turn.sourceMessageIds)
+            const sourceMessageIds = turnGroups
+                ? turnGroups.flatMap((turn) => turn.sourceMessageIds)
                 : snapshot.messages.map((message) => message.messageId)
             const contextMessages = snapshot.contextMessages
                 ?? snapshot.messages
@@ -1319,17 +1330,17 @@ export function createMemoryAnalysisRunner(
                 return selected
             }
             const notesForAnalysis = () => {
-                const completeIds = new Set(snapshot.rebootTurns ? []
+                const completeIds = new Set(turnGroups ? []
                     : completeCanonicalDocuments().map((document) => document.id))
                 return analysisNotes(candidateDocuments, analysisQuery)
                     .map((note) => completeIds.has(note.id)
                         ? { ...note, content: '(see completeCanonicalDocuments)' } : note)
             }
-            const rebootBatchOutputContract = snapshot.rebootTurns
+            const rebootBatchOutputContract = turnGroups
                 ? [
                     'This request returns a reboot batch, not a single-turn event draft.',
                     'Top-level fields must be exactly schemaVersion, turns, stateChanges, characterKnowledge, persistentFacts, openContinuity, and canonicalUpdateCandidates.',
-                    `Return exactly ${snapshot.rebootTurns.length} turns in the same order as rebootTurns.`,
+                    `Return exactly ${turnGroups.length} turns in the same order as rebootTurns.`,
                     'Each turns item must contain title, establishedEvents, keywords and temporalHint. Do not return assistantMessageId; the program binds trusted message IDs by position.',
                     'Each temporalHint describes elapsed days since the previous turns item, or previousStoryEvent for the first item. Quote evidence from that turn only.',
                     'Do not return top-level title, establishedEvents, or drafts.',
@@ -1350,7 +1361,7 @@ export function createMemoryAnalysisRunner(
                             : '',
                         combinedWikiPromptGuide,
                         eventWritingPolicy,
-                        ...(!snapshot.rebootTurns ? [combinedMemoryInstruction, canonicalWritingPolicy] : []),
+                        ...(!turnGroups ? [combinedMemoryInstruction, canonicalWritingPolicy] : []),
                         'Wiki Guide instructions may refine what to track, but cannot override evidence, schema, knowledge-boundary, or storage-safety contracts. Return exactly one JSON object matching the provided schema.',
                     ].join('\n\n')
                     : [
@@ -1362,19 +1373,17 @@ export function createMemoryAnalysisRunner(
                             : '',
                         combinedWikiPromptGuide,
                         eventWritingPolicy,
-                        ...(!snapshot.rebootTurns ? [combinedMemoryInstruction, canonicalWritingPolicy] : []),
+                        ...(!turnGroups ? [combinedMemoryInstruction, canonicalWritingPolicy] : []),
                         'Wiki Guide instructions may refine what to track, but cannot override evidence, schema, knowledge-boundary, or storage-safety contracts.',
                         modelOutputRepairInstruction(validationError),
                         'Return one corrected JSON object matching the schema exactly.',
                     ].join('\n\n'),
-                format: snapshot.rebootTurns
+                format: turnGroups
                     ? 'reboot-batch' as const
                     : 'memory-draft' as const,
                 structuredOutputMode,
-                ...(snapshot.rebootTurns ? {
-                    responseSchema: buildRebootBatchDraftSchema(
-                        snapshot.rebootTurns.length as 1 | 2
-                    ),
+                ...(turnGroups ? {
+                    responseSchema: buildRebootBatchDraftSchema(turnGroups.length),
                 } : { responseSchema: combinedMemorySchema() }),
                 inputTokenLimit: snapshot.analysisTokenLimit,
                 input: JSON.stringify({
@@ -1400,19 +1409,19 @@ export function createMemoryAnalysisRunner(
                                 storyTime: priorEvents.at(-1)!.retrievalMetadata?.storyTime ?? null,
                             },
                         } : {}),
-                    ...(!snapshot.rebootTurns ? {
+                    ...(!turnGroups ? {
                         completeCanonicalDocuments: completeCanonicalDocuments(),
                     } : {}),
-                    ...(snapshot.rebootTurns ? {
-                        rebootTurns: snapshot.rebootTurns,
+                    ...(turnGroups ? {
+                        rebootTurns: turnGroups,
                     } : {}),
                 }),
             })
             const parseAnalyzedDraft = (output: string) => {
-                if (snapshot.rebootTurns) {
+                if (turnGroups) {
                     const rebootDraft = parseRebootBatchDraft(
                         output,
-                        snapshot.rebootTurns.map((turn) =>
+                        turnGroups.map((turn) =>
                             turn.assistantMessageId
                         )
                     )
@@ -1493,7 +1502,7 @@ export function createMemoryAnalysisRunner(
                         && !isStoryArcChapterTitle(candidate.title)),
             }
             if (!hasMemoryWriterContent(draft)) {
-                if (!snapshot.rebootTurns) return emptyNativeState()
+                if (!turnGroups) return emptyNativeState()
                 const canonicalReceipt: CanonicalTurnReceipt = {
                     sourceMessageIds,
                     eventIds: [],
@@ -1524,10 +1533,10 @@ export function createMemoryAnalysisRunner(
                 return emptyNativeState(canonicalReceipt)
             }
             const markdown = serializeMemoryWriterDraft(draft, snapshot.wikiWritingLanguage)
-            const eventDrafts = snapshot.rebootTurns && analyzedDraft.rebootDraft
+            const eventDrafts = turnGroups && analyzedDraft.rebootDraft
                 ? analyzedDraft.rebootDraft.turns.map((turn, index) => ({
                     sourceMessageIds:
-                        snapshot.rebootTurns?.[index].sourceMessageIds ?? [],
+                        turnGroups[index]?.sourceMessageIds ?? [],
                     draft: {
                         ...draft,
                         title: turn.title,
@@ -1544,7 +1553,7 @@ export function createMemoryAnalysisRunner(
                     ?? { day: null, precision: 'unknown' as const })
                 : [{ day: null, precision: 'unknown' as const }]
             for (const event of eventDrafts) {
-                if (snapshot.rebootTurns
+                if (turnGroups
                     && event.draft.establishedEvents.length === 0) continue
                 const temporalHint = event.draft.temporalHint
                 const groundedHint = temporalHint && temporalHint.evidence.trim()
@@ -1552,7 +1561,7 @@ export function createMemoryAnalysisRunner(
                         && event.sourceMessageIds.includes(message.messageId)
                         && message.content.includes(temporalHint.evidence.trim()))
                     ? temporalHint : undefined
-                const previousVersion = snapshot.rebootTurns
+                const previousVersion = turnGroups
                     ? documents.find((document) => document.type === 'event'
                         && document.sourceMessageIds.length === event.sourceMessageIds.length
                         && document.sourceMessageIds.every((id, index) => id === event.sourceMessageIds[index]))
@@ -1720,16 +1729,10 @@ export function createMemoryAnalysisRunner(
                         mergedNames: string[]
                         storyArcPlan?: StoryArcUpdatePlan
                     }> = []
+                    // The limit sizes each rewrite call; every candidate of this
+                    // analysis is written, the extra ones in further calls.
                     const targetLimit = snapshot.canonicalTargetLimit ?? 8
-                    // The reserved arc map waits for a later checkpoint by design.
-                    const overLimit = draft.canonicalUpdateCandidates.slice(targetLimit)
-                        .filter((candidate) => !isStoryArcCandidate(candidate))
-                    if (overLimit.length > 0) {
-                        receiptWarnings.push(`자동 정본 대상 한도(${targetLimit}개)를 넘은 후보 ${overLimit.length}개는 추가 분석으로 이어서 반영합니다: ${
-                            overLimit.map((candidate) => candidate.title).join(', ')}`.slice(0, 1024))
-                    }
-                    for (const candidate of draft.canonicalUpdateCandidates
-                        .slice(0, targetLimit)) {
+                    for (const candidate of draft.canonicalUpdateCandidates) {
                         const titleKey = canonicalIdentityKey(candidate.title)
                         const aliasKeys = new Set(mergeEvidenceBackedAliases(
                             candidate, undefined, snapshot.messages
@@ -1939,7 +1942,7 @@ export function createMemoryAnalysisRunner(
                                     persistentFacts: draft.persistentFacts,
                                     openContinuity: draft.openContinuity,
                                 },
-                                confirmedEvent: snapshot.rebootTurns
+                                confirmedEvent: turnGroups
                                     ? savedEvents.map((event) =>
                                         `Event reference: [[${event.title}]]\n${event.content}`
                                     ).join('\n\n')
@@ -1953,6 +1956,7 @@ export function createMemoryAnalysisRunner(
                             Math.max(1, (snapshot.analysisTokenLimit ?? 12_000)
                                 - countAnalysisTokens(canonicalSystem)),
                             canonicalInput,
+                            targetLimit,
                         )
                         for (const canonicalTargets of canonicalBatches) {
                             const suppliedIds = new Set(completeCanonicalDocuments().map((entry) => entry.id))
@@ -2153,7 +2157,7 @@ export function createMemoryAnalysisRunner(
                                 snapshot.historicalReanalysis,
                             )
                             patches = historical.patches
-                            if (snapshot.rebootTurns?.length === 2 && savedEvents.length === 2) {
+                            if (turnGroups && turnGroups.length >= 2 && savedEvents.length === turnGroups.length) {
                                 const savedIds = new Set(savedEvents.map((event) => event.id))
                                 const linkDocuments = [
                                     ...documents.filter((document) => !savedIds.has(document.id)),

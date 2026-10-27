@@ -57,7 +57,7 @@ describe('automatic BardWiki confirmation', () => {
         expect(block).toContain('targetMessageId: narrativeTurnToConfirm.targetMessageId')
         // A turn that does not confirm stops the pass so that no later turn overtakes it.
         const runner = processSource.slice(processSource.indexOf('async function runNarrativeBacklog('))
-        expect(runner.slice(0, 1600)).toMatch(/risubardMemoryConfirmed !== true\) break/)
+        expect(runner.slice(0, runner.search(/\r?\n\}\r?\n/))).toMatch(/risubardMemoryConfirmed !== true\)+ break/)
     })
 
     test('keeps configurable confirmation delay out of the product path', () => {

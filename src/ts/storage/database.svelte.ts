@@ -1989,6 +1989,8 @@ export interface Database{
     risuBardDynamicMemoryMaximumTokens?: number
     /** Set to 2 once the old memory budget defaults were migrated to the 보통 tier (see memoryBudgetPreset.ts). */
     risuBardMemoryBudgetDefaultsVersion?: number
+    /** Simple or advanced BardWiki settings view, shared by the sidebar panel and the settings page. */
+    risuBardWikiSettingsView?: import('../risubard/wikiScalePreset').RisuBardWikiSettingsView
     risuBardInquiryTimeoutMs?: number
     risuBardHistoricalSourceMatchLimit?: number
     risuBardCanonicalWritingStyle?: import('../risubard/risuBardSettings').RisuBardCanonicalWritingStyle

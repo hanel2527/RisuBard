@@ -3,7 +3,7 @@ import { MIN_CHAT_UPLOAD_CHUNK_MIB, MAX_CHAT_UPLOAD_CHUNK_MIB, normalizeChatUplo
 import { normalizeRisuBardCanonicalCustomStyle } from '../risubard/risuBardSettings'
 import { wikiWritingLanguageOptions } from '../risubard/wikiWritingLanguage'
 import { normalizeArcaChatTitleImageStyle } from '../arcaChatSaverSettings'
-import { showMemoryBudgetFields } from './memoryBudgetPresetUi.svelte'
+import { showAdvancedWikiSettings, showMemoryBudgetFields } from './memoryBudgetPresetUi.svelte'
 import {
     ARC_PLOTTER_CUSTOM_SELECTION_ID,
     ARC_PLOTTER_LIMITS,
@@ -115,7 +115,15 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
         keywords: ['wiki', 'analysis', 'memory', '위키', '분석', '메모리'],
     },
     {
+        id: 'risubard.common.wikiSettingsView',
+        type: 'custom',
+        componentId: 'RisuBardWikiSettingsView',
+        fallbackLabel: '설정 보기',
+        keywords: ['simple', 'advanced', 'work scale', 'analysis limit', '간단', '고급', '작업 규모', '분석 상한', '분석 입력'],
+    },
+    {
         id: 'risubard.chat.analysisRecentMessages',
+        condition: showAdvancedWikiSettings,
         type: 'number',
         labelKey: 'risuBardRecentMessages',
         helpKey: 'risuBardRecentMessages',
@@ -125,6 +133,7 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
     },
     {
         id: 'risubard.chat.analysisExcludeUserMessages',
+        condition: showAdvancedWikiSettings,
         type: 'check',
         labelKey: 'risuBardAnalysisExcludeUsers',
         helpKey: 'risuBardAnalysisExcludeUsers',
@@ -177,6 +186,7 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
     },
     {
         id: 'risubard.chat.inquiryTimeoutMs',
+        condition: showAdvancedWikiSettings,
         type: 'number',
         labelKey: 'risuBardInquiryTimeoutMs',
         helpKey: 'risuBardInquiryTimeoutMs',
@@ -206,6 +216,7 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
     },
     {
         id: 'risubard.chat.historicalSourceMatchLimit',
+        condition: showAdvancedWikiSettings,
         type: 'number',
         labelKey: 'risuBardHistoricalSourceMatchLimit',
         helpKey: 'risuBardHistoricalSourceMatchLimit',
@@ -215,6 +226,7 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
     },
     {
         id: 'risubard.chat.analysisTokenLimit',
+        condition: showAdvancedWikiSettings,
         type: 'number',
         labelKey: 'risuBardAnalysisTokenLimit',
         helpKey: 'risuBardAnalysisTokenLimit',
@@ -224,6 +236,7 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
     },
     {
         id: 'risubard.chat.additionalSearchLimit',
+        condition: showAdvancedWikiSettings,
         type: 'number',
         labelKey: 'risuBardAdditionalSearchLimit',
         helpKey: 'risuBardAdditionalSearchLimit',
@@ -233,6 +246,7 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
     },
     {
         id: 'risubard.chat.canonicalTargetLimit',
+        condition: showAdvancedWikiSettings,
         type: 'number',
         labelKey: 'risuBardCanonicalTargetLimit',
         helpKey: 'risuBardCanonicalTargetLimit',
@@ -265,6 +279,7 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
     },
     {
         id: 'risubard.arcPlotter.checkpointSize',
+        condition: showAdvancedWikiSettings,
         type: 'number',
         labelKey: 'risuBardArcPlotterCheckpointSize',
         helpKey: 'risuBardArcPlotterCheckpointSize',
@@ -279,6 +294,7 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
     },
     {
         id: 'risubard.arcPlotter.maxArcs',
+        condition: showAdvancedWikiSettings,
         type: 'number',
         labelKey: 'risuBardArcPlotterMaxArcs',
         helpKey: 'risuBardArcPlotterMaxArcs',
@@ -293,6 +309,7 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
     },
     {
         id: 'risubard.arcPlotter.maxTurningPoints',
+        condition: showAdvancedWikiSettings,
         type: 'number',
         labelKey: 'risuBardArcPlotterMaxTurningPoints',
         helpKey: 'risuBardArcPlotterMaxTurningPoints',
@@ -307,6 +324,7 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
     },
     {
         id: 'risubard.arcPlotter.maxOpenThreads',
+        condition: showAdvancedWikiSettings,
         type: 'number',
         labelKey: 'risuBardArcPlotterMaxOpenThreads',
         helpKey: 'risuBardArcPlotterMaxOpenThreads',
@@ -321,6 +339,7 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
     },
     {
         id: 'risubard.arcPlotter.maxCharacters',
+        condition: showAdvancedWikiSettings,
         type: 'number',
         labelKey: 'risuBardArcPlotterMaxCharacters',
         helpKey: 'risuBardArcPlotterMaxCharacters',
@@ -351,6 +370,7 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
     },
     {
         id: 'risubard.common.canonicalWritingStyle',
+        condition: showAdvancedWikiSettings,
         type: 'select',
         labelKey: 'risuBardCanonicalWritingStyle',
         helpKey: 'risuBardCanonicalWritingStyle',
@@ -374,7 +394,7 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
         setValue: (db, value) => {
             db.risuBardCanonicalCustomStyle = normalizeRisuBardCanonicalCustomStyle(value)
         },
-        condition: ({ db }) => db.risuBardCanonicalWritingStyle === 'custom',
+        condition: (ctx) => showAdvancedWikiSettings(ctx) && ctx.db.risuBardCanonicalWritingStyle === 'custom',
         keywords: ['canonical', 'custom instruction', '정본', '사용자 지정', '지시문'],
     },
     {

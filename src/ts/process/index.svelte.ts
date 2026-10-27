@@ -48,6 +48,7 @@ import {
     type MemoryAnalysisMessage,
 } from "../risubard/memoryAnalysisClient";
 import { enqueueNarrativeConfirmation } from '../risubard/narrativeConfirmationQueue';
+import { groupNarrativeBacklog, NARRATIVE_BACKLOG_TURNS_PER_RUN, withoutRepeatedMessages } from '../risubard/narrativeBacklogBatch';
 import { projectActiveNarrativeSources } from "../risubard/sourceProjection";
 import {
     createNarrativeSourcesPrompt,
@@ -239,11 +240,13 @@ async function confirmProjectedNarrativeTurn(input: {
     additionalAnalysis?: boolean
     historicalReanalysis?: boolean
     excludeCanonicalDocumentIds?: readonly string[]
+    /** Two or more waiting turns analyzed in one call; messages and target cover them all. */
+    batch?: readonly NarrativeTurn[]
 }): Promise<boolean> {
     const key = JSON.stringify([
         input.characterId,
         input.chatId,
-        input.targetMessageId,
+        ...(input.batch?.map((turn) => turn.targetMessageId) ?? [input.targetMessageId]),
     ])
     if (narrativeConfirmations.has(key)) return false
     narrativeConfirmations.add(key)
@@ -306,12 +309,15 @@ async function collectAnalysisLoreReference(
     }
 }
 
+type NarrativeTurn = { targetMessageId: string; messages: readonly MemoryAnalysisMessage[] }
+
 async function runNarrativeConfirmation(
     input: Parameters<typeof confirmProjectedNarrativeTurn>[0],
     key: string,
 ): Promise<boolean> {
     const generationOperation = `analysis:${key}`
     const generationSignal = beginWikiGeneration(generationOperation)
+    const turns: readonly NarrativeTurn[] = input.batch ?? [input]
     try {
         const character = DBState.db.characters.find(
             (item) => item.chaId === input.characterId
@@ -350,9 +356,13 @@ async function runNarrativeConfirmation(
                 input.chatId
             )
             : undefined
-        const confirmedMessages = settings.risuBardAnalysisExcludeUserMessages
-            ? input.messages.filter((message) => message.role !== 'user')
-            : [...input.messages]
+        const keepMessage = (message: MemoryAnalysisMessage) =>
+            !settings.risuBardAnalysisExcludeUserMessages || message.role !== 'user'
+        const confirmedMessages = input.messages.filter(keepMessage)
+        const batchTurns = input.batch?.map((turn) => ({
+            assistantMessageId: turn.targetMessageId,
+            sourceMessageIds: turn.messages.filter(keepMessage).map((message) => message.messageId),
+        }))
         const contextMessages = chat
             ? projectRecentMemoryMessages(
                 chat.message,
@@ -397,8 +407,9 @@ async function runNarrativeConfirmation(
             } : {}),
             ...(loreReference ? { loreReference } : {}),
             ...(input.additionalAnalysis ? { additionalAnalysis: true } : {}),
-            ...(!input.additionalAnalysis && !input.historicalReanalysis && previousCanonicalReceipt
+            ...(!input.additionalAnalysis && !input.historicalReanalysis && !batchTurns && previousCanonicalReceipt
                 ? { previousCanonicalReceipt } : {}),
+            ...(batchTurns ? { batchTurns } : {}),
             ...(input.historicalReanalysis ? { historicalReanalysis: true } : {}),
             ...(input.excludeCanonicalDocumentIds ? {
                 excludeCanonicalDocumentIds:
@@ -421,35 +432,37 @@ async function runNarrativeConfirmation(
                 message: retryWarning,
             })
         }
-        const message = chat?.message.find(
-            (item) => item.chatId === input.targetMessageId
-        )
-        const accepted = input.messages.at(-1)
-        if (message && accepted?.role === 'assistant' && message.data !== accepted.content) {
-            message.risubardWikiPending = {
-                reason: '분석하는 동안 메시지 내용이 바뀌어 다시 분석합니다.',
-                failedAt: new Date().toISOString(),
-            }
-        }
-        if (message
-            && accepted?.role === 'assistant'
-            && message.data === accepted.content) {
-            if (receipt && canonicalTurnNeedsRetry(receipt)) {
-                delete message.risubardMemoryConfirmed
+        for (const turn of turns) {
+            const message = chat?.message.find(
+                (item) => item.chatId === turn.targetMessageId
+            )
+            const accepted = turn.messages.at(-1)
+            if (message && accepted?.role === 'assistant' && message.data !== accepted.content) {
                 message.risubardWikiPending = {
-                    reason: canonicalTurnRetryWarning(receipt)?.slice(0, 512),
+                    reason: '분석하는 동안 메시지 내용이 바뀌어 다시 분석합니다.',
                     failedAt: new Date().toISOString(),
                 }
             }
-            else {
-                message.risubardMemoryConfirmed = true
-                delete message.risubardWikiPending
-            }
-            if (receipt) {
-                message.risubardCanonicalReceipt = mergeCanonicalTurnReceipts(
-                    message.risubardCanonicalReceipt,
-                    receipt
-                )
+            if (message
+                && accepted?.role === 'assistant'
+                && message.data === accepted.content) {
+                if (receipt && canonicalTurnNeedsRetry(receipt)) {
+                    delete message.risubardMemoryConfirmed
+                    message.risubardWikiPending = {
+                        reason: canonicalTurnRetryWarning(receipt)?.slice(0, 512),
+                        failedAt: new Date().toISOString(),
+                    }
+                }
+                else {
+                    message.risubardMemoryConfirmed = true
+                    delete message.risubardWikiPending
+                }
+                if (receipt) {
+                    message.risubardCanonicalReceipt = mergeCanonicalTurnReceipts(
+                        message.risubardCanonicalReceipt,
+                        receipt
+                    )
+                }
             }
         }
         return true
@@ -459,11 +472,13 @@ async function runNarrativeConfirmation(
         const reason = (error instanceof Error
             ? error.message
             : String(error)).trim().slice(0, 512)
-        const failed = findNarrativeMessage(input.characterId, input.chatId, input.targetMessageId)
-        if (failed && failed.risubardMemoryConfirmed !== true) {
-            failed.risubardWikiPending = {
-                reason: reason || '알 수 없는 오류',
-                failedAt: new Date().toISOString(),
+        for (const turn of turns) {
+            const failed = findNarrativeMessage(input.characterId, input.chatId, turn.targetMessageId)
+            if (failed && failed.risubardMemoryConfirmed !== true) {
+                failed.risubardWikiPending = {
+                    reason: reason || '알 수 없는 오류',
+                    failedAt: new Date().toISOString(),
+                }
             }
         }
         publishRisuBardMemoryActivity({
@@ -486,11 +501,9 @@ function findNarrativeMessage(characterId: string, chatId: string, messageId: st
         ?.message.find((item) => item.chatId === messageId && item.role === 'char')
 }
 
-const NARRATIVE_BACKLOG_TURNS_PER_RUN = 4
-
 /**
- * Analyzes the chat's queued turns in story order, at most a few per call,
- * and stops at the first turn that does not confirm so that no later turn
+ * Analyzes the chat's queued turns in story order, as many per model call as
+ * fit, and stops at the first batch that does not confirm so that no later turn
  * overtakes it. The target turn is queued first.
  */
 const narrativeBacklogRuns = new Map<string, Promise<void>>()
@@ -527,36 +540,34 @@ async function runNarrativeBacklog(input: {
         limit: NARRATIVE_BACKLOG_TURNS_PER_RUN,
         ignoreOocTurns: true,
     })
-    for (const turn of turns) {
+    const analysisTokenLimit = resolvedRisuBardSettings(chat, true).risuBardAnalysisTokenLimit
+    const batches = groupNarrativeBacklog(turns, analysisTokenLimit)
+    const epoch = wikiCancellationEpoch()
+    for (let batch = batches.shift(); batch; batch = batches.shift()) {
+        const last = batch.at(-1)!
+        const turnsOnce = withoutRepeatedMessages(batch)
+        const projected = batch.length === 1 ? last : {
+            targetMessageId: last.targetMessageId,
+            messages: turnsOnce.flatMap((turn) => turn.messages),
+            batch: turnsOnce,
+        }
         try {
             await confirmProjectedNarrativeTurn({
                 characterId: input.characterId,
                 chatId: input.chatId,
-                ...turn,
+                ...projected,
             })
         }
         catch (error) {
             console.warn('[RisuBard memory confirmation]', error)
-        }
-        const message = findNarrativeMessage(input.characterId, input.chatId, turn.targetMessageId)
-        if (message && message.risubardMemoryConfirmed !== true) break
-        // Candidates over the target limit get one more pass on the same turn's
-        // evidence; the saved documents are excluded so nothing is redone.
-        const receipt = message?.risubardCanonicalReceipt
-        if (receipt?.warnings.some((warning) => warning.startsWith('자동 정본 대상 한도('))) {
-            const followUp = projectConfirmedMemoryTurn(chat.message, turn.targetMessageId, {
-                includeConfirmed: true, ignoreOocTurns: true,
-            })
-            if (followUp) {
-                await confirmProjectedNarrativeTurn({
-                    characterId: input.characterId,
-                    chatId: input.chatId,
-                    additionalAnalysis: true,
-                    excludeCanonicalDocumentIds: receipt.changes.map((change) => change.documentId),
-                    ...followUp,
-                }).catch((error: unknown) => console.warn('[RisuBard memory confirmation]', error))
+            // A batch the model cannot answer must not hold every turn back; retry them one by one.
+            if (batch.length > 1 && wikiCancellationEpoch() === epoch) {
+                batches.unshift(...batch.map((turn) => [turn]))
+                continue
             }
         }
+        if (batch.some((turn) => findNarrativeMessage(input.characterId, input.chatId, turn.targetMessageId)
+            ?.risubardMemoryConfirmed !== true)) break
     }
 }
 

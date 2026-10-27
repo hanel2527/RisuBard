@@ -30,6 +30,16 @@
         type RisuBardChatSettingKey,
     } from 'src/ts/risubard/chatSettingsHelp'
     import {
+        WIKI_SCALE_PRESETS,
+        WIKI_SCALE_PRESET_IDS,
+        detectWikiScalePreset,
+        formatWikiScaleTokens,
+        normalizeRisuBardWikiSettingsView,
+        wikiScalePresetValues,
+        type RisuBardWikiSettingsView,
+        type WikiScalePresetId,
+    } from 'src/ts/risubard/wikiScalePreset'
+    import {
         normalizeWikiWritingLanguage,
         wikiWritingLanguageOptions,
         wikiWritingLocales,
@@ -38,7 +48,7 @@
     interface Props {
         chat?: Chat
         character?: Pick<Character, 'risuBardPinnedSettings'>
-        global: RisuBardChatSettings
+        global: RisuBardChatSettings & { risuBardWikiSettingsView?: RisuBardWikiSettingsView }
         globalDynamicOnly?: boolean
     }
 
@@ -76,6 +86,27 @@
     let numberDraft = $state('')
     const formatNumber = (value: number) => value.toLocaleString('ko-KR')
     const dynamicModeLabels = { off: '사용 안 함', economy: '절약형', balanced: '균형형', recall: '회수 우선형' } as const
+
+    // The view is a global preference, so the sidebar and the settings page open the same way.
+    let view = $derived.by(() => {
+        revision
+        return normalizeRisuBardWikiSettingsView(global.risuBardWikiSettingsView)
+    })
+    let simple = $derived(view === 'simple' && !globalDynamicOnly)
+    let scaleSelection = $derived<WikiScalePresetId | 'custom'>(detectWikiScalePreset(settings))
+
+    function setView(next: RisuBardWikiSettingsView) {
+        global.risuBardWikiSettingsView = next
+        revision++
+    }
+
+    function selectWikiScale(id: WikiScalePresetId) {
+        if (!chat) return
+        const values = wikiScalePresetValues(id)
+        setValue('risuBardAnalysisTokenLimit', values.risuBardAnalysisTokenLimit)
+        setValue('risuBardCanonicalTargetLimit', values.risuBardCanonicalTargetLimit)
+        setValue('risuBardAnalysisLoreTokenLimit', values.risuBardAnalysisLoreTokenLimit)
+    }
 
     // The selection is derived from the six stored values; only choosing 사용자 지정 keeps the fields open without changing them.
     let customOpen = $state(false)
@@ -317,6 +348,40 @@
     </div>
 {/snippet}
 
+{#snippet wikiScaleControl()}
+    <fieldset class="scale-field" data-chat-setting-field="risuBardWikiScale">
+        <legend class="setting-heading">
+            <span>작업 규모</span>
+            <button
+                type="button"
+                class="help-button"
+                data-chat-setting-help="risuBardWikiScale"
+                aria-label="작업 규모 도움말"
+                use:helpTooltip={'위키 분석이 한 번에 읽는 분량입니다. 정리 중에 쌓인 턴을 한 번에 묶을 수 있는 양도 이 값으로 정해집니다.\n\n크게 할수록 긴 응답과 여러 턴을 잘라 내지 않고 한 번에 분석하지만, 호출 하나가 무거워집니다. 모델의 입력 한도가 작으면 가볍게를 고르세요.\n\n한 번에 고칠 문서 수와 분석에 넣을 로어북 양도 함께 맞춰집니다.'}
+            >?</button>
+        </legend>
+        <div class="scale-options">
+            {#each WIKI_SCALE_PRESET_IDS as id (id)}
+                <label class="scale-option">
+                    <input type="radio" name="bardwiki-wiki-scale" value={id} checked={scaleSelection === id}
+                        disabled={!chat} onchange={() => selectWikiScale(id)} />
+                    <span class="scale-name">{WIKI_SCALE_PRESETS[id].label}</span>
+                    <span class="scale-tokens">{formatWikiScaleTokens(WIKI_SCALE_PRESETS[id].analysis)}</span>
+                </label>
+            {/each}
+        </div>
+        {#if scaleSelection === 'custom'}
+            <small class="scale-summary" data-wiki-scale-custom>
+                고급에서 직접 조정한 값을 쓰는 중입니다 (분석 {formatNumber(settings.risuBardAnalysisTokenLimit)}토큰, 문서 {settings.risuBardCanonicalTargetLimit}개, 로어북 {formatNumber(settings.risuBardAnalysisLoreTokenLimit)}토큰). 위에서 하나를 고르면 그 값으로 바뀝니다.
+            </small>
+        {:else}
+            <small class="scale-summary">
+                분석 {formatNumber(settings.risuBardAnalysisTokenLimit)}토큰, 한 번에 고칠 문서 {settings.risuBardCanonicalTargetLimit}개, 분석용 로어북 {formatNumber(settings.risuBardAnalysisLoreTokenLimit)}토큰
+            </small>
+        {/if}
+    </fieldset>
+{/snippet}
+
 <div class="chat-settings" data-chat-risubard-settings>
     {#if !globalDynamicOnly}
     <header class="settings-head">
@@ -343,9 +408,39 @@
         {/if}
         {#if globalFeedback}<small class="global-feedback" role="status">{globalFeedback}</small>{/if}
     </header>
+    <div class="view-switch" role="group" aria-label="설정 보기">
+        <button type="button" aria-pressed={view === 'simple'} data-wiki-settings-view="simple"
+            onclick={() => setView('simple')}>간단</button>
+        <button type="button" aria-pressed={view === 'advanced'} data-wiki-settings-view="advanced"
+            onclick={() => setView('advanced')}>고급</button>
+    </div>
     {/if}
 
     <fieldset class="settings-form" data-chat-settings-form disabled={formDisabled}>
+    {#if simple}
+    <section class="settings-section" aria-label="위키 분석">
+        {@render wikiScaleControl()}
+        <div class="settings-grid">
+            <div class="setting-field" data-chat-setting-field="risuBardModelMode">
+                {@render settingTitle('risuBardModelMode', '작업 모델', 'bardwiki-model-mode')}
+                <select id="bardwiki-model-mode" data-memory-model-mode value={settings.risuBardModelMode}
+                    onchange={(event) => setValue('risuBardModelMode', (event.currentTarget as HTMLSelectElement).value === 'model' ? 'model' : 'memory')}>
+                    <option value="memory">보조 모델</option><option value="model">메인 모델</option>
+                </select>
+            </div>
+            <div class="setting-field" data-chat-setting-field="risuBardWikiWritingLanguage">
+                {@render settingTitle('risuBardWikiWritingLanguage', language.risuBardWikiWritingLanguage, 'bardwiki-writing-language')}
+                <select id="bardwiki-writing-language" value={(character?.risuBardPinnedSettings ?? chat?.risuBardSettings)?.risuBardWikiWritingLanguage ?? ''}
+                    onchange={(event) => setValue('risuBardWikiWritingLanguage',
+                        (event.currentTarget.value || undefined) as RisuBardChatSettings['risuBardWikiWritingLanguage'])}>
+                    <option value="">{language.risuBardWikiLanguageGlobal} ({wikiWritingLocales[normalizeWikiWritingLanguage(global.risuBardWikiWritingLanguage)].label})</option>
+                    {#each wikiWritingLanguageOptions as option}<option value={option.value}>{option.label}</option>{/each}
+                </select>
+            </div>
+        </div>
+    </section>
+    {/if}
+
     <section class="settings-section" aria-label={globalDynamicOnly ? '장기기억 동적 한도' : '기억 예산'}>
         <div class="settings-grid">
             {#if !globalDynamicOnly}
@@ -358,15 +453,20 @@
                             {#each MEMORY_BUDGET_PRESET_IDS as id (id)}
                                 <option value={id}>{MEMORY_BUDGET_PRESETS[id].label}</option>
                             {/each}
-                            <option value="custom">사용자 지정</option>
+                            {#if !simple || presetSelection === 'custom'}
+                                <option value="custom" disabled={simple}>사용자 지정</option>
+                            {/if}
                         </select>
                     </div>
+                    {#if simple && presetSelection === 'custom'}
+                        <small class="budget-summary" data-memory-budget-custom>고급에서 직접 조정한 값을 쓰는 중입니다. 위에서 하나를 고르면 그 값으로 바뀝니다.</small>
+                    {/if}
                     {#if presetSummaryParts.length}
                         <small id="bardwiki-memory-budget-summary" class="budget-summary">{#each presetSummaryParts as part, index}{#if index > 0}{' / '}{/if}<span class="summary-part">{part}</span>{/each}</small>
                     {/if}
                 </div>
             {/if}
-            {#if showBudgetFields}
+            {#if showBudgetFields && !simple}
                 <div class="setting-field dynamic-field" data-chat-setting-field="risuBardDynamicMemoryMode">
                     {@render settingTitle('risuBardDynamicMemoryMode', '장기기억 동적 한도', 'bardwiki-dynamic-memory')}
                     <select id="bardwiki-dynamic-memory" value={settings.risuBardDynamicMemoryMode} disabled={!chat && !globalDynamicOnly}
@@ -385,7 +485,12 @@
         </div>
     </section>
 
-    {#if !globalDynamicOnly}
+
+    {#if simple}
+    <p class="simple-note">검색 분량, 문체, 메시지 수 같은 세부 값은 <button type="button" class="link-button" onclick={() => setView('advanced')}>고급</button>에서 바꿀 수 있습니다.</p>
+    {/if}
+
+    {#if !globalDynamicOnly && !simple}
     <section class="settings-section" aria-labelledby="bardwiki-operation-settings">
         <h3 id="bardwiki-operation-settings">작동 방식</h3>
         <div class="settings-grid">
@@ -449,6 +554,7 @@
 
     <section class="settings-section" aria-labelledby="bardwiki-analysis-settings">
         <h3 id="bardwiki-analysis-settings">분석과 답변</h3>
+        {@render wikiScaleControl()}
         <div class="settings-grid">
             <div class="setting-field" data-chat-setting-field="risuBardAnalysisTokenLimit">
                 {@render settingTitle('risuBardAnalysisTokenLimit', '위키 분석 최대 길이(토큰)', 'bardwiki-analysis-tokens')}
@@ -545,6 +651,25 @@
 </div>
 
 <style>
+    .view-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 2px; border: 1px solid var(--risu-theme-darkborderc); border-radius: .45rem; background: color-mix(in srgb, var(--risu-theme-darkbg) 80%, var(--risu-theme-bgcolor)); }
+    .view-switch button { min-height: 2rem; border: 0; border-radius: .34rem; background: transparent; color: var(--risu-theme-textcolor2); font-size: .82rem; font-weight: 650; cursor: pointer; transition: background-color .15s ease-out, color .15s ease-out; }
+    .view-switch button:hover { color: var(--risu-theme-textcolor); }
+    .view-switch button[aria-pressed='true'] { color: var(--risu-theme-textcolor); background: color-mix(in srgb, var(--risu-theme-primary) 22%, var(--risu-theme-darkbg)); }
+    .scale-field { display: grid; gap: .32rem; min-width: 0; margin: 0; padding: .38rem; border: 1px solid color-mix(in srgb, var(--risu-theme-darkborderc) 72%, transparent); border-radius: .36rem; background: color-mix(in srgb, var(--risu-theme-darkbg) 76%, var(--color-bgcolor)); }
+    .scale-field legend { float: left; width: 100%; margin-bottom: .1rem; padding: 0; }
+    .scale-field legend span { font-size: .78rem; font-weight: 650; }
+    .scale-options { clear: both; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .3rem; }
+    .scale-option { position: relative; display: grid; justify-items: center; gap: .05rem; min-height: 2.9rem; padding: .35rem .2rem; border: 1px solid var(--risu-theme-darkborderc); border-radius: .36rem; color: var(--risu-theme-textcolor2); background: color-mix(in srgb, var(--risu-theme-darkbg) 92%, var(--color-bgcolor)); cursor: pointer; transition: border-color .15s ease-out, background-color .15s ease-out; }
+    .scale-option input { position: absolute; opacity: 0; pointer-events: none; }
+    .scale-option:hover { border-color: color-mix(in srgb, var(--risu-theme-primary) 50%, var(--risu-theme-darkborderc)); }
+    .scale-option:has(input:checked) { border-color: var(--risu-theme-primary); color: var(--risu-theme-textcolor); background: color-mix(in srgb, var(--risu-theme-primary) 16%, var(--risu-theme-darkbg)); }
+    .scale-option:has(input:focus-visible) { outline: 2px solid var(--risu-theme-primary); outline-offset: 2px; }
+    .scale-option:has(input:disabled) { opacity: .5; cursor: default; }
+    .scale-name { font-size: .8rem; font-weight: 700; }
+    .scale-tokens { font-size: .75rem; font-variant-numeric: tabular-nums; color: var(--risu-theme-textcolor2); }
+    .scale-summary { color: var(--risu-theme-textcolor2); font-size: .75rem; line-height: 1.45; overflow-wrap: anywhere; }
+    .simple-note { margin: 0; padding: 0 .2rem; color: var(--risu-theme-textcolor2); font-size: .75rem; line-height: 1.45; }
+    .link-button { padding: 0; border: 0; background: none; color: var(--risu-theme-primary); font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
     .dynamic-number { min-width: 0; position: relative; }
     .dynamic-value { display: block; margin-top: .2rem; color: var(--color-info); font-size: .75rem; line-height: 1.4; overflow-wrap: anywhere; }
     .dynamic-note { display: block; color: var(--color-textcolor2); }
@@ -587,6 +712,9 @@
 
     @container chat-settings (max-width: 48rem) {
         .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @container chat-settings (max-width: 20rem) {
+        .scale-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @container chat-settings (max-width: 31rem) {
         .settings-head { grid-template-columns: 1fr; }
