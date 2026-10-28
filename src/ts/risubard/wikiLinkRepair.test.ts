@@ -41,4 +41,11 @@ describe('repairBrokenWikiLinks', () => {
             [{ ...documents[0], status: 'retracted' }])
         expect(result.repaired).toEqual([])
     })
+
+    test('never throws on malformed documents', () => {
+        const text = '[[웅영고 원서 확인과 필기시험 정식 응시]]'
+        const odd = [{ id: 'x' }, { id: 'y', title: 3 }, null, { id: 'z', title: '웅영고 원서 접수 확인과 필기시험 정식 응시 결정', aliases: 'nope' }] as never
+        expect(repairBrokenWikiLinks(text, odd).markdown).toBe('[[웅영고 원서 접수 확인과 필기시험 정식 응시 결정]]')
+        expect(repairBrokenWikiLinks(text, undefined as never)).toEqual({ markdown: text, repaired: [] })
+    })
 })

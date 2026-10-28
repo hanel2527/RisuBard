@@ -17,6 +17,10 @@ export const LINK_REPAIR_MIN_SIMILARITY = 0.7
 /** The best title must beat the best title of any other document by this much, or the link is left alone. */
 export const LINK_REPAIR_MIN_MARGIN = 0.08
 
+const namesOf = (document: LinkRepairDocument): string[] =>
+    [document.title, ...(Array.isArray(document.aliases) ? document.aliases : [])]
+        .filter((name): name is string => typeof name === 'string' && name.length > 0)
+
 const WIKI_LINK = /\[\[([^\]|#\n]+)((?:[|#][^\]\n]*)?)\]\]/gu
 
 function bigrams(value: string): Map<string, number> {
@@ -49,16 +53,30 @@ export function repairBrokenWikiLinks(
     markdown: string,
     documents: readonly LinkRepairDocument[],
 ): { markdown: string; repaired: RepairedWikiLink[] } {
-    const live = documents.filter((document) => document.status !== 'retracted' && document.status !== 'superseded')
+    // A save must never fail because of link upkeep: malformed input leaves the text as written.
+    try {
+        return repairLinks(markdown, documents)
+    }
+    catch {
+        return { markdown, repaired: [] }
+    }
+}
+
+function repairLinks(
+    markdown: string,
+    documents: readonly LinkRepairDocument[],
+): { markdown: string; repaired: RepairedWikiLink[] } {
+    const live = documents.filter((document) => typeof document?.title === 'string' && document.title
+        && document.status !== 'retracted' && document.status !== 'superseded')
     const known = new Set<string>()
     for (const document of live) {
         known.add(document.id)
-        for (const name of [document.title, ...(document.aliases ?? [])]) known.add(normalizeWikiLinkKey(name))
+        for (const name of namesOf(document)) known.add(normalizeWikiLinkKey(name))
     }
     const candidates = live.map((document) => ({
         title: document.title,
         id: document.id,
-        grams: [document.title, ...(document.aliases ?? [])].map(bigrams),
+        grams: namesOf(document).map(bigrams),
     }))
     const cache = new Map<string, string | undefined>()
     const repaired: RepairedWikiLink[] = []

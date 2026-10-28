@@ -189,7 +189,7 @@
     input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
     .entries { display: grid; gap: .9rem; position: relative; z-index: 0; }
     .delete-button { display: inline-flex; align-items: center; gap: .3rem; padding: .35rem; border-radius: .3rem; flex-shrink: 0; white-space: nowrap; color: var(--color-textcolor2); }
-    button.delete-button:hover:not(:disabled) { color: var(--color-red-500, #ef4444); }
+    button.delete-button:hover:not(:disabled) { color: var(--color-danger); }
     article { min-width: 0; border: 1px solid var(--color-darkborderc); border-radius: .5rem; background: var(--color-darkbg); padding: 1rem; }
     article.user { border-left: 3px solid var(--color-primary); }
     .message-label { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .5rem; }

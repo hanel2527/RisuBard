@@ -1938,7 +1938,7 @@
     .compress-dialog { display: grid; gap: .6rem; font-size: .9rem; min-width: 0; }
     .compress-dialog label { display: flex; align-items: center; gap: .4rem; cursor: pointer; }
     .compress-cost, .compress-list small { color: var(--color-textcolor2); font-size: .8rem; }
-    .compress-error { color: var(--color-danger, #ef4444); }
+    .compress-error { color: var(--color-danger); }
     .compress-result { white-space: pre-line; }
     .compress-list { display: grid; gap: .5rem; list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow: auto; }
     .compress-list li { display: grid; gap: .15rem; padding: .55rem .7rem; border: 1px solid var(--color-darkborderc); border-radius: .4rem; }
