@@ -7,6 +7,7 @@ import { normalizeRisuBardInquiryTokenBudget } from '../../src/ts/risubard/risuB
 import { selectMarkdownExcerpt } from './risubard-markdown-excerpt'
 import { isStoryArcChapterTitle, isStoryArcTitle } from '../../src/ts/risubard/wikiWritingLanguage'
 import { normalizeWikiRetrievalLimits, wikiPageTokenCap, type WikiRetrievalLimits } from '../../src/ts/risubard/wikiRetrievalLimits'
+import { RESOLVED_SOURCE_SCORE } from '../../src/ts/risubard/historicalSourceRecall'
 
 const MAX_SELECTED_DOCUMENTS = 12
 // Client validation accepts at most 44 sources per inquiry.
@@ -964,8 +965,10 @@ export function inquireMarkdownDocuments(
         .map((match) => [match.messageId, match] as const))
     const selectedEventSources = new Map<string, string>()
     const semanticEventSourceDocuments = new Map<string, string>()
-    const prepareSource = (match: NonNullable<MarkdownInquiryInput['sourceMatches']>[number]) => {
-        const eventTitle = selectedEventSources.get(match.messageId)
+    const prepareSource = (
+        match: NonNullable<MarkdownInquiryInput['sourceMatches']>[number],
+        eventTitle = selectedEventSources.get(match.messageId),
+    ) => {
         const routed = eventTitle !== undefined
         const heading = `Original historical chat evidence (${match.role}, order ${match.occurredAt}):`
         const bodyTokenBudget = Math.max(
@@ -1010,6 +1013,17 @@ export function inquireMarkdownDocuments(
         selectedTokens += source.tokens
         return true
     }
+    // The best historical match goes first even when no event summary routes it:
+    // a summary can leave out the very detail asked about, and routed scenes
+    // would otherwise use the room before it.
+    // An event's requested original is not a query match, so it never leads.
+    const leadingSource = input.sourceMatches?.find((match) => match.score < RESOLVED_SOURCE_SCORE)
+    const leadingEventTitle = leadingSource && eventCandidates
+        .find((candidate) => candidate.document.sourceMessageIds.includes(leadingSource.messageId))?.document.title
+    if (leadingSource && sourceLimit > 0 && (historicalEvidenceIntent || leadingSource.retrieval === 'semantic'
+        || leadingSource.score >= MIN_UNROUTED_LEXICAL_SCORE)) {
+        addSource(prepareSource(leadingSource, leadingEventTitle))
+    }
     // Evidence is read scene by scene: an event and then its original text, so
     // the best-matching scene arrives whole before weaker summaries use the room.
     // Pages never give way here; their own lane is the target budget.
@@ -1022,15 +1036,16 @@ export function inquireMarkdownDocuments(
                 semanticEventSourceDocuments.set(messageId, candidate.document.id)
             }
         }
+        const leadingOriginal = newSourceIds.some((messageId) => selectedSourceIds.has(messageId))
         const originals = newSourceIds.flatMap((messageId) => {
             const match = suppliedSources.get(messageId)
-            return match ? [prepareSource(match)] : []
+            return match && !selectedSourceIds.has(messageId) ? [prepareSource(match)] : []
         })
         // A scene whose original fits arrives as heading plus original, so two
         // scenes' originals fit where one summary and one original did before.
         const originalTokens = originals.reduce((sum, source) => sum + source.tokens, 0)
         // A semantic passage of the summary is kept: it is the part that matched, not a repeat of the original.
-        const compact = originals.length > 0 && candidate.heading !== undefined
+        const compact = (originals.length > 0 || leadingOriginal) && candidate.heading !== undefined
             && !semanticPassages.has(candidate.document.id)
             && selectedSourceMatches.length + originals.length <= sourceLimit
             && selectedTokens + candidate.headingTokens! + originalTokens <= tokenBudget.maximum
@@ -1065,6 +1080,9 @@ export function inquireMarkdownDocuments(
             || right.occurredAt - left.occurredAt
             || left.messageId.localeCompare(right.messageId))
     for (const source of unroutedSources) addSource(source)
+    // An unrouted lead only reserved its room early; scenes read in their own order before it.
+    const leading = selectedSourceMatches.findIndex((source) => source.messageId === leadingSource?.messageId)
+    if (leading >= 0 && leadingEventTitle === undefined) selectedSourceMatches.push(...selectedSourceMatches.splice(leading, 1))
     for (const candidate of prepared) {
         if (!requiredIds.has(candidate.document.id)
             && candidate.document.type !== 'event') {

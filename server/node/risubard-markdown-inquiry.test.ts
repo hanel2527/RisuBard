@@ -2,6 +2,7 @@ import { get_encoding } from '@dqbd/tiktoken'
 import { describe, expect, test } from 'vitest'
 import type { MarkdownWikiDocument } from './risubard-markdown-wiki'
 import { inquireMarkdownDocuments } from './risubard-markdown-inquiry'
+import { RESOLVED_SOURCE_SCORE } from '../../src/ts/risubard/historicalSourceRecall'
 
 function document(
     input: Partial<MarkdownWikiDocument> & Pick<
@@ -711,6 +712,30 @@ describe('progressive Markdown inquiry', () => {
             expect(event.content).toContain('[Summary omitted: the original text of this scene follows]')
         }
         expect(result.metrics.selectedTokens).toBeLessThanOrEqual(1_100)
+    })
+
+    test('the best query match comes before routed scenes even when no summary mentions it', () => {
+        const scene = (id: string, title: string, messageId: string) => document({ id, type: 'event', title,
+            relativePath: `events/${id}.md`, sourceMessageIds: [messageId],
+            content: `## ${title}\n\n- ${title}: 유메미가 전구 이야기를 했다.` })
+        const original = (messageId: string, occurredAt: number, score: number, text: string) => ({
+            messageId, role: 'assistant' as const, occurredAt, score, content: `${text} `.repeat(20) })
+        const result = inquireMarkdownDocuments({
+            currentInput: '유메미가 말한 전구 여분은 몇 개였고, 전기 흘려 봤을 때 쓸 수 있는 건 몇 개였지?',
+            documents: [scene('stock', '전구 재고 확인', 'turn-7'), scene('welcome', '첫 만남 전구 안내', 'turn-1')],
+            // The summary of turn 9 dropped the test result, so only its original text can answer.
+            sourceMatches: [
+                original('turn-7', 7, RESOLVED_SOURCE_SCORE, '예비 전구는 재고가 4개 남아 있다고 했다.'),
+                original('turn-1', 1, RESOLVED_SOURCE_SCORE, '유메미가 손님을 맞으며 전구 안내를 했다.'),
+                original('turn-9', 9, 4, '전기를 흘려 본 결과 4개 중에 2개의 전구가 무사했다.'),
+            ],
+            sourceLimit: 2,
+            tokenBudget: { target: 200, events: 2_000, perSource: 1_000, maximum: 1_500 },
+        })
+        const ids = result.sources.map((source) => source.id)
+        expect(ids).toContain('narrative-memory:source:turn-9:9')
+        expect(ids).toContain('narrative-memory:source:turn-7:7')
+        expect(ids).not.toContain('narrative-memory:source:turn-1:1')
     })
 
     test('a long canon page gives way to the original text of the selected event', () => {
