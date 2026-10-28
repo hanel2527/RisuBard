@@ -83,7 +83,8 @@ describe('optional wiki embedding index', () => {
             ])
             for (const match of result.matches) {
                 expect(match.start).toBe(10)
-                expect(match.score).toBeCloseTo(recent ? 0.71 : 0.8, 12)
+                // direct 0.8 and contextual 0.6, weighted 0.9 and 0.1.
+                expect(match.score).toBeCloseTo(recent ? 0.78 : 0.8, 12)
             }
             expect(result.evidenceQuery).toBe('early strongest\nearly strongest\nearly strongest')
             expect(Object.values(result.evidenceHints)).toEqual(Array(12).fill('early strongest'))
@@ -142,7 +143,8 @@ describe('optional wiki embedding index', () => {
             : text.includes('다리') ? [1, 0] : [0.7, 0.7])
         const index = new WikiEmbeddingIndex({ identity: 'local', embed }, cache())
         await index.refresh(page([chunk('bridge', '다리에서 재회하기로 맹세했다.'), chunk('shop', '상점에서 빚을 갚기로 했다.')]))
-        expect((await index.search('그때 약속 기억해?', '우리는 무너진 다리에 도착했다.')).matches.map(x => x.documentId)).toEqual(['bridge'])
+        // Recent context only breaks the tie; it no longer decides what is kept.
+        expect((await index.search('그때 약속 기억해?', '우리는 무너진 다리에 도착했다.')).matches[0].documentId).toBe('bridge')
     })
 
     it('reuses unchanged vectors, embeds edits, and drops deleted documents', async () => {

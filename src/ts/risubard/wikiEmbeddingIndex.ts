@@ -37,6 +37,14 @@ export function buildWikiEmbeddingQueries(current: string, recent: string): stri
         : [query]
 }
 
+/**
+ * Weight of the query padded with recent conversation. It only separates
+ * look-alike passages for an implicit reference; at 0.45 it matched the latest
+ * scenes whatever was asked and cut full evidence recall from 15 to 9 of 25
+ * questions in the 45-turn measurement.
+ */
+export const CONTEXTUAL_QUERY_WEIGHT = 0.1
+
 function validVector(value: unknown): value is number[] {
     return Array.isArray(value) && value.length > 0
         && value.length <= 65_536 && value.every(Number.isFinite)
@@ -185,7 +193,8 @@ export class WikiEmbeddingIndex {
             entries.forEach((entry, order) => {
                 const direct = cosine(entry.vector, vectors[0])
                 const contextual = vectors[1] ? cosine(entry.vector, vectors[1]) : direct
-                const score = Math.max(0, Math.min(1, direct * 0.55 + contextual * 0.45))
+                const score = Math.max(0, Math.min(1,
+                    direct * (1 - CONTEXTUAL_QUERY_WEIGHT) + contextual * CONTEXTUAL_QUERY_WEIGHT))
                 if (score < 0.4) return
                 passages.push({ ...entry, score, order })
                 const previous = bestByDocument.get(entry.chunk.documentId)

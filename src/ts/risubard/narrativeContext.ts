@@ -412,7 +412,8 @@ export async function loadNarrativeInquiry(input: {
         (input.sourceMatches ?? []).map((match) => match.messageId)
     )
     const missingSourceIds = evidenceRequests
-        .filter((request) => request.documentId || !suppliedSourceIds.has(request.messageId))
+        // A source the query already found keeps its excerpt; re-centring it on a summary passage lost the answer.
+        .filter((request) => !suppliedSourceIds.has(request.messageId))
         .map((request) => request.messageId)
     if (input.resolveSourceMatches && missingSourceIds.length > 0) {
         const resolved = await input.resolveSourceMatches(missingSourceIds, evidenceRequests)

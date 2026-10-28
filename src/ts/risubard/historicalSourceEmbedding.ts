@@ -96,11 +96,14 @@ export class HistoricalSourceEmbeddingIndex {
 }
 
 export function mergeHistoricalSourceMatches(lexical: readonly HistoricalSourceMatch[], semantic: readonly HistoricalSourceMatch[], maximum: number): HistoricalSourceMatch[] {
+    // Rank fusion sets the order. A source both searches found keeps the lexical
+    // excerpt and score: the excerpt is centred on the asked words, and the score is
+    // what qualifies a strong lexical match without a routing event.
     const ranks = new Map<string, { source: HistoricalSourceMatch; score: number }>()
     for (const list of [lexical, semantic]) list.forEach((source, index) => {
         const old = ranks.get(source.messageId)
-        ranks.set(source.messageId, {source, score:(old?.score ?? 0) + 1 / (60 + index + 1)})
+        ranks.set(source.messageId, {source:old?.source ?? source, score:(old?.score ?? 0) + 1 / (60 + index + 1)})
     })
     return [...ranks.values()].sort((a,b) => b.score - a.score).slice(0, Math.max(0, Math.min(32, maximum)))
-        .map(({source,score}) => ({...source,score}))
+        .map(({source}) => source)
 }
