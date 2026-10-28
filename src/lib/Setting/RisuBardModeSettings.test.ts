@@ -161,9 +161,12 @@ describe('RisuBard mode settings', () => {
         expect(settingsData).toContain('wikiWritingLanguageOptions')
         expect(processSource).toContain('wikiWritingLanguage: settings.risuBardWikiWritingLanguage')
         expect(processSource).toContain("wikiWritingLanguage: job.writingLanguage ?? 'ko'")
-        expect(settingsData).toContain("value: 'standard'")
+        // Live analysis and reboot both tell the writer who the player is.
+        expect(processSource.split('playerName: getUserName({ character, chat })').length).toBe(3)
+        // Standard and ultra-concise were merged into the single built-in style.
+        expect(settingsData).not.toContain("value: 'standard'")
         expect(settingsData).toContain("value: 'concise'")
-        expect(settingsData).toContain("value: 'ultra-concise'")
+        expect(settingsData).not.toContain("value: 'ultra-concise'")
         expect(settingsData).toContain("value: 'custom'")
         expect(settingsData).toContain("bindKey: 'risuBardCanonicalCustomStyle'")
         expect(settingsData).toContain("db.risuBardCanonicalWritingStyle === 'custom'")

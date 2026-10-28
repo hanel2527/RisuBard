@@ -162,7 +162,7 @@ function recommendation(
         case 'risuBardAnalysisLoreExcludeWords':
             return '기본값은 이미지 에셋 문법(<img, {{asset::, {{img::, {{image::)입니다. 봇마다 에셋 항목에 공통으로 들어가는 표시가 있다면 그 단어를 한 줄에 하나씩 더하세요.'
         case 'risuBardCanonicalWritingStyle':
-            return '100턴 이상이거나 메시지가 길수록 ‘간결’을 권장합니다. 뉘앙스를 더 보존하려면 ‘표준’, 토큰을 극도로 줄이려면 ‘초간결’을 쓰세요.'
+            return '‘기본’을 권장합니다. 꾸밈과 줄거리 서술은 줄이고 숫자, 이름, 물건, 핵심 대사처럼 나중에 물어볼 만한 사실을 남깁니다. 직접 규칙을 쓰려면 ‘사용자 지정’을 고르세요.'
         case 'risuBardCanonicalCustomStyle':
             return '1~3개의 짧고 구체적인 규칙을 권장합니다. 긴 지시문은 모든 정본 갱신에 반복되어 토큰을 늘립니다.'
         case 'risuBardWikiWritingLanguage':
@@ -192,7 +192,7 @@ const roles: Record<RisuBardChatSettingHelpKey, string> = {
     risuBardAnalysisLoreTokenLimit: '위키 분석이 참고할 로어북 본문의 최대 토큰입니다. 분석한 턴까지의 채팅으로 켜지는 로어북 항목을 조건문과 변수까지 평가해 우선순위 순으로 넣고, 한도를 넘는 항목은 통째로 뺍니다. 0이면 로어북을 넣지 않습니다. 로어북은 인물과 설정을 확인하는 참고 자료로만 쓰고, 채팅에 나오지 않은 비밀은 위키에 적지 않습니다.',
     risuBardAnalysisLoreIncludeAlwaysActive: '켜면 항상 켜진 로어북 항목도 위키 분석에 넣습니다. 끄면 키워드로 켜진 항목만 넣습니다.',
     risuBardAnalysisLoreExcludeWords: '한 줄에 하나씩 적은 단어가 로어북 항목의 제목이나 본문 원문에 들어 있으면 그 항목을 위키 분석에 넣지 않습니다. 대소문자는 구분하지 않습니다. 모두 지우면 아무것도 빼지 않습니다.',
-    risuBardCanonicalWritingStyle: '정본 위키 문서를 얼마나 압축해서 작성할지 정합니다.',
+    risuBardCanonicalWritingStyle: '사건 요약과 정본 문서를 어떤 문체로 쓸지 정합니다.',
     risuBardCanonicalCustomStyle: '사용자 지정 정본 문체일 때 반복 적용할 짧은 작성 규칙입니다.',
     risuBardWikiWritingLanguage: 'BardWiki 정본 문서가 사용할 언어를 정합니다.',
 }

@@ -4106,7 +4106,7 @@ export const languageKorean = {
   risuBardGrimoireInstruction: "현재 분석 지시문",
   risuBardGrimoireInstructionDescription: "활성 그리모어 프롬프트의 미리보기입니다. 그리모어 프롬프트 페이지에서 복제본을 수정할 수 있으며, 실행 시 슬롯을 채운 뒤 원본 로어를 덧붙입니다.",
   risuBardCanonicalStyleStandard: "표준",
-  risuBardCanonicalStyleConcise: "간결",
+  risuBardCanonicalStyleConcise: "기본",
   risuBardCanonicalStyleUltraConcise: "초압축",
   risuBardCanonicalStyleCustom: "사용자 지정",
   risuBardCanonicalCustomStyle: "사용자 지정 정본 문체 지시문",

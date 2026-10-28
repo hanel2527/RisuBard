@@ -408,6 +408,7 @@ async function runNarrativeConfirmation(
             },
             canonicalWritingStyle: settings.risuBardCanonicalWritingStyle,
             canonicalCustomStyle: settings.risuBardCanonicalCustomStyle,
+            ...(character && chat ? { playerName: getUserName({ character, chat }) } : {}),
             wikiWritingLanguage: settings.risuBardWikiWritingLanguage,
             arcPlotterSettings: resolvedArcPlotterSettings(),
             ...(compiledWikiPromptGuide ? {
@@ -969,6 +970,7 @@ async function runWikiReboot(
                     },
                     canonicalWritingStyle: settings.risuBardCanonicalWritingStyle,
                     canonicalCustomStyle: settings.risuBardCanonicalCustomStyle,
+                    playerName: getUserName({ character, chat }),
                     wikiWritingLanguage: job.writingLanguage ?? 'ko',
                     arcPlotterSettings: resolvedArcPlotterSettings(),
                     ...(compiledWikiPromptGuide ? {

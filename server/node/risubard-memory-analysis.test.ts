@@ -698,7 +698,7 @@ describe('memory analysis runner', () => {
             onError: vi.fn(),
         })
         await runner.run({
-            characterId: 'character', chatId: 'chat', analysisTokenLimit: 3_072,
+            characterId: 'character', chatId: 'chat', analysisTokenLimit: 3_072, playerName: '플레이어',
             messages: [{
                 messageId: 'accepted', role: 'assistant',
                 content: '지휘자 라비안과 동료 세라가 탐색대의 역할을 설명했다.',
@@ -1481,6 +1481,7 @@ describe('memory analysis runner', () => {
             autoCanonicalUpdates: true,
             canonicalWritingStyle: 'custom',
             canonicalCustomStyle: '항목마다 짧은 명사형으로 끝낸다.',
+            playerName: '라비안',
             wikiPromptGuide: {
                 analysis: '경험치 변화를 반드시 분석 후보에 포함한다.',
                 canonicalRewrite: '정본의 RPG 능력치 표 형식을 유지한다.',
@@ -1491,6 +1492,8 @@ describe('memory analysis runner', () => {
         expect(systems).toHaveLength(2)
         expect(systems[0]).toContain('항목마다 짧은 명사형으로 끝낸다.')
         expect(systems[1]).toContain('항목마다 짧은 명사형으로 끝낸다.')
+        // Named once per request: the analysis prompt carries both policies.
+        expect(systems.every((system) => system.split('Player character: "라비안".').length === 2)).toBe(true)
         expect(systems[0]).toContain('경험치 변화를 반드시 분석 후보에 포함한다.')
         // The first request can now produce canonical patches as well as the event.
         expect(systems[0]).toContain('정본의 RPG 능력치 표 형식을 유지한다.')

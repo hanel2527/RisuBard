@@ -446,7 +446,7 @@ export const helpEn = {
         risuBardResponseRecentMessages:
             "Number of recent assistant turns referenced when generating a new response. The current user request is always included separately.",
         risuBardCanonicalWritingStyle:
-            "Writing style for event summaries and canonical Markdown, independent of wiki writing language. Concise is the default.",
+            "Writing style for event summaries and canonical Markdown, independent of wiki writing language. The default style drops decoration and narration and keeps facts a later question may ask about: counts, names, objects and key lines. The former Standard and Ultra concise styles were merged into it.",
         risuBardWikiWritingLanguage:
             "Language for event analysis, summaries and entire canonical bodies, independent of UI and conversation language. Current-chat settings can override this default. Takes priority over language requests in custom style and Wiki Guides. Existing titles, links, names and evidence quotations are preserved. Existing documents are not automatically translated; select a language and reboot to rebuild the entire wiki. Reboot keeps its starting language. Additional analysis cannot append to an event in another language.",
         risuBardCanonicalCustomStyle:

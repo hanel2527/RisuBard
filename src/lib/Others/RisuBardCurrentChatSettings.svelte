@@ -619,8 +619,7 @@
                 {@render settingTitle('risuBardCanonicalWritingStyle', '정본 문체', 'bardwiki-writing-style')}
                 <select id="bardwiki-writing-style" value={settings.risuBardCanonicalWritingStyle}
                     onchange={(event) => setValue('risuBardCanonicalWritingStyle', (event.currentTarget as HTMLSelectElement).value as RisuBardChatSettings['risuBardCanonicalWritingStyle'])}>
-                    <option value="concise">간결</option><option value="standard">표준</option>
-                    <option value="ultra-concise">초간결</option><option value="custom">사용자 지정</option>
+                    <option value="concise">기본</option><option value="custom">사용자 지정</option>
                 </select>
             </div>
             <div class="setting-field" data-chat-setting-field="risuBardWikiWritingLanguage">

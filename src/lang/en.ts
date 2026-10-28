@@ -3868,7 +3868,7 @@ export const languageEnglish = {
     risuBardGrimoireInstruction: "Active analysis instruction",
     risuBardGrimoireInstructionDescription: "Preview of the active Grimoire prompt. Edit a duplicated preset from the Grimoire prompts page; runtime slots are filled before source lore is appended.",
     risuBardCanonicalStyleStandard: "Standard",
-    risuBardCanonicalStyleConcise: "Concise",
+    risuBardCanonicalStyleConcise: "Default",
     risuBardCanonicalStyleUltraConcise: "Ultra concise",
     risuBardCanonicalStyleCustom: "Custom",
     risuBardCanonicalCustomStyle: "Custom canonical style instruction",

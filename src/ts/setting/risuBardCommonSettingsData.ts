@@ -368,8 +368,6 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
         options: {
             selectOptions: [
                 { value: 'concise', labelKey: 'risuBardCanonicalStyleConcise' },
-                { value: 'standard', labelKey: 'risuBardCanonicalStyleStandard' },
-                { value: 'ultra-concise', labelKey: 'risuBardCanonicalStyleUltraConcise' },
                 { value: 'custom', labelKey: 'risuBardCanonicalStyleCustom' },
             ],
         },

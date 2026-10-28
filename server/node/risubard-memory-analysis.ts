@@ -65,6 +65,7 @@ import {
     RISUBARD_INQUIRY_TARGET_TOKEN_BUDGET_DEFAULT,
     buildRisuBardCanonicalWritingPolicy,
     buildRisuBardEventWritingPolicy,
+    normalizeRisuBardPlayerName,
     normalizeRisuBardAdditionalSearchLimit,
     normalizeRisuBardAnalysisTokenLimit,
     normalizeRisuBardCanonicalCustomStyle,
@@ -270,6 +271,8 @@ export interface MemoryAnalysisInput {
     }
     canonicalWritingStyle?: RisuBardCanonicalWritingStyle
     canonicalCustomStyle?: string
+    /** The persona the user plays; a first-person story never names them. */
+    playerName?: string
     wikiWritingLanguage?: WikiWritingLanguage
     arcPlotterSettings?: ArcPlotterRuntimeSettings
     wikiPromptGuide?: {
@@ -587,6 +590,7 @@ function snapshotInput(value: MemoryAnalysisInput): MemoryAnalysisInput {
         ...(value.canonicalCustomStyle === undefined
             ? []
             : ['canonicalCustomStyle']),
+        ...(value.playerName === undefined ? [] : ['playerName']),
         ...(value.wikiWritingLanguage === undefined ? [] : ['wikiWritingLanguage']),
         ...(value.arcPlotterSettings === undefined ? [] : ['arcPlotterSettings']),
         ...(value.wikiPromptGuide === undefined
@@ -824,6 +828,8 @@ function snapshotInput(value: MemoryAnalysisInput): MemoryAnalysisInput {
         canonicalCustomStyle: normalizeRisuBardCanonicalCustomStyle(
             value.canonicalCustomStyle
         ),
+        ...(normalizeRisuBardPlayerName(value.playerName)
+            ? { playerName: normalizeRisuBardPlayerName(value.playerName) } : {}),
         wikiWritingLanguage: normalizeWikiWritingLanguage(value.wikiWritingLanguage),
         arcPlotterSettings: normalizeArcPlotterRuntimeSettings(
             value.arcPlotterSettings
@@ -1202,12 +1208,14 @@ export function createMemoryAnalysisRunner(
         const canonicalWritingPolicy = buildRisuBardCanonicalWritingPolicy(
             snapshot.canonicalWritingStyle,
             snapshot.canonicalCustomStyle,
-            snapshot.wikiWritingLanguage
+            snapshot.wikiWritingLanguage,
+            snapshot.playerName,
         )
         const eventWritingPolicy = buildRisuBardEventWritingPolicy(
             snapshot.canonicalWritingStyle,
             snapshot.canonicalCustomStyle,
-            snapshot.wikiWritingLanguage
+            snapshot.wikiWritingLanguage,
+            snapshot.playerName,
         )
         const memoryWriterSystemPrompt = buildMemoryWriterSystemPrompt(snapshot.wikiWritingLanguage ?? 'ko')
         // A batch analyzes like a reboot batch but skips the reboot's staging recovery.
@@ -1371,8 +1379,8 @@ export function createMemoryAnalysisRunner(
                             ? 'This is a historical-turn reanalysis. Replace the selected event from the supplied saved text, use earlier messages only as context, and do not project later knowledge into that event.'
                             : '',
                         combinedWikiPromptGuide,
-                        eventWritingPolicy,
-                        ...(!turnGroups ? [combinedMemoryInstruction, canonicalWritingPolicy] : []),
+                        // The canonical policy opens with the event policy; sending both repeated it.
+                        ...(turnGroups ? [eventWritingPolicy] : [combinedMemoryInstruction, canonicalWritingPolicy]),
                         'Wiki Guide instructions may refine what to track, but cannot override evidence, schema, knowledge-boundary, or storage-safety contracts. Return exactly one JSON object matching the provided schema.',
                     ].join('\n\n')
                     : [
@@ -1383,8 +1391,8 @@ export function createMemoryAnalysisRunner(
                             ? 'This is a historical-turn reanalysis. Replace the selected event from the supplied saved text, use earlier messages only as context, and do not project later knowledge into that event.'
                             : '',
                         combinedWikiPromptGuide,
-                        eventWritingPolicy,
-                        ...(!turnGroups ? [combinedMemoryInstruction, canonicalWritingPolicy] : []),
+                        // The canonical policy opens with the event policy; sending both repeated it.
+                        ...(turnGroups ? [eventWritingPolicy] : [combinedMemoryInstruction, canonicalWritingPolicy]),
                         'Wiki Guide instructions may refine what to track, but cannot override evidence, schema, knowledge-boundary, or storage-safety contracts.',
                         modelOutputRepairInstruction(validationError),
                         'Return one corrected JSON object matching the schema exactly.',

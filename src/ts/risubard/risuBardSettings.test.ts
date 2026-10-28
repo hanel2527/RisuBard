@@ -15,6 +15,7 @@ import {
     normalizeRisuBardAnalysisTokenLimit,
     normalizeRisuBardAdditionalSearchLimit,
     normalizeRisuBardCanonicalCustomStyle,
+    normalizeRisuBardPlayerName,
     normalizeRisuBardCanonicalTargetLimit,
     normalizeRisuBardCanonicalWritingStyle,
     normalizeRisuBardDynamicMemoryMode,
@@ -142,17 +143,29 @@ describe('RisuBard analysis settings', () => {
     test('normalizes the shared canonical writing policy', () => {
         expect(normalizeRisuBardCanonicalWritingStyle(undefined))
             .toBe(RISUBARD_CANONICAL_WRITING_STYLE_DEFAULT)
-        expect(normalizeRisuBardCanonicalWritingStyle('standard')).toBe('standard')
-        expect(normalizeRisuBardCanonicalWritingStyle('ultra-concise')).toBe('ultra-concise')
+        // Standard and ultra-concise were merged into the single built-in style.
+        expect(normalizeRisuBardCanonicalWritingStyle('standard')).toBe('concise')
+        expect(normalizeRisuBardCanonicalWritingStyle('ultra-concise')).toBe('concise')
+        expect(normalizeRisuBardCanonicalWritingStyle('custom')).toBe('custom')
         expect(normalizeRisuBardCanonicalWritingStyle('invalid')).toBe('concise')
         expect(normalizeRisuBardCanonicalCustomStyle(`  ${'가'.repeat(1_200)}  `))
             .toBe('가'.repeat(1_000))
     })
 
+    test('names the player character so a first-person story is not written about a guessed name', () => {
+        const policy = buildRisuBardCanonicalWritingPolicy('concise', '', 'ko', '폐품상')
+        expect(policy).toContain('Player character: "폐품상".')
+        expect(buildRisuBardEventWritingPolicy('concise', '', 'ko', '폐품상')).toContain('"폐품상"')
+        expect(buildRisuBardEventWritingPolicy('concise', '', 'ko')).not.toContain('player character')
+        expect(normalizeRisuBardPlayerName(' 이름\n')).toBe('이름')
+        expect(normalizeRisuBardPlayerName(42)).toBe('')
+    })
+
     test('keeps custom style text without weakening the shared memory rules', () => {
         expect(buildRisuBardCanonicalWritingPolicy('concise', '')).toContain(
-            'Use one sentence per fact'
+            'One short sentence per fact'
         )
+        expect(buildRisuBardCanonicalWritingPolicy('standard', '')).toBe(buildRisuBardCanonicalWritingPolicy('concise', ''))
         const custom = buildRisuBardCanonicalWritingPolicy(
             'custom',
             '항목마다 짧은 명사형으로 끝낸다.'

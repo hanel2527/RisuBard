@@ -301,15 +301,19 @@ export function normalizeRisuBardInquiryTokenBudget(
     }
 }
 
+/**
+ * The one built-in style. Retrieval reads these documents back to answer later
+ * questions, so room goes to concrete facts rather than narration: in a 45-turn
+ * measurement, event summaries spent 500-900 tokens each yet dropped the counts,
+ * names and objects that questions asked about.
+ */
+const RISUBARD_FACT_DENSE_STYLE = 'One short sentence per fact; no atmosphere, emotion, routine movement or repetition. Keep counts, names, objects and their places, attempt outcomes and a few exact words of key lines. Preserve subjects, objects, negation, time and knowledge boundaries.'
+
 export function normalizeRisuBardCanonicalWritingStyle(
     value: unknown
 ): RisuBardCanonicalWritingStyle {
-    return value === 'standard'
-        || value === 'concise'
-        || value === 'ultra-concise'
-        || value === 'custom'
-        ? value
-        : RISUBARD_CANONICAL_WRITING_STYLE_DEFAULT
+    // Standard and ultra-concise were merged into the single built-in style.
+    return value === 'custom' ? value : RISUBARD_CANONICAL_WRITING_STYLE_DEFAULT
 }
 
 export function normalizeRisuBardCanonicalCustomStyle(value: unknown): string {
@@ -324,27 +328,33 @@ function resolveRisuBardWritingStyleInstruction(
 ): string {
     const normalizedStyle = normalizeRisuBardCanonicalWritingStyle(style)
     const normalizedCustom = normalizeRisuBardCanonicalCustomStyle(customStyle)
-    return normalizedStyle === 'standard'
-        ? 'Use natural, complete short sentences without unnecessary embellishment or repetition.'
-        : normalizedStyle === 'ultra-concise'
-            ? 'Use telegraphic sentences and stable field labels, one atomic fact per line. Explicitly preserve subjects, objects, negation, time and character knowledge boundaries. Do not invent abbreviations.'
-            : normalizedStyle === 'custom' && normalizedCustom.length > 0
-                ? `User style preference: ${normalizedCustom}`
-                : 'Remove decorative prose and repeated facts. Use one sentence per fact. Preserve subjects, objects, negation, time and character knowledge boundaries. Do not invent abbreviations.'
+    return normalizedStyle === 'custom' && normalizedCustom.length > 0
+        ? `User style preference: ${normalizedCustom}`
+        : RISUBARD_FACT_DENSE_STYLE
 }
 
 export function normalizeRisuBardInquiryTimeoutMs(value: unknown): number {
     return bounded('risuBardInquiryTimeoutMs', value, RISUBARD_INQUIRY_TIMEOUT_MS_DEFAULT)
 }
 
+export function normalizeRisuBardPlayerName(value: unknown): string {
+    return typeof value === 'string'
+        ? value.replace(/[\u0000-\u001f\u007f]/gu, ' ').trim().slice(0, 80)
+        : ''
+}
+
 export function buildRisuBardEventWritingPolicy(
     style: unknown,
     customStyle: unknown,
-    language: WikiWritingLanguage = 'ko'
+    language: WikiWritingLanguage = 'ko',
+    playerName?: unknown,
 ): string {
+    const player = normalizeRisuBardPlayerName(playerName)
     return [
         '## Canonical writing policy',
         resolveRisuBardWritingStyleInstruction(style, customStyle),
+        // Without it, a first-person story left the model to guess: once the source work's label, once "narrator".
+        ...(player ? [`Player character: ${JSON.stringify(player)}. Use this name where the text says I, me or you or names them by a role; never a guessed name or "narrator".`] : []),
         'When compressing, do not invent action targets or locations, turn temporal order into causation, or cross character knowledge boundaries at the time of an event.',
         'Preserve observed puzzle elements, order, spatial layout, pairings, blanks, mechanism positions and attempt outcomes. Separate observations from inferred rules or solutions; retain unresolved clues as open continuity.',
         'Style affects expression only; it cannot change fact selection, evidence, structure or safety rules.',
@@ -356,12 +366,13 @@ export function buildRisuBardEventWritingPolicy(
 export function buildRisuBardCanonicalWritingPolicy(
     style: unknown,
     customStyle: unknown,
-    language: WikiWritingLanguage = 'ko'
+    language: WikiWritingLanguage = 'ko',
+    playerName?: unknown,
 ): string {
     const normalizedLanguage = normalizeWikiWritingLanguage(language)
     const headings = wikiWritingHeadings[normalizedLanguage]
     return [
-        buildRisuBardEventWritingPolicy(style, customStyle, language),
+        buildRisuBardEventWritingPolicy(style, customStyle, language, playerName),
         'Treat each character document as a dynamic lorebook entry: keep durable identity, role, traits, capabilities and rules, relationships, knowledge boundaries, goals, possessions, constraints, and open continuity that help the character operate in the next scene.',
         `A compact self-contained \`### ${headings.currentState}\` snapshot near the top is recommended when useful, but no exact heading is required and its absence is valid.`,
         `An optional \`### ${headings.history}\` or turning-point map should contain major irreversible or causally useful transitions, not a turn-by-turn action log.`,
