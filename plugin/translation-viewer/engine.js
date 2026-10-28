@@ -133,7 +133,7 @@ function validEntry(entry) {
         typeof entry.source === 'string' && Number.isFinite(entry.updatedAt);
 }
 
-export async function createEngine(api, onChange = () => {}) {
+export async function createEngine(api, onChange = () => {}, render) {
     const storage = await api.getLocalPluginStorage();
     const savedSettings = await storage.getItem(SETTINGS_KEY);
     let settings = normalizeSettings({ ...DEFAULT_SETTINGS, ...(savedSettings ?? {}) });
@@ -167,7 +167,11 @@ export async function createEngine(api, onChange = () => {}) {
         const reading = (async () => {
             const stored = await storage.getItem(key);
             if (disposed) return null;
-            const entry = validEntry(stored) ? Object.freeze({ text: stored.text, source: stored.source, updatedAt: stored.updatedAt }) : null;
+            const entry = validEntry(stored) ? Object.freeze({
+                text: stored.text, source: stored.source, updatedAt: stored.updatedAt,
+                ...(stored.htmlVersion === 1 && typeof stored.html === 'string'
+                    ? { html: stored.html, htmlVersion: 1 } : {}),
+            }) : null;
             cache.set(key, entry);
             return entry;
         })();
@@ -264,7 +268,11 @@ export async function createEngine(api, onChange = () => {}) {
                 return null;
             }
         },
-        async translate(context, { force = false } = {}) {
+        async render(context) {
+            // Upgrade an existing text-only cache without purchasing another translation.
+            return await this.translate(context, { cachedOnly: true });
+        },
+        async translate(context, { force = false, cachedOnly = false } = {}) {
             const key = identity(context);
             if (!key || !isEnabled(context.characterId)) return null;
             if (pending.has(key)) return await pending.get(key);
@@ -277,23 +285,41 @@ export async function createEngine(api, onChange = () => {}) {
                 try {
                     previous = await readEntry(key);
                     if (!isEnabled(snapshot.characterId)) return null;
-                    if (previous && !force) return previous;
-                    if (typeof snapshot.source !== 'string' || !snapshot.source.trim()) throw new Error('번역할 원문이 없습니다.');
-                    const { messages, styles } = await prepareRequest(api, snapshot, requestSettings);
-                    if (!isEnabled(snapshot.characterId)) return null;
-                    const options = { mode: 'translate', allowPlugins: true, messages };
-                    if (requestSettings.model) options.staticModel = requestSettings.model;
-                    const response = await api.runLLMModel(options);
-                    if (disposed) {
-                        if (response?.type === 'streaming' && typeof response.result?.cancel === 'function') {
-                            try { await response.result.cancel(); } catch { /* Already closed. */ }
+                    if (cachedOnly && !previous) return null;
+                    if (previous && !force && (!render || typeof previous.html === 'string')) return previous;
+                    let text = previous?.text;
+                    let source = previous?.source;
+                    let updatedAt = previous?.updatedAt;
+                    if (!previous || force) {
+                        if (typeof snapshot.source !== 'string' || !snapshot.source.trim()) throw new Error('번역할 원문이 없습니다.');
+                        const { messages, styles } = await prepareRequest(api, snapshot, requestSettings);
+                        if (!isEnabled(snapshot.characterId)) return null;
+                        const options = { mode: 'translate', allowPlugins: true, messages };
+                        if (requestSettings.model) options.staticModel = requestSettings.model;
+                        const response = await api.runLLMModel(options);
+                        if (disposed) {
+                            if (response?.type === 'streaming' && typeof response.result?.cancel === 'function') {
+                                try { await response.result.cancel(); } catch { /* Already closed. */ }
+                            }
+                            return null;
                         }
-                        return null;
+                        text = recoverStyles(await responseText(response), styles);
+                        source = snapshot.source;
+                        updatedAt = Date.now();
                     }
-                    const text = recoverStyles(await responseText(response), styles);
                     if (disposed) return null;
                     if (!text.trim()) throw new Error('모델이 빈 번역을 반환했습니다.');
-                    const entry = Object.freeze({ text, source: snapshot.source, updatedAt: Date.now() });
+                    let html;
+                    if (render && isEnabled(snapshot.characterId)) {
+                        // render resolves only after the native message has been restored.
+                        html = await render(snapshot, text);
+                        if (typeof html !== 'string') throw new Error('표시 후처리 결과가 올바르지 않습니다.');
+                    }
+                    if (disposed) return null;
+                    const entry = Object.freeze({
+                        text, source, updatedAt,
+                        ...(html === undefined ? {} : { html, htmlVersion: 1 }),
+                    });
                     try {
                         await storage.setItem(key, entry);
                     } catch (error) {

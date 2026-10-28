@@ -14,7 +14,7 @@ function deferred() {
     return { promise, resolve, reject };
 }
 
-async function fixture({ data = new Map(), respond = () => success('비가 그쳤다.'), onChange = () => {}, getItem } = {}) {
+async function fixture({ data = new Map(), respond = () => success('비가 그쳤다.'), onChange = () => {}, getItem, render } = {}) {
     const requests = [];
     const writes = [];
     const storage = {
@@ -33,7 +33,7 @@ async function fixture({ data = new Map(), respond = () => success('비가 그�
             return await respond(options, requests.length);
         },
     };
-    const engine = await createEngine(api, onChange);
+    const engine = await createEngine(api, onChange, render);
     return { engine, requests, writes, data, api };
 }
 
@@ -399,4 +399,85 @@ test('invalid settings show useful errors without changing saved values or trimm
     assert.equal(f.writes.length, 1);
     const reloaded = await fixture({ data: f.data });
     assert.equal(reloaded.engine.settings.prompt, prompt);
+});
+
+test('cached native HTML survives source edits and reload without another model or render call', async () => {
+    let renders = 0;
+    const f = await fixture({ render: async () => { renders++; return '<p>비가 그쳤다.</p><img src="data:image/png;base64,AA==">'; } });
+    const entry = await f.engine.translate(context());
+    assert.equal(entry.htmlVersion, 1);
+    f.engine.dispose();
+    const reloaded = await fixture({ data: f.data, render: () => { throw new Error('must use cached HTML'); } });
+    assert.deepEqual(await reloaded.engine.render(context({ source: 'Edited original.' })), entry);
+    assert.equal(reloaded.requests.length, 0);
+    assert.equal(renders, 1);
+});
+
+test('old text caches render using the current source for restoration without purchasing translation', async () => {
+    const legacy = await fixture();
+    const previous = await legacy.engine.translate(context());
+    legacy.engine.dispose();
+    const edited = context({ source: 'Edited before plugin upgrade.' });
+    let renderContext;
+    const f = await fixture({ data: legacy.data, render: async (snapshot, text) => {
+        renderContext = snapshot;
+        assert.equal(text, previous.text);
+        return ''; // A display script may deliberately remove the whole message.
+    } });
+    const entry = await f.engine.render(edited);
+    assert.equal(renderContext.source, edited.source);
+    assert.equal(entry.source, previous.source);
+    assert.equal(entry.updatedAt, previous.updatedAt);
+    assert.equal(entry.html, '');
+    assert.equal(f.requests.length, 0);
+    assert.equal(await f.engine.render(context({ messageId: 'uncached' })), null);
+    assert.equal(f.requests.length, 0);
+});
+
+test('native rendering is a publication barrier and failed reprocessing retains the prior good translation', async () => {
+    let fail = false;
+    let started = deferred();
+    let restored = deferred();
+    const f = await fixture({ render: async () => {
+        started.resolve();
+        await restored.promise;
+        if (fail) throw new Error('native render failed after original restoration');
+        return '<p>비가 그쳤다.</p>';
+    } });
+    const pending = f.engine.translate(context());
+    await started.promise;
+    assert.equal(await f.engine.get(context()), null);
+    assert.equal(f.engine.isBusy(context()), true);
+    assert.equal(f.writes.length, 0);
+    restored.resolve();
+    const previous = await pending;
+    fail = true;
+    started = deferred();
+    restored = deferred();
+    const retry = f.engine.translate(context({ source: 'Edited source.' }), { force: true });
+    await started.promise;
+    assert.deepEqual(await f.engine.get(context()), previous);
+    restored.resolve();
+    assert.deepEqual(await retry, previous);
+    assert.match(f.engine.error(context()), /native render failed/);
+    f.engine.dispose();
+    const reloaded = await fixture({ data: f.data });
+    assert.deepEqual(await reloaded.engine.get(context()), previous);
+});
+
+test('disabling the chatbot during a model call caches text without temporarily writing its chat', async () => {
+    const waiting = deferred();
+    const started = deferred();
+    const f = await fixture({
+        respond: () => { started.resolve(); return waiting.promise; },
+        render: () => { throw new Error('disabled chatbot must not be temporarily written'); },
+    });
+    const pending = f.engine.translate(context());
+    await started.promise;
+    await f.engine.saveSettings({ ...f.engine.settings, disabledCharacterIds: ['character-a'] });
+    waiting.resolve(success('비가 그쳤다.'));
+    const entry = await pending;
+    assert.equal(entry.text, '비가 그쳤다.');
+    assert.equal(entry.html, undefined);
+    assert.equal(f.engine.error(context()), '');
 });

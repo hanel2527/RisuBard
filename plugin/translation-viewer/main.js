@@ -1,12 +1,12 @@
-import MarkdownIt from 'markdown-it';
 import { createEngine } from './engine.js';
 import { registerSettings } from './settings.js';
 import { createQuickToggle, quickToggleCSS } from './quick-toggle.js';
+import { createMessageSwap } from './message-swap.js';
+import { createNativeRenderer } from './native-render.js';
 
 const ROW_MARK = 'x-rtv-row';
 const BODY_MARK = 'x-rtv-body';
 const MODE_MARK = 'x-rtv-show';
-const markdown = new MarkdownIt({ html: false, breaks: true, linkify: false });
 const css = `
 .rtv-translation { display: none; overflow-wrap: anywhere; pointer-events: none; user-select: none; }
 .chattext[x-rtv-show="translation"] > [data-painter-body] { display: none !important; }
@@ -35,13 +35,16 @@ function rowSelector(index, id) {
     return `.risu-chat[data-chat-index="${index}"][data-chat-id="${CSS.escape(id)}"]`;
 }
 
-// Only plugin-owned nodes and x- attributes are changed. No chat write API is used.
+// Translation HTML is separate. Native rendering uses a journaled temporary write
+// and restores message.data before publishing the cache or returning an output hook.
 export async function startTranslationViewer(api) {
     let disposed = false;
     let doc;
     let style;
     let observer;
     let engine;
+    let swaps;
+    let nativeRenderer;
     let settingsUI;
     let quickToggle;
     let timer;
@@ -52,6 +55,7 @@ export async function startTranslationViewer(api) {
     let selection = null;
     let uiError = '';
     let initialization = Promise.resolve();
+    let recoveredSelection = '';
     let activeRefresh = Promise.resolve();
     const views = new Map();
     const originalMode = new Set();
@@ -83,11 +87,14 @@ export async function startTranslationViewer(api) {
         clearTimeout(timer);
         clearInterval(poll);
         engine?.dispose();
+        // Start restoration before any DOM/settings cleanup; host unload is time-limited.
+        const restoring = nativeRenderer?.dispose() ?? swaps?.dispose();
         pendingOutputs.clear();
         // Remove the hiding rule first, before the host's one-second unload deadline.
         await style?.remove();
-        await Promise.allSettled([initialization, activeRefresh]);
+        await Promise.allSettled([restoring, initialization, activeRefresh]);
         engine?.dispose();
+        await swaps?.dispose();
         clearInterval(poll);
         await style?.remove();
         await Promise.allSettled([
@@ -118,6 +125,12 @@ export async function startTranslationViewer(api) {
         if (disposed || characterIndex !== await api.getCurrentCharacterIndex()
             || chatIndex !== await api.getCurrentChatIndex()) return null;
         const chat = character?.chats?.[chatIndex];
+        if (chat && swaps) {
+            for (const message of chat.message ?? []) {
+                const original = swaps.original({ characterId: character.chaId, chatId: chat.id, messageId: message.chatId });
+                if (original !== undefined) message.data = original; // This getter returned a snapshot, not the live DB.
+            }
+        }
         return chat?.id && Array.isArray(chat.message)
             ? { characterIndex, chatIndex, character, chat } : null;
     }
@@ -135,12 +148,23 @@ export async function startTranslationViewer(api) {
         const nativeButton = await view.row.querySelector('.button-icon-translate.text-info');
         view.nativeTranslated = Boolean(nativeButton);
         release(nativeButton);
-        const showTranslation = Boolean(entry && engine.isEnabled(view.context.characterId)
+        const ready = entry && typeof entry.html === 'string';
+        const showTranslation = Boolean(ready && engine.isEnabled(view.context.characterId)
             && !view.nativeTranslated && !snapshot.chat.isStreaming && !originalMode.has(view.key));
-        if (entry && view.renderedText !== entry.text) {
-            // SafeElement sanitizes the HTML too; Markdown's raw HTML is intentionally off.
-            await view.translation.setInnerHTML(markdown.render(entry.text));
-            view.renderedText = entry.text;
+        if (ready && view.renderedHTML !== entry.html) {
+            // SafeElement sanitizes again. Native scripts have already processed this HTML.
+            await view.translation.setInnerHTML(entry.html);
+            const images = await view.translation.querySelectorAll('img[class*="root-loaded-image"]');
+            try {
+                for (const image of await api.unwarpSafeArray(images)) {
+                    try {
+                        const classes = await image.getClassName();
+                        await image.addClass('root-loaded-image');
+                        if (classes.includes('root-loaded-image-dynamic')) await image.addClass('root-loaded-image-dynamic');
+                    } finally { release(image); }
+                }
+            } finally { release(images); }
+            view.renderedHTML = entry.html;
         }
         const mode = showTranslation ? 'translation' : 'original';
         if (view.mode !== mode) {
@@ -148,14 +172,18 @@ export async function startTranslationViewer(api) {
             view.mode = mode;
         }
         await setLabel(view, 'toggleLabel', view.toggle,
-            view.nativeTranslated ? '내장 번역 끄기 필요' : !entry ? '번역' : showTranslation ? '원문 보기' : '번역 보기');
-        await setLabel(view, 'retryLabel', view.retry, busy ? '번역 중…' : '다시 번역');
-        const error = engine.error(view.context) || uiError;
-        const status = view.nativeTranslated ? '앱의 번역 버튼과 자동 번역을 꺼 주세요.' : error || (busy ? '번역 중 — 기존 표시 유지'
+            view.nativeTranslated ? '내장 번역 끄기 필요' : !entry ? '번역' : !ready ? '후처리 재시도' : showTranslation ? '원문 보기' : '번역 보기');
+        await setLabel(view, 'retryLabel', view.retry, busy ? '번역·후처리 중…' : '다시 번역');
+        const error = swaps?.error || engine.error(view.context) || uiError;
+        const status = view.nativeTranslated ? '앱의 번역 버튼과 자동 번역을 꺼 주세요.' : error || (busy ? '번역·표시 후처리 중 — 원문 복구 후 표시'
             : snapshot.chat.isStreaming ? '응답 완료 후 번역할 수 있습니다.'
+            : entry && !ready ? '저장된 번역을 본체 표시 방식으로 후처리합니다. 추가 번역 요청은 보내지 않습니다.'
             : entry && entry.source !== view.context.source ? '원문 수정됨 · 기존 번역 유지'
             : showTranslation ? '번역문은 읽기 전용 · 편집은 원문 보기' : '');
         await setLabel(view, 'statusLabel', view.status, status);
+        if (entry && !ready && !busy && !engine.error(view.context) && !view.nativeTranslated && !snapshot.chat.isStreaming) {
+            void engine.render(view.context).catch(logError);
+        }
     }
 
     async function freshContext(view) {
@@ -167,18 +195,18 @@ export async function startTranslationViewer(api) {
     }
 
     async function act(view, force) {
-        if (disposed || view.nativeTranslated || engine.isBusy(view.context)) return;
+        if (disposed || nativeRenderer?.busy || swaps?.busy || view.nativeTranslated || engine.isBusy(view.context)) return;
         const context = await freshContext(view);
         if (!context || disposed) return;
         const entry = await engine.get(context);
-        if (entry && !force) {
+        if (entry && typeof entry.html === 'string' && !force) {
             if (originalMode.has(view.key)) originalMode.delete(view.key);
             else originalMode.add(view.key);
             schedule();
             return;
         }
         try {
-            const result = await engine.translate(context, { force });
+            const result = entry && !force ? await engine.render(context) : await engine.translate(context, { force });
             if (result && !disposed && !engine.error(context)) originalMode.delete(view.key);
         } catch (error) {
             logError(error);
@@ -324,8 +352,20 @@ export async function startTranslationViewer(api) {
         if (refreshing) { refreshAgain = true; return; }
         refreshing = true;
         try {
+            if (nativeRenderer?.busy || swaps?.busy) {
+                const status = swaps.error || '표시 후처리·원문 복구 중 — 대상 메시지 편집 잠금';
+                for (const view of views.values()) await setLabel(view, 'statusLabel', view.status, status);
+                return;
+            }
             selection = await readSelection();
             if (disposed) return;
+            const selectionKey = selection ? JSON.stringify([selection.character.chaId, selection.chat.id]) : '';
+            if (selectionKey && selectionKey !== recoveredSelection) {
+                recoveredSelection = selectionKey;
+                await swaps.recover();
+                selection = await readSelection();
+                if (disposed) return;
+            }
             settingsUI?.refreshPreference();
             await quickToggle?.refresh(selection);
             if (disposed) return;
@@ -360,13 +400,16 @@ export async function startTranslationViewer(api) {
     }
 
     initialization = (async () => {
-        engine = await createEngine(api, schedule);
-        if (disposed) return;
-        settingsUI = await registerSettings(api, engine, preferencesChanged);
-        if (disposed) return;
         doc = await api.getRootDocument();
         if (disposed) return;
         if (!doc) throw new Error('메인 화면 접근 권한이 필요합니다. 권한을 허용하고 플러그인을 다시 불러오세요.');
+        swaps = await createMessageSwap(api, schedule);
+        if (disposed) { await swaps.dispose(); return; }
+        nativeRenderer = createNativeRenderer(api, doc, swaps, schedule);
+        engine = await createEngine(api, schedule, (context, text) => nativeRenderer.render(context, text));
+        if (disposed) return;
+        settingsUI = await registerSettings(api, engine, preferencesChanged);
+        if (disposed) return;
         quickToggle = createQuickToggle(api, doc, engine, {
             readSelection, onChange: preferencesChanged, openSettings: () => settingsUI.open(), reportError: logError,
         });
