@@ -1,6 +1,7 @@
 import MarkdownIt from 'markdown-it';
 import { createEngine } from './engine.js';
 import { registerSettings } from './settings.js';
+import { createQuickToggle, quickToggleCSS } from './quick-toggle.js';
 
 const ROW_MARK = 'x-rtv-row';
 const BODY_MARK = 'x-rtv-body';
@@ -14,6 +15,7 @@ const css = `
 .rtv-controls button { cursor: pointer; padding: .25em .6em; border: 1px solid currentColor; border-radius: .35em; background: transparent; color: inherit; }
 .rtv-controls button:hover { opacity: .75; }
 .rtv-status { opacity: .8; white-space: pre-wrap; overflow-wrap: anywhere; }
+${quickToggleCSS}
 `;
 
 function contextFor(character, chat, message) {
@@ -40,7 +42,8 @@ export async function startTranslationViewer(api) {
     let style;
     let observer;
     let engine;
-    let settingsCleanup;
+    let settingsUI;
+    let quickToggle;
     let timer;
     let poll;
     let refreshing = false;
@@ -90,7 +93,8 @@ export async function startTranslationViewer(api) {
         await Promise.allSettled([
             observer?.disconnect(),
             ...Array.from(views.values(), cleanupView),
-            settingsCleanup?.(),
+            settingsUI?.dispose(),
+            quickToggle?.dispose(),
             api.removeRisuChatListener('output', onOutput),
         ]);
     };
@@ -116,13 +120,6 @@ export async function startTranslationViewer(api) {
         const chat = character?.chats?.[chatIndex];
         return chat?.id && Array.isArray(chat.message)
             ? { characterIndex, chatIndex, character, chat } : null;
-    }
-
-    async function generationIdle() {
-        const ready = await doc.querySelector('.button-icon-send');
-        const idle = Boolean(ready);
-        release(ready);
-        return idle;
     }
 
     async function setLabel(view, field, element, value) {
@@ -163,7 +160,7 @@ export async function startTranslationViewer(api) {
 
     async function freshContext(view) {
         const current = await readSelection();
-        if (!current || current.chat.isStreaming || !engine.isEnabled(current.character.chaId) || !await generationIdle()) return null;
+        if (!current || current.chat.isStreaming || !engine.isEnabled(current.character.chaId)) return null;
         const message = current.chat.message.find(message => message.chatId === view.context.messageId);
         const context = contextFor(current.character, current.chat, message);
         return context && engine.key(context) === view.key ? context : null;
@@ -283,14 +280,37 @@ export async function startTranslationViewer(api) {
         await Promise.all(Array.from(views.values()).filter(view => !seen.has(view.token)).map(cleanupView));
     }
 
-    function onOutput(output) {
+    async function translateOutput(context) {
+        const entry = await engine.get(context);
+        if (disposed || !engine.settings.autoTranslate || !engine.isEnabled(context.characterId)) return;
+        // A newly committed continuation is new generated content, not a source edit.
+        // Ordinary edits never enter this path and keep their existing translation.
+        await engine.translate(context, { force: Boolean(entry && entry.source !== context.source) });
+    }
+
+    async function onOutput(output) {
         if (disposed || !engine?.isEnabled(output.char?.chaId) || !engine.settings.autoTranslate) return;
         const message = output.chat?.message?.[output.messageIndex];
         const context = contextFor(output.char, output.chat, message);
         if (!context) return;
-        pendingOutputs.set(engine.key(context), context);
-        // Never await a network request inside the host's awaited output callback.
-        schedule();
+        const current = await readSelection();
+        if (disposed) return;
+        if (current?.character.chaId !== context.characterId || current.chat.id !== context.chatId) {
+            // CBS needs the selected chat. Keep offscreen output until that chat is opened.
+            pendingOutputs.set(engine.key(context), context);
+            schedule();
+            return;
+        }
+        pendingOutputs.delete(engine.key(context));
+        try {
+            // The host awaits this hook before auto-continue and automatic BardWiki writing.
+            // Waiting here gives translation priority without the send button's wiki delay.
+            await translateOutput(context);
+        } catch (error) {
+            logError(error);
+        } finally {
+            schedule();
+        }
     }
 
     function discardDisabledOutputs() {
@@ -306,17 +326,24 @@ export async function startTranslationViewer(api) {
         try {
             selection = await readSelection();
             if (disposed) return;
+            settingsUI?.refreshPreference();
+            await quickToggle?.refresh(selection);
+            if (disposed) return;
             discardDisabledOutputs();
-            // The output hook precedes auto-continue. The send control only returns after
-            // the whole generation chain ends, including non-streaming continuations.
-            // Offscreen chats wait until opened; never infer completion from isStreaming alone.
-            if (selection && !selection.chat.isStreaming && await generationIdle()) {
+            // Only offscreen output is deferred. Visible committed output is translated
+            // inside the awaited output hook, before automatic BardWiki writing starts.
+            if (selection && !selection.chat.isStreaming) {
                 for (const [key, context] of pendingOutputs) {
                     if (context.characterId !== selection.character.chaId || context.chatId !== selection.chat.id) continue;
                     pendingOutputs.delete(key);
                     const message = selection.chat.message.find(item => item.chatId === context.messageId);
                     const current = contextFor(selection.character, selection.chat, message);
-                    if (current) void engine.translate(current).catch(logError);
+                    if (current) {
+                        // An edit made while this chat was offscreen is not a new output.
+                        const translate = current.source === context.source
+                            ? translateOutput(current) : engine.translate(current);
+                        void translate.catch(logError);
+                    }
                 }
             }
             await reconcile(selection);
@@ -326,14 +353,23 @@ export async function startTranslationViewer(api) {
         }
     }
 
+    function preferencesChanged() {
+        uiError = '';
+        discardDisabledOutputs();
+        schedule();
+    }
+
     initialization = (async () => {
         engine = await createEngine(api, schedule);
         if (disposed) return;
-        settingsCleanup = await registerSettings(api, engine, () => { uiError = ''; discardDisabledOutputs(); schedule(); });
+        settingsUI = await registerSettings(api, engine, preferencesChanged);
         if (disposed) return;
         doc = await api.getRootDocument();
         if (disposed) return;
         if (!doc) throw new Error('메인 화면 접근 권한이 필요합니다. 권한을 허용하고 플러그인을 다시 불러오세요.');
+        quickToggle = createQuickToggle(api, doc, engine, {
+            readSelection, onChange: preferencesChanged, openSettings: () => settingsUI.open(), reportError: logError,
+        });
         style = await doc.createElement('style');
         if (disposed) return;
         await style.setTextContent(css);

@@ -88,6 +88,48 @@ test('global off overrides chatbot preferences without erasing them', async () =
     f.engine.dispose();
 });
 
+test('queued quick toggles merge with current settings instead of losing other chatbot or model changes', async () => {
+    const f = await fixture();
+    const setModel = f.engine.saveSettings(current => ({ ...current, model: '[PM] Updated' }));
+    const disable = id => f.engine.saveSettings(current => ({
+        ...current, disabledCharacterIds: [...current.disabledCharacterIds, id],
+    }));
+    await Promise.all([setModel, disable('character-a'), disable('character-b')]);
+    assert.equal(await f.engine.translate(context()), null);
+    assert.equal(await f.engine.translate(context({ characterId: 'character-b' })), null);
+    await f.engine.translate(context({ characterId: 'character-c' }));
+    assert.equal(f.requests[0].staticModel, 'pluginmodel:::[PM] Updated');
+    f.engine.dispose();
+    const reloaded = await fixture({ data: f.data });
+    assert.equal(reloaded.engine.isEnabled('character-a'), false);
+    assert.equal(reloaded.engine.isEnabled('character-b'), false);
+    assert.equal(reloaded.engine.settings.model, 'pluginmodel:::[PM] Updated');
+    reloaded.engine.dispose();
+});
+
+test('failed quick-toggle persistence restores the memory-first preference and survives reload', async () => {
+    const f = await fixture();
+    await f.engine.saveSettings({ ...f.engine.settings, disabledCharacterIds: ['character-b'] });
+    const storage = await f.api.getLocalPluginStorage();
+    const setItem = storage.setItem;
+    let fail = true;
+    storage.setItem = async (key, value) => {
+        await setItem(key, value);
+        if (fail) { fail = false; throw new Error('disk unavailable'); }
+    };
+    await assert.rejects(f.engine.saveSettings(current => ({
+        ...current, disabledCharacterIds: [...current.disabledCharacterIds, 'character-a'],
+    })), /disk unavailable/);
+    assert.equal(f.engine.isEnabled('character-a'), true);
+    f.engine.dispose();
+    const reloaded = await fixture({ data: f.data });
+    assert.equal(reloaded.engine.isEnabled('character-a'), true);
+    assert.equal(reloaded.engine.isEnabled('character-b'), false);
+    await reloaded.engine.translate(context());
+    assert.equal(reloaded.requests.length, 1);
+    reloaded.engine.dispose();
+});
+
 test('opting out skips queued requests but keeps an already-sent result and lets other chatbots proceed', async () => {
     const started = deferred();
     const release = deferred();

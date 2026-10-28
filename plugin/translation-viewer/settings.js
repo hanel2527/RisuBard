@@ -9,6 +9,7 @@ export async function registerSettings(api, engine, onSave = () => {}) {
     let saving = false;
     let containerTask = Promise.resolve();
     let selectedCharacterId = null;
+    let characterDirty = false;
     const root = document.createElement('main');
     root.className = 'rtv-settings';
     root.setAttribute('aria-labelledby', 'rtv-settings-title');
@@ -85,13 +86,14 @@ export async function registerSettings(api, engine, onSave = () => {}) {
     };
     field('enabled', '원문 보존 번역 사용 (전체)', 'checkbox');
     const characterEnabled = field('characterEnabled', '이 챗봇에서 번역 사용', 'checkbox', '',
-        '설정 창을 열 때 선택한 챗봇의 모든 채팅에 적용합니다. 전체 사용이 켜져 있어야 번역하며, 꺼도 저장된 번역은 삭제하지 않습니다.');
+        '설정 창을 열 때 선택한 챗봇의 모든 채팅에 적용합니다. 채팅 사이드바의 프리셋 고정 제목 옆 번역 버튼으로도 즉시 변경할 수 있습니다. 해당 영역이 숨겨지거나 없으면 이동 가능한 번역 버튼이 표시되며 위치는 본체가 저장합니다. 전체 사용이 꺼진 상태에서 버튼을 누르면 이 설정을 엽니다. 꺼도 저장된 번역은 삭제하지 않습니다.');
     const characterSummary = element('p', '', form);
     characterSummary.className = 'help';
     characterSummary.id = 'rtv-setting-character-summary';
     characterEnabled.setAttribute('aria-describedby', `${characterEnabled.id}-help ${characterSummary.id}`);
+    characterEnabled.addEventListener('change', () => { characterDirty = true; }, { signal: controller.signal });
     field('autoTranslate', '새로 완료된 캐릭터 답변만 자동 번역', 'checkbox', '',
-        '이전 대화의 번역되지 않은 메시지는 자동 처리하지 않습니다. 해당 메시지의 수동 번역 버튼을 사용하세요.');
+        '열어 둔 대화에서는 답변 확정 이벤트 안에서 번역을 먼저 마친 뒤 후속 자동 바드위키 작업으로 넘깁니다. 자동 이어쓰기는 확정된 각 구간마다 번역 요청이 발생하며, 같은 메시지의 최종 번역으로 갱신합니다. 다른 대화의 답변은 해당 대화를 열 때 처리합니다. 이전 대화의 미번역 메시지는 수동 번역 버튼을 사용하세요.');
     field('model', '번역 모델', 'text', '비워 두면 기본 번역 보조 모델 / [PM] 모델 이름',
         '비워 두면 앱의 현재 번역 보조 모델 선택을 사용합니다. Provider Manager 모델은 정확한 이름인 [PM] 모델 이름 또는 pluginmodel:::[PM] 모델 이름을 입력하세요.');
     field('targetLanguage', '번역할 언어', 'text', 'ko', '예: ko (한국어), en (영어), ja (일본어)');
@@ -111,6 +113,8 @@ export async function registerSettings(api, engine, onSave = () => {}) {
         '메시지를 편집할 때는 원문 모드로 전환한 뒤 편집하세요.',
         '원문을 편집해도 저장된 번역은 유지됩니다. 수동 재번역은 현재 원문으로 새 번역을 생성합니다.',
         '번역은 캐릭터·대화·메시지의 고유 ID로 별도 저장합니다. 모델·프롬프트·토글·번역가 노트를 바꿔도 기존 번역은 유지하며, 다시 번역할 때 현재 토글과 노트를 사용합니다.',
+        '번역 실패 시 기존 번역을 유지하고 후속 작업을 진행합니다. 이미 실행 중인 바드위키 요청을 중단하거나 앞지를 수는 없습니다.',
+        '현재 번역문 표시는 기본 Markdown만 지원합니다. 본체의 표시 정규식·Lua·어셋 후처리를 호출하는 공개 API가 없어 해당 후처리는 아직 지원하지 않습니다.',
     ]) element('li', text, help);
     const actions = element('div', undefined, form);
     actions.className = 'actions';
@@ -132,6 +136,10 @@ export async function registerSettings(api, engine, onSave = () => {}) {
         containerTask = containerTask.catch(() => {}).then(operation);
         return containerTask;
     };
+    const refreshPreference = () => {
+        if (!selectedCharacterId || characterDirty || saving) return;
+        characterEnabled.checked = !engine.settings.disabledCharacterIds.includes(selectedCharacterId);
+    };
     const load = async () => {
         for (const [key, input] of Object.entries(controls)) {
             if (input === characterEnabled) continue;
@@ -139,6 +147,7 @@ export async function registerSettings(api, engine, onSave = () => {}) {
             else input.value = String(engine.settings[key] ?? '');
         }
         selectedCharacterId = null;
+        characterDirty = false;
         characterEnabled.checked = true;
         characterEnabled.disabled = true;
         characterSummary.textContent = '챗봇을 선택한 뒤 설정을 다시 열어 주세요. 전체 설정은 저장할 수 있습니다.';
@@ -163,20 +172,26 @@ export async function registerSettings(api, engine, onSave = () => {}) {
         saving = true;
         save.disabled = true;
         feedback('저장 중입니다.');
-        const settings = { ...engine.settings };
+        const fields = {};
         for (const [key, input] of Object.entries(controls)) {
             if (input === characterEnabled) continue;
-            settings[key] = input.type === 'checkbox' ? input.checked : input.value;
+            fields[key] = input.type === 'checkbox' ? input.checked : input.value;
         }
-        if (selectedCharacterId && !characterEnabled.disabled) {
-            const disabled = new Set(settings.disabledCharacterIds);
-            if (characterEnabled.checked) disabled.delete(selectedCharacterId);
-            else disabled.add(selectedCharacterId);
-            settings.disabledCharacterIds = [...disabled];
-        }
+        const preferenceId = characterDirty && !characterEnabled.disabled ? selectedCharacterId : null;
+        const useTranslation = characterEnabled.checked;
         try {
-            await engine.saveSettings(settings);
+            await engine.saveSettings(current => {
+                const next = { ...current, ...fields };
+                if (preferenceId) {
+                    const disabled = new Set(current.disabledCharacterIds);
+                    if (useTranslation) disabled.delete(preferenceId);
+                    else disabled.add(preferenceId);
+                    next.disabledCharacterIds = [...disabled];
+                }
+                return next;
+            });
             if (!disposed) {
+                characterDirty = false;
                 onSave();
                 feedback('설정을 저장했습니다. 기존 번역은 그대로 유지됩니다.');
             }
@@ -185,6 +200,7 @@ export async function registerSettings(api, engine, onSave = () => {}) {
         } finally {
             saving = false;
             save.disabled = false;
+            refreshPreference();
         }
     }, { signal: controller.signal });
     const hide = async () => {
@@ -202,26 +218,27 @@ export async function registerSettings(api, engine, onSave = () => {}) {
     document.head.append(style);
     document.body.append(root);
     let registration;
+    const open = async () => {
+        if (disposed) return;
+        try {
+            await container(async () => {
+                if (disposed) return;
+                if (!visible && !saving) {
+                    await load();
+                    feedback('');
+                }
+                if (disposed) return;
+                root.hidden = false;
+                await api.showContainer('fullscreen');
+                visible = true;
+                controls.enabled.focus();
+            });
+        } catch (error) {
+            if (!disposed) feedback(`설정을 열지 못했습니다: ${errorText(error)}`, true);
+        }
+    };
     try {
-        registration = await api.registerSetting('원문 보존 번역', async () => {
-            if (disposed) return;
-            try {
-                await container(async () => {
-                    if (disposed) return;
-                    if (!visible && !saving) {
-                        await load();
-                        feedback('');
-                    }
-                    if (disposed) return;
-                    root.hidden = false;
-                    await api.showContainer('fullscreen');
-                    visible = true;
-                    controls.enabled.focus();
-                });
-            } catch (error) {
-                if (!disposed) feedback(`설정을 열지 못했습니다: ${errorText(error)}`, true);
-            }
-        }, '', 'none', SETTINGS_ID);
+        registration = await api.registerSetting('원문 보존 번역', open, '', 'none', SETTINGS_ID);
     } catch (error) {
         disposed = true;
         controller.abort();
@@ -229,7 +246,7 @@ export async function registerSettings(api, engine, onSave = () => {}) {
         style.remove();
         throw error;
     }
-    return async () => {
+    const dispose = async () => {
         if (disposed) return;
         disposed = true;
         controller.abort();
@@ -246,4 +263,5 @@ export async function registerSettings(api, engine, onSave = () => {}) {
             }
         }
     };
+    return { open, refreshPreference, dispose };
 }

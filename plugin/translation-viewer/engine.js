@@ -229,10 +229,20 @@ export async function createEngine(api, onChange = () => {}) {
         error(context) { return disposed ? '' : errors.get(identity(context)) ?? ''; },
         async saveSettings(value) {
             if (disposed) return;
-            const next = normalizeSettings(value);
             const saving = settingsQueue.then(async () => {
                 if (disposed) return;
-                await storage.setItem(SETTINGS_KEY, next);
+                // Functional updates merge with the latest queued settings, not a stale UI snapshot.
+                const next = normalizeSettings(typeof value === 'function' ? value(settings) : value);
+                try {
+                    await storage.setItem(SETTINGS_KEY, next);
+                } catch (error) {
+                    // The host updates its memory before durable storage succeeds.
+                    try { await storage.setItem(SETTINGS_KEY, settings); }
+                    catch (rollbackError) {
+                        throw new Error(`${String(error)}; 설정 복구도 실패했습니다: ${String(rollbackError)}`);
+                    }
+                    throw error;
+                }
                 if (disposed) return;
                 settings = next;
                 disabledCharacters = new Set(next.disabledCharacterIds);

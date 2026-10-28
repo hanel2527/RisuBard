@@ -1,7 +1,8 @@
 //@name risubard-translation-viewer
 //@display-name 원문 보존 번역
 //@api 3.0
-//@version 1.1.0
+//@version 1.2.1
+// 1.2.1: Prioritize committed assistant translations before subsequent automatic wiki work; refresh generated continuations without invalidating user edits.
 // Bundled renderer licenses follow.
 /*
 markdown-it
@@ -5753,10 +5754,19 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 			},
 			async saveSettings(value) {
 				if (disposed) return;
-				const next = normalizeSettings(value);
 				const saving = settingsQueue.then(async () => {
 					if (disposed) return;
-					await storage.setItem(SETTINGS_KEY, next);
+					const next = normalizeSettings(typeof value === "function" ? value(settings) : value);
+					try {
+						await storage.setItem(SETTINGS_KEY, next);
+					} catch (error) {
+						try {
+							await storage.setItem(SETTINGS_KEY, settings);
+						} catch (rollbackError) {
+							throw new Error(`${String(error)}; 설정 복구도 실패했습니다: ${String(rollbackError)}`);
+						}
+						throw error;
+					}
 					if (disposed) return;
 					settings = next;
 					disabledCharacters = new Set(next.disabledCharacterIds);
@@ -5878,6 +5888,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 		let saving = false;
 		let containerTask = Promise.resolve();
 		let selectedCharacterId = null;
+		let characterDirty = false;
 		const root = document.createElement("main");
 		root.className = "rtv-settings";
 		root.setAttribute("aria-labelledby", "rtv-settings-title");
@@ -5952,12 +5963,15 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 			return input;
 		};
 		field("enabled", "원문 보존 번역 사용 (전체)", "checkbox");
-		const characterEnabled = field("characterEnabled", "이 챗봇에서 번역 사용", "checkbox", "", "설정 창을 열 때 선택한 챗봇의 모든 채팅에 적용합니다. 전체 사용이 켜져 있어야 번역하며, 꺼도 저장된 번역은 삭제하지 않습니다.");
+		const characterEnabled = field("characterEnabled", "이 챗봇에서 번역 사용", "checkbox", "", "설정 창을 열 때 선택한 챗봇의 모든 채팅에 적용합니다. 채팅 사이드바의 프리셋 고정 제목 옆 번역 버튼으로도 즉시 변경할 수 있습니다. 해당 영역이 숨겨지거나 없으면 이동 가능한 번역 버튼이 표시되며 위치는 본체가 저장합니다. 전체 사용이 꺼진 상태에서 버튼을 누르면 이 설정을 엽니다. 꺼도 저장된 번역은 삭제하지 않습니다.");
 		const characterSummary = element("p", "", form);
 		characterSummary.className = "help";
 		characterSummary.id = "rtv-setting-character-summary";
 		characterEnabled.setAttribute("aria-describedby", `${characterEnabled.id}-help ${characterSummary.id}`);
-		field("autoTranslate", "새로 완료된 캐릭터 답변만 자동 번역", "checkbox", "", "이전 대화의 번역되지 않은 메시지는 자동 처리하지 않습니다. 해당 메시지의 수동 번역 버튼을 사용하세요.");
+		characterEnabled.addEventListener("change", () => {
+			characterDirty = true;
+		}, { signal: controller.signal });
+		field("autoTranslate", "새로 완료된 캐릭터 답변만 자동 번역", "checkbox", "", "열어 둔 대화에서는 답변 확정 이벤트 안에서 번역을 먼저 마친 뒤 후속 자동 바드위키 작업으로 넘깁니다. 자동 이어쓰기는 확정된 각 구간마다 번역 요청이 발생하며, 같은 메시지의 최종 번역으로 갱신합니다. 다른 대화의 답변은 해당 대화를 열 때 처리합니다. 이전 대화의 미번역 메시지는 수동 번역 버튼을 사용하세요.");
 		field("model", "번역 모델", "text", "비워 두면 기본 번역 보조 모델 / [PM] 모델 이름", "비워 두면 앱의 현재 번역 보조 모델 선택을 사용합니다. Provider Manager 모델은 정확한 이름인 [PM] 모델 이름 또는 pluginmodel:::[PM] 모델 이름을 입력하세요.");
 		field("targetLanguage", "번역할 언어", "text", "ko", "예: ko (한국어), en (영어), ja (일본어)");
 		field("sourceLanguage", "원문 언어", "text", "en", "예: en (영어), ko (한국어)");
@@ -5974,7 +5988,9 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 			"앱의 내장 자동 번역은 꺼 두세요. 이 플러그인은 별도의 번역 표시와 원문/번역 전환 버튼을 제공합니다.",
 			"메시지를 편집할 때는 원문 모드로 전환한 뒤 편집하세요.",
 			"원문을 편집해도 저장된 번역은 유지됩니다. 수동 재번역은 현재 원문으로 새 번역을 생성합니다.",
-			"번역은 캐릭터·대화·메시지의 고유 ID로 별도 저장합니다. 모델·프롬프트·토글·번역가 노트를 바꿔도 기존 번역은 유지하며, 다시 번역할 때 현재 토글과 노트를 사용합니다."
+			"번역은 캐릭터·대화·메시지의 고유 ID로 별도 저장합니다. 모델·프롬프트·토글·번역가 노트를 바꿔도 기존 번역은 유지하며, 다시 번역할 때 현재 토글과 노트를 사용합니다.",
+			"번역 실패 시 기존 번역을 유지하고 후속 작업을 진행합니다. 이미 실행 중인 바드위키 요청을 중단하거나 앞지를 수는 없습니다.",
+			"현재 번역문 표시는 기본 Markdown만 지원합니다. 본체의 표시 정규식·Lua·어셋 후처리를 호출하는 공개 API가 없어 해당 후처리는 아직 지원하지 않습니다."
 		]) element("li", text, help);
 		const actions = element("div", void 0, form);
 		actions.className = "actions";
@@ -5996,6 +6012,10 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 			containerTask = containerTask.catch(() => {}).then(operation);
 			return containerTask;
 		};
+		const refreshPreference = () => {
+			if (!selectedCharacterId || characterDirty || saving) return;
+			characterEnabled.checked = !engine.settings.disabledCharacterIds.includes(selectedCharacterId);
+		};
 		const load = async () => {
 			for (const [key, input] of Object.entries(controls)) {
 				if (input === characterEnabled) continue;
@@ -6003,6 +6023,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 				else input.value = String(engine.settings[key] ?? "");
 			}
 			selectedCharacterId = null;
+			characterDirty = false;
 			characterEnabled.checked = true;
 			characterEnabled.disabled = true;
 			characterSummary.textContent = "챗봇을 선택한 뒤 설정을 다시 열어 주세요. 전체 설정은 저장할 수 있습니다.";
@@ -6026,20 +6047,29 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 			saving = true;
 			save.disabled = true;
 			feedback("저장 중입니다.");
-			const settings = { ...engine.settings };
+			const fields = {};
 			for (const [key, input] of Object.entries(controls)) {
 				if (input === characterEnabled) continue;
-				settings[key] = input.type === "checkbox" ? input.checked : input.value;
+				fields[key] = input.type === "checkbox" ? input.checked : input.value;
 			}
-			if (selectedCharacterId && !characterEnabled.disabled) {
-				const disabled = new Set(settings.disabledCharacterIds);
-				if (characterEnabled.checked) disabled.delete(selectedCharacterId);
-				else disabled.add(selectedCharacterId);
-				settings.disabledCharacterIds = [...disabled];
-			}
+			const preferenceId = characterDirty && !characterEnabled.disabled ? selectedCharacterId : null;
+			const useTranslation = characterEnabled.checked;
 			try {
-				await engine.saveSettings(settings);
+				await engine.saveSettings((current) => {
+					const next = {
+						...current,
+						...fields
+					};
+					if (preferenceId) {
+						const disabled = new Set(current.disabledCharacterIds);
+						if (useTranslation) disabled.delete(preferenceId);
+						else disabled.add(preferenceId);
+						next.disabledCharacterIds = [...disabled];
+					}
+					return next;
+				});
 				if (!disposed) {
+					characterDirty = false;
 					onSave();
 					feedback("설정을 저장했습니다. 기존 번역은 그대로 유지됩니다.");
 				}
@@ -6048,6 +6078,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 			} finally {
 				saving = false;
 				save.disabled = false;
+				refreshPreference();
 			}
 		}, { signal: controller.signal });
 		const hide = async () => {
@@ -6065,26 +6096,27 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 		document.head.append(style);
 		document.body.append(root);
 		let registration;
+		const open = async () => {
+			if (disposed) return;
+			try {
+				await container(async () => {
+					if (disposed) return;
+					if (!visible && !saving) {
+						await load();
+						feedback("");
+					}
+					if (disposed) return;
+					root.hidden = false;
+					await api.showContainer("fullscreen");
+					visible = true;
+					controls.enabled.focus();
+				});
+			} catch (error) {
+				if (!disposed) feedback(`설정을 열지 못했습니다: ${errorText(error)}`, true);
+			}
+		};
 		try {
-			registration = await api.registerSetting("원문 보존 번역", async () => {
-				if (disposed) return;
-				try {
-					await container(async () => {
-						if (disposed) return;
-						if (!visible && !saving) {
-							await load();
-							feedback("");
-						}
-						if (disposed) return;
-						root.hidden = false;
-						await api.showContainer("fullscreen");
-						visible = true;
-						controls.enabled.focus();
-					});
-				} catch (error) {
-					if (!disposed) feedback(`설정을 열지 못했습니다: ${errorText(error)}`, true);
-				}
-			}, "", "none", SETTINGS_ID);
+			registration = await api.registerSetting("원문 보존 번역", open, "", "none", SETTINGS_ID);
 		} catch (error) {
 			disposed = true;
 			controller.abort();
@@ -6092,7 +6124,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 			style.remove();
 			throw error;
 		}
-		return async () => {
+		const dispose = async () => {
 			if (disposed) return;
 			disposed = true;
 			controller.abort();
@@ -6107,6 +6139,196 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 					root.remove();
 					style.remove();
 				}
+			}
+		};
+		return {
+			open,
+			refreshPreference,
+			dispose
+		};
+	}
+	//#endregion
+	//#region plugin/translation-viewer/quick-toggle.js
+	var BUTTON_ID = "risubard-translation-viewer:toggle";
+	var MARK = "x-rtv-quick-heading";
+	var HEADING = "[data-current-chat-section] ~ div > div.text-\\[11px\\]:has(+ div.items-stretch .lucide-folder-heart)";
+	var release = (object) => {
+		object?.release?.();
+	};
+	var quickToggleCSS = `
+[${MARK}]:not([${MARK}=""]) { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.rtv-quick { flex-shrink: 0; margin-inline-start: auto; }
+.rtv-quick button { font: inherit; font-size: 12px; padding: 4px 8px; border: 1px solid currentColor; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; white-space: nowrap; }
+.rtv-quick button[aria-pressed="true"] { color: var(--color-success, currentColor); }
+.rtv-quick button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.rtv-quick button:disabled { opacity: .6; cursor: wait; }
+[data-plugin-fab$=":${BUTTON_ID}"] > div { width: auto; height: auto; white-space: nowrap; font-size: 13px; }
+`;
+	function createQuickToggle(api, doc, engine, { readSelection, onChange, openSettings, reportError }) {
+		let disposed = false;
+		let busy = false;
+		let mounted = null;
+		let floating = null;
+		let floatingState = "";
+		let sequence = 0;
+		async function clearInline() {
+			const old = mounted;
+			mounted = null;
+			if (!old) return;
+			await Promise.allSettled([
+				old.heading.setAttribute(MARK, ""),
+				old.wrapper.remove(),
+				old.button?.removeEventListener("click", old.listener)
+			]);
+			for (const element of [
+				old.heading,
+				old.wrapper,
+				old.button
+			]) release(element);
+		}
+		async function clearFloating() {
+			if (!floating) return;
+			await api.unregisterUIPart(floating.id);
+			floating = null;
+			floatingState = "";
+		}
+		async function findHeading() {
+			const safe = await doc.querySelectorAll(HEADING);
+			const candidates = await api.unwarpSafeArray(safe);
+			release(safe);
+			let found = null;
+			try {
+				const width = await doc.clientWidth();
+				const height = await doc.clientHeight();
+				for (const candidate of candidates) {
+					const rect = await candidate.getBoundingClientRect();
+					if (rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.bottom > 0 && rect.left < width && rect.top < height) {
+						found = candidate;
+						break;
+					}
+				}
+				return found;
+			} finally {
+				for (const candidate of candidates) if (candidate !== found) release(candidate);
+			}
+		}
+		async function toggle(characterId) {
+			if (disposed || busy) return;
+			busy = true;
+			onChange();
+			try {
+				const current = await readSelection();
+				if (disposed || current?.character.chaId !== characterId) return;
+				if (!engine.settings.enabled) {
+					await openSettings();
+					return;
+				}
+				await engine.saveSettings((settings) => {
+					const disabled = new Set(settings.disabledCharacterIds);
+					if (disabled.has(characterId)) disabled.delete(characterId);
+					else disabled.add(characterId);
+					return {
+						...settings,
+						disabledCharacterIds: [...disabled]
+					};
+				});
+			} catch (error) {
+				if (!disposed) {
+					reportError(error);
+					alert(`번역 사용 설정을 저장하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`);
+				}
+			} finally {
+				busy = false;
+				if (!disposed) onChange();
+			}
+		}
+		return {
+			async refresh(snapshot) {
+				if (disposed) return;
+				const characterId = snapshot?.character.chaId;
+				if (!characterId || characterId === "§playground") {
+					await clearInline();
+					await clearFloating();
+					return;
+				}
+				const enabled = engine.isEnabled(characterId);
+				const label = busy ? "저장 중…" : !engine.settings.enabled ? "번역 전체 꺼짐" : enabled ? "번역 켜짐" : "번역 꺼짐";
+				const title = !engine.settings.enabled ? "전체 번역이 꺼져 있습니다. 설정 열기" : "이 챗봇의 모든 채팅에서 번역 켜기/끄기 · 저장된 번역은 유지됩니다";
+				const state = JSON.stringify([characterId, label]);
+				let heading = await findHeading();
+				try {
+					if (disposed) return;
+					if (heading) {
+						await clearFloating();
+						const child = await heading.querySelector(".rtv-quick");
+						const retained = mounted && child && await heading.getAttribute(MARK) === mounted.token;
+						release(child);
+						if (!retained) {
+							await clearInline();
+							const wrapper = await doc.createElement("span");
+							mounted = {
+								heading,
+								wrapper,
+								token: `rtv-${++sequence}`,
+								state: "",
+								button: null,
+								listener: null
+							};
+							heading = null;
+							await wrapper.setClassName("rtv-quick");
+							await mounted.heading.setAttribute(MARK, mounted.token);
+							await mounted.heading.appendChild(wrapper);
+						}
+						if (mounted.state !== state) {
+							if (mounted.characterId !== characterId) mounted.restoreFocus = false;
+							if (mounted.button) {
+								if (mounted.characterId === characterId && await mounted.button.matches(":focus")) mounted.restoreFocus = true;
+								await mounted.button.removeEventListener("click", mounted.listener);
+								release(mounted.button);
+							}
+							await mounted.wrapper.setInnerHTML(`<button type="button" title="${title}" aria-pressed="${enabled}" ${busy ? "disabled" : ""}>${label}</button>`);
+							mounted.button = await mounted.wrapper.querySelector("button");
+							mounted.listener = await mounted.button.addEventListener("click", () => {
+								toggle(characterId);
+							});
+							mounted.state = state;
+							mounted.characterId = characterId;
+							if (mounted.restoreFocus && !busy) {
+								const focused = await doc.querySelector(":focus");
+								try {
+									if (!focused || await focused.matches("body")) await mounted.button.focus();
+								} finally {
+									release(focused);
+									mounted.restoreFocus = false;
+								}
+							}
+						}
+					} else {
+						await clearInline();
+						if (floatingState !== state) {
+							floating = await api.registerButton({
+								id: BUTTON_ID,
+								location: "action",
+								name: `${label} — ${title}`,
+								iconType: "html",
+								icon: `<span>${label}</span>`
+							}, () => {
+								toggle(characterId);
+							});
+							floatingState = state;
+						}
+					}
+				} finally {
+					release(heading);
+					if (disposed) {
+						await clearInline();
+						await clearFloating();
+					}
+				}
+			},
+			async dispose() {
+				disposed = true;
+				await Promise.allSettled([clearInline(), clearFloating()]);
 			}
 		};
 	}
@@ -6128,6 +6350,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 .rtv-controls button { cursor: pointer; padding: .25em .6em; border: 1px solid currentColor; border-radius: .35em; background: transparent; color: inherit; }
 .rtv-controls button:hover { opacity: .75; }
 .rtv-status { opacity: .8; white-space: pre-wrap; overflow-wrap: anywhere; }
+${quickToggleCSS}
 `;
 	function contextFor(character, chat, message) {
 		if (![
@@ -6152,7 +6375,8 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 		let style;
 		let observer;
 		let engine;
-		let settingsCleanup;
+		let settingsUI;
+		let quickToggle;
 		let timer;
 		let poll;
 		let refreshing = false;
@@ -6208,7 +6432,8 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 			await Promise.allSettled([
 				observer?.disconnect(),
 				...Array.from(views.values(), cleanupView),
-				settingsCleanup?.(),
+				settingsUI?.dispose(),
+				quickToggle?.dispose(),
 				api.removeRisuChatListener("output", onOutput)
 			]);
 		};
@@ -6238,12 +6463,6 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 				character,
 				chat
 			} : null;
-		}
-		async function generationIdle() {
-			const ready = await doc.querySelector(".button-icon-send");
-			const idle = Boolean(ready);
-			release(ready);
-			return idle;
 		}
 		async function setLabel(view, field, element, value) {
 			if (view[field] === value) return;
@@ -6275,7 +6494,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 		}
 		async function freshContext(view) {
 			const current = await readSelection();
-			if (!current || current.chat.isStreaming || !engine.isEnabled(current.character.chaId) || !await generationIdle()) return null;
+			if (!current || current.chat.isStreaming || !engine.isEnabled(current.character.chaId)) return null;
 			const message = current.chat.message.find((message) => message.chatId === view.context.messageId);
 			const context = contextFor(current.character, current.chat, message);
 			return context && engine.key(context) === view.key ? context : null;
@@ -6401,13 +6620,31 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 			}
 			await Promise.all(Array.from(views.values()).filter((view) => !seen.has(view.token)).map(cleanupView));
 		}
-		function onOutput(output) {
+		async function translateOutput(context) {
+			const entry = await engine.get(context);
+			if (disposed || !engine.settings.autoTranslate || !engine.isEnabled(context.characterId)) return;
+			await engine.translate(context, { force: Boolean(entry && entry.source !== context.source) });
+		}
+		async function onOutput(output) {
 			if (disposed || !engine?.isEnabled(output.char?.chaId) || !engine.settings.autoTranslate) return;
 			const message = output.chat?.message?.[output.messageIndex];
 			const context = contextFor(output.char, output.chat, message);
 			if (!context) return;
-			pendingOutputs.set(engine.key(context), context);
-			schedule();
+			const current = await readSelection();
+			if (disposed) return;
+			if (current?.character.chaId !== context.characterId || current.chat.id !== context.chatId) {
+				pendingOutputs.set(engine.key(context), context);
+				schedule();
+				return;
+			}
+			pendingOutputs.delete(engine.key(context));
+			try {
+				await translateOutput(context);
+			} catch (error) {
+				logError(error);
+			} finally {
+				schedule();
+			}
 		}
 		function discardDisabledOutputs() {
 			for (const [key, context] of pendingOutputs) if (!engine.settings.autoTranslate || !engine.isEnabled(context.characterId)) pendingOutputs.delete(key);
@@ -6422,13 +6659,16 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 			try {
 				selection = await readSelection();
 				if (disposed) return;
+				settingsUI?.refreshPreference();
+				await quickToggle?.refresh(selection);
+				if (disposed) return;
 				discardDisabledOutputs();
-				if (selection && !selection.chat.isStreaming && await generationIdle()) for (const [key, context] of pendingOutputs) {
+				if (selection && !selection.chat.isStreaming) for (const [key, context] of pendingOutputs) {
 					if (context.characterId !== selection.character.chaId || context.chatId !== selection.chat.id) continue;
 					pendingOutputs.delete(key);
 					const message = selection.chat.message.find((item) => item.chatId === context.messageId);
 					const current = contextFor(selection.character, selection.chat, message);
-					if (current) engine.translate(current).catch(logError);
+					if (current) (current.source === context.source ? translateOutput(current) : engine.translate(current)).catch(logError);
 				}
 				await reconcile(selection);
 			} finally {
@@ -6439,18 +6679,25 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 				}
 			}
 		}
+		function preferencesChanged() {
+			uiError = "";
+			discardDisabledOutputs();
+			schedule();
+		}
 		initialization = (async () => {
 			engine = await createEngine(api, schedule);
 			if (disposed) return;
-			settingsCleanup = await registerSettings(api, engine, () => {
-				uiError = "";
-				discardDisabledOutputs();
-				schedule();
-			});
+			settingsUI = await registerSettings(api, engine, preferencesChanged);
 			if (disposed) return;
 			doc = await api.getRootDocument();
 			if (disposed) return;
 			if (!doc) throw new Error("메인 화면 접근 권한이 필요합니다. 권한을 허용하고 플러그인을 다시 불러오세요.");
+			quickToggle = createQuickToggle(api, doc, engine, {
+				readSelection,
+				onChange: preferencesChanged,
+				openSettings: () => settingsUI.open(),
+				reportError: logError
+			});
 			style = await doc.createElement("style");
 			if (disposed) return;
 			await style.setTextContent(css);
