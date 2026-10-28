@@ -302,6 +302,14 @@ describe('canonical maintenance', () => {
             { content: markdown, sourceMessageIds: ['m1'] },
             [{ id: 'event.walk', type: 'event', title: '산책', sourceMessageIds: ['m1'], content: walkBody }],
         )).toEqual([{ id: 'event.walk', title: '산책', content: walkBody }])
+        // A stored card keeps only its latest sources, so the (#N) mark is how an older unit finds its event.
+        expect(maintenanceCoverDocuments(
+            { content: '## 미오\n\n### 지식과 비밀\n\n- 폐공장에서 수면향을 목격했다. (#8)', sourceMessageIds: ['m20'] },
+            [
+                { id: 'event.factory', type: 'event', title: '폐공장', sourceMessageIds: ['m15'], sequence: 8 },
+                { id: 'event.later', type: 'event', title: '순찰차', sourceMessageIds: ['m17'], sequence: 9 },
+            ],
+        ).map((document) => document.id)).toEqual(['event.factory'])
     })
 
     test('reports applied, skipped and failed maintenance without throwing', async () => {

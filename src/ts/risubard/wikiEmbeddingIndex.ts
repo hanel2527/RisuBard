@@ -24,7 +24,7 @@ export interface WikiVectorCache {
 
 type IndexedChunk = { chunk: WikiEmbeddingChunk; vector: number[] }
 /** Why a search returned nothing although semantic search is on, for the inquiry diagnostic. */
-export type WikiSemanticSkip = 'not-ready' | 'timeout' | 'error'
+export type WikiSemanticSkip = 'not-ready' | 'build-failed' | 'timeout' | 'error'
 const emptyResult = (skipped?: WikiSemanticSkip) => ({ matches: [] as WikiSemanticMatch[], evidenceQuery: '', evidenceHints: {} as Record<string, string>,
     ...(skipped ? { skipped } : {}) })
 
@@ -59,6 +59,8 @@ export class WikiEmbeddingIndex {
     private refreshPromise?: Promise<void>
     private controller = new AbortController()
     ready = false
+    /** The last index build failed, so "preparing" would be a lie until a rebuild succeeds. */
+    buildFailed = false
 
     constructor(private provider: WikiVectorProvider, private cache: WikiVectorCache) {}
 
@@ -69,7 +71,12 @@ export class WikiEmbeddingIndex {
         active: () => boolean = () => true,
     ): Promise<void> {
         if (this.refreshPromise) return this.refreshPromise
-        this.refreshPromise = this.rebuild(loadPage, active).finally(() => {
+        this.refreshPromise = this.rebuild(loadPage, active).then(() => {
+            this.buildFailed = false
+        }, (error) => {
+            this.buildFailed = true
+            throw error
+        }).finally(() => {
             this.refreshPromise = undefined
         })
         return this.refreshPromise
@@ -158,7 +165,7 @@ export class WikiEmbeddingIndex {
         const entries = options.allowedDocumentIds ? this.entries.filter(entry => options.allowedDocumentIds!.has(entry.chunk.documentId)) : this.entries
         const queries = buildWikiEmbeddingQueries(current, recent)
         if (!queries.length) return emptyResult()
-        if (!this.ready) return emptyResult('not-ready')
+        if (!this.ready) return emptyResult(this.buildFailed ? 'build-failed' : 'not-ready')
         if (!entries.length) return emptyResult()
         let timer: ReturnType<typeof setTimeout> | undefined
         const controller = new AbortController()

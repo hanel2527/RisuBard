@@ -427,7 +427,7 @@ describe('memory analysis runner', () => {
         expect(result.canonicalReceipt?.notes).toContain('정본 항목 편집: Alice (삭제 1, 되살림 1)')
     })
 
-    test('retries maintenance of an oversized place after new sources instead of raising its baseline', async () => {
+    test('retries maintenance of an oversized place after a few new sources instead of raising its baseline', async () => {
         const units = Array.from({ length: 30 }, (_, index) => `The north gate has rule number ${index + 1} for travelers.`)
         const gate = {
             id: 'location.gate', type: 'location' as const, title: 'North Gate', aliases: [],
@@ -472,7 +472,7 @@ describe('memory analysis runner', () => {
                 messages: [{ messageId: `assistant-${turn}`, role: 'assistant', content: 'The gate stayed closed.' }] })
         }
 
-        expect(maintenanceSystems).toHaveLength(2)
+        expect(maintenanceSystems).toHaveLength(3)
         expect(maintenanceSystems[0]).toContain('place, group, creature, item, concept or open thread')
     })
 

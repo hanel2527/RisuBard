@@ -35,6 +35,7 @@ import type {
 } from '../../src/ts/risubard/automaticWikiUpdate'
 import type { MarkdownWikiDocument } from './risubard-markdown-wiki'
 import { repairRebootEventLinks } from './risubard-reboot-event-links'
+import { repairBrokenWikiLinks } from '../../src/ts/risubard/wikiLinkRepair'
 import { combinedMemoryInstruction, combinedMemorySchema, parseCombinedMemory } from './risubard-combined-memory'
 import { resolveMemoryRetrievalMetadata, type MemoryRetrievalMetadata } from './risubard-memory-metadata'
 import {
@@ -90,6 +91,7 @@ import {
 } from './risubard-canonical-unit-edit'
 import {
     MAINTENANCE_COOLDOWN_SOURCES,
+    MAINTENANCE_RETRY_SOURCES,
     changedCanonicalUnits,
     maintainCharacterCanon,
     maintenanceCoverDocuments,
@@ -1139,7 +1141,7 @@ export function createMemoryAnalysisRunner(
     options: MemoryAnalysisRunnerOptions
 ) {
     // Per session only: a reload forgets baselines and cooldowns, costing at most one extra attempt per card.
-    const maintenanceState = new Map<string, { baselineTokens?: number; restingSources?: ReadonlySet<string> }>()
+    const maintenanceState = new Map<string, { baselineTokens?: number; restingSources?: ReadonlySet<string>; retry?: boolean }>()
     const reportError = async (error: unknown): Promise<void> => {
         try {
             await options.onError(error)
@@ -2270,6 +2272,11 @@ export function createMemoryAnalysisRunner(
                                         .map((section) => `${section.heading} ${section.count}`).join(', ')})`)
                                 }
                             }
+                            // Writers misquote event titles by a word or two; point such links at the real title. No model call.
+                            if (!entry.storyArcPlan) {
+                                const linkRepair = repairBrokenWikiLinks(rewritten, [...documents, ...savedEvents])
+                                rewritten = linkRepair.markdown
+                            }
                             let maintenanceNote: string | undefined
                             // A reboot replays the whole story, so its cards need the same upkeep as live turns.
                             if (entry.target && entry.candidate.type !== 'scene' && !entry.storyArcPlan
@@ -2283,7 +2290,8 @@ export function createMemoryAnalysisRunner(
                                 // Every attempt, applied or not, waits for new sources, which bounds
                                 // upkeep calls per card; retrieval cuts any overflow meanwhile.
                                 if (restingSources === undefined
-                                    || [...currentSources].filter((id) => !restingSources.has(id)).length >= MAINTENANCE_COOLDOWN_SOURCES) {
+                                    || [...currentSources].filter((id) => !restingSources.has(id)).length
+                                        >= (state?.retry ? MAINTENANCE_RETRY_SOURCES : MAINTENANCE_COOLDOWN_SOURCES)) {
                                     // Upkeep keeps a card within its retrieval share, so recall rarely cuts it.
                                     const perSourceTokens = wikiPageTokenCap({
                                         target: snapshot.inquiryTokenBudget?.target ?? RISUBARD_INQUIRY_TARGET_TOKEN_BUDGET_DEFAULT,
@@ -2314,7 +2322,7 @@ export function createMemoryAnalysisRunner(
                                     else if (maintained.outcome === 'no-reduction') {
                                         // Raising the baseline above the ceiling would let the card outgrow retrieval for good.
                                         maintenanceState.set(attemptKey, (maintained.tokensBefore ?? 0) > perSourceTokens
-                                            ? { baselineTokens: state?.baselineTokens, restingSources: currentSources }
+                                            ? { baselineTokens: state?.baselineTokens, restingSources: currentSources, retry: true }
                                             : { baselineTokens: maintained.tokensBefore })
                                     }
                                     else if (maintained.outcome === 'error') {

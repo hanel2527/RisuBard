@@ -29,7 +29,8 @@ export function wikiInquiryFailure(error: unknown): WikiInquiryFailure {
 }
 
 const semanticSkipLabels = {
-    'not-ready': '의미 검색 제외: 임베딩 준비 중',
+    'not-ready': '의미 검색 제외: 임베딩 색인 만드는 중',
+    'build-failed': '의미 검색 제외: 임베딩 색인 만들기 실패',
     timeout: '의미 검색 제외: 위키 조회 제한 시간 안에 임베딩 응답 없음',
     error: '의미 검색 제외: 임베딩 요청 실패',
 } as const

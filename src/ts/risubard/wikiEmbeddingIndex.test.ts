@@ -196,6 +196,10 @@ describe('optional wiki embedding index', () => {
         const embed = vi.fn(async (texts: string[]) => texts.map(() => [1, 0]))
         const index = new WikiEmbeddingIndex({ identity: 'local', embed }, cache())
         expect((await index.search('query', '')).skipped).toBe('not-ready')
+        // A failed build must not keep saying "preparing" forever.
+        embed.mockRejectedValueOnce(new Error('bad key'))
+        await expect(index.refresh(page())).rejects.toThrow('bad key')
+        expect((await index.search('query', '')).skipped).toBe('build-failed')
         await index.refresh(page())
         embed.mockRejectedValueOnce(new Error('offline'))
         expect((await index.search('query', '')).skipped).toBe('error')

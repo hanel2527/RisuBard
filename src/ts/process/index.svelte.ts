@@ -82,6 +82,13 @@ import {
 } from '../risubard/memoryWiki';
 import { announceRisuBardMemoryUpdated } from '../risubard/memoryEvents';
 import {
+    applyCanonCompression,
+    previewCanonCompression,
+    type CanonCompressionPreview,
+} from '../risubard/canonCompression';
+import { readModelResponseText } from '../../../packages/risubard-core/src/modelResponse';
+import type { WikiCatalogDocument } from '../risubard/memoryWiki';
+import {
     executeDirectWikiCommand,
     type DirectWikiContextSelection,
     type DirectWikiContextSources,
@@ -1332,6 +1339,114 @@ export async function executeCurrentNarrativeWikiCommand(
     }
     finally {
         endWikiGeneration(generationOperation)
+    }
+}
+
+/** Runs the canon maintenance pass on chosen wiki pages and returns previews; nothing is saved. */
+export async function previewCurrentCanonCompression(
+    targetIds: readonly string[],
+    catalog: readonly WikiCatalogDocument[],
+    onProgress?: (done: number, total: number, title: string) => void
+): Promise<CanonCompressionPreview[]> {
+    const character = DBState.db.characters[get(selectedCharID)]
+    const chat = character?.chats[character.chatPage]
+    if (!character || !chat) throw new Error('현재 채팅을 찾을 수 없습니다.')
+    const characterId = character.chaId
+    const chatId = ensureNarrativeSessionChatId(chat, v4)
+    const settings = resolvedRisuBardSettings(chat, true)
+    const wikiPromptPreset = resolveWikiPromptPreset(
+        DBState.db.risuBardWikiPromptPresets,
+        DBState.db.risuBardChatWikiPromptPresetId
+    )
+    const policy = wikiPromptPreset
+        ? renderWikiPromptGuide(compileWikiPromptGuide(wikiPromptPreset, {
+            characterGuide: risuChatParser(character.risuBardWikiGuide ?? '', { chara: character }),
+            chatGuide: risuChatParser(chat.risuBardWikiGuide ?? '', { chara: character }),
+        }), character, chat).canonicalRewrite
+        : ''
+    const operation = `compress:${characterId}:${chatId}`
+    const signal = beginWikiGeneration(operation)
+    try {
+        return await previewCanonCompression({
+            characterId, chatId, targetIds, catalog, policy, signal, onProgress,
+            fetchImpl: fetch,
+            createAuth: () => forageStorage.createAuth(),
+            request: async (prompt) => readModelResponseText(await requestWithProviderOutputLimit(
+                {
+                    formated: [
+                        { role: 'system' as const, content: prompt.system },
+                        { role: 'user' as const, content: prompt.input },
+                    ],
+                    useStreaming: false,
+                    noMultiGen: true,
+                    tools: [],
+                    maxTokens: settings.risuBardAnalysisTokenLimit,
+                    temperature: 0,
+                    bias: {},
+                    extractJson: '',
+                    schema: prompt.schema,
+                    logSource: 'wiki-admin' as const,
+                    logPurpose: 'bardwiki-admin' as const,
+                    realChatId: chatId,
+                },
+                (attempt) => requestChatData(attempt, settings.risuBardModelMode, signal)
+            )),
+        })
+    }
+    finally {
+        endWikiGeneration(operation)
+    }
+}
+
+/** Saves the ready previews with an undo point, so the wiki's last-change undo restores them. */
+export async function applyCurrentCanonCompression(
+    previews: readonly CanonCompressionPreview[]
+): Promise<{ applied: string[]; failed: Array<{ title: string; reason: string }> }> {
+    const character = DBState.db.characters[get(selectedCharID)]
+    const chat = character?.chats[character.chatPage]
+    if (!character || !chat) throw new Error('현재 채팅을 찾을 수 없습니다.')
+    const characterId = character.chaId
+    const chatId = ensureNarrativeSessionChatId(chat, v4)
+    const createAuth = () => forageStorage.createAuth()
+    let undoStarted = false
+    try {
+        const result = await applyCanonCompression({
+            previews,
+            beforeApply: async () => {
+                await beginBardChatUndo({ characterId, chatId, fetchImpl: fetch, createAuth })
+                undoStarted = true
+            },
+            save: (preview) => saveManualWikiDocument({
+                characterId, chatId,
+                documentId: preview.documentId,
+                type: preview.type,
+                title: preview.title,
+                aliases: preview.aliases,
+                markdown: preview.markdown,
+                expectedContentHash: preview.contentHash,
+                fetchImpl: fetch,
+                createAuth,
+            }),
+        })
+        if (undoStarted) {
+            await finalizeBardChatUndo({ characterId, chatId, fetchImpl: fetch, createAuth })
+            undoStarted = false
+        }
+        announceRisuBardMemoryUpdated({ characterId, chatId })
+        publishRisuBardMemoryActivity({
+            characterId, chatId,
+            operation: result.failed.length > 0 ? 'error' : 'wiki-save',
+            timestamp: Date.now(),
+            message: `정본 압축: ${result.applied.length}건 적용${result.failed.length > 0 ? `, ${result.failed.length}건 미적용` : ''}`,
+        })
+        return result
+    }
+    catch (cause) {
+        if (undoStarted) {
+            try { await finalizeBardChatUndo({ characterId, chatId, fetchImpl: fetch, createAuth }) }
+            catch { /* Preserve the original failure. */ }
+        }
+        throw cause
     }
 }
 

@@ -23,7 +23,7 @@ export interface WikiPromptBlock {
 
 export interface WikiPromptPreset {
     schemaVersion: 1
-    writingPolicyVersion?: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
+    writingPolicyVersion?: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
     id: string
     name: string
     revision: number
@@ -130,16 +130,18 @@ export const OFFICIAL_WIKI_V4_BACKUP_ID = 'official-wiki-261003'
 export const OFFICIAL_WIKI_V5_BACKUP_ID = 'official-wiki-261003-v5'
 export const OFFICIAL_WIKI_V6_BACKUP_ID = 'official-wiki-261010'
 export const OFFICIAL_WIKI_V7_BACKUP_ID = 'official-wiki-261021'
+export const OFFICIAL_WIKI_V8_BACKUP_ID = 'official-wiki-261027'
 export const OFFICIAL_WIKI_CURRENT_ID = 'official-wiki-current'
 export const OFFICIAL_WIKI_ARCHIVE_FOLDER_ID = 'official-wiki-archive'
 // Named like the official presets themselves; the UI language is not loaded yet when this folder is created.
 const OFFICIAL_WIKI_ARCHIVE_FOLDER_NAME = '과거 공식 프리셋'
 // Shipping a new official version: bump the release date, move the previous release to the front of
 // OFFICIAL_WIKI_ARCHIVES, and move archives beyond OFFICIAL_WIKI_ARCHIVE_LIMIT to RETIRED_OFFICIAL_IDS.
-export const OFFICIAL_WIKI_RELEASE = '2026-10-27'
+export const OFFICIAL_WIKI_RELEASE = '2026-10-28'
 export const OFFICIAL_WIKI_ARCHIVE_LIMIT = 3
 const RETIRED_OFFICIAL_IDS: ReadonlySet<string> = new Set([
     OFFICIAL_WIKI_BACKUP_ID, OFFICIAL_WIKI_V2_BACKUP_ID, OFFICIAL_WIKI_V4_BACKUP_ID, OFFICIAL_WIKI_V3_BACKUP_ID,
+    OFFICIAL_WIKI_V5_BACKUP_ID,
 ])
 
 export function officialWikiPresetName(date: string): string {
@@ -201,6 +203,14 @@ const V6_CONTINUITY = CURRENT_CONTINUITY.split('\n').map(line =>
             : line.startsWith('Identity owns identity')
                 ? `${line} Relationships and Trust keeps one compact current entry per counterpart; how it developed belongs in events and Major Transitions, not a running chronicle of scenes. Canon never narrates a sequence of scenes, so it must not imply when a routine experience happened.`
                 : line
+).join('\n')
+
+// Version 8 gives each turn's edit a test for what enters Knowledge and Secrets: a protagonist
+// appears in every scene, so logging each witnessed fact grew their card every turn.
+const V8_CONTINUITY = V6_CONTINUITY.split('\n').map(line =>
+    line.startsWith('A completed encounter or revelation')
+        ? `${line} An event document already records what happened in front of the character, so do not add an entry that only says they saw, heard, were told, confirmed or learned something that event records. Add one only when it changes what the character can do later because others do not share it: something they hide, something a relevant counterpart does not know or wrongly believes, their own mistaken belief or open question, or a secret and who shares it. An offer, promise or agreement belongs in Relationships and Trust and its result in Current State; state each fact in one section only.`
+        : line
 ).join('\n')
 
 // Version 3 adds recall detail without changing the archived writing policies.
@@ -368,7 +378,8 @@ function normalizePreset(value: unknown, idFactory: () => string): WikiPromptPre
             content: '',
         })
     }
-    const writingPolicyVersion = source.writingPolicyVersion === 8 ? 8
+    const writingPolicyVersion = source.writingPolicyVersion === 9 ? 9
+        : source.writingPolicyVersion === 8 ? 8
         : source.writingPolicyVersion === 7 ? 7
         : source.writingPolicyVersion === 6 ? 6
         : source.writingPolicyVersion === 5 ? 5
@@ -392,7 +403,9 @@ function normalizePreset(value: unknown, idFactory: () => string): WikiPromptPre
                 return {
                     ...block,
                     ...(block.id === 'core-character-continuity-contract' && writingPolicyVersion >= 2
-                        ? { content: writingPolicyVersion >= 6 ? V6_CONTINUITY
+                        ? { content: writingPolicyVersion >= 9 ? V9_CONTINUITY
+                        : writingPolicyVersion >= 8 ? V8_CONTINUITY
+                        : writingPolicyVersion >= 6 ? V6_CONTINUITY
                         : writingPolicyVersion >= 5 ? CURRENT_CONTINUITY
                         : writingPolicyVersion >= 4 ? V4_CONTINUITY : MODULAR_CONTINUITY } : {}),
                     ...(stored ? {
@@ -528,7 +541,7 @@ function createV7WikiPromptPreset(id: string): WikiPromptPreset {
 // story's voice: an in-character reply is not told to admit it does not know.
 const RECALL_RESPONSE_V8 = 'Use retrieved concrete actions, objects and distinctive expressions when relevant to the current scene, without forcing callbacks. Preserve the original speaker, addressee, conditions, chronology and knowledge holders. For exact past wording, prefer retrieved source text over a summary; do not present reconstructed or paraphrased dialogue as a verbatim past quote. Do not invent past facts that no supplied source supports: where an object was, what was said or done, a quantity, a name, or why something happened. When the sources do not cover a past detail, keep to what they establish and leave that detail unstated rather than filling it with a plausible guess. A past claim remains attributed, and a scene-local reaction does not establish a lasting relationship or state.'
 
-export function createDefaultWikiPromptPreset(id: string): WikiPromptPreset {
+function createV8WikiPromptPreset(id: string): WikiPromptPreset {
     const previous = createV7WikiPromptPreset(id)
     return normalizePreset({
         ...previous, writingPolicyVersion: 8, revision: 7,
@@ -537,11 +550,39 @@ export function createDefaultWikiPromptPreset(id: string): WikiPromptPreset {
     }, () => id)
 }
 
+// Version 9 (2026-10-28) replaces the continuity contract, which had grown by adding a rule per
+// problem, with one short statement of what a character card holds and how each update edits it.
+const V9_CONTINUITY = [
+    'A character document is a current card, not a log. It holds who this character is now, what they want, can do and are bound by now, and what another writer must know to play them in the next scene. Events record what happened; do not copy a scene into the card.',
+    'Use these sections: Identity, Current State, Relationships and Trust, Knowledge and Secrets, Major Transitions. Write each heading exactly as the locale heading given in the canonical writing policy. Leave out a section that has nothing to say.',
+    'Identity: background, personality and abilities that stay true. Current State: the present situation, goals, injuries, constraints and unfinished tasks. Relationships and Trust: one entry per counterpart with the present relationship, level of trust, open conflicts, promises and stated values.',
+    'Knowledge and Secrets: only what changes how this character acts later. That is a secret and who shares it, something a relevant counterpart does not know, a wrong belief this character holds, or a question they have not resolved. Do not write that the character saw, heard, was told, confirmed or learned something; the event records it. World rules and place facts belong once in the location or concept document, with a link. A link, another person\'s knowledge or knowing a mutual acquaintance does not make something this character\'s knowledge.',
+    'Major Transitions: lasting changes to role, goals, affiliation, abilities or a relationship. Each entry states the resulting change with links to its first and decisive events. A scene that spans several events is one entry. When a new event continues the latest entry, rewrite that entry instead of adding one.',
+    'Each fact lives in one section only.',
+    'Every update rewrites the card; it never only appends. Before adding a line, find the line about the same topic or counterpart and rewrite it. Delete a line once it is no longer true, its task is finished, or an event already records it. Keep the evidence marks (#N), and combine them into a range such as (#4–#9) when you merge lines.',
+    'Keep unresolved promises and obligations, secrets and who shares them, wrong beliefs, injuries, lasting constraints and meaningful possessions. When a new scene does not mention one of these, leave it as it is.',
+    'Keep the card short enough to take in at a glance: about 4,000 characters or fewer for a main character. If it is longer, merge and delete before you add.',
+    'Record confirmed structured state values in the relevant document, and update them only from confirmed evidence.',
+    'When you replace or merge sections, return the destination and the deletion patches together so that no fact that is still true is lost. Old headings alone are not a reason to update.',
+    'Meaningful equipment stays in Identity or Current State unless the equipment module is enabled. Do not add a Related Documents section that only repeats links.',
+].join('\n')
+
+const V9_COMPRESSION = 'The document is over its length goal. Rewrite it shorter: merge lines about the same topic or counterpart, delete lines that are finished, no longer true, or already recorded by an event, and combine evidence marks into ranges. Keep each secret and who shares it, wrong beliefs, unresolved promises, lasting constraints, relationship direction and values, and each transition\'s result with its event links. Make the merge and delete the source sections in the same patch batch.'
+
+export function createDefaultWikiPromptPreset(id: string): WikiPromptPreset {
+    const previous = createV8WikiPromptPreset(id)
+    return normalizePreset({
+        ...previous, writingPolicyVersion: 9, revision: 8,
+        blocks: previous.blocks.map(block => block.id === 'default-length-compression'
+            ? { ...block, content: V9_COMPRESSION } : block),
+    }, () => id)
+}
+
 // Newest first; at most OFFICIAL_WIKI_ARCHIVE_LIMIT entries.
 const OFFICIAL_WIKI_ARCHIVES: readonly { id: string; date: string; create: (id: string) => WikiPromptPreset }[] = [
+    { id: OFFICIAL_WIKI_V8_BACKUP_ID, date: '2026-10-27', create: createV8WikiPromptPreset },
     { id: OFFICIAL_WIKI_V7_BACKUP_ID, date: '2026-10-21', create: createV7WikiPromptPreset },
     { id: OFFICIAL_WIKI_V6_BACKUP_ID, date: '2026-10-10', create: createV6WikiPromptPreset },
-    { id: OFFICIAL_WIKI_V5_BACKUP_ID, date: '2026-10-03', create: createLocalizedTransitionWikiPromptPreset },
 ]
 
 export function createWikiPromptPreset(id: string, name = 'Wiki Prompt'): WikiPromptPreset {
@@ -579,7 +620,7 @@ export function normalizeWikiPromptPresetState(
         }
         // Only one official preset stays locked; it keeps its stable ID and optional toggles.
         if (official) continue
-        official = normalized.writingPolicyVersion === 8 ? normalized : upgradeOfficialPreset(normalized)
+        official = normalized.writingPolicyVersion === 9 ? normalized : upgradeOfficialPreset(normalized)
         presets.push(official)
     }
     if (!official) {
