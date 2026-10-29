@@ -489,6 +489,8 @@ export const helpEn = {
             "Maximum characters in the complete reserved plot Markdown. Higher values preserve more threads but can enlarge canonical-writer input and later search candidates.",
         risuBardResponseExcludeUsers:
             "Exclude earlier user messages from response context. The current user request is always retained.",
+        risuBardSourceRerank:
+            "Off by default. Before each answer, the work model (sub or main) reads up to 16 past chat excerpts against the question and keeps up to 4 that actually state the asked quantity, name, line or order; they go in before wiki pages. If none qualifies or the request fails, the usual search result is used. Adds one model request per answer with 10k to 20k input tokens (about $0.002 with Claude Haiku 5.5). Turn it on when answers often get past details wrong.",
         risuBardHideOocTurns: "Hide OOC replies and their user inputs from the main chat list. Off by default. Read the live transcript in BardWiki's OOC notepad. Applies to all chats without changing saved messages, AI context or wiki analysis settings.",
         risuBardCacheFriendlyContext: "Off by default. Moves BardWiki memory, including always-included documents, out of the top of the prompt and the character description, and sends it right before the latest user message. The preset, character description, lorebook and earlier chat stay identical between turns, so prompt caching holds longer. The current narrative baseline stays in the description position. Turn it off to restore the previous order.",
         risuBardAnalysisExcludeUsers:

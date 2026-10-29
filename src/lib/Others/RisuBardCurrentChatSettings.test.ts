@@ -574,13 +574,13 @@ describe('RisuBardCurrentChatSettings', () => {
         })
     })
 
-    test('the simple view shows the work scale, model and language and writes a scale to the chat', async () => {
+    test('the simple view shows the work scale, model, source rerank and language and writes a scale to the chat', async () => {
         const chat = chatWithLongMessages()
         chat.risuBardSettings = {}
         const global: RisuBardChatSettings & { risuBardWikiSettingsView?: 'simple' | 'advanced' } = {}
         mounted = mount(RisuBardCurrentChatSettings, { target: document.body, props: { chat, global } })
         const fields = () => [...document.querySelectorAll<HTMLElement>('[data-chat-setting-field]')].map((field) => field.dataset.chatSettingField)
-        expect(fields()).toEqual(['risuBardWikiScale', 'risuBardModelMode', 'risuBardWikiWritingLanguage', 'risuBardMemoryBudgetPreset'])
+        expect(fields()).toEqual(['risuBardWikiScale', 'risuBardModelMode', 'risuBardSourceRerank', 'risuBardWikiWritingLanguage', 'risuBardMemoryBudgetPreset'])
         const scale = (value: string) => document.querySelector<HTMLInputElement>(`input[name="bardwiki-wiki-scale"][value="${value}"]`)!
         expect(scale('standard').checked).toBe(true)
         scale('large').click()

@@ -4052,6 +4052,7 @@ export const languageKorean = {
   risuBardRecentMessages: "위키 분석이 읽을 최근 응답 수",
   risuBardResponseRecentMessages: "답변에 그대로 넣을 최근 응답 수",
   risuBardResponseExcludeUsers: "답변에서 사용자 메시지 빼기",
+  risuBardSourceRerank: "과거 원문 재순위",
   risuBardHideOocTurns: "챗에서 OOC 턴 숨김",
   risuBardCacheFriendlyContext: "캐싱 친화적 구조",
   risuBardAnalysisExcludeUsers: "위키 분석에서 사용자 메시지 빼기",

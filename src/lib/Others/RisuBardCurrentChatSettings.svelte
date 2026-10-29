@@ -295,6 +295,18 @@
     </span>
 {/snippet}
 
+{#snippet sourceRerankField()}
+    <div class="setting-field" data-chat-setting-field="risuBardSourceRerank">
+        {@render settingTitle('risuBardSourceRerank', '과거 원문 재순위', 'bardwiki-source-rerank')}
+        <label class="toggle-control" for="bardwiki-source-rerank">
+            <input id="bardwiki-source-rerank" type="checkbox" checked={settings.risuBardSourceRerank}
+                disabled={settings.risuBardHistoricalSourceMatchLimit === 0}
+                onchange={(event) => setValue('risuBardSourceRerank', (event.currentTarget as HTMLInputElement).checked)} />
+            <span>{settings.risuBardSourceRerank ? '켬' : '끔'}</span>
+        </label>
+    </div>
+{/snippet}
+
 {#snippet numberNote(key: RisuBardNumberSettingKey, id: string)}
     {#if numberNotes[key]}
         <small id={`${id}-note`} class="number-note" role="status" data-number-note={key}>{numberNotes[key]}</small>
@@ -427,6 +439,7 @@
                     <option value="memory">보조 모델</option><option value="model">메인 모델</option>
                 </select>
             </div>
+            {@render sourceRerankField()}
             <div class="setting-field" data-chat-setting-field="risuBardWikiWritingLanguage">
                 {@render settingTitle('risuBardWikiWritingLanguage', language.risuBardWikiWritingLanguage, 'bardwiki-writing-language')}
                 <select id="bardwiki-writing-language" value={(character?.risuBardPinnedSettings ?? chat?.risuBardSettings)?.risuBardWikiWritingLanguage ?? ''}
@@ -548,15 +561,7 @@
                     onchange={(event) => setNumber('risuBardHistoricalSourceMatchLimit', event)} />
                 {@render numberNote('risuBardHistoricalSourceMatchLimit', 'bardwiki-history-limit')}
             </div>
-            <div class="setting-field" data-chat-setting-field="risuBardSourceRerank">
-                {@render settingTitle('risuBardSourceRerank', '과거 원문 재순위', 'bardwiki-source-rerank')}
-                <label class="toggle-control" for="bardwiki-source-rerank">
-                    <input id="bardwiki-source-rerank" type="checkbox" checked={settings.risuBardSourceRerank}
-                        disabled={settings.risuBardHistoricalSourceMatchLimit === 0}
-                        onchange={(event) => setValue('risuBardSourceRerank', (event.currentTarget as HTMLInputElement).checked)} />
-                    <span>{settings.risuBardSourceRerank ? '켬' : '끔'}</span>
-                </label>
-            </div>
+            {@render sourceRerankField()}
         </div>
     </section>
 

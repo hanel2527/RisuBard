@@ -3814,6 +3814,7 @@ export const languageEnglish = {
     risuBardRecentMessages: "Recent responses read by wiki analysis",
     risuBardResponseRecentMessages: "Recent responses kept verbatim in answers",
     risuBardResponseExcludeUsers: "Leave user messages out of answers",
+    risuBardSourceRerank: "Rerank past chat excerpts",
     risuBardHideOocTurns: "Hide OOC turns in chat",
     risuBardCacheFriendlyContext: "Cache-friendly structure",
     risuBardAnalysisExcludeUsers: "Leave user messages out of wiki analysis",

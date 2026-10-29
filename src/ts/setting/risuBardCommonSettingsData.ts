@@ -100,6 +100,14 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
         keywords: ['response user messages', '응답 사용자 메시지'],
     },
     {
+        id: 'risubard.chat.sourceRerank',
+        type: 'check',
+        labelKey: 'risuBardSourceRerank',
+        helpKey: 'risuBardSourceRerank',
+        bindKey: 'risuBardSourceRerank',
+        keywords: ['rerank', 'historical', 'source', 'recall', '재순위', '과거', '원문', '회수', '기억'],
+    },
+    {
         id: 'risubard.chat.cacheFriendlyContext',
         type: 'check',
         labelKey: 'risuBardCacheFriendlyContext',
