@@ -38,6 +38,7 @@ import { getModuleAssets, getModuleLorebooksWithSources, getModuleToggles } from
 import { forageStorage, readImage, refreshLiveFiles } from "../globalApi.svelte";
 import { chatGenKey, chatProcessStage, endGeneration, isChatGenerating, setGenerationStage, startGeneration } from "./generationState";
 import { waitForSendSync } from './sendPreparation';
+import { translateNewResponse } from '../translator/newResponseTranslation';
 import {
     buildBoundedNarrativeInquiryFallback,
     createStoredResponseMemoryAnalysis,
@@ -3859,6 +3860,10 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     }
     setGenerationStage(genKey, 4)
     stageTimings.stage4Start = Date.now()
+
+    // Only the completed output is eligible; never scan history on chat load.
+    // Await cache publication so automatic wiki requests cannot overtake translation.
+    await translateNewResponse(generationScope.character, generationScope.chat, outputMessageId, abortSignal)
 
     if(resendChat){
         stageTimings.stage4Duration = Date.now() - stageTimings.stage4Start

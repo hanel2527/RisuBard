@@ -257,6 +257,17 @@
     {/each}
 {/snippet}
 
+{#if chara}
+<div class="flex gap-2 mt-4 items-center justify-between min-h-10 px-1">
+    <span class="min-w-0 break-words" use:tooltip={language.autoTranslateNewResponsesHelp}>{language.autoTranslateNewResponses}</span>
+    <ShSwitch
+        ariaLabel={language.autoTranslateNewResponses}
+        checked={chara.autoTranslateNewResponses !== false}
+        onCheckedChange={(checked) => { chara.autoTranslateNewResponses = checked }}
+    />
+</div>
+{/if}
+
 {#if !DBState.db.disableToggleBinding}
 <div class="text-[11px] text-textcolor2 mt-4 px-1">{language.toggleBindingLabel}</div>
 <div class="flex gap-1 mt-1 items-stretch">

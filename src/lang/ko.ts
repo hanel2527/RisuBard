@@ -3109,6 +3109,8 @@ export const languageKorean = {
   keepSessionAlivePip: "PIP 사용",
   keepSessionAliveSound: "소리 사용",
   hideLeftBarCollapseButton: "메뉴바 접기 버튼 숨기기",
+  autoTranslateNewResponses: "새 LLM 응답 자동 번역",
+  autoTranslateNewResponsesHelp: "기본 켜짐. 이 챗봇의 모든 채팅에 적용됩니다. 보조 모델(LLM) 자동 번역이 켜져 있으면 '캐시된 메시지만 자동 번역' 상태에서도 새로 생성 완료된 AI 응답만 번역합니다. 과거 메시지와 유저 입력은 건드리지 않습니다. 번역 처리 후 바드위키 자동 업데이트를 시작하며, 번역 실패 시 원문을 유지합니다.",
   toggleBindingLabel: "채팅별 프리셋 고정",
   togglePinToChat: "현재 토글 값을 이 채팅에만 고정",
   togglePinLabel: "채팅에 고정",

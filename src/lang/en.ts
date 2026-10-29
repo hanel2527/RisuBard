@@ -2960,6 +2960,8 @@ export const languageEnglish = {
     keepSessionAlive: "Keep Session Alive",
     keepSessionAlivePip: "Via PIP",
     keepSessionAliveSound: "Via Sound",
+    autoTranslateNewResponses: "Auto-translate new AI responses",
+    autoTranslateNewResponsesHelp: "Enabled by default for this bot, across all its chats. With LLM auto translation enabled, translates only newly completed AI responses, even in cached-only mode. Does not translate old messages or user input. Translation finishes before automatic BardWiki updates start; failures keep the original text.",
     toggleBindingLabel: "Chat-specific toggles",
     togglePinToChat: "Pin the current toggle values to this chat only",
     togglePinLabel: "Pin to chat",

@@ -177,6 +177,7 @@ export const CHARACTER_UPDATE: UpdateSpec = {
         'oaiVoice', 'oaiTTSConfig', 'hfTTS', 'ttsReadOnlyQuoted', 'supaMemory', 'memoryPresetId',
         'removedQuotes', 'postHistoryInstructionsApplied', 'reloadKeys', 'scriptstate', 'realmId',
         'imported', 'trashTime', 'lastInteraction', 'translatorNote', 'doNotChangeSeperateModels',
+        'autoTranslateNewResponses',
         'escapeOutput', 'modules', 'coldstorage', 'coldStoragedChats', 'virtualscript', 'updateBase',
     ]),
     silent: new Set(['creation_date', 'modification_date', 'additionalData']),
