@@ -2471,6 +2471,7 @@ export function createMarkdownNarrativeWiki(
                 occurredAt: number
             }[]
             sourceLimit?: number
+            rankedSourceIds?: readonly string[]
             timeline?: { messages: readonly { chatId: string; role: 'user' | 'char' }[] }
             tokenBudget?: {
                 target: number
@@ -2502,6 +2503,7 @@ export function createMarkdownNarrativeWiki(
                 ...(input.sourceLimit === undefined
                     ? {}
                     : { sourceLimit: input.sourceLimit }),
+                ...(input.rankedSourceIds ? { rankedSourceIds: input.rankedSourceIds } : {}),
                 ...(input.tokenBudget
                     ? { tokenBudget: input.tokenBudget }
                     : {}),

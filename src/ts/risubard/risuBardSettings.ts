@@ -42,6 +42,7 @@ export interface RisuBardChatSettings {
     risuBardInquiryMaximumTokenBudget?: number
     risuBardInquiryTimeoutMs?: number
     risuBardHistoricalSourceMatchLimit?: number
+    risuBardSourceRerank?: boolean
     risuBardAnalysisTokenLimit?: number
     risuBardAdditionalSearchLimit?: number
     risuBardCanonicalTargetLimit?: number
@@ -75,6 +76,7 @@ export interface ResolvedRisuBardChatSettings {
     risuBardInquiryMaximumTokenBudget: number
     risuBardInquiryTimeoutMs: number
     risuBardHistoricalSourceMatchLimit: number
+    risuBardSourceRerank: boolean
     risuBardAnalysisTokenLimit: number
     risuBardAdditionalSearchLimit: number
     risuBardCanonicalTargetLimit: number
@@ -197,6 +199,7 @@ export function resolveRisuBardChatSettings(
             normalizeRisuBardHistoricalSourceMatchLimit(
                 value('risuBardHistoricalSourceMatchLimit')
             ),
+        risuBardSourceRerank: value('risuBardSourceRerank') === true,
         risuBardAnalysisTokenLimit: normalizeRisuBardAnalysisTokenLimit(
             value('risuBardAnalysisTokenLimit')
         ),

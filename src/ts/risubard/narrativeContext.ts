@@ -129,6 +129,8 @@ export async function loadNarrativeInquiry(input: {
     }[]
     sourceMatches?: readonly HistoricalSourceMatch[]
     sourceLimit?: number
+    /** Supplied sources a reranking model kept, best first; the server reads them before pages. */
+    rankedSourceIds?: readonly string[]
     timeline?: { messages: readonly { chatId: string; role: 'user' | 'char' }[] }
     resolveSourceMatches?: (
         messageIds: readonly string[],
@@ -208,6 +210,9 @@ export async function loadNarrativeInquiry(input: {
                                     32,
                                     Math.trunc(input.sourceLimit)
                                 )) }),
+                            ...(input.rankedSourceIds?.length
+                                ? { rankedSourceIds: input.rankedSourceIds.slice(0, 8) }
+                                : {}),
                             ...(input.timeline === undefined || input.timeline.messages.length === 0
                                 ? {}
                                 : { timeline: { messages: input.timeline.messages.slice(-96)

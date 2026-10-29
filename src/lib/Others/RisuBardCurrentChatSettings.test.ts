@@ -608,7 +608,7 @@ describe('RisuBardCurrentChatSettings', () => {
 
         const fields = [...document.querySelectorAll('[data-chat-setting-field]')]
         const helpButtons = [...document.querySelectorAll('[data-chat-setting-help]')]
-        expect(fields).toHaveLength(17)
+        expect(fields).toHaveLength(18)
         expect(document.querySelector('[data-chat-setting-field^="risuBardBardChan"]')).toBeNull()
         expect(document.querySelector('#bardwiki-ignore-ooc')).toBeNull()
         expect(helpButtons).toHaveLength(fields.length)

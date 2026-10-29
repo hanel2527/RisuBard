@@ -108,9 +108,14 @@ import { resolveRisuBardChatSettings } from '../risubard/risuBardSettings';
 import { resolveDynamicMemorySettings } from '../risubard/dynamicMemoryBudget';
 import { requestWithProviderOutputLimit } from '../risubard/providerOutputTokenLimit';
 import {
+    buildSourceRerankInput, buildSourceRerankPool, parseSourceRerank,
+    SOURCE_RERANK_POOL_LIMIT, SOURCE_RERANK_SCHEMA, SOURCE_RERANK_SYSTEM_PROMPT,
+} from '../risubard/historicalSourceRerank';
+import {
     buildInquiryTimeline,
     findHistoricalSourceMatches,
     resolveHistoricalSourceMatchesById,
+    type HistoricalSourceMatch,
 } from '../risubard/historicalSourceRecall';
 import { activateWikiEmbeddings, refreshHistoricalSourceEmbeddings, searchHistoricalSourceEmbeddings, stopHistoricalSourceEmbeddings, wikiEmbeddingRuntime } from '../risubard/wikiEmbeddingService';
 import { mergeHistoricalSourceMatches } from '../risubard/historicalSourceEmbedding';
@@ -2107,7 +2112,24 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                         currentChat.message,
                         normalizeNarrativeWorkingMessageLimit(inquirySettings.risuBardResponseMessageCount),
                     )
-                    const loadInquiry = (semanticMatches?: readonly WikiSemanticMatch[]) => loadNarrativeInquiry({
+                    const resolveSources = (messageIds: readonly string[], evidenceRequests: readonly { messageId: string; documentId?: string }[]) =>
+                        resolveHistoricalSourceMatchesById({
+                            ignoreOocTurns: true,
+                            messageIds,
+                            messages: currentChat.message,
+                            currentInput,
+                            queryByMessageId: Object.fromEntries(evidenceRequests
+                                .filter(request => request.documentId && embedded.evidenceHints[request.documentId])
+                                .map(request => [request.messageId, embedded.evidenceHints[request.documentId!]])),
+                            excludeRecentMessages:
+                                normalizeNarrativeWorkingMessageLimit(
+                                    inquirySettings.risuBardResponseMessageCount
+                                ),
+                        })
+                    const loadInquiry = (semanticMatches?: readonly WikiSemanticMatch[], ranked?: {
+                        sourceMatches: readonly HistoricalSourceMatch[]
+                        rankedSourceIds: readonly string[]
+                    }) => loadNarrativeInquiry({
                         contextSelection: 'auto',
                         timeline: inquiryTimeline,
                         characterId: currentChar.chaId,
@@ -2123,29 +2145,63 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                         ),
                         entityHints: lorepmt.bardWikiEntityHints,
                         tokenBudget: optionalWikiBudget!,
-                        sourceMatches: historicalMatches,
+                        sourceMatches: ranked?.sourceMatches ?? historicalMatches,
                         sourceLimit:
                             inquirySettings.risuBardHistoricalSourceMatchLimit,
-                        resolveSourceMatches: (messageIds, evidenceRequests) =>
-                            resolveHistoricalSourceMatchesById({
-                                ignoreOocTurns: true,
-                                messageIds,
-                                messages: currentChat.message,
-                                currentInput,
-                                queryByMessageId: Object.fromEntries(evidenceRequests
-                                    .filter(request => request.documentId && embedded.evidenceHints[request.documentId])
-                                    .map(request => [request.messageId, embedded.evidenceHints[request.documentId!]])),
-                                excludeRecentMessages:
-                                    normalizeNarrativeWorkingMessageLimit(
-                                        inquirySettings.risuBardResponseMessageCount
-                                    ),
-                            }),
+                        ...(ranked
+                            ? { rankedSourceIds: ranked.rankedSourceIds }
+                            : { resolveSourceMatches: resolveSources }),
                         fetchImpl: fetch,
                         createAuth: () => forageStorage.createAuth(),
                         timeoutMs: inquirySettings.risuBardInquiryTimeoutMs,
                         ...(semanticMatches ? { semanticMatches } : {}),
                     })
-                    const inquiry = await loadInquiry(embedded.matches)
+                    let inquiry = await loadInquiry(embedded.matches)
+                    if (inquirySettings.risuBardSourceRerank) {
+                        // A model reads the candidate originals against the question; any failure keeps the scored choice.
+                        try {
+                            const known = new Set(historicalMatches.map(match => match.messageId))
+                            const pool = buildSourceRerankPool(
+                                historicalMatches,
+                                await resolveSources(inquiry.evidenceRequests
+                                    .filter(request => !known.has(request.messageId))
+                                    .map(request => request.messageId), inquiry.evidenceRequests),
+                                findHistoricalSourceMatches({ ...historicalOptions, maximumMatches: SOURCE_RERANK_POOL_LIMIT,
+                                    currentInput, messages: currentChat.message }),
+                            )
+                            const rankedSourceIds = pool.length === 0 ? [] : parseSourceRerank(readModelResponseText(
+                                await requestWithProviderOutputLimit({
+                                    formated: [
+                                        { role: 'system' as const, content: SOURCE_RERANK_SYSTEM_PROMPT },
+                                        { role: 'user' as const, content: buildSourceRerankInput(currentInput, pool) },
+                                    ],
+                                    useStreaming: false,
+                                    noMultiGen: true,
+                                    tools: [],
+                                    maxTokens: 512,
+                                    temperature: 0,
+                                    bias: {},
+                                    extractJson: '',
+                                    schema: SOURCE_RERANK_SCHEMA,
+                                    logSource: 'memory' as const,
+                                    logPurpose: 'bardwiki-source-rerank' as const,
+                                    realChatId,
+                                }, (attempt) => requestChatData(attempt, inquirySettings.risuBardModelMode, arg.signal))), pool)
+                            if (rankedSourceIds.length > 0) {
+                                inquiry = await loadInquiry(embedded.matches, {
+                                    sourceMatches: buildSourceRerankPool(
+                                        rankedSourceIds.map(id => pool.find(match => match.messageId === id)!),
+                                        pool,
+                                    ),
+                                    rankedSourceIds,
+                                })
+                            }
+                        }
+                        catch (error) {
+                            if (arg.signal?.aborted) throw error
+                            console.warn('RisuBard source rerank skipped', error)
+                        }
+                    }
                     sources = inquiry.sources
                     wikiInquirySources = [...requiredWikiSources, ...sources]
                     narrativeContextObservation.promptMode = inquiry.mode

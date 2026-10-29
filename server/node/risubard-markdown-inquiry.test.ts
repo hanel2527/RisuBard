@@ -738,6 +738,35 @@ describe('progressive Markdown inquiry', () => {
         expect(ids).not.toContain('narrative-memory:source:turn-1:1')
     })
 
+    test('ranked originals come before pages and replace the scored choice of originals', () => {
+        const page = document({ id: 'yumemi', type: 'character', title: '유메미', relativePath: 'characters/yumemi.md',
+            content: `## 유메미\n\n${'- 유메미는 플라네타리움의 안내 로봇이다. 전구 이야기를 좋아한다.\n'.repeat(40)}` })
+        const scene = document({ id: 'stock', type: 'event', title: '전구 재고 확인', relativePath: 'events/stock.md',
+            sourceMessageIds: ['turn-7'], content: '## 전구 재고 확인\n\n- 유메미가 전구 재고를 말했다.' })
+        const original = (messageId: string, occurredAt: number, score: number, text: string) => ({
+            messageId, role: 'assistant' as const, occurredAt, score, content: `${text} `.repeat(20) })
+        const input = {
+            currentInput: '유메미가 말한 전구 여분은 몇 개였고, 전기 흘려 봤을 때 쓸 수 있는 건 몇 개였지?',
+            documents: [page, scene],
+            sourceMatches: [
+                original('turn-9', 9, 4, '전기를 흘려 본 결과 4개 중에 2개의 전구가 무사했다.'),
+                original('turn-7', 7, RESOLVED_SOURCE_SCORE, '예비 전구는 재고가 4개 남아 있다고 했다.'),
+                original('turn-3', 3, 6, '유메미가 전구 이야기를 하며 웃었다.'),
+            ],
+            sourceLimit: 4,
+            tokenBudget: { target: 1_000, events: 1_000, perSource: 400, maximum: 1_400 },
+        }
+        const plain = inquireMarkdownDocuments(input).sources.map((source) => source.id)
+        expect(plain).toContain('narrative-memory:wiki:characters/yumemi.md')
+        const ranked = inquireMarkdownDocuments({ ...input, rankedSourceIds: ['turn-7', 'turn-9'] })
+        const ids = ranked.sources.map((source) => source.id)
+        // Both ranked originals fit although the page lane alone could have used the room.
+        expect(ids.filter((id) => id.includes(':source:'))).toEqual([
+            'narrative-memory:source:turn-7:7', 'narrative-memory:source:turn-9:9'])
+        expect(ranked.sources.find((source) => source.id.endsWith('turn-7:7'))?.displayName).toContain('전구 재고 확인')
+        expect(ranked.metrics.selectedTokens).toBeLessThanOrEqual(1_400)
+    })
+
     test('a long canon page gives way to the original text of the selected event', () => {
         const result = inquireMarkdownDocuments({
             currentInput: '유메미, 마지막 식량 섭취 때 내가 뭘 먹었지?',

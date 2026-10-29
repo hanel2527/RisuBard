@@ -992,6 +992,7 @@ export function setDatabase(data:Database){
     )
     data.risuBardAnalysisLoreIncludeAlwaysActive =
         data.risuBardAnalysisLoreIncludeAlwaysActive === true
+    data.risuBardSourceRerank = data.risuBardSourceRerank === true
     data.risuBardAnalysisLoreExcludeWords = normalizeRisuBardAnalysisLoreExcludeWords(
         data.risuBardAnalysisLoreExcludeWords
     )
@@ -1978,6 +1979,7 @@ export interface Database{
     risuBardAnalysisLoreTokenLimit?: number
     risuBardAnalysisLoreIncludeAlwaysActive?: boolean
     risuBardAnalysisLoreExcludeWords?: string
+    risuBardSourceRerank?: boolean
     risuBardAnalysisTokenLimit?: number
     risuBardAdditionalSearchLimit?: number
     risuBardCanonicalTargetLimit?: number

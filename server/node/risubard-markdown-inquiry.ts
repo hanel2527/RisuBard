@@ -130,6 +130,8 @@ export interface MarkdownInquiryInput {
         occurredAt: number
     }[]
     sourceLimit?: number
+    /** Supplied sources a reranking model judged to state the asked facts, best first. */
+    rankedSourceIds?: readonly string[]
     timeline?: InquiryTimelineInput
     tokenBudget?: {
         target: number
@@ -937,12 +939,6 @@ export function inquireMarkdownDocuments(
         else selectedMapTokens += entry.tokens
         return true
     }
-    for (const candidate of prepared.filter((item) =>
-        !requiredIds.has(item.document.id)
-        && item.document.type !== 'event'
-    ).slice(0, MAX_MAP_ANCHORS_BEFORE_EVENTS)) {
-        addOptionalIfFits(candidate, 'map')
-    }
     // Events in the order they should be read: the strongest match first.
     const eventCandidates = currentStateIntent
         ? prepared
@@ -1013,11 +1009,26 @@ export function inquireMarkdownDocuments(
         selectedTokens += source.tokens
         return true
     }
+    // Ranked originals were read against the question by a model, so they come
+    // before pages and replace the score-based choice of originals entirely.
+    const rankedSources = (input.rankedSourceIds ?? [])
+        .flatMap((messageId) => suppliedSources.get(messageId) ?? [])
+    for (const match of rankedSources) {
+        addSource(prepareSource(match, eventCandidates
+            .find((candidate) => candidate.document.sourceMessageIds.includes(match.messageId))?.document.title))
+    }
+    const ranked = rankedSources.length > 0
+    for (const candidate of prepared.filter((item) =>
+        !requiredIds.has(item.document.id)
+        && item.document.type !== 'event'
+    ).slice(0, MAX_MAP_ANCHORS_BEFORE_EVENTS)) {
+        addOptionalIfFits(candidate, 'map')
+    }
     // The best historical match goes first even when no event summary routes it:
     // a summary can leave out the very detail asked about, and routed scenes
     // would otherwise use the room before it.
     // An event's requested original is not a query match, so it never leads.
-    const leadingSource = input.sourceMatches?.find((match) => match.score < RESOLVED_SOURCE_SCORE)
+    const leadingSource = ranked ? undefined : input.sourceMatches?.find((match) => match.score < RESOLVED_SOURCE_SCORE)
     const leadingEventTitle = leadingSource && eventCandidates
         .find((candidate) => candidate.document.sourceMessageIds.includes(leadingSource.messageId))?.document.title
     if (leadingSource && sourceLimit > 0 && (historicalEvidenceIntent || leadingSource.retrieval === 'semantic'
@@ -1039,7 +1050,7 @@ export function inquireMarkdownDocuments(
         const leadingOriginal = newSourceIds.some((messageId) => selectedSourceIds.has(messageId))
         const originals = newSourceIds.flatMap((messageId) => {
             const match = suppliedSources.get(messageId)
-            return match && !selectedSourceIds.has(messageId) ? [prepareSource(match)] : []
+            return match && !ranked && !selectedSourceIds.has(messageId) ? [prepareSource(match)] : []
         })
         // A scene whose original fits arrives as heading plus original, so two
         // scenes' originals fit where one summary and one original did before.
@@ -1073,9 +1084,9 @@ export function inquireMarkdownDocuments(
         .slice(0, MAX_UNROUTED_LEXICAL_SOURCES)
         .map((match) => match.messageId))
     const unroutedSources = [...suppliedSources.values()]
-        .filter((match) => !selectedSourceIds.has(match.messageId) && !selectedEventSources.has(match.messageId)
+        .filter((match) => !ranked && !selectedSourceIds.has(match.messageId) && !selectedEventSources.has(match.messageId)
             && (historicalEvidenceIntent || match.retrieval === 'semantic' || strongLexicalSourceIds.has(match.messageId)))
-        .map(prepareSource)
+        .map((match) => prepareSource(match))
         .sort((left, right) => right.effectiveScore - left.effectiveScore
             || right.occurredAt - left.occurredAt
             || left.messageId.localeCompare(right.messageId))
