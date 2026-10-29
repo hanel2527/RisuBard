@@ -96,12 +96,12 @@ describe('three-way update plan', () => {
     })
 
     test('never touches chats, notes and other personal fields', () => {
-        const mine = bot({ notes: 'my notes', chatPage: 3, scriptstate: { hp: 3 }, ttsMode: 'vits' })
-        const theirs = bot({ chaId: 'new', notes: '', chatPage: 0, chats: [], ttsMode: 'normal', desc: 'changed' })
+        const mine = bot({ notes: 'my notes', chatPage: 3, scriptstate: { hp: 3 }, ttsMode: 'vits', autoTranslateNewResponses: false })
+        const theirs = bot({ chaId: 'new', notes: '', chatPage: 0, chats: [], ttsMode: 'normal', desc: 'changed', autoTranslateNewResponses: true })
         const plan = planCharacterUpdate(mine, theirs, updateBaseSnapshot(bot()))
         expect(plan.items.map(item => item.field)).toEqual(['desc'])
         const merged = applyCharacterUpdate(mine, theirs, plan)
-        expect(merged).toMatchObject({ chaId: 'installed', notes: 'my notes', chatPage: 3, scriptstate: { hp: 3 }, ttsMode: 'vits', desc: 'changed' })
+        expect(merged).toMatchObject({ chaId: 'installed', notes: 'my notes', chatPage: 3, scriptstate: { hp: 3 }, ttsMode: 'vits', desc: 'changed', autoTranslateNewResponses: false })
     })
 
     test('ignores lore ids and caches that differ between two installs of one card', () => {

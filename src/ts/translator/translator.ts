@@ -674,7 +674,11 @@ export function isExpTranslator(){
     return db.translatorType === 'llm' || db.translatorType === 'deepl' || db.translatorType === 'deeplX'
 }
 
-export async function translateHTML(html: string, reverse:boolean, charArg:simpleCharacterArgument|string = '', chatID:number, regenerate = false): Promise<string> {
+export async function translateHTML(
+    html: string, reverse: boolean, charArg: simpleCharacterArgument | string = '', chatID: number,
+    regenerate = false,
+    options: { allowDuringGeneration?: boolean, translatorNote?: string, realChatId?: string, signal?: AbortSignal } = {},
+): Promise<string> {
     let alwaysExistChar: character | simpleCharacterArgument;
     if(charArg !== ''){
         if(typeof(charArg) === 'string'){
@@ -696,7 +700,7 @@ export async function translateHTML(html: string, reverse:boolean, charArg:simpl
     }
     let db = getDatabase()
     let DoingChat = get(doingChat)
-    if(DoingChat){
+    if(DoingChat && !options.allowDuringGeneration){
         if(isExpTranslator()){
             if(!(db.translatorType === 'llm' && await getLLMCache(html) !== null)){
                 return html
@@ -707,7 +711,7 @@ export async function translateHTML(html: string, reverse:boolean, charArg:simpl
         const tr = db.translator || 'en'
         const from = db.translatorInputLanguage
         let translated = false
-        const r = await translateLLM(html, {to: tr, from: from, regenerate, onCacheState: (cached) => { translated = !cached }})
+        const r = await translateLLM(html, {to: tr, from: from, regenerate, translatorNote: options.translatorNote, realChatId: options.realChatId, signal: options.signal, onCacheState: (cached) => { translated = !cached }})
         if(translated && db.playMessageOnTranslateEnd){
             playNotificationSound(db.translateSound, db.translateSoundVolume)
         }
@@ -921,7 +925,7 @@ function needSuperChunkedTranslate(){
     return getDatabase().translatorType === 'deeplX'
 }
 
-async function translateLLM(text:string, arg:{to:string, from:string, regenerate?:boolean,translatorNote?:string, onCacheState?:(cached:boolean) => void}):Promise<string>{
+async function translateLLM(text:string, arg:{to:string, from:string, regenerate?:boolean,translatorNote?:string, realChatId?:string, signal?:AbortSignal, onCacheState?:(cached:boolean) => void}):Promise<string>{
     if(!arg.regenerate){
         const cacheMatch = llmTranslateCache.get(text)
         if(cacheMatch){
@@ -952,7 +956,7 @@ async function translateLLM(text:string, arg:{to:string, from:string, regenerate
     const currentChar = db.characters[charIndex]
     let translatorNote = ""
     console.log(arg.translatorNote)
-    if(arg.translatorNote){
+    if(arg.translatorNote !== undefined){
         translatorNote = arg.translatorNote
     }
     else if (currentChar?.type === "character") {
@@ -988,8 +992,10 @@ async function translateLLM(text:string, arg:{to:string, from:string, regenerate
         useStreaming: false,
         noMultiGen: true,
         maxTokens: preset.maxResponse,
-    }, 'translate')
+        realChatId: arg.realChatId,
+    }, 'translate', arg.signal)
 
+    if (arg.signal?.aborted) return cacheKey
     if(rq.type === 'fail'){
         notifyError(rq.result)
         return text
