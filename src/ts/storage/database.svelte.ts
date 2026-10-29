@@ -2405,6 +2405,7 @@ export interface RisuBardGallery {
 
 export interface character{
     bardPainter?: import('../bardPainter/types').PainterBotData
+    autoTranslateNewResponses?: boolean
     type?:"character"
     name:string
     image?:string
