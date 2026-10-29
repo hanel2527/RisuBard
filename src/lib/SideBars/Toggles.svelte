@@ -434,6 +434,17 @@
     {/each}
 {/snippet}
 
+{#if chara}
+<div class="flex gap-2 mt-4 items-center justify-between min-h-10 px-1">
+    <span class="min-w-0 break-words" use:tooltip={language.autoTranslateNewResponsesHelp}>{language.autoTranslateNewResponses}</span>
+    <ShSwitch
+        ariaLabel={language.autoTranslateNewResponses}
+        checked={chara.autoTranslateNewResponses !== false}
+        onCheckedChange={(checked) => { chara.autoTranslateNewResponses = checked }}
+    />
+</div>
+{/if}
+
 {#if minimal}
 <div data-sidebar-binding-row class="mt-3 flex items-stretch gap-1">
     {@render leading?.()}
