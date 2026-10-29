@@ -23,7 +23,7 @@ export interface WikiPromptBlock {
 
 export interface WikiPromptPreset {
     schemaVersion: 1
-    writingPolicyVersion?: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
+    writingPolicyVersion?: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10
     id: string
     name: string
     revision: number
@@ -131,17 +131,18 @@ export const OFFICIAL_WIKI_V5_BACKUP_ID = 'official-wiki-261003-v5'
 export const OFFICIAL_WIKI_V6_BACKUP_ID = 'official-wiki-261010'
 export const OFFICIAL_WIKI_V7_BACKUP_ID = 'official-wiki-261021'
 export const OFFICIAL_WIKI_V8_BACKUP_ID = 'official-wiki-261027'
+export const OFFICIAL_WIKI_V9_BACKUP_ID = 'official-wiki-261028'
 export const OFFICIAL_WIKI_CURRENT_ID = 'official-wiki-current'
 export const OFFICIAL_WIKI_ARCHIVE_FOLDER_ID = 'official-wiki-archive'
 // Named like the official presets themselves; the UI language is not loaded yet when this folder is created.
 const OFFICIAL_WIKI_ARCHIVE_FOLDER_NAME = '과거 공식 프리셋'
 // Shipping a new official version: bump the release date, move the previous release to the front of
 // OFFICIAL_WIKI_ARCHIVES, and move archives beyond OFFICIAL_WIKI_ARCHIVE_LIMIT to RETIRED_OFFICIAL_IDS.
-export const OFFICIAL_WIKI_RELEASE = '2026-10-28'
+export const OFFICIAL_WIKI_RELEASE = '2026-10-29'
 export const OFFICIAL_WIKI_ARCHIVE_LIMIT = 3
 const RETIRED_OFFICIAL_IDS: ReadonlySet<string> = new Set([
     OFFICIAL_WIKI_BACKUP_ID, OFFICIAL_WIKI_V2_BACKUP_ID, OFFICIAL_WIKI_V4_BACKUP_ID, OFFICIAL_WIKI_V3_BACKUP_ID,
-    OFFICIAL_WIKI_V5_BACKUP_ID,
+    OFFICIAL_WIKI_V5_BACKUP_ID, OFFICIAL_WIKI_V6_BACKUP_ID,
 ])
 
 export function officialWikiPresetName(date: string): string {
@@ -378,7 +379,8 @@ function normalizePreset(value: unknown, idFactory: () => string): WikiPromptPre
             content: '',
         })
     }
-    const writingPolicyVersion = source.writingPolicyVersion === 9 ? 9
+    const writingPolicyVersion = source.writingPolicyVersion === 10 ? 10
+        : source.writingPolicyVersion === 9 ? 9
         : source.writingPolicyVersion === 8 ? 8
         : source.writingPolicyVersion === 7 ? 7
         : source.writingPolicyVersion === 6 ? 6
@@ -569,7 +571,7 @@ const V9_CONTINUITY = [
 
 const V9_COMPRESSION = 'The document is over its length goal. Rewrite it shorter: merge lines about the same topic or counterpart, delete lines that are finished, no longer true, or already recorded by an event, and combine evidence marks into ranges. Keep each secret and who shares it, wrong beliefs, unresolved promises, lasting constraints, relationship direction and values, and each transition\'s result with its event links. Make the merge and delete the source sections in the same patch batch.'
 
-export function createDefaultWikiPromptPreset(id: string): WikiPromptPreset {
+function createV9WikiPromptPreset(id: string): WikiPromptPreset {
     const previous = createV8WikiPromptPreset(id)
     return normalizePreset({
         ...previous, writingPolicyVersion: 9, revision: 8,
@@ -578,11 +580,33 @@ export function createDefaultWikiPromptPreset(id: string): WikiPromptPreset {
     }, () => id)
 }
 
+// Version 10 (2026-10-29) targets recall questions that measured weakest: which of two past moments
+// came first, and scenes asked about in other words than the story used. Orders come from the
+// excerpt order numbers, summaries name what an item follows, and keywords add the words of a later question.
+const RECALL_RESPONSE_V10 = `${RECALL_RESPONSE_V8} To tell which past moment came first, use the order numbers on retrieved original excerpts (a lower number is earlier) and the order of the event summaries, not the order in which sources appear here.`
+
+const RECALL_DETAIL_V10 = RECALL_BLOCKS.find(block => block.id === 'default-recall-detail')!.content!.split('\n').map(line =>
+    line.startsWith('When keywords are available')
+        ? 'When keywords are available, include grounded distinctive names, objects, actions, nicknames or short recurring expressions, and the plain words a participant would likely use when asking about this event later: everyday names for its objects and actions, how the characters refer to them, and a short label for the moment such as the first meeting or the night before leaving. Keywords aid retrieval but never replace the event facts or add unsupported details.'
+        : line.startsWith('Write establishedEvents as a chronological story summary')
+            ? `${line} When an item follows from, answers or undoes an earlier development, name that development in a short clause (right after X, in reply to X, because of X) so the summary alone shows what came first and what led to what. Give a cause only when the source establishes it; otherwise give only the order.`
+            : line
+).join('\n')
+
+export function createDefaultWikiPromptPreset(id: string): WikiPromptPreset {
+    const previous = createV9WikiPromptPreset(id)
+    return normalizePreset({
+        ...previous, writingPolicyVersion: 10, revision: 9,
+        blocks: previous.blocks.map(block => block.id === 'default-recall-response' ? { ...block, content: RECALL_RESPONSE_V10 }
+            : block.id === 'default-recall-detail' ? { ...block, content: RECALL_DETAIL_V10 } : block),
+    }, () => id)
+}
+
 // Newest first; at most OFFICIAL_WIKI_ARCHIVE_LIMIT entries.
 const OFFICIAL_WIKI_ARCHIVES: readonly { id: string; date: string; create: (id: string) => WikiPromptPreset }[] = [
+    { id: OFFICIAL_WIKI_V9_BACKUP_ID, date: '2026-10-28', create: createV9WikiPromptPreset },
     { id: OFFICIAL_WIKI_V8_BACKUP_ID, date: '2026-10-27', create: createV8WikiPromptPreset },
     { id: OFFICIAL_WIKI_V7_BACKUP_ID, date: '2026-10-21', create: createV7WikiPromptPreset },
-    { id: OFFICIAL_WIKI_V6_BACKUP_ID, date: '2026-10-10', create: createV6WikiPromptPreset },
 ]
 
 export function createWikiPromptPreset(id: string, name = 'Wiki Prompt'): WikiPromptPreset {
@@ -620,7 +644,7 @@ export function normalizeWikiPromptPresetState(
         }
         // Only one official preset stays locked; it keeps its stable ID and optional toggles.
         if (official) continue
-        official = normalized.writingPolicyVersion === 9 ? normalized : upgradeOfficialPreset(normalized)
+        official = normalized.writingPolicyVersion === 10 ? normalized : upgradeOfficialPreset(normalized)
         presets.push(official)
     }
     if (!official) {
